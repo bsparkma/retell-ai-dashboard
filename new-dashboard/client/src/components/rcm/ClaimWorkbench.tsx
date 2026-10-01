@@ -63,6 +63,7 @@ import {
   FileText,
   Info,
   Loader2,
+  Pencil,
   ScanLine,
   Search,
   ShieldCheck,
@@ -131,6 +132,13 @@ export interface ClaimWorkbenchProps {
   onDecide: (lineId: string, decision: LineDecision, reason: string | null) => void;
   /** The document this claim's numbers were read from, when there is one. */
   documentHref: string | null;
+  /**
+   * THE DOOR TO THE CONFIRM SCREEN, anchored at this claim — or null when the
+   * check has no confirm step (an 835, a text-layer PDF) or no `?from=` named
+   * the check. A LINK and nothing more: a figure is edited in exactly one
+   * audited place, the confirm screen, and this only chooses where it opens.
+   */
+  fixFigureHref: string | null;
 }
 
 export default function ClaimWorkbench({
@@ -149,12 +157,73 @@ export default function ClaimWorkbench({
   onConfirm,
   onDecide,
   documentHref,
+  fixFigureHref,
 }: ClaimWorkbenchProps) {
   const verdict = claim.verdict ?? null;
   const identity = claim.identity ?? null;
   // B2. Null until this claim has posted and its chart has been read back.
   const confirmedAt = claim.confirmedAt ?? null;
   const chart = claim.chart ?? null;
+  /**
+   * WHETHER THE DOCUMENT IS SHOWING. Lifted out of `CarrierPanel` because
+   * opening it now changes the PAGE's layout, not only the panel's — see the
+   * split below.
+   */
+  const [docOpen, setDocOpen] = useState(false);
+
+  const carrier = (
+    <CarrierPanel
+      claim={claim}
+      provenance={data.claim.provenance}
+      documentHref={documentHref}
+      fixFigureHref={fixFigureHref}
+      verdict={verdict}
+      reasons={data.writeoffReasons}
+      busy={busy}
+      mayDecide={mayDecide}
+      decideBlockedBy={decideBlockedBy}
+      onDecide={onDecide}
+      docOpen={docOpen}
+      onToggleDoc={() => setDocOpen((v) => !v)}
+    />
+  );
+
+  const odColumn = (
+    <div className="space-y-4">
+      {/*
+        S8 · ONE HEADING OVER BOTH HALVES OF WHAT OPEN DENTAL HAS — the
+        patient it holds and the claim it holds. It was the claim panel's
+        own heading, sitting under the identity panel as though the patient
+        were not part of what Open Dental has.
+      */}
+      <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        What Open Dental has
+      </h2>
+      <IdentityPanel identity={identity} matchStatus={claim.odMatchStatus} />
+      <ChartPanel
+        claim={claim}
+        chart={chart}
+        /* The red verdict's own problems, so the rail can flag the row the
+           money argument is actually about. Null unless the verdict is
+           red — see `verdictBlock`. */
+        block={verdictBlock(verdict)}
+        snapshot={snapshot}
+        busy={busy}
+        mayRerun={mayRerun}
+        fromBatchId={fromBatchId}
+        onRunMatch={onRunMatch}
+        onConfirm={onConfirm}
+        rules={data.matchRules}
+      />
+      <ReviewBox
+        claim={claim}
+        note={note}
+        setNote={setNote}
+        busy={busy === "review"}
+        onSave={onReview}
+      />
+    </div>
+  );
 
   return (
     <div className="mt-4" data-testid="claim-workbench">
@@ -174,55 +243,45 @@ export default function ClaimWorkbench({
         THREE-FIFTHS AND TWO. The carrier's panel is a seven-column table now,
         and at an even split its decision column ran off the edge at 1280. The
         Open Dental side is two narrow tables and a card, and gives up the room.
-      */}
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-        <CarrierPanel
-          claim={claim}
-          provenance={data.claim.provenance}
-          documentHref={documentHref}
-          verdict={verdict}
-          reasons={data.writeoffReasons}
-          busy={busy}
-          mayDecide={mayDecide}
-          decideBlockedBy={decideBlockedBy}
-          onDecide={onDecide}
-        />
 
-        <div className="space-y-4">
-          {/*
-            S8 · ONE HEADING OVER BOTH HALVES OF WHAT OPEN DENTAL HAS — the
-            patient it holds and the claim it holds. It was the claim panel's
-            own heading, sitting under the identity panel as though the patient
-            were not part of what Open Dental has.
-          */}
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            What Open Dental has
-          </h2>
-          <IdentityPanel identity={identity} matchStatus={claim.odMatchStatus} />
-          <ChartPanel
-            claim={claim}
-            chart={chart}
-            /* The red verdict's own problems, so the rail can flag the row the
-               money argument is actually about. Null unless the verdict is
-               red — see `verdictBlock`. */
-            block={verdictBlock(verdict)}
-            snapshot={snapshot}
-            busy={busy}
-            mayRerun={mayRerun}
-            fromBatchId={fromBatchId}
-            onRunMatch={onRunMatch}
-            onConfirm={onConfirm}
-            rules={data.matchRules}
-          />
-          <ReviewBox
-            claim={claim}
-            note={note}
-            setNote={setNote}
-            busy={busy === "review"}
-            onSave={onReview}
-          />
+        ── WITH THE DOCUMENT OPEN, THE PAGE SPLITS INSTEAD ────────────────────
+        The viewer used to open ABOVE the carrier table, inside the panel, so
+        the reason a biller opens it — comparing a figure on the page with a
+        figure on the screen — put the two a full scroll apart. The owner hit
+        exactly that working a real check.
+
+        So at ≥1280px an open document takes the left half, sticky and at the
+        column's full height, and all the work — the carrier's table, then the
+        Open Dental panels — flows down the right, the same shape the confirm
+        screen already has. One page scroll, per the standing rule: the frame's
+        own scroll is the one internal exception a page image is allowed.
+        Below 1280px it stacks, document first.
+      */}
+      {docOpen ? (
+        <div
+          className="grid grid-cols-1 gap-4 xl:grid-cols-2 xl:items-start"
+          data-testid="workbench-split"
+        >
+          <div className="xl:sticky xl:top-4">
+            <EobViewerPanel
+              href={documentHref}
+              caption={provenanceLabel(data.claim.provenance)}
+              open
+              onClose={() => setDocOpen(false)}
+              heightClass="h-[55vh] xl:h-[calc(100vh-11rem)]"
+            />
+          </div>
+          <div className="space-y-4">
+            {carrier}
+            {odColumn}
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+          {carrier}
+          {odColumn}
+        </div>
+      )}
 
       {/*
         ── THE VERDICT BAND, ACROSS THE BOTTOM ─────────────────────────────────
@@ -663,22 +722,35 @@ function CarrierPanel({
   claim,
   provenance,
   documentHref,
+  fixFigureHref,
   verdict,
   reasons,
   busy,
   mayDecide,
   decideBlockedBy,
   onDecide,
+  docOpen,
+  onToggleDoc,
 }: {
   claim: ClaimDetailResponse["claim"];
   provenance: ClaimDetailResponse["claim"]["provenance"];
   documentHref: string | null;
+  /** The door to the confirm screen, anchored at this claim. See the props. */
+  fixFigureHref: string | null;
   verdict: ClaimVerdict | null;
   reasons: { slug: string; label: string }[];
   busy: ClaimWorkbenchProps["busy"];
   mayDecide: boolean;
   decideBlockedBy: ClaimWorkbenchProps["decideBlockedBy"];
   onDecide: ClaimWorkbenchProps["onDecide"];
+  /**
+   * The document toggle, OWNED BY THE WORKBENCH now: opening the viewer
+   * changes the page's layout (the ≥1280px split), which is above this
+   * panel's pay grade. The button stays here, where the figures it is about
+   * are.
+   */
+  docOpen: boolean;
+  onToggleDoc: () => void;
 }) {
   /*
    * IS THERE A CHART BEHIND THIS DECISION YET? — Stage C-3, item 4.
@@ -695,9 +767,6 @@ function CarrierPanel({
    */
   const notLinked = claim.odMatchStatus !== "confirmed";
 
-  /** Whether the document is showing beside the figures. Closed by default. */
-  const [docOpen, setDocOpen] = useState(false);
-
   return (
     <section data-testid="claim-parsed">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -706,42 +775,57 @@ function CarrierPanel({
         <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           What the carrier said, and what you decide
         </h2>
-        {/*
-          ONE CLICK TO THE PAPER. The reason a biller checks a figure is that she
-          doubts it, and the thing that settles it is the image the numbers were
-          read from. Rendered only when there IS one — an 835 was parsed, not
-          scanned, and offering a document that does not exist is worse than
-          offering none.
-        */}
-        {documentHref && (
-          /*
-            IN PLACE, NOT A NEW TAB.
-            The reason a biller opens the document is that she doubts a figure on
-            THIS screen, and a new tab takes that screen away at the moment she
-            needs to compare the two. It also put the whole exchange somewhere
-            this app cannot observe: a blocked popup, a tab that downloads, or a
-            bare refusal all looked identical from in here, which is why the prod
-            logs carry no record of the attempt that failed on 2026-09-30.
-          */
-          <button
-            type="button"
-            onClick={() => setDocOpen((v) => !v)}
-            aria-expanded={docOpen}
-            data-testid="open-source-document"
-            className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-foreground hover:bg-muted"
-          >
-            <FileText size={13} />
-            {docOpen ? "Hide the EOB" : "See the EOB"}
-          </button>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {/*
+            ── FIX A FIGURE — the door to the one audited place ───────────────
+            A biller who spots a wrong number on THIS screen used to have to
+            know that figures are corrected on the confirm step, and find her
+            own way there. This is the way, anchored at this claim. It is only
+            a link: nothing on this page edits a figure, and nothing may.
+            Rendered only when the check HAS a confirm step — an 835's figures
+            were parsed, not read, and there is nothing to correct against a
+            page.
+          */}
+          {fixFigureHref && (
+            <Link
+              href={fixFigureHref}
+              data-testid="fix-figure-door"
+              className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-foreground hover:bg-muted"
+            >
+              <Pencil size={13} />
+              Fix a figure on this claim
+            </Link>
+          )}
+          {/*
+            ONE CLICK TO THE PAPER. The reason a biller checks a figure is that she
+            doubts it, and the thing that settles it is the image the numbers were
+            read from. Rendered only when there IS one — an 835 was parsed, not
+            scanned, and offering a document that does not exist is worse than
+            offering none.
+          */}
+          {documentHref && (
+            /*
+              IN PLACE, NOT A NEW TAB.
+              The reason a biller opens the document is that she doubts a figure on
+              THIS screen, and a new tab takes that screen away at the moment she
+              needs to compare the two. It also put the whole exchange somewhere
+              this app cannot observe: a blocked popup, a tab that downloads, or a
+              bare refusal all looked identical from in here, which is why the prod
+              logs carry no record of the attempt that failed on 2026-09-30.
+            */
+            <button
+              type="button"
+              onClick={onToggleDoc}
+              aria-expanded={docOpen}
+              data-testid="open-source-document"
+              className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-foreground hover:bg-muted"
+            >
+              <FileText size={13} />
+              {docOpen ? "Hide the EOB" : "See the EOB"}
+            </button>
+          )}
+        </div>
       </div>
-
-      <EobViewerPanel
-        href={documentHref}
-        caption={provenanceLabel(provenance)}
-        open={docOpen}
-        onClose={() => setDocOpen(false)}
-      />
 
       <div className="mt-2 rounded-xl border border-border bg-card">
         {provenanceLabel(provenance) && (
