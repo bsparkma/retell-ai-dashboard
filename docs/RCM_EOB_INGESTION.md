@@ -77,6 +77,7 @@ lands in.
 | `413` | `FILE_TOO_LARGE` |
 | `415` | `NOT_A_PDF` — decided on **magic bytes**, not the declared content type |
 | `503` | `EOB_STORAGE_UNAVAILABLE` — no blob account configured |
+| `503` | `EOB_OCR_UNAVAILABLE` — this document needs OCR and this deployment has no reader. Nothing is stored, queued or spent. See §10 "Refused at the front door" |
 
 ---
 
@@ -260,7 +261,7 @@ elapsed milliseconds. The bytes are never written to disk on either side of the 
 
 | Var | Default | Effect |
 | --- | --- | --- |
-| `RCM_BLOB_ACCOUNT_URL` | — | `https://<acct>.blob.core.windows.net`. Absent ⇒ POST 503s. Shared with the ERA store: one storage account holds both containers. **Set on staging; deliberately NOT on prod** — see the promotion checklist below. |
+| `RCM_BLOB_ACCOUNT_URL` | — | `https://<acct>.blob.core.windows.net`. Absent ⇒ POST 503s `EOB_STORAGE_UNAVAILABLE` before anything is stored. Shared with the ERA store: one storage account holds both containers. **Set on staging and on prod** (prod 2026-09-29). |
 | `RCM_EOB_CONTAINER` | `rcm-eob` | Private container for EOB PDFs. **Leave unset.** The default is the container that exists in both environments. |
 | `RCM_EXTRACTION_MAX_CENTS_PER_DAY` | `1000` | The breaker. `0` = unlimited. Non-numeric falls back to 1000. |
 | `RCM_EXTRACTION_BUDGET_TZ` | `America/Chicago` | Day boundary for the breaker. |
@@ -276,7 +277,7 @@ elapsed milliseconds. The bytes are never written to disk on either side of the 
 
 | Var | Default | Effect |
 | --- | --- | --- |
-| `RCM_OCR_ENDPOINT` | — | `https://<name>.cognitiveservices.azure.com`. **Absent ⇒ OCR is off**, and an image-only PDF fails with `no_extractable_text` exactly as it did before the OCR slice. That is a legal, documented state, not a degraded one. |
+| `RCM_OCR_ENDPOINT` | — | `https://<name>.cognitiveservices.azure.com`. **Absent ⇒ OCR is off**, and a document that needs it is now **refused at upload** with `503 EOB_OCR_UNAVAILABLE` rather than accepted and failed later — see §10 "Refused at the front door". Still a legal state, but the lane says so up front. **Set on staging and on prod** (prod 2026-09-29). |
 | `RCM_OCR_MODEL` | `prebuilt-read` | **Leave it.** `prebuilt-layout` costs 6.7× and returns structure the extraction prompt does not consume. Changing it *requires* changing `RCM_OCR_CENTS_PER_KPAGE` to match, or the breaker under-counts by that factor. |
 | `RCM_OCR_API_VERSION` | `2024-11-30` | Document Intelligence v4.0 GA. |
 | `RCM_OCR_AUTH_MODE` | `managed_identity` | `azure_cli` for local dev (`az login`), `api_key` as a last resort. Exactly one credential is used — never a silent fallback. |
@@ -296,7 +297,7 @@ There is **no** OpenAI-direct escape hatch here. `ALLOW_OPENAI_DIRECT` is honore
 voice summarizer (a worse summary is the downside) and is deliberately ignored by this
 module (invented dollar amounts in a claim is the downside).
 
-### What is provisioned today (2026-08-17)
+### What is provisioned today (2026-09-29)
 
 Both RCM containers live on the **same storage accounts as TC media** — same PHI class,
 same tenant, same posture (shared-key auth off, public blob access off, 14-day blob *and*
@@ -308,7 +309,7 @@ Contributor` is granted at **container** scope, matching `tc-media`.
 | account | `stcareinstaging` (rg-carein-staging) | `stcareinprod` (rg-carein-prod) |
 | containers | `rcm-eob`, `rcm-era` ✅ | `rcm-eob`, `rcm-era` ✅ |
 | RBAC (MI + `admin@carein.ai`) | ✅ | ✅ |
-| `RCM_BLOB_ACCOUNT_URL` | ✅ set | ❌ **deferred — see below** |
+| `RCM_BLOB_ACCOUNT_URL` | ✅ set | ✅ set 2026-09-29 (rev `ca-carein-prod-backend--0000049`) |
 
 Document Intelligence is a separate Azure resource, in the same resource group, reached with
 the same managed identity and the same `https://cognitiveservices.azure.com/.default` token
@@ -316,79 +317,102 @@ audience as Azure OpenAI and Azure Speech:
 
 | | staging | prod |
 | --- | --- | --- |
-| resource | `docint-carein-staging` (S0, southcentralus) ✅ | ❌ **not provisioned — see below** |
-| RBAC (`Cognitive Services User` → `id-carein-staging`) | ✅ | ❌ |
-| `RCM_OCR_ENDPOINT` | ✅ set on `ca-carein-backend` | ❌ **deferred** |
+| resource | `docint-carein-staging` (S0, southcentralus) ✅ | `docint-carein-prod` (S0, southcentralus) ✅ 2026-09-29 |
+| RBAC (`Cognitive Services User`) | ✅ → `id-carein-staging` | ✅ → `id-carein-prod` |
+| `RCM_OCR_ENDPOINT` | ✅ set on `ca-carein-backend` | ✅ set on `ca-carein-prod-backend` |
+
+**Auth is managed identity in BOTH environments, and no Document Intelligence key exists
+in either Key Vault.** `RCM_OCR_AUTH_MODE` defaults to `managed_identity`, so there is
+nothing to store; `RCM_OCR_API_KEY` is read only when the mode is explicitly set to
+`api_key`, which no environment does. A key was considered for prod during the 2026-09-29
+stand-up and rejected: it would be a long-lived credential where staging has none. The
+endpoint itself is not a secret and travels as a plain env var.
 
 Containers are **not** on `stcareinstgcallstore`. That account has shared-key auth *enabled*
 because Container Apps AzureFile mounts authenticate with the account key; keeping PHI blobs
 off it is the entire reason it exists separately
 ([project_staging_callstore_durability](DEV_PROD_WORKFLOW.md#gotchas)).
 
-### Prod promotion checklist
+### Prod promotion checklist — COMPLETED 2026-09-29
 
-RCM ships dark, so prod carries the containers and the RBAC but **not** the env var: setting
-it restarts the backend, and prod has known readiness-probe flakiness at `maxReplicas=1`.
-Deferring it is only safe if it is not forgotten — so it is a line item here:
+> **This checklist is closed.** It is kept because the order it prescribed was not the
+> order that happened, and the gap between the two is the whole lesson.
+>
+> **What the checklist assumed.** That RCM would ship dark: prod would carry the containers
+> and the RBAC but not the env vars, and the vars would be set *before* the `rcm`
+> entitlement was flipped, because setting one restarts a backend that has known
+> readiness-probe flakiness at `maxReplicas=1`.
+>
+> **What actually happened.** The entitlement went first. `rcm` was live on the prod tenant
+> with real logins on `dashboard.carein.ai/rcm` while `RCM_BLOB_ACCOUNT_URL` was still
+> unset, so `POST /api/rcm/eob` answered `503 EOB_STORAGE_UNAVAILABLE` — the exact failure
+> this list was written to prevent, and it was hit four times in six minutes on 2026-09-30
+> 01:00–01:06 UTC before anyone looked at the config.
+>
+> **What that cost, and the fix that came out of it.** Nothing was lost — the blob guard
+> refuses before storing — but the OCR half of the same gap was worse: an unconfigured
+> reader accepted a scan, banked it, and only then failed it with `no_extractable_text`,
+> a message about the biller's file. That is what §10 "Refused at the front door" now
+> prevents, and it is deliberately a CODE guard rather than another checklist line, because
+> a checklist is exactly what did not hold here.
 
-- [ ] **Set `RCM_BLOB_ACCOUNT_URL` on `ca-carein-prod-backend`** during the promotion window,
-      *before* flipping the `rcm` entitlement. Without it, the first prod upload returns
-      `503 EOB_STORAGE_UNAVAILABLE` — the exact failure staging hit on 2026-08-17.
+All four items landed on 2026-09-29 (revision `ca-carein-prod-backend--0000049`):
 
-  ```bash
-  az containerapp update --subscription "Azure subscription 1" \
-    -n ca-carein-prod-backend -g rg-carein-prod \
-    --set-env-vars RCM_BLOB_ACCOUNT_URL=https://stcareinprod.blob.core.windows.net
-  ```
-
-  Do **not** set `RCM_EOB_CONTAINER` or `RCM_ERA_CONTAINER`. Check `gh run list
-  --workflow=prod.yml` for an in-flight deploy first, and confirm afterwards that the new
-  revision kept its image tag and `CALLSTORE_DIR=/data`.
-
-- [ ] Verify the containers and RBAC are still in place (they were created 2026-08-17):
+- [x] **`RCM_BLOB_ACCOUNT_URL` set on `ca-carein-prod-backend`.**
+- [x] **Containers and RBAC verified still in place** (created 2026-08-17, unchanged):
       `az storage container-rm list --subscription "Azure subscription 1" --storage-account stcareinprod -o table`
+- [x] **`docint-carein-prod` provisioned and `RCM_OCR_ENDPOINT` set.** Managed identity
+      only — no key minted, nothing added to `kv-carein-prod`.
+- [x] `rcm` entitlement — already flipped before this window, out of order. See above.
 
-- [ ] **Provision Document Intelligence in prod, and set `RCM_OCR_ENDPOINT`** — the same
-      shape as the blob var above, and deferred for the same reason (setting an env var
-      restarts the backend). Prod is deliberately left with **no** OCR resource at all, so
-      until this is done a scanned EOB in prod fails honestly with `no_extractable_text`.
+Both env vars went in **one** `--set-env-vars` call, so the backend restarted once rather
+than twice:
 
-  ```bash
-  SUB="Azure subscription 1"
+```bash
+SUB="Azure subscription 1"
 
-  # 1. the resource
-  az cognitiveservices account create --subscription "$SUB" \
-    -n docint-carein-prod -g rg-carein-prod \
-    --kind FormRecognizer --sku S0 --location southcentralus \
-    --custom-domain docint-carein-prod --yes
+# 1. the resource
+az cognitiveservices account create --subscription "$SUB" \
+  -n docint-carein-prod -g rg-carein-prod \
+  --kind FormRecognizer --sku S0 --location southcentralus \
+  --custom-domain docint-carein-prod --yes
 
-  # 2. RBAC for the prod backend's managed identity.
-  #    ⚠ Use the identity's principalId, NOT its clientId. `az identity list -o table`
-  #    shows the CLIENT id in the column people reach for; read principalId explicitly.
-  PID=$(az identity show --subscription "$SUB" -n <prod-identity> -g rg-carein-prod \
-          --query principalId -o tsv)
-  SUBID=$(az account list --query "[?name=='$SUB'].id" -o tsv)
-  az role assignment create --subscription "$SUB" \
-    --assignee-object-id "$PID" --assignee-principal-type ServicePrincipal \
-    --role "Cognitive Services User" \
-    --scope "/subscriptions/$SUBID/resourceGroups/rg-carein-prod/providers/Microsoft.CognitiveServices/accounts/docint-carein-prod"
+# 2. RBAC for the prod backend's managed identity.
+#    WARNING Use the identity's principalId, NOT its clientId. `az identity list -o table`
+#    shows the CLIENT id in the column people reach for; read principalId explicitly.
+PID=$(az identity show --subscription "$SUB" -n id-carein-prod -g rg-carein-prod \
+        --query principalId -o tsv)
+SUBID=$(az account list --query "[?name=='$SUB'].id" -o tsv)
+MSYS_NO_PATHCONV=1 az role assignment create --subscription "$SUB" \
+  --assignee-object-id "$PID" --assignee-principal-type ServicePrincipal \
+  --role "Cognitive Services User" \
+  --scope "/subscriptions/$SUBID/resourceGroups/rg-carein-prod/providers/Microsoft.CognitiveServices/accounts/docint-carein-prod"
 
-  # 3. the env var
-  az containerapp update --subscription "$SUB" \
-    -n ca-carein-prod-backend -g rg-carein-prod \
-    --set-env-vars RCM_OCR_ENDPOINT=https://docint-carein-prod.cognitiveservices.azure.com
-  ```
+# 3. BOTH env vars, one call, one restart
+az containerapp update --subscription "$SUB" \
+  -n ca-carein-prod-backend -g rg-carein-prod \
+  --set-env-vars RCM_BLOB_ACCOUNT_URL=https://stcareinprod.blob.core.windows.net \
+                 RCM_OCR_ENDPOINT=https://docint-carein-prod.cognitiveservices.azure.com
+```
 
-  Do **not** set `RCM_OCR_MODEL`, `RCM_OCR_AUTH_MODE` or any threshold var: every default
-  is the intended production value. Afterwards, count the env vars on the new revision and
-  confirm nothing else moved — `--set-env-vars` is additive, but a mistyped flag is not.
+`RCM_EOB_CONTAINER`, `RCM_ERA_CONTAINER`, `RCM_OCR_MODEL`, `RCM_OCR_AUTH_MODE` and every
+threshold var were deliberately left unset: each default *is* the intended production
+value. Read back afterwards — the env count went 29 → **31**, exactly +2, and the image tag
+(`carein-backend:a83039e`), `CALLSTORE_DIR=/data`, the `callstore-vol` AzureFile mount and
+`minReplicas`/`maxReplicas` 1/1 were all unchanged. `--set-env-vars` is additive, but a
+mistyped flag is not.
 
-  > ⚠ **Git Bash mangles `--scope`.** MSYS rewrites a leading `/subscriptions/...` into a
-  > Windows path and `az` then fails with `MissingSubscription`, which reads like a login
-  > problem and is not. Prefix with `MSYS_NO_PATHCONV=1`, or run the role assignment from
-  > PowerShell.
+> WARNING **Git Bash mangles `--scope`.** MSYS rewrites a leading `/subscriptions/...` into
+> a Windows path and `az` then fails with `MissingSubscription`, which reads like a login
+> problem and is not. Prefix with `MSYS_NO_PATHCONV=1`, or run the role assignment from
+> PowerShell.
 
-- [ ] Only then flip the `rcm` module entitlement for the tenant.
+**Posting stayed fail-closed throughout, and that was verified rather than assumed.** On
+the new revision `OFFICES_ENABLED_FOR_POSTING` is `['roland']` and `drain_enabled` is
+`false` for **both** roland and valley, with `drain_updated_at`/`drain_updated_by` null —
+seeded rows nobody has ever flipped. A chart write needs both conditions
+(`services/rcm/postingGate.js`), so every prod office is in shadow mode: a biller can work
+real EOBs all the way to `approved` and nothing can reach Open Dental.
 
 ---
 
@@ -444,8 +468,10 @@ Never a real EOB on staging before the Slice 6 era. Use a synthetic one.
 
 ### Prerequisites
 
-- The tenant is entitled to `rcm` (Platform Console). It ships dark, so everything 403s until
-  it is.
+- The tenant is entitled to `rcm` (Platform Console). The mount fails closed, so everything
+  403s until it is. (The module *shipped* dark; it is no longer dark anywhere — the `carein`
+  tenant is entitled on **staging and prod** as of 2026-09-29. What keeps prod safe is the
+  shadow gate on posting, not the module gate.)
 - `RCM_BLOB_ACCOUNT_URL` points at a private container the staging container app's managed
   identity can write (`Storage Blob Data Contributor`).
 - `AZURE_OPENAI_ENDPOINT` + `AZURE_OPENAI_DEPLOYMENT` are set and the MI holds
@@ -765,6 +791,46 @@ longer and noisier than a text layer for the same pages, so a document that woul
 as a digital PDF can overrun as a scan. A scanned bulk EOB that silently lost its tail claims
 is the same defect as a digital one that did, so it is the same refusal — same
 `document_too_large` code, wording that says the reading was by OCR, and no partial stored.
+
+### Refused at the front door (2026-09-29)
+
+**When there is no reader in this deployment, the upload lane says so BEFORE it takes the
+file.** `POST /api/rcm/eob` answers `503` with `code: 'EOB_OCR_UNAVAILABLE'` and the
+sentence *"Scanned document reading isn't set up here yet."* Nothing is stored, no row is
+written, no job is queued, no audit row is cut, and nothing is spent.
+
+**What this replaced, and why the old behaviour was the problem.** Prod ran from 2026-09-25
+to 2026-09-29 with `rcm` entitled, real logins on it, and no Document Intelligence resource.
+A scan was accepted, banked in the blob container, given a row, queued — and only then
+failed with `no_extractable_text`, rendered to the biller as *"This PDF has no text layer —
+most likely a scan."* Every word of that is true and the whole of it is misleading: it
+describes her FILE when the fact is about the DEPLOYMENT. She goes back to the scanner, scans
+the page again, and it fails again, because nothing was ever wrong with the paper.
+
+Three properties, each deliberate:
+
+- **The parse lives INSIDE the `isConfigured()` guard, not beside it.** In every armed
+  environment — staging, and prod since 2026-09-29 — this check costs exactly nothing,
+  because we never need to know whether the document is a scan. The worker finds that out
+  for free on the path it already walks. The pre-check only runs in the one configuration
+  where the answer changes what we do.
+- **One predicate, two callers.** `hasUsableTextLayer` and `extractPdfText` both go through
+  `textLayerIsUsable` (`meaningfulTextLength >= MIN_DOCUMENT_CHARS`). Two copies of that
+  floor would drift, and the drift would either refuse a document the worker could have read
+  or accept one it could not.
+- **A PDF that will not OPEN is not this refusal's business.** An encrypted or corrupt file
+  raises `PDF_UNREADABLE`, and answering *that* with "reading isn't set up here yet" would
+  commit the very error the guard exists to undo — a message about the deployment when the
+  fact is about the file. So a parse error falls through to the worker, which gives it the
+  accurate reason. The guard refuses only what it affirmatively knows needs OCR.
+
+The `ocr` object on `GET /api/rcm/eob` now also carries `configured` and `reachable`.
+`configured: false` with `paused: false` is the state that was previously unrepresentable —
+no cap has been hit and no scan will ever be read — and the panel showed a healthy
+"$0.00 of $2.00" spend line for that rail until this slice. **`reachable` is `true`/`false`
+only after real traffic proved it, and `null` otherwise**: reachability costs a request and
+a request costs a page, so rendering a list must never probe for it, and "we have not tried
+since boot" is reported as itself rather than as good news.
 
 ### New failure codes
 

@@ -327,6 +327,18 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
       k("LINES_PAIRED", confirmed),
       k("CLAIM_TOTALS_AGREE", true),
       k("PATIENT_RESPONSIBILITY_MATCHES", confirmed && c.verdict?.state !== "red"),
+      /*
+       * THE TWO FIELD-CONFIRM CONDITIONS, passing.
+       *
+       * The real gate emits them on EVERY checklist and passes them
+       * unconditionally for an 835 and for a PDF with its own text layer. This
+       * world's checks are all electronic, so they pass here — and they are
+       * present rather than omitted because the approve screen renders the
+       * checklist the gate sent, and two more green rows cost words that the
+       * budget has to know about.
+       */
+      k("FIELDS_CONFIRMED", true),
+      k("CONFIRMED_SUMS_TO_CHECK", true),
     ];
   }
 
@@ -553,6 +565,88 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
     getApprovalPreview: async (_office: string, batchId: string) => {
       live(batchId);
       return preview(batchId);
+    },
+
+    /*
+     * THE CONFIRM STEP's read.
+     *
+     * A FIXED synthetic state rather than one derived from this world, and
+     * deliberately so: every check in this world is electronic, so deriving one
+     * would produce `required: false` and measure the teaching dead end instead
+     * of the screen. What is budgeted here is the screen's CHROME — its headings,
+     * its caveat, its banner, its controls — which does not depend on whose
+     * figures are in it.
+     *
+     * The state is the WORST CASE: nothing confirmed, so every control is
+     * present, and the claim totals do not add up, so the amber banner is showing
+     * with a named difference. A screen with figures confirmed says strictly less.
+     */
+    getFieldConfirm: async (office: string, batchId: string) => {
+      log(`getFieldConfirm:${batchId}`);
+      const f = (field: string, cents: number | null) => ({
+        field,
+        cents,
+        stated: cents !== null,
+        source: "extracted" as const,
+        confirmed: false,
+        extractedCents: cents,
+        confirmedBy: null,
+        confirmedAt: null,
+      });
+      return {
+        office,
+        batchId,
+        payer: "SYNTHETIC DENTAL",
+        checkNumber: "chk-900101",
+        depositDate: "2026-08-14",
+        checkTotal: f("check_total", 18400),
+        required: true,
+        provenance: {
+          uploadId: "f4c1a0de-6b52-4a1e-9f77-2c6a0b9d4e31",
+          textSource: "ocr" as const,
+          ocrPageCount: 1,
+          ocrMeanConfidence: 0.991,
+        },
+        claims: [
+          {
+            claimId: "clm-900201",
+            patientName: "Test, MangoTest",
+            claimNumber: "clm-900201",
+            serviceDate: "2026-08-01",
+            totalPaid: f("claim_total_paid", 122900),
+            lines: [
+              {
+                lineId: "a02f3207-d73a-5cd7-ae2d-a0ffa4f69c90",
+                position: 0,
+                code: "D2750",
+                description: "Crown",
+                region: null,
+                fields: [
+                  f("line_paid", null),
+                  f("line_billed", 131500),
+                  f("line_allowed", 122900),
+                  f("line_deductible", 0),
+                  f("line_copay", 0),
+                ],
+              },
+            ],
+          },
+        ],
+        outstanding: { ok: false, outstanding: 7, first: { claimId: null, lineId: null, field: "check_total" } },
+        sums: {
+          ok: false,
+          comparable: true,
+          checkTotalCents: 18400,
+          claimsTotalCents: 122900,
+          differenceCents: 104500,
+        },
+        checkImage: null,
+      };
+    },
+
+    confirmFields: async (office: string, batchId: string, fields: unknown[]) => {
+      log(`confirmFields:${batchId}:${fields.length}`);
+      return { office, batchId, confirmed: [] };
     },
 
     approveRemittance: async (office: string, batchId: string) => {
@@ -815,6 +909,7 @@ import RemittanceList from "@/pages/rcm/RemittanceList";
 import RemittanceDetail from "@/pages/rcm/RemittanceDetail";
 import ClaimMatch from "@/pages/rcm/ClaimMatch";
 import ApproveCheck from "@/pages/rcm/ApproveCheck";
+import FieldConfirm from "@/pages/rcm/FieldConfirm";
 import PostingQueue from "@/pages/rcm/PostingQueue";
 import DashboardLayout from "@/components/DashboardLayout";
 import { RcmShadowProvider } from "@/features/rcm/shadowMode";
@@ -1622,6 +1717,7 @@ function screenIdOf(root: HTMLElement): string | null {
   const path = lastRenderedPath;
   const has = (id: string) => Boolean(root.querySelector(`[data-testid="${id}"]`));
   if (path.startsWith("/rcm/posting")) return "activity";
+  if (path.startsWith("/rcm/remittances/") && path.includes("/confirm")) return "confirm";
   if (path.startsWith("/rcm/remittances/") && path.includes("/approve")) {
     return has("approve-takeback-only") || has("recoupment-panel") ? "takeback-route" : "approve";
   }
@@ -1660,7 +1756,50 @@ const SCREENS: Record<string, ScreenSpec> = {
      `MatchGuidance` and `ClaimWorkbench` together, always — see its §5 note.
      The brief counts them separately; the code has only ever had one page. */
   claim: { id: "claim", label: "Claim page (Match + Workbench)", kind: "flow", budget: 430 },
-  approve: { id: "approve", label: "Approve", kind: "flow", budget: 230 },
+  /*
+   * 240, up from 230, and the nine words are two checklist rows.
+   *
+   * The field-confirm slice added FIELDS_CONFIRMED and CONFIRMED_SUMS_TO_CHECK
+   * to the gate, and the gate emits them on EVERY checklist — including the
+   * electronic remittances in this world, where they pass. The approve screen
+   * renders the conditions the gate sent, so two more green rows is two more
+   * titles and two more one-line pass confirmations.
+   *
+   * Raised rather than worked around: the rows are load-bearing (a condition
+   * that appeared on some checks and not others would read as a missing check),
+   * and the budget's job is to stop the words creeping back, not to hold a
+   * number through a real change. Measured at 239, rounded up to the next ten.
+   */
+  approve: { id: "approve", label: "Approve", kind: "flow", budget: 240 },
+  /*
+   * THE CONFIRM STEP, measured at 165 and budgeted at 170.
+   *
+   * A flow screen, and its worst case is the one rendered below: nothing
+   * confirmed yet, so the anchor's two buttons and the per-field controls are
+   * all present, AND the sum-to-check banner is showing with a named difference.
+   * A screen with figures confirmed says strictly less.
+   */
+  /*
+   * ── RE-PINNED 170 → 180 BY THE FLOW FIX ───────────────────────────────────
+   *
+   * The screen read as an island, so it now carries the same header rail and
+   * breadcrumb as every other flow screen. That is +28 measured: five step
+   * titles AND their sentences (`variant="board"` renders both — `BoardStep`
+   * prints `step.detail` under the title), "Back to the check", and the viewer's
+   * caption and new-tab escape.
+   *
+   * 24 of those 28 were PAID BY CUTTING, all of it duplication the rail created:
+   *   −17  the scan caveat's first half, now said by the current step itself
+   *   −15  "work down the list — each one is either right, or you type what the
+   *        page says", which the two buttons on every row already say
+   *    −9  "still worth checking each figure against the page", which the
+   *        outstanding count at the foot already says
+   *
+   * Measured 173 after the cuts, against 161 before the fix: net +12, and the
+   * re-pin is +10 — inside the Bring-in-step-sentence cap the brief allows.
+   * Rounded up to the next ten from 173, per this file's own rule.
+   */
+  confirm: { id: "confirm", label: "Check the figures against the page", kind: "flow", budget: 180 },
   "takeback-route": { id: "takeback-route", label: "Approve → takeback", kind: "flow", budget: 130 },
   posted: { id: "posted", label: "Posted / Done", kind: "terminal", budget: 270 },
   stuck: { id: "stuck", label: "Stuck / Failed", kind: "terminal", budget: 510 },
@@ -2370,6 +2509,8 @@ describe("1 · enter a check, the whole road", () => {
       "REVIEWED",
       "LINES_PAIRED",
       "CLAIM_TOTALS_AGREE",
+      "FIELDS_CONFIRMED",
+      "CONFIRMED_SUMS_TO_CHECK",
       "PATIENT_RESPONSIBILITY_MATCHES",
     ];
     const rendered = [...list.querySelectorAll("li")].map((li) =>
@@ -2403,6 +2544,36 @@ describe("1 · enter a check, the whole road", () => {
     const result = await screen.findByTestId("approve-result");
     expect(result.textContent).toContain("2 claims approved — $570.00");
     expect(srv.calls.filter((c) => c === `approveRemittance:${A}`)).toHaveLength(1);
+    sweep(container);
+  });
+
+  it("1.15b the confirm step: the page beside the figures, the anchor first, and the gap named", async () => {
+    /*
+     * THE WALK'S ONE VISIT TO THE CONFIRM SCREEN, which is what makes its word
+     * budget a measurement rather than a guess.
+     *
+     * Its state is the worst case this screen has: nothing confirmed, so every
+     * control is rendered, and the claim totals do not reach the cheque, so the
+     * amber banner is showing with a difference in it.
+     */
+    const { container } = renderAt(<FieldConfirm />, `/rcm/remittances/${A}/confirm`);
+    await screen.findByTestId("rcm-confirm-page");
+
+    // THE ANCHOR IS THE FIRST FIGURE. Everything reconciles to it.
+    expect(screen.getByTestId("rcm-confirm-check-total").textContent).toBe("$184.00");
+
+    // The gap is named in dollars, not described.
+    expect(screen.getByTestId("rcm-confirm-sum-off").textContent).toContain("$1,045.00 apart");
+
+    // A figure the document does not state says so, and the covered amount that
+    // was once promoted into it is still reported as covered.
+    const paid = "clm-900201|a02f3207-d73a-5cd7-ae2d-a0ffa4f69c90|line_paid";
+    expect(screen.getByTestId(`rcm-confirm-field-${paid}`).textContent).toContain("Not stated");
+
+    // No dead primary: the screen says what is left instead.
+    expect(screen.getByTestId("rcm-confirm-not-done").textContent).toContain("still to check");
+    expect(screen.queryByTestId("rcm-confirm-done")).toBeNull();
+
     sweep(container);
   });
 
@@ -3898,6 +4069,7 @@ const INVENTORY_ORDER = [
   "check",
   "claim",
   "approve",
+  "confirm",
   "takeback-route",
   "posted",
   "stuck",

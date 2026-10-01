@@ -14,13 +14,8 @@
 import { AlertTriangle, Loader2, Send } from "lucide-react";
 
 import { type StagedWrite } from "@shared/hyg/contract";
-import { countPerioChart, type PerioChart } from "@shared/hyg/perio";
-import {
-  estimatePerioSendRequests,
-  perioChangeLine,
-  planPerioSend,
-  type PerioSiteChange,
-} from "@shared/hyg/perioSend";
+import { countPerioChart, type PerioChart, type PerioSiteChange } from "@shared/hyg/perio";
+import { estimatePerioSendRequests, perioChangeLine, planPerioSend } from "@shared/hyg/perioSend";
 import {
   Dialog,
   DialogContent,

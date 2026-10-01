@@ -30,6 +30,15 @@ const eobState = vi.hoisted(() => ({
     timezone: "America/Chicago",
     persisted: true,
   } as Record<string, unknown>,
+  /**
+   * The OCR rail, or null for a server that does not report one.
+   *
+   * Null rather than omitted on purpose: "this server predates the OCR rail" is a
+   * state the panel must render with NO banner, and a harness that could not
+   * express it would let a `!ocr?.configured` regression through — which would put
+   * the not-configured banner on every healthy deployment.
+   */
+  ocr: null as Record<string, unknown> | null,
   listError: null as Error | null,
   uploadResult: null as unknown,
   uploadError: null as Error | null,
@@ -52,6 +61,7 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
         limit: 25,
         offset: 0,
         extraction: eobState.extraction,
+        ...(eobState.ocr ? { ocr: eobState.ocr } : {}),
       };
     }),
     uploadEob: vi.fn(async (office: string, file: File) => {
@@ -108,6 +118,7 @@ beforeEach(() => {
   eobState.uploadResult = { office: "roland", duplicate: false, upload: upload() };
   eobState.calls = [];
   eobState.listCalls = 0;
+  eobState.ocr = null;
   eobState.extraction = {
     paused: false,
     usedCents: 125,
@@ -510,5 +521,80 @@ describe("EOB upload panel — waiting for extraction", () => {
     view.unmount();
     await settle(60_000);
     expect(eobState.listCalls).toBe(1);
+  });
+
+});
+
+describe("EOB upload panel — no document reader in this deployment", () => {
+  // ── No document reader in this deployment ──────────────────────────────────
+  //
+  // Prod ran from 2026-09-25 to 2026-09-29 with `rcm` entitled, real logins on
+  // it, and no Document Intelligence resource. The lane looked perfectly healthy:
+  // it showed "Scan-reading (OCR) spend today: $0.00 of $2.00" for a rail that
+  // could not run, and a dropped scan was banked and then failed with "This PDF
+  // has no text layer — most likely a scan" — a sentence about her file.
+
+  const OCR_RAIL = {
+    rail: "ocr",
+    paused: false,
+    usedCents: 0,
+    capCents: 200,
+    remainingCents: 200,
+    resetsAt: "2026-09-30T05:00:00.000Z",
+    timezone: "America/Chicago",
+    persisted: true,
+    pagesRead: 0,
+    centsPerKPage: 150,
+  };
+
+  it("says up front when this deployment cannot read scans, and blames the deployment", async () => {
+    eobState.ocr = { ...OCR_RAIL, configured: false, reachable: null };
+    render(<EobUploadPanel office="roland" />);
+
+    const banner = await waitFor(() =>
+      screen.getByTestId("rcm-eob-ocr-unconfigured-roland"),
+    );
+    const text = banner.textContent ?? "";
+    expect(text).toContain("isn't set up here yet");
+    // The old sentence must not be what she reads about a missing resource.
+    expect(text).not.toMatch(/no text layer/i);
+    expect(text).not.toMatch(/rescan/i);
+  });
+
+  it("does not print a scan-reading cap for a rail that cannot run", async () => {
+    eobState.ocr = { ...OCR_RAIL, configured: false, reachable: null };
+    render(<EobUploadPanel office="roland" />);
+    await waitFor(() => expect(screen.getByTestId("rcm-eob-panel-roland")).toBeTruthy());
+    // "$0.00 of $2.00" reads as "scans work, nobody has used them".
+    expect(screen.queryByTestId("rcm-eob-ocr-spend-roland")).toBeNull();
+  });
+
+  it("leaves the lane OPEN — a text-layer PDF still needs no reader", async () => {
+    eobState.ocr = { ...OCR_RAIL, configured: false, reachable: null };
+    render(<EobUploadPanel office="roland" />);
+    await waitFor(() => expect(screen.getByTestId("rcm-eob-input-roland")).toBeTruthy());
+
+    const input = screen.getByTestId("rcm-eob-input-roland") as HTMLInputElement;
+    expect(input.disabled).toBe(false);
+    pick("roland");
+    await waitFor(() => expect(eobState.calls.length).toBe(1));
+  });
+
+  it("says nothing when a reader IS configured", async () => {
+    eobState.ocr = { ...OCR_RAIL, configured: true, reachable: null };
+    render(<EobUploadPanel office="roland" />);
+    await waitFor(() => expect(screen.getByTestId("rcm-eob-panel-roland")).toBeTruthy());
+    expect(screen.queryByTestId("rcm-eob-ocr-unconfigured-roland")).toBeNull();
+    expect(screen.getByTestId("rcm-eob-ocr-spend-roland")).toBeTruthy();
+  });
+
+  it("says nothing when the server does not report the rail at all", async () => {
+    // A dashboard talking to a server that predates the field. `undefined` means
+    // "this server does not say", which is NOT "there is no reader" — rendering
+    // it as one would put the banner on every deployment.
+    eobState.ocr = null;
+    render(<EobUploadPanel office="roland" />);
+    await waitFor(() => expect(screen.getByTestId("rcm-eob-panel-roland")).toBeTruthy());
+    expect(screen.queryByTestId("rcm-eob-ocr-unconfigured-roland")).toBeNull();
   });
 });

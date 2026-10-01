@@ -66,6 +66,8 @@ import {
   type PerioCursor,
   type PerioFlag,
   type PerioSite,
+  PerioSiteChangeSchema,
+  type PerioSiteChange,
 } from "./perio";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -577,23 +579,21 @@ export function comparePerioReadback(expected: PerioChart, found: PerioChart): P
 // Amending a chart that is already in Open Dental (item 13)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * One site a correction changes, in words: `#14 B: 3 mm → 4 mm`.
- *
- * The same comparison the read-back uses, read the other way round: `before` is
- * what Open Dental holds (the chart the last send WROTE), `after` is the
- * correction. A hygienist confirming an amendment sees this list, not a summary.
+/*
+ * `PerioSiteChangeSchema` — one site a correction changes, `#14 B: 3 mm → 4 mm`
+ * — lives in perio.ts, because item 14's drift check needs the same shape and
+ * perio.ts cannot import from this file. The comparison that PRODUCES one, and
+ * the two formatters that read one, stay here beside the read-back they reuse.
  */
-export const PerioSiteChangeSchema = z.object({
-  tooth: z.number().int(),
-  surface: ToothSurfaceSchema.nullable(),
-  kind: z.enum(["depth", "flags", "skipped"]),
-  from: z.string(),
-  to: z.string(),
-});
-export type PerioSiteChange = z.infer<typeof PerioSiteChangeSchema>;
 
-/** Every site where the correction differs from what was written. Pure. */
+/**
+ * Every site where the correction differs from what was written. Pure.
+ *
+ * `before` is what Open Dental holds (the chart the last send WROTE), `after` is
+ * the correction. A hygienist confirming an amendment sees this list, not a
+ * summary. Item 14 runs it the same way round for drift: `before` is what CareIN
+ * wrote, `after` is what Open Dental holds now.
+ */
 export function perioChartChanges(before: PerioChart, after: PerioChart): PerioSiteChange[] {
   const out: PerioSiteChange[] = [];
   for (const m of comparePerioReadback(before, after)) {

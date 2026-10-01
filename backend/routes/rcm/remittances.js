@@ -53,6 +53,7 @@ const { requirePermission, holdsPermission } = require('../../config/permissions
 const { audit } = require('../../platform/audit');
 const { toClaimSummary, loadClaimBundle, runBatchMatch, CLAIM_LIST_COLUMNS } = require('./matchService');
 const approvalGate = require('./approvalGate');
+const confirmedFigures = require('../../services/rcm/confirmedFigures');
 
 const router = express.Router();
 
@@ -1268,6 +1269,20 @@ router.get(
 
       const queued = await batchesWithQueue(pool, office, [batchId]);
 
+      /*
+       * HOW MUCH OF A SCANNED READ IS STILL UNCHECKED.
+       *
+       * A SUMMARY, not the figures — the confirm screen reads those. The check
+       * page needs exactly one thing: is the confirm step finished, and if not,
+       * how much is left, so the rail can say "read from the scan — figures not
+       * yet checked" and the one primary can point at the work.
+       *
+       * Everything about WHICH figure is real still goes through
+       * `services/rcm/confirmedFigures.js`. This route does not join the
+       * confirmations table itself.
+       */
+      const fieldConfirm = await summariseFieldConfirm(pool, office, batchId, upload, claims);
+
       return {
         batch,
         claims,
@@ -1275,6 +1290,7 @@ router.get(
         upload,
         decided,
         actors,
+        fieldConfirm,
         hasQueue: queued.has(batchId),
         queueStatuses: statusesOf(queued.get(batchId)),
         queuePlans: queued.get(batchId) || [],
@@ -1355,6 +1371,16 @@ router.get(
               documentUrl: `/api/rcm/uploads/${loaded.upload.uploadId}/document?office=${office}`,
             }
           : null,
+        /**
+         * HOW MUCH OF A SCANNED READ IS STILL UNCHECKED — a summary, never the
+         * figures themselves.
+         *
+         * `required: false` for an 835 and for a PDF read from its own text
+         * layer, and the rail then draws exactly what it drew before the confirm
+         * step existed. That is what keeps the 835 flow untouched by
+         * construction rather than by a branch somebody has to remember.
+         */
+        fieldConfirm: loaded.fieldConfirm,
       },
       claims: loaded.details,
     });
@@ -1895,6 +1921,63 @@ router.post(
  * `requirePermission('rcm.queue')` below, which is what `rcmGuard.test.js` walks
  * the router to see.
  */
+/**
+ * The one query this summariser owns, hoisted for
+ * `scripts/rcm-verify-queries.js`. Columns named explicitly, per the repo rule.
+ */
+const QUERIES = Object.freeze({
+  confirmLineIds: `
+    SELECT line_id, claim_id FROM rcm_procedure_lines
+     WHERE office_id = $1 AND claim_id = ANY($2::uuid[])
+  `,
+});
+
+/**
+ * IS THE CONFIRM STEP FINISHED, AND IF NOT, HOW MUCH IS LEFT?
+ *
+ * The check page's rail and its one primary need this and nothing else. The
+ * figures themselves belong to the confirm screen, and shipping them here would
+ * put a second copy of every amount on a page that does not render them.
+ *
+ * `required` is false for an 835 and for a PDF read from its own text layer, and
+ * then the summary is inert — the rail draws exactly what it drew before this
+ * slice, and the 835 flow is untouched by construction rather than by a branch
+ * somebody has to remember.
+ *
+ * ONE ACCESSOR, STILL. `confirmedFigures` decides what counts as confirmed;
+ * this function only asks it about the shape of this check.
+ *
+ * @param {import('pg').Pool} pool
+ * @param {string} office
+ * @param {string} batchId
+ * @param {{ textSource?: string|null }|null} upload
+ * @param {Array<{ claimId: string }>} claims
+ * @returns {Promise<{ required: boolean, ok: boolean, outstanding: number }>}
+ */
+async function summariseFieldConfirm(pool, office, batchId, upload, claims) {
+  const NOT_REQUIRED = { required: false, ok: true, outstanding: 0 };
+  if (!confirmedFigures.isOcrSourced(upload ? { textSource: upload.textSource } : null)) {
+    return NOT_REQUIRED;
+  }
+
+  const [rows, lines] = await Promise.all([
+    pool.query(confirmedFigures.QUERIES.readForBatch, [office, batchId]),
+    claims.length
+      ? pool.query(QUERIES.confirmLineIds, [office, claims.map((c) => c.claimId)])
+      : Promise.resolve({ rows: [] }),
+  ]);
+
+  const byClaim = new Map(claims.map((c) => [c.claimId, []]));
+  for (const line of lines.rows) {
+    const bucket = byClaim.get(String(line.claim_id));
+    if (bucket) bucket.push({ lineId: String(line.line_id) });
+  }
+
+  const shape = claims.map((c) => ({ claimId: c.claimId, lines: byClaim.get(c.claimId) || [] }));
+  const state = confirmedFigures.allConfirmed(confirmedFigures.indexConfirmations(rows.rows), shape);
+  return { required: true, ok: state.ok, outstanding: state.outstanding };
+}
+
 const requireQueue = requirePermission('rcm.queue');
 
 /**

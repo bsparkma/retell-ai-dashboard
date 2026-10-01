@@ -124,6 +124,53 @@ function isConfigured() {
 }
 
 /**
+ * THE LAST THING WE ACTUALLY LEARNED ABOUT THE PROVIDER, or null.
+ *
+ * `true` only after a call came back. `false` only after one failed. `null`
+ * means nobody has called since this process started — and `null` is reported as
+ * `null`, never coerced to `true`.
+ *
+ * WHY THIS IS NOT A PROBE. The honest answer to "is Document Intelligence
+ * reachable" costs a request, and a request costs a page. A screen that reported
+ * reachability by probing would bill the OCR rail to render itself, which is the
+ * one thing the rail exists to prevent. So this records what the real traffic
+ * already told us and says "unknown" the rest of the time. "We have not tried
+ * since boot" and "we tried and it worked" are different facts, and a biller
+ * deciding whether to walk to the scanner deserves to be told which one she has.
+ *
+ * Process-local and reset on restart, like the pacer counters — a last-known
+ * state, not an SLA.
+ *
+ * @type {boolean|null}
+ */
+let lastReachable = null;
+
+/** What `lastReachable` was set from, for the log line and the wire. */
+let lastReachableCode = null;
+
+/** @returns {{ reachable: boolean|null, code: string|null }} */
+function lastOutcome() {
+  return { reachable: lastReachable, code: lastReachableCode };
+}
+
+/**
+ * Record that a call reached the provider (or did not).
+ *
+ * Only TRANSPORT and AUTH outcomes move this. A document Azure read and
+ * disliked — a faint scan, a page count over the cap — proves the provider IS
+ * reachable, so a content refusal must not be filed as an outage. Conflating the
+ * two would tell an operator to check the network when the answer was to rescan
+ * the page.
+ *
+ * @param {boolean} reachable
+ * @param {string|null} code
+ */
+function noteReachable(reachable, code) {
+  lastReachable = reachable;
+  lastReachableCode = code || null;
+}
+
+/**
  * The `Authorization` (or `Ocp-Apim-Subscription-Key`) header for one request.
  *
  * AUTH_MODE picks EXACTLY ONE credential — never both, and never a silent
@@ -222,6 +269,42 @@ async function analyze(buffer) {
     throw new DocumentOcrError('No document bytes to read.', 'OCR_CALL_FAILED');
   }
 
+  /*
+   * REACHABILITY IS RECORDED HERE AND NOWHERE ELSE.
+   *
+   * Both guards above are LOCAL refusals — no request left this process — so
+   * they must not move the reachability state. The empty-buffer guard raising
+   * `OCR_CALL_FAILED` is exactly the trap: filing it as an outage would have a
+   * zero-byte upload tell an operator the network was down.
+   *
+   * Past this line every outcome came from a real exchange, and the code the
+   * transport already assigns is the right discriminator:
+   *
+   *   OCR_ANALYZE_FAILED  Azure answered and rejected THIS document (a 4xx that
+   *                       is not 401/403). We reached it — reachable stays true.
+   *   anything else       transport, auth, or timeout — we did not get an answer
+   *                       we could use, so reachable goes false.
+   */
+  try {
+    const result = await analyzeRemote(buffer, endpoint);
+    noteReachable(true, null);
+    return result;
+  } catch (err) {
+    const code = err && err.code ? err.code : null;
+    noteReachable(code === 'OCR_ANALYZE_FAILED', code);
+    throw err;
+  }
+}
+
+/**
+ * The transport. Split from `analyze` so that reachability is recorded in one
+ * place and the local guards cannot reach it.
+ *
+ * @param {Buffer} buffer
+ * @param {string} endpoint already trimmed of trailing slashes by `endpointUrl`
+ * @returns {Promise<OcrResult>}
+ */
+async function analyzeRemote(buffer, endpoint) {
   const model = modelId();
   const apiVersion = process.env.RCM_OCR_API_VERSION || DEFAULT_API_VERSION;
   const timeoutMs = envNumber('RCM_OCR_TIMEOUT_MS', DEFAULT_TIMEOUT_MS);
@@ -454,11 +537,14 @@ async function safeErrorText(response) {
 function _resetForTests() {
   tokenProvider = null;
   tokenProviderFor = null;
+  lastReachable = null;
+  lastReachableCode = null;
 }
 
 module.exports = {
   analyze,
   isConfigured,
+  lastOutcome,
   modelId,
   DocumentOcrError,
   DEFAULT_MODEL,

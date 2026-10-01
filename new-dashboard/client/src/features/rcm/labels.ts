@@ -1,3 +1,5 @@
+import type { ConfirmableField } from "@/features/rcm/api";
+
 /**
  * The RCM vocabulary, in words a biller reads.
  *
@@ -63,6 +65,16 @@ export const REVIEW_LABELS: Record<string, string> = {
   // against the document, which is the one action this reason implies.
   ocr_low_confidence:
     "This document was scanned — check the amounts against the image before approving",
+
+  // ── Field confirm ──
+  // States the fact about the LAYOUT, then what it means for her.
+  //
+  // Not "the amounts do not add up": the printed numbers do not disagree, one of
+  // them was simply never printed. Saying they disagree would send her to hunt a
+  // column error that is not there — which is exactly what the reason it
+  // replaced, `paid_total_mismatch`, used to do on these documents.
+  line_paid_not_stated:
+    "This payer states payment by category, not per line — the per-line amounts are not on the page",
 };
 
 /**
@@ -108,6 +120,31 @@ export const FAILURE_LABELS: Record<string, string> = {
   // works is splitting the document, so that is what the label says.
   ocr_document_exceeds_cap: "This document is larger than a whole day's scan-reading cap — split it",
 };
+
+/**
+ * THERE IS NO DOCUMENT READER IN THIS DEPLOYMENT.
+ *
+ * Said BEFORE an upload, on the lane itself, and again in the server's refusal if
+ * someone drops a scan anyway. Two places, one sentence — the backend holds the
+ * other copy in `routes/rcm/eob.js`.
+ *
+ * WHAT THIS REPLACED, and why the wording matters. Prod ran with the module live
+ * and no reader from 2026-09-25 to 2026-09-29. A scan was accepted, banked, and
+ * then failed with `no_extractable_text` → "This PDF has no text layer — most
+ * likely a scan". Every word true; the whole thing misleading. It describes her
+ * FILE, so she goes back to the scanner and feeds it again, and it fails again,
+ * because nothing was ever wrong with the paper.
+ *
+ * "isn't set up here yet" names the deployment. "yet" says a switch is missing
+ * rather than that she did something wrong. And the second sentence gives her the
+ * thing she can still do today, because a lane that only says no is a dead end.
+ */
+export const OCR_NOT_CONFIGURED =
+  "Scanned document reading isn't set up here yet.";
+
+/** What still works meanwhile — never leave her without a next move. */
+export const OCR_NOT_CONFIGURED_DETAIL =
+  "PDFs that carry their own text still read normally. A scan or a photo will be turned away until someone switches this on.";
 
 
 /**
@@ -188,6 +225,16 @@ export const REASON_GATE: Record<string, "blocking" | "annotating"> = {
   // that any stored amount is wrong. The arithmetic checks above are the ones
   // that catch a misreading which actually moved a number, and they all block.
   ocr_low_confidence: "annotating",
+  /*
+   * Annotating, mirroring the backend. The document is not wrong — a payer is
+   * allowed to print payment at a subtotal — and the figure it concerns reads
+   * "not stated" rather than as a number.
+   *
+   * What keeps the money safe on these documents is the field-confirm gate, not
+   * this verdict. Blocking here would withhold the claim a second time for the
+   * same fact, and name a reason she cannot clear instead of the step she can.
+   */
+  line_paid_not_stated: "annotating",
 
   // ── Remittance flags ──
   plb_adjustments_present: "annotating",
@@ -317,4 +364,81 @@ export function provenanceNote(
 ): string | null {
   if (!provenance || provenance.textSource !== "ocr") return null;
   return "These figures were read off a page image, not parsed from the file.";
+}
+
+// ─── The confirm step — checking a scanned read against the page ─────────────
+
+/**
+ * THE SCREEN'S OWN SENTENCE. What she is doing, in the fewest words that say it.
+ *
+ * Not "field confirmation" and not "validate extracted figures": the object of
+ * the verb is the page, because the page is the thing she has and the thing the
+ * figures are being judged against.
+ */
+export const CONFIRM_HEADLINE = "Check these figures against the page";
+
+/**
+ * THE HONEST FRAMING, in place of a confidence score this product does not have.
+ *
+ * There IS no per-field confidence. The reader reports one mean word confidence
+ * for a whole document; the extraction model reports a per-LINE confidence,
+ * which already reaches her as an uncertain-line review reason on the check
+ * page. Neither is a score for an individual amount, and printing "92%" beside
+ * one would be a number we made up about a number a payer printed.
+ *
+ * So the caveat says what it means for her, and stops.
+ *
+ * IT NO LONGER SAYS WHERE THE FIGURES CAME FROM. The rail above it now does —
+ * the Bring-in step is the current one and reads "Read from the scan … not yet
+ * checked against the page". Saying it twice cost this screen seventeen words
+ * and told a biller nothing she had not read two lines earlier.
+ */
+export const CONFIRM_SCAN_CAVEAT = "Every money figure needs a person's eye.";
+
+/**
+ * WHAT A FIGURE THE DOCUMENT DOES NOT STATE IS CALLED.
+ *
+ * "Not stated", never "$0.00" and never blank. Zero asserts that the plan paid
+ * nothing, which is a claim about a patient's balance; blank reads as a bug. A
+ * category-subtotal EOB genuinely has no per-line payment, and confirming that
+ * is a real answer she is allowed to give.
+ */
+export const CONFIRM_NOT_STATED = "Not stated";
+
+/** What each confirmable field is called on the screen. */
+export const CONFIRM_FIELD_LABELS: Record<ConfirmableField, string> = {
+  check_total: "This check is for",
+  claim_total_paid: "Paid on this claim",
+  line_paid: "Paid",
+  line_billed: "Billed",
+  line_allowed: "Covered",
+  line_deductible: "Deductible",
+  line_copay: "Patient share",
+};
+
+/**
+ * THE TRAIL, IN A SENTENCE, under the figure it belongs to.
+ *
+ * "corrected by <name> from the page image" is the wording the ruling asked for,
+ * and the reason a typed amount is safe: anybody reading this number later can
+ * see that it was typed, by whom, and what the machine had said instead. A
+ * confirmation gets the quieter half of the same sentence.
+ *
+ * An unknown author reads as "someone" rather than as a crosswalk key — a key in
+ * a sentence is worse than an honest indefinite.
+ */
+export function confirmedByLine(field: {
+  source: "extracted" | "confirmed" | "corrected";
+  confirmedBy: string | null;
+  extractedCents: number | null;
+}): string {
+  const who = field.confirmedBy ?? "someone";
+  if (field.source === "corrected") {
+    const was =
+      field.extractedCents === null
+        ? "the scan showed nothing here"
+        : `the scan read ${(field.extractedCents / 100).toLocaleString(undefined, { style: "currency", currency: "USD" })}`;
+    return `corrected by ${who} from the page image — ${was}`;
+  }
+  return `checked by ${who} against the page image`;
 }

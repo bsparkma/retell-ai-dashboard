@@ -70,11 +70,86 @@ test('"last declaration wins" resolves to the migration that actually owns each 
   // of these and this assertion is not updated with it, the failure names the
   // file — which is the whole point of resolving by recency instead of by a
   // hard-coded path.
-  assert.equal(migrationDeclaring('REVIEW_REASONS').file, '1787100000000_rcm_ocr.js');
+  // The field-confirm migration widened REVIEW_REASONS with `line_paid_not_stated`,
+  // so it now owns that list — and this line having to move IS the mechanism working.
+  assert.equal(
+    migrationDeclaring('REVIEW_REASONS').file,
+    '1789500000000_rcm_eob_field_confirm.js'
+  );
+  // It did not touch the failure codes, which still resolve to the OCR migration.
   assert.equal(migrationDeclaring('EOB_FAILURE_CODES').file, '1787100000000_rcm_ocr.js');
-  // ...and the lists the OCR migration does NOT touch still resolve to 5.5.
+  // ...and the lists neither migration touches still resolve to 5.5.
   assert.equal(migrationDeclaring('LINE_FLAGS').file, '1787060000000_rcm_fidelity.js');
   assert.equal(migrationDeclaring('REMITTANCE_FLAGS').file, '1787060000000_rcm_fidelity.js');
+  // The confirm vocabularies are born in the field-confirm migration.
+  assert.equal(
+    migrationDeclaring('CONFIRMABLE_FIELDS').file,
+    '1789500000000_rcm_eob_field_confirm.js'
+  );
+  assert.equal(
+    migrationDeclaring('CONFIRM_STATES').file,
+    '1789500000000_rcm_eob_field_confirm.js'
+  );
+});
+
+test('a subtotal layout ANNOTATES; it never blocks', () => {
+  /*
+   * `line_paid_not_stated` says the payer printed payment at a subtotal instead
+   * of per line. That is an ordinary way to print an EOB, not a defect, and the
+   * figure it concerns reads "not stated" on screen rather than as a number.
+   *
+   * BLOCKING would be wrong twice over. It would withhold every claim from such
+   * a document for a fact nobody can change, and the refusal a biller met would
+   * name a review reason she cannot clear instead of the confirm step she can.
+   * What keeps the money safe here is the field-confirm gate, not this verdict.
+   *
+   * Pinned because `isBlockingReason` defaults anything unlisted to BLOCKING, so
+   * this is one edit away from silently withholding a whole payer's remittances.
+   */
+  assert.equal(vocabulary.REASON_GATE.line_paid_not_stated, 'annotating');
+  assert.equal(vocabulary.isBlockingReason('line_paid_not_stated'), false);
+  assert.deepEqual(vocabulary.blockingReasonsIn(['line_paid_not_stated']), []);
+
+  // And it does not quietly excuse anything else that travels with it: a real
+  // blocking reason on the same claim still blocks.
+  assert.deepEqual(
+    vocabulary.blockingReasonsIn(['line_paid_not_stated', 'reversal_not_postable']),
+    ['reversal_not_postable']
+  );
+});
+
+test('the confirmable-field vocabulary matches the migration exactly', () => {
+  // Same drift guard as every other list here. The CHECK constraint is built
+  // from the migration's copy, so a field added to the code and not the
+  // migration would be a rejected INSERT in prod rather than a failure here.
+  assert.deepEqual(
+    migrationList('CONFIRMABLE_FIELDS').sort(),
+    [...vocabulary.CONFIRMABLE_FIELDS].sort()
+  );
+  assert.deepEqual(
+    migrationList('CONFIRM_STATES').sort(),
+    [...vocabulary.CONFIRM_STATES].sort()
+  );
+});
+
+test('a field knows its own scope, and nothing outside the vocabulary has one', () => {
+  // `fieldScope` and the migration's scope CHECK have to agree about which
+  // columns a field needs, or a row the code builds is one the database refuses.
+  assert.equal(vocabulary.fieldScope('check_total'), 'check');
+  assert.equal(vocabulary.fieldScope('claim_total_paid'), 'claim');
+  assert.equal(vocabulary.fieldScope('line_paid'), 'line');
+  assert.equal(vocabulary.fieldScope('line_copay'), 'line');
+  // Outside the vocabulary → no scope, rather than a guess read off the prefix.
+  assert.equal(vocabulary.fieldScope('line_invented'), null);
+  assert.equal(vocabulary.fieldScope('claim_total_billed'), null);
+  assert.equal(vocabulary.fieldScope(''), null);
+  assert.equal(vocabulary.fieldScope(null), null);
+  assert.equal(vocabulary.fieldScope(undefined), null);
+
+  // Every member resolves to a scope. One that did not would pass the field
+  // CHECK and fail the scope CHECK — a slug nobody could ever store.
+  const scopeless = vocabulary.CONFIRMABLE_FIELDS.filter((f) => vocabulary.fieldScope(f) === null);
+  assert.deepEqual(scopeless, [], `these confirmable fields have no scope: ${scopeless.join(', ')}`);
 });
 
 test('the line-flag vocabulary matches the migration exactly', () => {

@@ -27,7 +27,8 @@ const SEND_COLUMNS = `
   preview_fingerprint, plan, state, exam_num, prior_exam_nums, rows_written,
   mismatches, error_message, step_token, step_claimed_at, created_by, created_at,
   updated_at, finished_at, deleted_by, deleted_at,
-  chart, supersedes_exam_num, supersedes_deleted_at, amend_diff
+  chart, supersedes_exam_num, supersedes_deleted_at, amend_diff,
+  exam_gone_at, exam_gone_by
 `;
 
 function num(value) {
@@ -108,22 +109,73 @@ async function createSend(
 }
 
 /**
- * The send whose exam is LIVE in Open Dental: the most recent one that verified.
+ * The send whose exam is LIVE in Open Dental: the most recent one that verified
+ * AND whose exam has not been found gone.
  *
  * This is what makes an amendment an amendment. A chart with a live send is in
  * Open Dental, so the next send replaces that exam rather than adding a second.
  * After a swap there are two `written` sends — the original, whose exam was
  * deleted, and the amendment — and the most recent is the live one.
+ *
+ * ITEM 14: `exam_gone_at IS NULL` is the whole resend.
+ *
+ * When somebody deletes the exam in Open Dental's own perio chart, the send is
+ * still `written` — it did write it, and it did read every site back. What is no
+ * longer true is that its exam is in Open Dental. Excluding it here means the
+ * next send finds NO live send and is therefore a FIRST send: it posts a new
+ * exam rather than refusing `AMEND_BASE_MISSING` over an exam nobody can
+ * correct. The row keeps its `chart`, so what CareIN wrote is not lost.
  */
 async function getLiveSend(pool, { office, stagedWriteId }) {
   const res = await pool.query(
     `SELECT ${SEND_COLUMNS} FROM hyg_perio_send
       WHERE staged_write_id = $1 AND office = $2 AND state = 'written'
+        AND exam_gone_at IS NULL
       ORDER BY created_at DESC
       LIMIT 1`,
     [stagedWriteId, office]
   );
   return res.rowCount === 0 ? null : toSend(res.rows[0]);
+}
+
+/**
+ * The exam this send wrote is no longer in Open Dental (item 14).
+ *
+ * Stamped only from the resend, which re-reads `/perioexams` and confirms the
+ * exam is absent before it calls this — never from the drift check, which is a
+ * read and writes nothing. `written` and `exam_num IS NOT NULL` are re-asserted
+ * because the CHECK requires them, and `exam_gone_at IS NULL` makes a second
+ * press of the same button a no-op rather than a re-stamp under a new name.
+ *
+ * @returns {Promise<boolean>} whether THIS call recorded it
+ */
+async function markExamGone(pool, { office, sendId, actor }) {
+  const res = await pool.query(
+    `UPDATE hyg_perio_send
+        SET exam_gone_at = clock_timestamp(), exam_gone_by = $3, updated_at = clock_timestamp()
+      WHERE send_id = $1 AND office = $2
+        AND state = 'written' AND exam_num IS NOT NULL AND exam_gone_at IS NULL`,
+    [sendId, office, actor]
+  );
+  return res.rowCount === 1;
+}
+
+/**
+ * Every exam number CareIN's sends of this chart created.
+ *
+ * Item 14: the resend confirmation lists every exam the patient has on the
+ * visit's date, INCLUDING ones CareIN did not write, and has to be able to tell
+ * them apart. This is the "did CareIN write it" side of that, and it is all this
+ * module can honestly claim to know — an exam nobody here has a send row for
+ * reads as not CareIN's.
+ */
+async function getSendExamNums(pool, { office, stagedWriteId }) {
+  const res = await pool.query(
+    `SELECT exam_num FROM hyg_perio_send
+      WHERE staged_write_id = $1 AND office = $2 AND exam_num IS NOT NULL`,
+    [stagedWriteId, office]
+  );
+  return res.rows.map((r) => Number(r.exam_num)).filter((n) => Number.isSafeInteger(n) && n > 0);
 }
 
 /** The chart a send wrote, recorded when it verified. The next amendment's baseline. */
@@ -267,6 +319,8 @@ async function restageChart(pool, { office, visitId }) {
 module.exports = {
   getLatestSend,
   getLiveSend,
+  getSendExamNums,
+  markExamGone,
   setSendChart,
   markSupersededDeleted,
   createSend,

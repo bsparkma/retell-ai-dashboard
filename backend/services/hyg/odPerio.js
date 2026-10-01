@@ -18,6 +18,15 @@
  *   GET /perioexams?PatNum=           → the exam headers; pick the newest
  *   GET /periomeasures?PerioExamNum=  → one row per (tooth, SequenceType)
  *
+ * A patient with NO perio exams answers **HTTP 200 with an empty array** — not
+ * the 404-with-a-sentence that `/procedurelogs/GroupNotes?PatNum=` gives for the
+ * same question (item 21, `isNoGroupNotesAnswer`). Measured 2026-09-29, and the
+ * capture is new-dashboard/tests/fixtures/od-perioexams-none-measured.json. That
+ * asymmetry is load-bearing for item 14's drift check: the one case it exists for
+ * — a `Written` chart whose only exam was deleted — arrives here as a clean empty
+ * list, so nothing has to recognise a refusal as an absence, and a refusal stays
+ * a refusal.
+ *
  * Open Dental caps every list at 100 rows. A full-mouth exam is 32 Probing rows
  * plus 32 BleedSupPlaqCalc rows plus whatever else was charted — past one page
  * before recession is even counted — and a truncated read looks exactly like a
@@ -76,13 +85,14 @@ function examDateOf(value) {
  *
  * @param {Function} odGet
  * @param {{ patNum: number }} opts
- * @returns {Promise<{ ok: true, exam: object|null, odReads: number, dropped: number }
- *                   | { ok: false, error: string, odReads: number }>}
+ * @returns {Promise<{ ok: true, exam: object|null, exams: object[], truncated: boolean,
+ *                     odReads: number, dropped: number }
+ *                   | { ok: false, error: string, exams: object[], truncated: boolean, odReads: number }>}
  */
 async function readLatestExam(odGet, { patNum }) {
   const list = await pagedList(odGet, '/perioexams', { PatNum: patNum });
   if (list.error && list.rows.length === 0) {
-    return { ok: false, error: list.error, odReads: list.pages };
+    return { ok: false, error: list.error, exams: [], truncated: true, odReads: list.pages };
   }
 
   let dropped = 0;
@@ -110,7 +120,16 @@ async function readLatestExam(odGet, { patNum }) {
     return b.examNum - a.examNum;
   });
 
-  return { ok: true, exam: exams[0] || null, odReads: list.pages, dropped };
+  return {
+    ok: true,
+    exam: exams[0] || null,
+    // The whole filtered list, so a caller asking "is exam N present?" does not
+    // have to read `/perioexams` a second time to find out (item 14).
+    exams,
+    truncated: list.truncated || Boolean(list.error),
+    odReads: list.pages,
+    dropped,
+  };
 }
 
 /**
@@ -175,9 +194,28 @@ function chartFromMeasures(rows) {
  * differently from `none`. A patient with no history and a practice we could
  * not reach are different sentences.
  *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * IT ALSO HANDS BACK WHAT IT READ, SO ITEM 14 NEEDS NO SECOND REQUEST
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The drift check (services/hyg/perioDrift.js) asks whether the exam CareIN
+ * wrote is still in Open Dental. That is the SAME `/perioexams?PatNum=` answer
+ * this function already has, and the same `/periomeasures` answer whenever the
+ * exam in question is the newest one — which it is on every ordinary open of a
+ * chart CareIN wrote. So `exams` and `latest` are returned alongside `prior`
+ * rather than re-fetched: one exam-list read per open, and measures only for an
+ * exam that is still there.
+ *
+ * `exams.ok` is the LIST read's own verdict, not the prior panel's. They differ:
+ * a list whose later pages failed still yields a newest exam (`prior: 'found'`)
+ * while being useless for "is exam N present?", because an exam missing from
+ * half a list is not missing from the chart. So `ok` is false when any page
+ * failed or the page budget ran out, and the drift check answers `unknown`.
+ *
  * @param {Function} odGet
  * @param {{ patNum: number }} opts
- * @returns {Promise<{ prior: object, odReads: number }>}
+ * @returns {Promise<{ prior: object, odReads: number,
+ *                     exams: { ok: boolean, list: Array<object>, error: string|null },
+ *                     latest: { examNum: number, chart: object }|null }>}
  */
 async function readPriorPerio(odGet, { patNum }) {
   if (!Number.isSafeInteger(patNum) || patNum <= 0) {
@@ -185,9 +223,21 @@ async function readPriorPerio(odGet, { patNum }) {
   }
 
   const latest = await readLatestExam(odGet, { patNum });
+  /**
+   * Every exam the list read returned, for this patient, and whether the read
+   * was WHOLE. `readLatestExam` tolerates a partial list because a newest exam
+   * from half a list is still a real exam; presence does not tolerate it.
+   */
+  const exams = {
+    ok: latest.ok && !latest.truncated,
+    list: latest.exams || [],
+    error: latest.ok ? (latest.truncated ? 'the exam list came back truncated' : null) : String(latest.error),
+  };
   if (!latest.ok) {
     return {
       odReads: latest.odReads,
+      exams,
+      latest: null,
       prior: {
         status: 'unavailable',
         message: 'The last perio exam could not be read from Open Dental.',
@@ -196,7 +246,7 @@ async function readPriorPerio(odGet, { patNum }) {
     };
   }
   if (!latest.exam) {
-    return { odReads: latest.odReads, prior: { status: 'none' } };
+    return { odReads: latest.odReads, exams, latest: null, prior: { status: 'none' } };
   }
 
   const { examNum } = latest.exam;
@@ -205,6 +255,8 @@ async function readPriorPerio(odGet, { patNum }) {
   if (list.error && list.rows.length === 0) {
     return {
       odReads,
+      exams,
+      latest: null,
       prior: {
         status: 'unavailable',
         message: 'A perio exam is on file, but its readings could not be read from Open Dental.',
@@ -215,8 +267,16 @@ async function readPriorPerio(odGet, { patNum }) {
 
   const mine = list.rows.filter((r) => r && odInt(r.PerioExamNum) === examNum);
   const { chart } = chartFromMeasures(mine);
+  // A page that failed after the first, or a budget that ran out: some
+  // readings are missing and the screen must say so.
+  const truncated = list.truncated || Boolean(list.error);
   return {
     odReads,
+    exams,
+    // A PARTIAL chart is not a baseline anything may be compared against: the
+    // sites that did not come back would read as changed. Withheld, so the
+    // drift check reaches its own honest `unknown` instead.
+    latest: truncated ? null : { examNum, chart },
     prior: {
       status: 'found',
       examNum,
@@ -224,9 +284,7 @@ async function readPriorPerio(odGet, { patNum }) {
       provNum: latest.exam.provNum,
       chart,
       counts: contract.countPerioChart(chart),
-      // A page that failed after the first, or a budget that ran out: some
-      // readings are missing and the screen must say so.
-      truncated: list.truncated || Boolean(list.error),
+      truncated,
     },
   };
 }

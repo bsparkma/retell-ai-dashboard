@@ -253,6 +253,20 @@ class FakeHygDb extends FakeAuditDb {
       Object.assign(row, { state: 'Staged', error_message: null, updated_at: new Date() });
       return { rows: [], rowCount: 1 };
     }
+    // ── the resend (item 14) ────────────────────────────────────────────────
+    // Written → Staged, because the exam this chart claimed is GONE. Matched
+    // before the slice-2 statements below, which only ever move a Failed row.
+    if (/UPDATE hyg_staged_write\s+SET state = 'Staged', written_ref = NULL/i.test(text)) {
+      const [visitId, office, kind] = params;
+      const row = this.hyg_staged_write.find(
+        (r) => r.visit_id === visitId && r.office === office && r.kind === kind && r.state === 'Written'
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      // hyg_staged_write_written_ref_check is a biconditional: only a Written
+      // row may carry a reference, and it must.
+      Object.assign(row, { state: 'Staged', written_ref: null, error_message: null, updated_at: new Date() });
+      return { rows: [], rowCount: 1 };
+    }
     // ── the amendment (item 13) ─────────────────────────────────────────────
     // Matched before the slice-2 staged-write statements below: both of these
     // would otherwise be read as markWritten or a plain state move.
@@ -291,10 +305,26 @@ class FakeHygDb extends FakeAuditDb {
     if (/FROM hyg_perio_send\s+WHERE staged_write_id = \$1 AND office = \$2 AND state = 'written'/i.test(text)) {
       const [stagedWriteId, office] = params;
       const written = this.hyg_perio_send.filter(
-        (r) => r.staged_write_id === stagedWriteId && r.office === office && r.state === 'written'
+        (r) =>
+          r.staged_write_id === stagedWriteId &&
+          r.office === office &&
+          r.state === 'written' &&
+          // Item 14: a send whose exam has been found gone from Open Dental is
+          // no longer the live one, which is what makes the next send a FIRST
+          // send instead of an amendment of an exam nobody can correct.
+          r.exam_gone_at === null
       );
       const live = written.length > 0 ? [written[written.length - 1]] : [];
       return { rows: live, rowCount: live.length };
+    }
+    // Item 14: which exams CareIN's own sends created. Matched BEFORE the
+    // latest-send statement below, which this would otherwise be read as.
+    if (/SELECT exam_num FROM hyg_perio_send/i.test(text)) {
+      const [stagedWriteId, office] = params;
+      const rows = this.hyg_perio_send
+        .filter((r) => r.staged_write_id === stagedWriteId && r.office === office && r.exam_num !== null)
+        .map((r) => ({ exam_num: r.exam_num }));
+      return { rows, rowCount: rows.length };
     }
     if (/FROM hyg_perio_send\s+WHERE staged_write_id = \$1 AND office = \$2/i.test(text)) {
       const [stagedWriteId, office] = params;
@@ -308,6 +338,22 @@ class FakeHygDb extends FakeAuditDb {
       if (!row) return { rows: [], rowCount: 0 };
       row.chart = FakeHygDb.json(chart);
       row.updated_at = new Date();
+      return { rows: [], rowCount: 1 };
+    }
+    if (/UPDATE hyg_perio_send\s+SET exam_gone_at = clock_timestamp\(\)/i.test(text)) {
+      const [id, office, actor] = params;
+      const row = this.hyg_perio_send.find(
+        (r) =>
+          r.send_id === id &&
+          r.office === office &&
+          r.state === 'written' &&
+          r.exam_num !== null &&
+          r.exam_gone_at === null
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      // hyg_perio_send_exam_gone_check: both, or neither.
+      if (!actor) throw new Error('hyg_perio_send_exam_gone_check violated');
+      Object.assign(row, { exam_gone_at: new Date(), exam_gone_by: actor, updated_at: new Date() });
       return { rows: [], rowCount: 1 };
     }
     if (/UPDATE hyg_perio_send SET supersedes_deleted_at = now\(\)/i.test(text)) {
@@ -370,6 +416,10 @@ class FakeHygDb extends FakeAuditDb {
         supersedes_exam_num: supersedes === null ? null : String(supersedes),
         supersedes_deleted_at: null,
         amend_diff: amendDiff,
+        // Item 14: the exam this send wrote is still in Open Dental until
+        // somebody is shown it is not and confirms a resend.
+        exam_gone_at: null,
+        exam_gone_by: null,
       };
       this.hyg_perio_send.push(row);
       return { rows: [row], rowCount: 1 };
@@ -1414,7 +1464,10 @@ function perioOd({
     };
   }
   publish();
-  return { client, state };
+  // `publish` is handed back so a test can stage what a HUMAN did in Open Dental
+  // — delete an exam, edit one site — directly on `state` and then make the fake
+  // answer with it. Item 14 is entirely about changes CareIN did not make.
+  return { client, state, publish };
 }
 
 module.exports = {
