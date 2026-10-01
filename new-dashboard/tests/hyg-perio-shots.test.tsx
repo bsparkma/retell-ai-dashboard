@@ -140,6 +140,10 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
         chart,
         stagedWrite: fixtures.stagedWrite as StagedWrite | null,
         counts: perio.countPerioChart(chart),
+        // Item 27: these fixtures are charts somebody has worked on, so none of
+        // them pre-skips. A shot of a pre-skipped chart would need its own
+        // fixture, and the behaviour is pinned by tests rather than by a photo.
+        chartStored: true,
       };
     }),
     fetchPerioSend: vi.fn(async () =>
@@ -160,6 +164,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
       appointment: APPOINTMENT,
       prior: fixtures.prior as PerioPrior,
       drift: fixtures.drift as PerioDrift,
+      preSkip: { status: "unavailable" as const },
     })),
     fetchVisit: vi.fn(async () => ({
       success: true as const,

@@ -14896,6 +14896,7 @@ __export(contract_entry_exports, {
   PerioGradeSchema: () => PerioGradeSchema,
   PerioMismatchKindSchema: () => PerioMismatchKindSchema,
   PerioMismatchSchema: () => PerioMismatchSchema,
+  PerioPreSkipSchema: () => PerioPreSkipSchema,
   PerioPriorSchema: () => PerioPriorSchema,
   PerioResendRequestSchema: () => PerioResendRequestSchema,
   PerioSameDateExamSchema: () => PerioSameDateExamSchema,
@@ -16428,7 +16429,17 @@ var HygPerioResponseSchema = import_zod3.z.object({
   visitStarted: import_zod3.z.boolean(),
   chart: PerioChartSchema,
   stagedWrite: StagedWriteSchema.nullable(),
-  counts: PerioCountsSchema
+  counts: PerioCountsSchema,
+  /**
+   * ITEM 27: has a perio chart for this visit EVER been stored? Not "is it
+   * empty" — `counts.empty` already answers that, and it is the wrong question
+   * for a pre-skip. A hygienist who un-skips the last pre-skipped tooth leaves
+   * an empty chart behind, and an empty chart is indistinguishable from an
+   * untouched one, so keying the pre-skip on emptiness would undo her un-skip
+   * on the next open. A stored row says she has been here. Defaults false so an
+   * older answer pre-skips as a first open would.
+   */
+  chartStored: import_zod3.z.boolean().default(false)
 });
 var PerioPriorSchema = import_zod3.z.discriminatedUnion("status", [
   import_zod3.z.object({
@@ -16483,6 +16494,14 @@ var PerioDriftSchema = import_zod3.z.discriminatedUnion("status", [
   }),
   import_zod3.z.object({ status: import_zod3.z.literal("unknown"), examNum: import_zod3.z.number().int() })
 ]);
+var PerioPreSkipSchema = import_zod3.z.discriminatedUnion("status", [
+  import_zod3.z.object({
+    status: import_zod3.z.literal("ready"),
+    /** Permanent teeth 1–32 marked `Missing`. Empty = none, NOT "unknown". */
+    teeth: import_zod3.z.array(import_zod3.z.number().int().min(1).max(PERIO_TOOTH_COUNT))
+  }),
+  import_zod3.z.object({ status: import_zod3.z.literal("unavailable") })
+]);
 var PerioResendRequestSchema = import_zod3.z.object({ examNum: import_zod3.z.number().int().positive() }).strict();
 var HygPerioPriorResponseSchema = import_zod3.z.object({
   success: import_zod3.z.literal(true),
@@ -16491,7 +16510,8 @@ var HygPerioPriorResponseSchema = import_zod3.z.object({
   date: import_zod3.z.string(),
   appointment: HygAppointmentSchema,
   prior: PerioPriorSchema,
-  drift: PerioDriftSchema
+  drift: PerioDriftSchema,
+  preSkip: PerioPreSkipSchema.default({ status: "unavailable" })
 });
 
 // shared/hyg/perioSend.ts
@@ -17104,6 +17124,7 @@ var import_zod5 = __toESM(require_zod());
   PerioGradeSchema,
   PerioMismatchKindSchema,
   PerioMismatchSchema,
+  PerioPreSkipSchema,
   PerioPriorSchema,
   PerioResendRequestSchema,
   PerioSameDateExamSchema,

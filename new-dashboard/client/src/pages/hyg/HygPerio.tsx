@@ -55,10 +55,12 @@ import {
   perioSideOf,
   perioSite,
   perioTooth,
+  withPerioSkipped,
   type HygPerioPriorResponse,
   type HygPerioResponse,
   type PerioChart,
   type PerioDrift,
+  type PerioPreSkip,
 } from "@shared/hyg/perio";
 import { perioChartChanges, type HygPerioSendResponse } from "@shared/hyg/perioSend";
 import {
@@ -393,6 +395,60 @@ export default function HygPerio() {
     void loadPrior(controller.signal);
     return () => controller.abort();
   }, [loadChart, loadPrior]);
+
+  /*
+   * ===========================================================================
+   * ITEM 27: OPEN DENTAL ALREADY KNOWS WHICH TEETH ARE NOT THERE
+   * ===========================================================================
+   * So a chart nobody has touched opens with those teeth already skipped,
+   * instead of asking her to skip four teeth by hand that her own practice
+   * management system has on file.
+   *
+   * HER STATE WINS, ALWAYS, AND THAT IS WHY THIS KEYS ON `chartStored` --
+   * not on `counts.empty`. Un-skipping the last pre-skipped tooth leaves an
+   * EMPTY chart behind, and an empty chart cannot be told apart from an
+   * untouched one, so an emptiness test would re-skip the tooth she had just
+   * un-skipped every time she re-opened the chart. A stored row means she has
+   * been here, and that settles this visit for good.
+   *
+   * IT IS NOT SAVED ON ITS OWN. `lastSaved` is moved to the pre-skipped chart,
+   * which makes the pre-skip a BASELINE rather than an unsaved change. Two
+   * reasons, and the first is the serious one: saving a visit that has not been
+   * started STARTS it (see `save` below), so persisting a pre-skip would open a
+   * visit and file a draft chart for a patient whose chart she only glanced at.
+   * The second is that nothing is lost by waiting -- her first real reading or
+   * un-skip saves the whole chart, pre-skips included.
+   *
+   * Decided ONCE per mount, either way, so a reading typed while Open Dental
+   * was still answering can never be overwritten by a late pre-skip.
+   */
+  const preSkipSettled = useRef(false);
+  const [preSkipped, setPreSkipped] = useState<number[]>([]);
+  useEffect(() => {
+    if (preSkipSettled.current) return;
+    // Both answers have to be in: the chart says whether she has been here, and
+    // the prior read carries which teeth Open Dental marks Missing.
+    if (stored === null || prior.phase !== "loaded") return;
+    preSkipSettled.current = true;
+
+    if (stored.chartStored) return;
+    const preSkip: PerioPreSkip = prior.res.preSkip;
+    // `unavailable` says nothing and does nothing -- the chart opens exactly as
+    // it does today. A `ready` answer naming no teeth is a real answer that
+    // happens to name none, and is just as silent.
+    if (preSkip.status !== "ready" || preSkip.teeth.length === 0) return;
+    // A race she wins: if a reading landed while Open Dental was answering, the
+    // chart is hers and the pre-skip is DROPPED, not merged into it.
+    if (!countPerioChart(latestChart.current).empty) return;
+
+    // The same composition the `skipTeeth` reducer case performs, so the
+    // baseline set here is the chart that is about to be on screen.
+    let next = latestChart.current;
+    for (const tooth of preSkip.teeth) next = withPerioSkipped(next, tooth, true);
+    lastSaved.current = chartKey(next);
+    dispatch({ type: "skipTeeth", teeth: preSkip.teeth });
+    setPreSkipped(preSkip.teeth);
+  }, [stored, prior]);
 
   // Focus the grid in the same commit that puts it on screen: the first key should
   // be a number. A LAYOUT effect, not a passive one — a passive effect runs after the
@@ -969,6 +1025,29 @@ export default function HygPerio() {
           onSkipTeeth={(teeth) => act({ type: "skipTeeth", teeth })}
         />
       </div>
+
+      {/*
+        ITEM 27: SAY THAT CAREIN DID IT, AND THAT IT CAN BE UNDONE.
+        Teeth that appear struck through on a chart she has not touched are
+        otherwise unexplained -- she would be left to work out whether she did
+        it, whether it came from the last exam, or whether the grid is broken.
+        It names the teeth and where the claim came from, and it is NOT a
+        warning: a correct default is not a problem to report.
+        This line is about teeth that are no longer in the mouth, so it survives
+        the chart being locked -- a sent chart still shows why it skipped them.
+      */}
+      {preSkipped.length > 0 ? (
+        <p
+          className="mt-3 rounded-xl border border-dashed border-border px-3 py-2 text-sm text-muted-foreground"
+          data-testid="hyg-perio-preskipped"
+        >
+          <span className="font-medium text-foreground">
+            {preSkipped.map((t) => "#" + t).join(", ")} skipped
+          </span>{" "}
+          because Open Dental records {preSkipped.length === 1 ? "it" : "them"} as missing. Select a
+          skipped tooth to un-skip it and chart it.
+        </p>
+      ) : null}
 
       {numLockOff ? (
         <p
