@@ -461,6 +461,41 @@ export function countPerioChart(chart: PerioChart): PerioCounts {
 }
 
 /**
+ * ITEM 28: DOES THIS CHART HOLD A MEASUREMENT? The one gate on staging.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * A SKIP IS A STATEMENT ABOUT A TOOTH. IT IS NOT A READING.
+ * ═════════════════════════════════════════════════════════════════════════════
+ * `empty` counts a skipped tooth as content, which is right for the question it
+ * answers — "has anybody touched this chart at all" — and wrong for this one. A
+ * chart of nothing but skips passed `!empty`, staged, and sent a perio exam with
+ * NO READINGS into the chart of record: a dated exam in a patient's permanent
+ * record saying, in effect, that a perio chart was done and found nothing.
+ *
+ * Hand-skipping made that reachable. Item 27's pre-skip made it reachable with
+ * the hygienist having entered nothing at all — she opens a chart, Open Dental's
+ * missing teeth skip themselves, and Stage lights up. So the gate is a
+ * measurement she took: a depth, or a flag riding a site.
+ *
+ * ⚠️ USE THIS, NOT `!counts.empty`, FOR ANYTHING THAT WRITES. `empty` is still
+ * the right question for "has she touched this chart" — item 27's pre-skip is
+ * suppressed by it, deliberately, because a tooth she skipped by hand is a
+ * decision the pre-skip must not overrule.
+ *
+ * Flags are counted on un-skipped teeth only (see the loop above), so a flag on
+ * a skipped tooth cannot satisfy this either.
+ */
+export function perioHasReading(counts: PerioCounts): boolean {
+  return counts.sitesCharted > 0 || PERIO_FLAGS.some((flag) => counts[flag] > 0);
+}
+
+/** The refusal, in the one wording the server and the screen both use. */
+export const PERIO_NO_READING_REFUSAL =
+  "There are no perio readings on this visit yet, so there is nothing to stage. " +
+  "Skipped teeth do not count — a skip says a tooth was not charted, not what " +
+  "was measured. Open the perio chart and enter a reading first.";
+
+/**
  * "Partial chart: 84 of 192 sites charted" — the words a partial chart is
  * labelled with EVERYWHERE, so the tray, the workspace and the staged preview
  * cannot describe one chart three ways.

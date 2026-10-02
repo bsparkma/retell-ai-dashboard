@@ -1139,31 +1139,39 @@ describe("item 27: a fresh chart opens with Open Dental's missing teeth skipped"
     expect(server.visitStarted).toBe(false);
   });
 
-  it("STAGING a pre-skip-only chart stores it FIRST — the stage composes from storage", async () => {
+  it("STAGING stores the chart FIRST, pre-skips and all — the stage composes from storage", async () => {
     /*
-     * A skipped tooth makes `counts.empty` false, so the Stage button is live on
-     * a chart that holds nothing but the pre-skip. The stage composes from what
-     * the server has STORED, so the save must really happen here.
+     * The autosave stands down while the chart is nothing but the pre-skip, and
+     * `save()` must NOT stand down with it. An earlier version of item 27 moved
+     * `lastSaved` to the pre-skipped chart, which suppressed the autosave as
+     * intended AND made `save()` itself a no-op -- so staging asked the server
+     * for a chart it had never been sent. A separate baseline now suppresses the
+     * autosave only, and this is the test that would catch it coming back.
      *
-     * An earlier version of this slice moved `lastSaved` to the pre-skipped
-     * chart, which suppressed the autosave as intended AND made `save()` itself
-     * a no-op -- so this path asked the server to stage a chart it had never
-     * been sent. The baseline now suppresses the autosave only.
+     * ITEM 28 changed how this test gets to Stage, not what it proves. Stage is
+     * now refused on a chart of only skips, so she types one reading first --
+     * which is the realistic path anyway.
      */
     odSaysMissing([1, 16]);
     renderPerio();
     await screen.findByTestId("hyg-perio-skipped-number-1");
+    // The pre-skip alone saved nothing and cannot be staged.
     expect(server.calls).not.toContain("SAVE");
+    expect((screen.getByTestId("hyg-perio-stage") as HTMLButtonElement).disabled).toBe(true);
 
-    const stage = screen.getByTestId("hyg-perio-stage");
-    expect((stage as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(stage);
+    fireEvent.keyDown(screen.getByTestId("hyg-perio-grid"), digit(4));
+    await waitFor(() =>
+      expect((screen.getByTestId("hyg-perio-stage") as HTMLButtonElement).disabled).toBe(false),
+    );
+    fireEvent.click(screen.getByTestId("hyg-perio-stage"));
 
     await waitFor(() => expect(server.calls).toContain("STAGE"));
-    // The save went first, and it carried the pre-skips.
+    // The save went first, and it carried the pre-skips with the reading.
     expect(server.calls.indexOf("SAVE")).toBeGreaterThan(-1);
     expect(server.calls.indexOf("SAVE")).toBeLessThan(server.calls.indexOf("STAGE"));
-    expect(countPerioChart(server.saves.at(-1) as PerioChart).teethSkipped).toEqual([1, 16]);
+    const stored = server.saves.at(-1) as PerioChart;
+    expect(countPerioChart(stored).teethSkipped).toEqual([1, 16]);
+    expect(countPerioChart(stored).sitesCharted).toBe(1);
   });
 
   it("ACCEPTANCE 2: a pre-skipped tooth can be un-skipped and then charted", async () => {
@@ -1317,5 +1325,77 @@ describe("item 27: when Open Dental says nothing, neither does the chart", () =>
     renderPerio();
     await screen.findByTestId("hyg-perio-prior-failed");
     expect(screen.queryByTestId("hyg-perio-preskipped")).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ITEM 28: STAGE NEEDS A READING, AND THE BUTTON SAYS SO
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The server is the rail (routes/hyg/hygPerio.test.js). These are about the
+// button not offering something the server would decline, and both read the one
+// shared predicate, `perioHasReading`.
+//
+// Item 27 is why this matters on a chart she has not typed into: Open Dental's
+// missing teeth skip themselves, and the Stage button used to light up.
+
+describe("item 28: a chart of only skips cannot be staged from the screen", () => {
+  const stageButton = () => screen.getByTestId("hyg-perio-stage") as HTMLButtonElement;
+
+  it("ACCEPTANCE 4: skips alone leave Stage disabled, and the note says why", async () => {
+    server.chart = normalizePerioChart(
+      [1, 16, 17, 32].reduce((c, t) => withPerioSkipped(c, t, true), emptyPerioChart()),
+    );
+    server.chartStored = true;
+    renderPerio();
+
+    await screen.findByTestId("hyg-perio-skipped-number-1");
+    // Not empty — that is exactly the case the old predicate let through.
+    expect(countPerioChart(server.chart as PerioChart).empty).toBe(false);
+    expect(stageButton().disabled).toBe(true);
+    expect(screen.getByTestId("hyg-perio-stage-note").textContent).toMatch(
+      /Nothing to stage until there is a reading\. Skipped teeth do not count\./,
+    );
+  });
+
+  it("ACCEPTANCE 4: one reading enables it, with the skips still on the chart", async () => {
+    let chart = [1, 16].reduce((c, t) => withPerioSkipped(c, t, true), emptyPerioChart());
+    chart = normalizePerioChart(withPerioSite(chart, 3, "DB", { depth: 4 }));
+    server.chart = chart;
+    server.chartStored = true;
+    renderPerio();
+
+    await screen.findByTestId("hyg-perio-site-3-DB");
+    expect(stageButton().disabled).toBe(false);
+    expect(countPerioChart(chart).teethSkipped).toEqual([1, 16]);
+  });
+
+  it("ACCEPTANCE 4: it enables the moment she types, and nothing had to round-trip", async () => {
+    server.chart = normalizePerioChart(withPerioSkipped(emptyPerioChart(), 19, true));
+    server.chartStored = true;
+    renderPerio();
+
+    await screen.findByTestId("hyg-perio-skipped-number-19");
+    expect(stageButton().disabled).toBe(true);
+
+    fireEvent.keyDown(screen.getByTestId("hyg-perio-grid"), digit(4));
+    await waitFor(() => expect(stageButton().disabled).toBe(false));
+  });
+
+  it("ACCEPTANCE 4: an item-27 pre-skip does not light the button up", async () => {
+    // The case that prompted the ruling: she has entered nothing, Open Dental's
+    // missing teeth pre-skipped themselves, and Stage used to become pressable.
+    server.preSkip = { status: "ready", teeth: [1, 16] };
+    renderPerio();
+
+    await screen.findByTestId("hyg-perio-skipped-number-1");
+    expect(stageButton().disabled).toBe(true);
+    expect(server.calls).not.toContain("STAGE");
+  });
+
+  it("an untouched chart is still disabled, exactly as before", async () => {
+    renderPerio();
+    await screen.findByTestId("hyg-perio-grid");
+    expect(stageButton().disabled).toBe(true);
   });
 });

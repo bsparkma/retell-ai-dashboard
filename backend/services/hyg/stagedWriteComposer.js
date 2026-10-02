@@ -77,7 +77,9 @@
  * A perio chart is entered site by site into the visit's `perio` row while it
  * sits in `Draft`, and staging composes the preview from THAT stored chart —
  * `ctx.draft`, loaded by visitStore, never a request body. A visit with no
- * readings refuses with NOTHING_TO_STAGE rather than staging an empty chart.
+ * readings refuses with NOTHING_TO_STAGE rather than staging an empty chart —
+ * and a SKIPPED TOOTH IS NOT A READING (item 28), so a chart of nothing but
+ * skips is refused here too.
  *
  * Staging is as far as this file goes. The send is `services/hyg/perioSend.js`,
  * started from the chart page or riding the visit Send (item 15), and it plans
@@ -308,14 +310,20 @@ function composeRaw(kind, { visit, items, actor, signature, draft }) {
     // "compose from what is stored" rule every other kind follows.
     const parsed = contract.PerioChartSchema.safeParse(draft && draft.chart);
     const chart = parsed.success ? contract.normalizePerioChart(parsed.data) : null;
-    if (!chart || contract.countPerioChart(chart).empty) {
-      return {
-        empty:
-          'There are no perio readings on this visit yet, so there is nothing to stage. ' +
-          'Open the perio chart and enter them first.',
-      };
+    const counts = chart ? contract.countPerioChart(chart) : null;
+    /*
+     * ITEM 28: A READING, NOT MERELY SOMETHING. This was `counts.empty`, which
+     * counts a skipped tooth as content — so a chart of nothing but skips
+     * staged, and sent an exam with NO readings into the chart of record. A
+     * skip says a tooth was not charted; it does not say what was measured.
+     *
+     * THIS IS THE RAIL. The Stage button reads the same predicate and goes
+     * grey, but a greyed button is a courtesy — the visit Send, a retry, and
+     * anything else that reaches staging all come through here.
+     */
+    if (!chart || !counts || !contract.perioHasReading(counts)) {
+      return { empty: contract.PERIO_NO_READING_REFUSAL };
     }
-    const counts = contract.countPerioChart(chart);
     return {
       title: 'Perio chart',
       // A partial chart SAYS it is partial, in the same words everywhere.
