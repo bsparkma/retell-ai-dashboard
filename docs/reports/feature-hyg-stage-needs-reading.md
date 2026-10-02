@@ -150,4 +150,21 @@ Seven files changed, four of them tests and one the regenerated contract bundle.
 
 ## 5. Push, PR, and the merge tree
 
-Filled in at push time.
+**PR #217**, `feature/hyg-stage-needs-reading` -> `develop`, code commit
+`56672fb`. Not merged.
+
+A branch-local green is not a result: CI builds `refs/pull/N/merge`, not the
+branch tip, which is how #207's red went undiagnosed for a round. So the trees
+are compared rather than assumed, on every push:
+
+```
+git fetch origin +refs/pull/217/merge:refs/remotes/origin/pr-217-merge
+git rev-parse HEAD^{tree}                         a08a5ef7f94b1fe6b4d72b7c699370f66ad2a066
+git rev-parse refs/pull/217/merge^{tree}          a08a5ef7f94b1fe6b4d72b7c699370f66ad2a066
+git rev-list --count HEAD..origin/develop         0
+```
+
+The §4 table was re-run on the final tree after the last push — including after
+this section was added, since "a documentation commit cannot change a test
+outcome" is the kind of assumption that is cheaper to check than to be wrong
+about.
