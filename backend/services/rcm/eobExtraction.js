@@ -44,7 +44,7 @@
 // ─── Tunables ────────────────────────────────────────────────────────────────
 
 /** Sentinels the model is INSTRUCTED to emit rather than invent a value. */
-const { EOB_REVIEW_REASONS } = require('./rcmVocabulary');
+const { EOB_REVIEW_REASONS, ERA_REVIEW_REASONS } = require('./rcmVocabulary');
 
 const PLACEHOLDER_NPI = '0000000000';
 const PLACEHOLDER_DOB = '1900-01-01';
@@ -144,6 +144,28 @@ const PROCEDURE_SCHEMA = {
         'printed only at a category or benefit-type subtotal. NEVER put an allowed, ' +
         'covered, eligible or approved amount here.',
     },
+    /*
+     * THE DRAFT/TWO-ROW FAMILY'S ESCAPE VALVE FOR RECONCILIATION.
+     *
+     * Some layouts interleave "CLAIM SPECIFIC MESSAGE(S)" paragraphs between
+     * claim blocks, and one of those messages can say a line's amounts are NOT
+     * included in the printed TOTALS line. Such a line is still real work and
+     * is extracted in full — but summing it against the Claim Totals row would
+     * "discover" a mismatch the document itself disclaims. This flag is about
+     * membership in the printed sums, nothing else: it never changes a figure,
+     * and `deriveClaimReviewReasons` is its only consumer.
+     *
+     * Not persisted — rcm_procedure_lines has no column for it and the frozen
+     * flags vocabulary is not extended. It does its whole job before storage,
+     * inside the reconciliation sums.
+     */
+    excludedFromTotals: {
+      type: 'boolean',
+      description:
+        'true ONLY when a claim-specific message for this line says its amounts are not ' +
+        'included in the TOTALS line. The line is still extracted in full; it is only left ' +
+        'out of the reconciliation sums. false for every ordinary line.',
+    },
     confidence: {
       type: 'integer',
       description:
@@ -173,6 +195,7 @@ const PROCEDURE_SCHEMA = {
     'deductibleCents',
     'copayCents',
     'paidCents',
+    'excludedFromTotals',
     'confidence',
     'flags',
     'adjustments',
@@ -183,11 +206,22 @@ const PROCEDURE_SCHEMA = {
 const CLAIM_SCHEMA = {
   type: 'object',
   properties: {
-    patientName: { type: 'string', description: 'Full name of the patient for THIS claim' },
+    patientName: {
+      type: 'string',
+      description:
+        'Full name of the PATIENT for THIS claim — the Patient field of the claim block. ' +
+        'NEVER the subscriber/applicant name: on a family document several patients share ' +
+        'one subscriber, and they are different fields.',
+    },
     patientDOB: { type: 'string', description: `Patient DOB as YYYY-MM-DD, or "${PLACEHOLDER_DOB}" if absent` },
     subscriberId: { type: 'string', description: 'Insurance subscriber/member ID' },
     groupNumber: { type: 'string', description: 'Insurance group number' },
-    claimNumber: { type: 'string', description: 'Claim number the payer assigned to THIS claim' },
+    claimNumber: {
+      type: 'string',
+      description:
+        'Claim number the payer assigned to THIS claim. A claim that continues on the next ' +
+        'page repeats its header with the SAME number — that is one claim, one entry.',
+    },
     serviceDate: { type: 'string', description: 'Date of service as YYYY-MM-DD' },
     providerNPI: { type: 'string', description: `Rendering provider NPI, or "${PLACEHOLDER_NPI}" if absent` },
     renderingProvider: { type: 'string', description: 'Rendering provider full name' },
@@ -292,6 +326,15 @@ COVERED IS NOT PAID. This is the most important rule here.
 - A procedure's paidCents is the amount the PLAN PAID for that line, and nothing else. An "allowed", "covered", "eligible", "approved" or "benefit" amount is a DIFFERENT column and must never be copied into paidCents. Copying one across invents a payment that is not on the page and makes the patient appear to owe less than they do.
 - Many layouts state payment only at a CATEGORY or BENEFIT-TYPE SUBTOTAL (for example "Preventive ... paid 120.00" over several lines), and never per line. When a line has no payment of its own printed for it, set that line's paidCents to null. Do not spread a subtotal across the lines beneath it, do not divide it, and do not substitute the covered column. null is the correct, expected answer for those layouts.
 - The claim's totalPaidCents is read from the document's own claim total and STANDS ALONE. It is still required even when every line's paidCents is null.
+
+SOME PAYERS PRINT A TWO-ROW DRAFT TABLE. Recognize this family by its SHAPE, never by the payer's name: ONE column-header table prints at the TOP OF EACH PAGE (dates of service, procedure code, provider charge with ALLOWANCE stacked beneath it, a non-chargeable amount with its code, a subscriber-liability amount with its code, other insurance, amount paid to provider, amount paid to subscriber, message codes), and that header governs every header-less claim block below it on that page. For this family:
+- EACH SERVICE LINE IS TWO PHYSICAL ROWS, and the two rows are ONE line. The first row carries the date, the procedure code, the provider charge, the shared amount/code cells, the amount paid to provider and the message codes; the second row carries the service count, the place of service, sometimes a tooth or surface, and the ALLOWANCE printed DIRECTLY UNDER that line's own charge. Pair each allowance with the charge directly above it — NEVER with a neighbouring line's charge. Walk the pairs top to bottom, one line at a time; mispairing charge and allowance across neighbouring lines is the classic misread of this layout.
+- AMOUNT AND CODE SHARE A CELL (for example "126.00 /N01", "12.80 / C1", "74.00 / H1"). The code assigns the money's meaning, and the DOCUMENT PRINTS ITS OWN LEGEND for those codes, usually on the last page — read the legend and map by what it says: a MAC-differential or non-chargeable code is a contractual write-off (it is never patient money); a deductible or coinsurance liability code belongs in deductibleCents/copayCents (patient responsibility); a rejected-but-billable non-covered code leaves that amount billable to the patient; a rejected NON-billable code is a write-off and never the patient's. Never guess a meaning the legend does not give.
+- THIS FAMILY STATES PAYMENT PER LINE: each line's paidCents is that line's AMOUNT PAID TO PROVIDER. An amount paid to the SUBSCRIBER is not a payment to the provider and never goes in paidCents. (Category-subtotal layouts still take null per line — the rule above stands; these are different shapes and you must handle both.)
+- CLAIM BLOCKS repeat a header like "Claim Number: ... Patient: ... / Patient Acct #: ... / Appl(Sub) Name: ...", and one claim can CONTINUE ON THE NEXT PAGE under a repeated header with the SAME claim number. Merge continuations into ONE claim entry carrying all of its lines; its Claim Totals row attaches to that claim wherever it appears. Never emit two claim entries for one claim number.
+- PATIENT IS NOT SUBSCRIBER. The claim's patientName is the Patient field of its block. The applicant/subscriber name says whose plan it is, and on a family document several patients share it — never put the subscriber's name in patientName.
+- "CLAIM SPECIFIC MESSAGE(S)" paragraphs interleave between claim blocks. When a message code says a line's amounts are NOT included in the TOTALS line, set that line's excludedFromTotals to true and still extract the line in full. Every ordinary line is false.
+- THE DOCUMENT CARRIES ITS OWN ANSWER KEY — use it before returning: every claim prints a Claim Totals row, the last page prints the EOB-total provider payment, the enclosed draft/check shows the same amount, and the draft number repeats in every page header. Check your line reads against those printed totals (leaving excludedFromTotals lines out). If they disagree, you have mispaired a two-row line or misread a shared amount/code cell — re-read the lines. NEVER adjust a figure to force agreement.
 
 Rules that MUST hold — read amounts digit-by-digit and RECONCILE before returning:
 - Extract ALL procedure lines for EACH claim. Read each procedure's PLAN PAID amount carefully. When EVERY line states its own payment, set that claim's totalPaidCents to the exact SUM of its procedure paidCents. When any line's payment is not stated, read totalPaidCents from the document instead and leave the unstated lines null.
@@ -400,9 +443,91 @@ function normalizeExtraction(raw) {
   };
 
   const claimsIn = Array.isArray(doc.claims) ? doc.claims : [];
-  const claims = claimsIn.map((c) => normalizeClaim(c));
+  const claims = mergeContinuations(claimsIn.map((c) => normalizeClaim(c)));
 
   return { payment, confidence: pct(doc.confidence), claims };
+}
+
+/**
+ * ONE CLAIM NUMBER, ONE CLAIM — the derivation's half of the continuation rule.
+ *
+ * The two-row draft family lets a claim CONTINUE ON THE NEXT PAGE under a
+ * repeated header with the same claim number, and its Claim Totals row attaches
+ * wherever it appears. The prompt tells the model to merge those itself; this
+ * is the enforcement for the model that does not. Left split, a continuation
+ * becomes a second claim whose lines are missing from the first — the first's
+ * sums come up short, the second's totals are zeros, and the batch arithmetic
+ * double-counts the claim against the check.
+ *
+ * The merge is mechanical, never arithmetic:
+ *  - procedures concatenate in printed order and are re-positioned, so
+ *    `uncertain_line:N` keeps pointing at a row a human can count to;
+ *  - identity fields take the first non-empty value — a continuation header
+ *    repeats them, it does not change them;
+ *  - the TOTALS come from the one entry that carries any (a continuation block
+ *    has no Claim Totals row of its own, so its required integers arrive as
+ *    zeros). When BOTH entries carry totals the first stated set is kept
+ *    verbatim — never summed, never averaged — and the reconciliation reasons
+ *    say so if the kept set disagrees with the lines. A disagreement is
+ *    flagged, not repaired (#212's rule).
+ *
+ * Claims with NO claim number never merge: an empty string is the absence of
+ * the key, not a shared key.
+ *
+ * @param {ExtractedClaim[]} claims
+ * @returns {ExtractedClaim[]}
+ */
+const CLAIM_TOTAL_FIELDS = Object.freeze([
+  'totalBilledCents',
+  'totalAllowedCents',
+  'totalDeductibleCents',
+  'totalCopayCents',
+  'totalPaidCents',
+]);
+
+function mergeContinuations(claims) {
+  /** @type {ExtractedClaim[]} */
+  const out = [];
+  /** @type {Map<string, ExtractedClaim>} */
+  const byNumber = new Map();
+
+  for (const claim of claims) {
+    const key = claim.claimNumber;
+    if (!key) {
+      out.push(claim);
+      continue;
+    }
+    const kept = byNumber.get(key);
+    if (!kept) {
+      byNumber.set(key, claim);
+      out.push(claim);
+      continue;
+    }
+
+    kept.procedures = [...kept.procedures, ...claim.procedures].map((p, i) => ({
+      ...p,
+      position: i,
+    }));
+
+    for (const f of ['patientName', 'subscriberId', 'groupNumber', 'renderingProvider']) {
+      if (!kept[f]) kept[f] = claim[f];
+    }
+    // Placeholders count as "empty" for NPI: a continuation that read the real
+    // one should win over a first block that could not.
+    if (!kept.providerNPI || kept.providerNPI === PLACEHOLDER_NPI) {
+      kept.providerNPI = claim.providerNPI;
+    }
+    for (const f of ['patientDOB', 'serviceDate']) {
+      if (kept[f] == null) kept[f] = claim[f];
+    }
+
+    const keptHasTotals = CLAIM_TOTAL_FIELDS.some((f) => kept[f] !== 0);
+    const nextHasTotals = CLAIM_TOTAL_FIELDS.some((f) => claim[f] !== 0);
+    if (!keptHasTotals && nextHasTotals) {
+      for (const f of CLAIM_TOTAL_FIELDS) kept[f] = claim[f];
+    }
+  }
+  return out;
 }
 
 /** @param {unknown} rawClaim */
@@ -470,6 +595,13 @@ function normalizeProcedure(rawProc, index) {
      * prints "not stated" rather than a number nobody can find on the page.
      */
     paidCents: intOrNull(p.paidCents),
+    /*
+     * STRICTLY the literal true. A model slip ("yes", 1, "true") must read as
+     * an ordinary line: excluding a line from the reconciliation sums on a
+     * coerced truthy would silently shrink the very check that catches
+     * misreads, which is the opposite of what this field is for.
+     */
+    excludedFromTotals: p.excludedFromTotals === true,
     // Derived, not asked for — the source derived them the same way, and a
     // model-supplied "write-off" that disagreed with billed − allowed would be
     // a third number nobody could reconcile.
@@ -564,18 +696,56 @@ function deriveClaimReviewReasons(claim, confidence, payment, opts = {}) {
      * one and they still do not add up. Both widen review; they send a biller to
      * different places.
      */
-    const unstated = claim.procedures.filter((p) => p.paidCents === null);
+    /*
+     * THE SUMS RUN OVER THE LINES THE DOCUMENT ITSELF COUNTS. A claim-specific
+     * message can say a line's amounts are not included in the TOTALS line
+     * (the two-row draft family prints these between claim blocks); summing
+     * such a line would "discover" a mismatch the document disclaims and send
+     * a biller hunting a column error that is not there. The excluded line is
+     * still extracted, still stored, still on the screen — it is only outside
+     * the printed arithmetic. With no exclusions (every other layout) this is
+     * exactly the old behavior.
+     */
+    const included = claim.procedures.filter((p) => !p.excludedFromTotals);
+    const unstated = included.filter((p) => p.paidCents === null);
     if (unstated.length > 0) {
       reasons.push(R.LINE_PAID_NOT_STATED);
-    } else {
-      const paidSum = claim.procedures.reduce((acc, p) => acc + p.paidCents, 0);
+    } else if (included.length > 0) {
+      const paidSum = included.reduce((acc, p) => acc + p.paidCents, 0);
       if (Math.abs(paidSum - claim.totalPaidCents) > TOTAL_TOLERANCE_CENTS) {
         reasons.push(R.PAID_TOTAL_MISMATCH);
       }
     }
-    const billedSum = claim.procedures.reduce((acc, p) => acc + p.billedCents, 0);
-    if (Math.abs(billedSum - claim.totalBilledCents) > TOTAL_TOLERANCE_CENTS) {
-      reasons.push(R.BILLED_TOTAL_MISMATCH);
+    if (included.length > 0) {
+      const billedSum = included.reduce((acc, p) => acc + p.billedCents, 0);
+      if (Math.abs(billedSum - claim.totalBilledCents) > TOTAL_TOLERANCE_CENTS) {
+        reasons.push(R.BILLED_TOTAL_MISMATCH);
+      }
+      /*
+       * THE ALLOWANCE COLUMN IS THE ONE THIS LAYOUT MISPAIRS, so it gets its own
+       * reconciliation against the printed Claim Totals row.
+       *
+       * In the two-row draft family each line's ALLOWANCE prints directly under
+       * its own charge, and pairing an allowance with a neighbouring line's
+       * charge is the classic misread. A permutation of the same numbers still
+       * sums correctly — no sum can catch that — but a mispairing that DROPS or
+       * DUPLICATES an allowance (the common failure when the model loses its
+       * place walking two-row pairs) changes the total, and the document prints
+       * the answer. Only checked when the claim states an allowed total, because
+       * a layout that prints none would otherwise flag every claim.
+       *
+       * REUSED SLUG, DELIBERATELY: `claim_line_allowed_mismatch` is already in
+       * the frozen vocabulary, already labelled ("The claim's allowed total does
+       * not match the sum of its lines") and already gated BLOCKING. The ERA
+       * path raises it for the same arithmetic on the same column, and a biller
+       * should not meet two different words for one fact.
+       */
+      if (claim.totalAllowedCents !== 0) {
+        const allowedSum = included.reduce((acc, p) => acc + p.allowedCents, 0);
+        if (Math.abs(allowedSum - claim.totalAllowedCents) > TOTAL_TOLERANCE_CENTS) {
+          reasons.push(ERA_REVIEW_REASONS.CLAIM_LINE_ALLOWED_MISMATCH);
+        }
+      }
     }
   }
 
@@ -675,6 +845,9 @@ module.exports = {
  * @property {number} copayCents
  * @property {number|null} paidCents `null` = the document states no payment for
  *           this line. NOT zero — see `intOrNull`.
+ * @property {boolean} excludedFromTotals a claim-specific message says this
+ *           line's amounts are not in the printed TOTALS line; the line is
+ *           extracted in full but left out of the reconciliation sums.
  * @property {number} adjustmentCents
  * @property {number} writeOffCents
  * @property {number} patientRespCents

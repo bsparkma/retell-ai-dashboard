@@ -559,3 +559,724 @@ test('the check total is still checked against the claim totals on a subtotal la
   extracted.payment.totalPaidCents = 140000;
   assert.deepEqual(deriveBatchReviewReasons(extracted), ['batch_paid_total_mismatch']);
 });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// THE TWO-ROW DRAFT LAYOUT FAMILY
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// A scanned multi-patient "draft" remittance whose column headers print at the
+// top of EVERY page and govern the header-less claim blocks below them. Every
+// service line is TWO physical rows — the allowance prints directly under its
+// own charge — amount and code share one cell, claims continue across pages
+// under a repeated header with the same claim number, and the document prints
+// its own answer key (a Claim Totals row per claim, an EOB total, a draft
+// amount).
+//
+// EVERY FIXTURE HERE IS FICTIONAL: invented names, invented ids, invented
+// amounts, arithmetic worked so the document is internally consistent. No real
+// remittance, patient or payer appears in this repo.
+//
+// The family is recognized by SHAPE, never by a payer name — nothing in the
+// prompt or the derivation keys on who sent the document.
+
+/**
+ * One claim from the family, read CORRECTLY, as worked arithmetic:
+ *
+ *   line 1  charge 126.00 / allowance 101.80 (row 2, under its own charge)
+ *           non-chargeable  24.20 /N01   MAC differential -> contractual write-off
+ *           sub liability   12.80 / C1   coinsurance      -> patient responsibility
+ *           paid to provider 89.00       (101.80 - 12.80)
+ *   line 2  charge  74.00 / allowance  74.00
+ *           sub liability   74.00 / H1   rejected but BILLABLE -> patient owes it
+ *           paid to provider 0.00        (the plan paid nothing - a STATED zero)
+ *
+ *   Claim Totals   charge 200.00 - allowance 175.80 - liability 86.80 - paid 89.00
+ *   EOB total / draft amount: 89.00
+ */
+function draftFamilyDoc() {
+  return {
+    payment: {
+      payer: 'Fictional Dental Benefit Plan',
+      // The draft number repeats in every page header and on the draft itself.
+      checkNumber: 'DRAFT-7781234',
+      checkDate: '2026-08-05',
+      paymentMethod: 'check',
+      totalPaidCents: 8900,
+    },
+    // A scan: this family only ever arrives as one.
+    confidence: 78,
+    claims: [
+      {
+        patientName: 'Quillfeather, Marisol',
+        patientDOB: '2011-06-02',
+        // The family shares one subscriber; the PATIENT is the claim's own.
+        subscriberId: 'FICT-44120',
+        groupNumber: 'GRP-0099',
+        claimNumber: 'DCLM-5500871',
+        serviceDate: '2026-07-28',
+        providerNPI: '1598324220',
+        renderingProvider: 'Example Dental Group',
+        totalBilledCents: 20000,
+        totalAllowedCents: 17580,
+        totalDeductibleCents: 0,
+        totalCopayCents: 8680,
+        totalPaidCents: 8900,
+        procedures: [
+          {
+            code: 'D2392',
+            description: 'Resin-based composite - two surfaces, posterior',
+            billedCents: 12600,
+            allowedCents: 10180,
+            deductibleCents: 0,
+            copayCents: 1280,
+            paidCents: 8900,
+            excludedFromTotals: false,
+            confidence: 82,
+            flags: [],
+            adjustments: [
+              {
+                groupCode: 'CO',
+                reasonCode: '45',
+                reasonDescription: 'Charge exceeds maximum allowable (N01)',
+                amountCents: 2420,
+                remarkCode: '',
+                remarkDescription: '',
+              },
+              {
+                groupCode: 'PR',
+                reasonCode: '2',
+                reasonDescription: 'Coinsurance (C1)',
+                amountCents: 1280,
+                remarkCode: '',
+                remarkDescription: '',
+              },
+            ],
+          },
+          {
+            code: 'D9110',
+            description: 'Palliative treatment of dental pain',
+            billedCents: 7400,
+            allowedCents: 7400,
+            deductibleCents: 0,
+            copayCents: 7400,
+            paidCents: 0,
+            excludedFromTotals: false,
+            confidence: 80,
+            flags: ['not_covered'],
+            adjustments: [
+              {
+                groupCode: 'PR',
+                reasonCode: '96',
+                reasonDescription: 'Non-covered, billable to patient (H1)',
+                amountCents: 7400,
+                remarkCode: '',
+                remarkDescription: '',
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/** The second physical row's allowance, by printed line position. */
+function allowancesOf(claim) {
+  return claim.procedures.map((p) => p.allowedCents);
+}
+
+// ─── The prompt teaches the family by its SHAPE ──────────────────────────────
+
+test('the prompt teaches the two-row family by shape, never by a payer name', () => {
+  // A trigger keyed on a payer would miss the next payer printing the same
+  // table, and would misfire on this one's other forms.
+  assert.match(SYSTEM_PROMPT, /TWO-ROW DRAFT TABLE/i);
+  assert.match(SYSTEM_PROMPT, /by its SHAPE, never by the payer's name/i);
+  for (const shape of [
+    /TOP OF EACH PAGE/i,
+    /TWO PHYSICAL ROWS/i,
+    /DIRECTLY UNDER/i,
+    /NEVER with a neighbouring line's charge/i,
+    /AMOUNT AND CODE SHARE A CELL/i,
+    /legend/i,
+    /AMOUNT PAID TO PROVIDER/i,
+    /CONTINUE ON THE NEXT PAGE/i,
+    /SAME claim number/i,
+    /PATIENT IS NOT SUBSCRIBER/i,
+    /CLAIM SPECIFIC MESSAGE/i,
+    /ANSWER KEY/i,
+  ]) {
+    assert.match(SYSTEM_PROMPT, shape, `the prompt must name: ${shape}`);
+  }
+  // And it must not have learned the shape by learning a name.
+  assert.doesNotMatch(SYSTEM_PROMPT, /blue ?cross|blue ?shield|arkansas/i);
+});
+
+test('the prompt keeps BOTH families: per-line paid here, null on a subtotal layout', () => {
+  // The two rules live side by side and neither weakens the other.
+  assert.match(SYSTEM_PROMPT, /COVERED IS NOT PAID/);
+  assert.match(SYSTEM_PROMPT, /THIS FAMILY STATES PAYMENT PER LINE/i);
+  assert.match(
+    SYSTEM_PROMPT,
+    /Category-subtotal layouts still take null per line/i,
+    'the per-line rule must say out loud that it does not repeal the subtotal rule'
+  );
+  assert.match(
+    SYSTEM_PROMPT,
+    /paid to the SUBSCRIBER is not a payment to the provider/i,
+    'the other paid column must be refused by name'
+  );
+  assert.match(SYSTEM_PROMPT, /NEVER adjust a figure to force agreement/i);
+});
+
+// ─── (B) the two-row line: one line, its own allowance ───────────────────────
+
+test('a correctly paired two-row claim reconciles against its printed Claim Totals', () => {
+  const extracted = normalizeExtraction(draftFamilyDoc());
+  const claim = extracted.claims[0];
+
+  assert.equal(claim.procedures.length, 2, 'two LINES, not four rows');
+  assert.deepEqual(allowancesOf(claim), [10180, 7400], 'each allowance under its own charge');
+  assert.deepEqual(
+    deriveClaimReviewReasons(claim, extracted.confidence, extracted.payment, { today: TODAY }),
+    ['low_confidence'],
+    'a scan is low-confidence and nothing else about it is wrong'
+  );
+  assert.deepEqual(deriveBatchReviewReasons(extracted), [], 'and it balances to the draft');
+});
+
+test('a MISPAIRED allowance is caught by the claim total the document itself prints', () => {
+  /*
+   * The classic misread of this layout: walking the two-row pairs, the model
+   * loses its place and files line 2's allowance under line 1 as well — so
+   * 101.80 is lost and 74.00 is used twice. The charges are untouched, so the
+   * billed sum still agrees; the ALLOWANCE sum does not, and the Claim Totals
+   * row is the answer key that says so.
+   */
+  const doc = draftFamilyDoc();
+  doc.claims[0].procedures[0].allowedCents = 7400; // was 10180
+  const extracted = normalizeExtraction(doc);
+  const claim = extracted.claims[0];
+  const reasons = deriveClaimReviewReasons(claim, extracted.confidence, extracted.payment, {
+    today: TODAY,
+  });
+
+  assert.ok(
+    reasons.includes('claim_line_allowed_mismatch'),
+    'the mispairing must raise the allowed-total reason'
+  );
+  // NOTHING WAS REPAIRED. The honest (wrong) read is what is stored.
+  assert.deepEqual(allowancesOf(claim), [7400, 7400]);
+  assert.equal(claim.totalAllowedCents, 17580, 'the printed total is stored as printed');
+});
+
+test('a claim printing no allowed total is not flagged for an allowance it never stated', () => {
+  const doc = draftFamilyDoc();
+  doc.claims[0].totalAllowedCents = 0;
+  const extracted = normalizeExtraction(doc);
+  const reasons = deriveClaimReviewReasons(
+    extracted.claims[0],
+    extracted.confidence,
+    extracted.payment,
+    { today: TODAY }
+  );
+  assert.ok(!reasons.includes('claim_line_allowed_mismatch'));
+});
+
+// ─── (C) the shared amount/code cell decides whose money it is ───────────────
+
+test('a shared amount/code cell lands the money where its code says, never elsewhere', () => {
+  /*
+   * "24.20 /N01" is a MAC differential: a CONTRACTUAL write-off, never the
+   * patient's. "12.80 / C1" is coinsurance: the patient's. "74.00 / H1" is
+   * rejected-but-billable: also the patient's, and the plan pays nothing.
+   *
+   * The derivation is what gives those meanings teeth — write-off is
+   * billed − allowed and patient responsibility is deductible + copay — so a
+   * code mapped into the wrong field moves money between the practice and the
+   * patient, and these are the figures that would show it.
+   */
+  const extracted = normalizeExtraction(draftFamilyDoc());
+  const [mac, nonCovered] = extracted.claims[0].procedures;
+
+  // N01 — the whole non-chargeable amount is the practice's write-off.
+  assert.equal(mac.writeOffCents, 2420);
+  assert.equal(mac.adjustmentCents, 2420);
+  // C1 — and only the coinsurance is the patient's.
+  assert.equal(mac.patientRespCents, 1280);
+  assert.equal(mac.paidCents, 8900, 'paid comes from AMOUNT PAID TO PROVIDER');
+
+  // H1 — rejected but billable: the patient owes the charge, the plan paid 0,
+  // and a STATED zero is a payment of zero, not an unstated figure (#212).
+  assert.equal(nonCovered.writeOffCents, 0, 'a billable rejection is not a write-off');
+  assert.equal(nonCovered.patientRespCents, 7400);
+  assert.equal(nonCovered.paidCents, 0);
+  assert.notEqual(nonCovered.paidCents, null);
+});
+
+test('the patient of a claim is the Patient field, never the shared subscriber', () => {
+  // Two siblings on one subscriber: a claim that took the subscriber's name
+  // would file one child's treatment under the other's chart.
+  const doc = draftFamilyDoc();
+  const sibling = JSON.parse(JSON.stringify(doc.claims[0]));
+  sibling.claimNumber = 'DCLM-5500872';
+  sibling.patientName = 'Quillfeather, Tobias';
+  doc.claims.push(sibling);
+  doc.payment.totalPaidCents = 17800;
+
+  const extracted = normalizeExtraction(doc);
+  assert.deepEqual(
+    extracted.claims.map((c) => c.patientName),
+    ['Quillfeather, Marisol', 'Quillfeather, Tobias'],
+    'different patients, one subscriber — two claims, two names'
+  );
+  assert.equal(
+    new Set(extracted.claims.map((c) => c.subscriberId)).size,
+    1,
+    'and they do share the subscriber id'
+  );
+  assert.match(
+    SYSTEM_PROMPT,
+    /never put the subscriber's name in patientName/i,
+    'the prompt must say it too — derivation cannot tell the two names apart'
+  );
+});
+
+// ─── (D) a claim that continues on the next page is ONE claim ────────────────
+
+test('a claim continued on the next page merges into ONE claim, lines in printed order', () => {
+  /*
+   * The continuation block repeats the header with the SAME claim number and
+   * carries no Claim Totals row of its own (its required integers arrive as
+   * zeros). Left split, the first claim's lines come up short, the second's
+   * totals are zeros, and the batch arithmetic counts the claim twice.
+   */
+  const doc = draftFamilyDoc();
+  const continuation = JSON.parse(JSON.stringify(doc.claims[0]));
+  for (const f of [
+    'totalBilledCents',
+    'totalAllowedCents',
+    'totalDeductibleCents',
+    'totalCopayCents',
+    'totalPaidCents',
+  ]) {
+    continuation[f] = 0;
+  }
+  continuation.procedures = [
+    {
+      code: 'D0220',
+      description: 'Intraoral periapical first radiographic image',
+      billedCents: 3000,
+      allowedCents: 2400,
+      deductibleCents: 0,
+      copayCents: 0,
+      paidCents: 2400,
+      excludedFromTotals: false,
+      confidence: 81,
+      flags: [],
+      adjustments: [],
+    },
+  ];
+  doc.claims.push(continuation);
+  // The Claim Totals row attaches wherever it appears — here, to the first block.
+  doc.claims[0].totalBilledCents = 23000;
+  doc.claims[0].totalAllowedCents = 19980;
+  doc.claims[0].totalPaidCents = 11300;
+  doc.payment.totalPaidCents = 11300;
+
+  const extracted = normalizeExtraction(doc);
+  assert.equal(extracted.claims.length, 1, 'ONE claim number, ONE claim');
+  const claim = extracted.claims[0];
+  assert.deepEqual(
+    claim.procedures.map((p) => p.code),
+    ['D2392', 'D9110', 'D0220'],
+    'all three lines, in printed order'
+  );
+  assert.deepEqual(
+    claim.procedures.map((p) => p.position),
+    [0, 1, 2],
+    're-positioned, so uncertain_line:N still points at a countable row'
+  );
+  assert.equal(claim.totalPaidCents, 11300, 'the printed totals, from the block that carries them');
+  assert.deepEqual(
+    deriveClaimReviewReasons(claim, extracted.confidence, extracted.payment, { today: TODAY }),
+    ['low_confidence'],
+    'merged, the claim reconciles'
+  );
+  assert.deepEqual(deriveBatchReviewReasons(extracted), [], 'and the check is not double-counted');
+});
+
+test('a split claim left unmerged would have been flagged — the merge is what fixes it', () => {
+  // The counterfactual, so the merge is shown to be load-bearing rather than
+  // merely tidy: the same two blocks, summed as two claims, disagree with the
+  // draft and with their own totals.
+  const doc = draftFamilyDoc();
+  const continuation = JSON.parse(JSON.stringify(doc.claims[0]));
+  continuation.claimNumber = 'DCLM-5500871-PAGE2';
+  for (const f of [
+    'totalBilledCents',
+    'totalAllowedCents',
+    'totalDeductibleCents',
+    'totalCopayCents',
+    'totalPaidCents',
+  ]) {
+    continuation[f] = 0;
+  }
+  continuation.procedures = [
+    {
+      code: 'D0220',
+      description: 'Intraoral periapical first radiographic image',
+      billedCents: 3000,
+      allowedCents: 2400,
+      deductibleCents: 0,
+      copayCents: 0,
+      paidCents: 2400,
+      excludedFromTotals: false,
+      confidence: 81,
+      flags: [],
+      adjustments: [],
+    },
+  ];
+  doc.claims.push(continuation);
+  doc.claims[0].totalBilledCents = 23000;
+  doc.claims[0].totalAllowedCents = 19980;
+  doc.claims[0].totalPaidCents = 11300;
+  doc.payment.totalPaidCents = 11300;
+
+  const extracted = normalizeExtraction(doc);
+  assert.equal(extracted.claims.length, 2, 'a different number is a different claim');
+  const first = deriveClaimReviewReasons(
+    extracted.claims[0],
+    extracted.confidence,
+    extracted.payment,
+    { today: TODAY }
+  );
+  assert.ok(first.includes('paid_total_mismatch'), 'the first block is short of its own total');
+  assert.ok(first.includes('billed_total_mismatch'), 'and short of its charges too');
+
+  /*
+   * And the second block is a PHANTOM CLAIM: real lines, and a Claim Totals row
+   * of zeros because the continuation never printed one. It is flagged as well —
+   * which is the point. Note what the BATCH check cannot see: 11300 + 0 still
+   * equals the draft, so the outer answer key balances while two claims are
+   * wrong. Nothing but the merge puts this document right.
+   */
+  const second = deriveClaimReviewReasons(
+    extracted.claims[1],
+    extracted.confidence,
+    extracted.payment,
+    { today: TODAY }
+  );
+  assert.ok(second.includes('paid_total_mismatch'), 'the phantom claim pays against a zero total');
+  assert.equal(extracted.claims[1].totalPaidCents, 0);
+  assert.deepEqual(
+    deriveBatchReviewReasons(extracted),
+    [],
+    'the batch key is blind to a split, because the zeros still add to the draft'
+  );
+});
+
+test('the Claim Totals row attaches wherever it appears — including on the continuation', () => {
+  /*
+   * The other way round, and the common one: the first page's block runs out of
+   * room, so it prints LINES AND NO TOTALS, and the Claim Totals row prints on
+   * the next page under the repeated header. The merged claim must take the
+   * printed totals from whichever block carries them — a merge that only ever
+   * kept the first block's zeros would report a claim that was paid nothing and
+   * flag every sum against it.
+   */
+  const doc = draftFamilyDoc();
+  const continuation = JSON.parse(JSON.stringify(doc.claims[0]));
+
+  // Page 1: two lines, no Claim Totals row yet.
+  for (const f of [
+    'totalBilledCents',
+    'totalAllowedCents',
+    'totalDeductibleCents',
+    'totalCopayCents',
+    'totalPaidCents',
+  ]) {
+    doc.claims[0][f] = 0;
+  }
+  // Page 2: the third line AND the claim's printed totals.
+  continuation.procedures = [
+    {
+      code: 'D0220',
+      description: 'Intraoral periapical first radiographic image',
+      billedCents: 3000,
+      allowedCents: 2400,
+      deductibleCents: 0,
+      copayCents: 0,
+      paidCents: 2400,
+      excludedFromTotals: false,
+      confidence: 81,
+      flags: [],
+      adjustments: [],
+    },
+  ];
+  continuation.totalBilledCents = 23000;
+  continuation.totalAllowedCents = 19980;
+  continuation.totalDeductibleCents = 0;
+  continuation.totalCopayCents = 8680;
+  continuation.totalPaidCents = 11300;
+  doc.claims.push(continuation);
+  doc.payment.totalPaidCents = 11300;
+
+  const extracted = normalizeExtraction(doc);
+  assert.equal(extracted.claims.length, 1);
+  const claim = extracted.claims[0];
+  assert.equal(claim.totalPaidCents, 11300, 'the totals came from the block that printed them');
+  assert.equal(claim.totalBilledCents, 23000);
+  assert.equal(claim.totalAllowedCents, 19980);
+  assert.deepEqual(
+    claim.procedures.map((p) => p.code),
+    ['D2392', 'D9110', 'D0220'],
+    'and the lines are still in printed order'
+  );
+  assert.deepEqual(
+    deriveClaimReviewReasons(claim, extracted.confidence, extracted.payment, { today: TODAY }),
+    ['low_confidence'],
+    'so the merged claim reconciles against its own printed answer key'
+  );
+  assert.deepEqual(deriveBatchReviewReasons(extracted), []);
+});
+
+test('a claim whose BOTH blocks print totals keeps the first stated set, never a sum', () => {
+  // A repeated totals row is the same row printed twice, not two rows to add.
+  // Summing them would double the claim against the draft.
+  const doc = draftFamilyDoc();
+  const continuation = JSON.parse(JSON.stringify(doc.claims[0]));
+  continuation.procedures = [];
+  doc.claims.push(continuation);
+
+  const [claim] = normalizeExtraction(doc).claims;
+  assert.equal(claim.totalPaidCents, 8900, 'kept verbatim');
+  assert.equal(claim.totalBilledCents, 20000);
+});
+
+test('a continuation block supplies identity the first block could not read', () => {
+  const doc = draftFamilyDoc();
+  doc.claims[0].providerNPI = PLACEHOLDER_NPI;
+  doc.claims[0].patientDOB = null;
+  const continuation = JSON.parse(JSON.stringify(doc.claims[0]));
+  continuation.providerNPI = '1902833271';
+  continuation.patientDOB = '2011-06-02';
+  continuation.procedures = [];
+  for (const f of [
+    'totalBilledCents',
+    'totalAllowedCents',
+    'totalDeductibleCents',
+    'totalCopayCents',
+    'totalPaidCents',
+  ]) {
+    continuation[f] = 0;
+  }
+  doc.claims.push(continuation);
+
+  const [claim] = normalizeExtraction(doc).claims;
+  assert.equal(claim.providerNPI, '1902833271', 'a real NPI beats a placeholder');
+  assert.equal(claim.patientDOB, '2011-06-02');
+});
+
+test('claims with NO claim number never merge — absence is not a shared key', () => {
+  const doc = draftFamilyDoc();
+  const other = JSON.parse(JSON.stringify(doc.claims[0]));
+  doc.claims[0].claimNumber = '';
+  other.claimNumber = '';
+  other.patientName = 'Ashgrove, Petra';
+  doc.claims.push(other);
+
+  const extracted = normalizeExtraction(doc);
+  assert.equal(extracted.claims.length, 2, 'two unnumbered claims stay two claims');
+});
+
+// ─── (E) a line the document excludes from its own totals ────────────────────
+
+test('a line the document excludes from TOTALS is extracted in full but left out of the sums', () => {
+  /*
+   * A claim-specific message says this line's amounts are not included in the
+   * TOTALS line. Counting it would "discover" a mismatch the document itself
+   * disclaims — three of them, in fact: billed, allowed and paid.
+   */
+  const doc = draftFamilyDoc();
+  doc.claims[0].procedures.push({
+    code: 'D4346',
+    description: 'Scaling in presence of moderate inflammation',
+    billedCents: 5000,
+    allowedCents: 5000,
+    deductibleCents: 0,
+    copayCents: 0,
+    paidCents: 5000,
+    excludedFromTotals: true,
+    confidence: 84,
+    flags: [],
+    adjustments: [],
+  });
+
+  const extracted = normalizeExtraction(doc);
+  const claim = extracted.claims[0];
+  assert.equal(claim.procedures.length, 3, 'the line is still extracted, in full');
+  assert.equal(claim.procedures[2].excludedFromTotals, true);
+  assert.equal(claim.procedures[2].paidCents, 5000, 'and its figures are untouched');
+
+  assert.deepEqual(
+    deriveClaimReviewReasons(claim, extracted.confidence, extracted.payment, { today: TODAY }),
+    ['low_confidence'],
+    'the printed totals still reconcile over the lines the document counts'
+  );
+});
+
+test('an excluded line still has every other rule applied to it', () => {
+  // Out of the SUMS is not out of REVIEW: a negative amount or a low-confidence
+  // row is still a reason to look, wherever the document files it.
+  const doc = draftFamilyDoc();
+  doc.claims[0].procedures.push({
+    code: 'D4346',
+    description: 'Scaling in presence of moderate inflammation',
+    billedCents: -5000,
+    allowedCents: 0,
+    deductibleCents: 0,
+    copayCents: 0,
+    paidCents: 0,
+    excludedFromTotals: true,
+    confidence: 40,
+    flags: [],
+    adjustments: [],
+  });
+  const extracted = normalizeExtraction(doc);
+  const reasons = deriveClaimReviewReasons(
+    extracted.claims[0],
+    extracted.confidence,
+    extracted.payment,
+    { today: TODAY }
+  );
+  assert.ok(reasons.includes('negative_amount'), 'an excluded line is still read for sanity');
+  assert.ok(reasons.includes('uncertain_line:3'), 'and still flagged as uncertain');
+});
+
+test('excludedFromTotals is strictly the literal true — a truthy slip reads as ordinary', () => {
+  /*
+   * Coercing a truthy would let a model slip SHRINK the very reconciliation
+   * that catches misreads. Every non-true value, including the string "true",
+   * leaves the line inside the sums.
+   */
+  for (const slip of ['true', 1, 'yes', {}, [], 'false', null, undefined]) {
+    const doc = draftFamilyDoc();
+    doc.claims[0].procedures[0].excludedFromTotals = slip;
+    const claim = normalizeExtraction(doc).claims[0];
+    assert.equal(
+      claim.procedures[0].excludedFromTotals,
+      false,
+      `${JSON.stringify(slip)} must not exclude a line from the document's own arithmetic`
+    );
+  }
+});
+
+test('a claim whose every line is excluded is not flagged against an empty sum', () => {
+  // A comparison against an empty sum would read "the lines total 0" and flag a
+  // claim whose printed totals are fine.
+  const doc = draftFamilyDoc();
+  for (const p of doc.claims[0].procedures) p.excludedFromTotals = true;
+  const extracted = normalizeExtraction(doc);
+  const reasons = deriveClaimReviewReasons(
+    extracted.claims[0],
+    extracted.confidence,
+    extracted.payment,
+    { today: TODAY }
+  );
+  assert.ok(!reasons.includes('paid_total_mismatch'));
+  assert.ok(!reasons.includes('billed_total_mismatch'));
+  assert.ok(!reasons.includes('claim_line_allowed_mismatch'));
+  assert.ok(!reasons.includes('line_paid_not_stated'));
+});
+
+// ─── (F) the document's own answer key, at the check level ───────────────────
+
+test('perturbing one line is caught against the printed totals, and changes no figure', () => {
+  /*
+   * Two claims on one draft. Misread a single line's payment and the claim's own
+   * Claim Totals row catches it; the sum of claim payments against the printed
+   * EOB total / draft amount is the second, independent check — the one that
+   * still fires when a whole claim total is misread.
+   */
+  const doc = draftFamilyDoc();
+  const second = JSON.parse(JSON.stringify(doc.claims[0]));
+  second.claimNumber = 'DCLM-5500873';
+  second.patientName = 'Ashgrove, Petra';
+  doc.claims.push(second);
+  doc.payment.totalPaidCents = 17800; // 89.00 + 89.00, as printed on the draft
+
+  const clean = normalizeExtraction(doc);
+  assert.deepEqual(deriveBatchReviewReasons(clean), []);
+  assert.equal(claimsPaidSum(clean), 17800);
+
+  // Now misread line 1 of the second claim: 89.00 read as 80.90.
+  doc.claims[1].procedures[0].paidCents = 8090;
+  const perturbed = normalizeExtraction(doc);
+  const claimReasons = deriveClaimReviewReasons(
+    perturbed.claims[1],
+    perturbed.confidence,
+    perturbed.payment,
+    { today: TODAY }
+  );
+  assert.ok(claimReasons.includes('paid_total_mismatch'), 'the claim answer key fires');
+  // THE FLAG IS THE WHOLE RESPONSE. No figure moved toward agreement.
+  assert.equal(perturbed.claims[1].procedures[0].paidCents, 8090, 'the honest read is stored');
+  assert.equal(perturbed.claims[1].totalPaidCents, 8900, 'and so is the printed total');
+});
+
+test('a misread CLAIM total is caught by the draft amount, which the line sums cannot see', () => {
+  const doc = draftFamilyDoc();
+  const second = JSON.parse(JSON.stringify(doc.claims[0]));
+  second.claimNumber = 'DCLM-5500874';
+  second.patientName = 'Ashgrove, Petra';
+  doc.claims.push(second);
+  doc.payment.totalPaidCents = 17800;
+  // Internally consistent — line and claim agree — and wrong against the draft.
+  doc.claims[1].procedures[0].paidCents = 8000;
+  doc.claims[1].totalPaidCents = 8000;
+
+  const batch = normalizeExtraction(doc);
+  assert.deepEqual(
+    deriveClaimReviewReasons(batch.claims[1], batch.confidence, batch.payment, { today: TODAY }),
+    ['low_confidence'],
+    'the claim agrees with itself, so only the outer key can object'
+  );
+  assert.deepEqual(
+    deriveBatchReviewReasons(batch),
+    ['batch_paid_total_mismatch'],
+    'the draft amount is the outer answer key'
+  );
+  assert.equal(batch.payment.totalPaidCents, 17800, 'and nothing was reconciled by force');
+});
+
+test('the family carries the draft number through as the check number', () => {
+  // One number repeats in every page header and on the draft itself; it is what
+  // a biller matches the paper against, so a missing one must still flag.
+  const extracted = normalizeExtraction(draftFamilyDoc());
+  assert.equal(extracted.payment.checkNumber, 'DRAFT-7781234');
+
+  const doc = draftFamilyDoc();
+  doc.payment.checkNumber = PLACEHOLDER_CHECK;
+  const missing = normalizeExtraction(doc);
+  const reasons = deriveClaimReviewReasons(missing.claims[0], missing.confidence, missing.payment, {
+    today: TODAY,
+  });
+  assert.ok(reasons.includes('missing_check_number'));
+});
+
+test('the draft family stays a PROPOSAL — derivation widens review and resolves nothing', () => {
+  // Nothing in this slice can mark a claim anything but reviewable: the only
+  // outputs are review reasons and the figures exactly as read.
+  const doc = draftFamilyDoc();
+  doc.confidence = 55;
+  const extracted = normalizeExtraction(doc);
+  const reasons = deriveClaimReviewReasons(
+    extracted.claims[0],
+    extracted.confidence,
+    extracted.payment,
+    { today: TODAY }
+  );
+  assert.ok(reasons.includes('low_confidence'));
+  assert.deepEqual(allowancesOf(extracted.claims[0]), [10180, 7400], 'figures as read, always');
+});
