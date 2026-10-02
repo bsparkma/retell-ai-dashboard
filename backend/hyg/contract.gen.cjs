@@ -14875,6 +14875,7 @@ __export(contract_entry_exports, {
   PERIO_FULL_MOUTH_SITES: () => PERIO_FULL_MOUTH_SITES,
   PERIO_LOWER_TEETH: () => PERIO_LOWER_TEETH,
   PERIO_MAX_DEPTH: () => PERIO_MAX_DEPTH,
+  PERIO_NO_READING_REFUSAL: () => PERIO_NO_READING_REFUSAL,
   PERIO_SEGMENTS: () => PERIO_SEGMENTS,
   PERIO_SEND_BATCH: () => PERIO_SEND_BATCH,
   PERIO_SEND_STATES: () => PERIO_SEND_STATES,
@@ -14969,6 +14970,7 @@ __export(contract_entry_exports, {
   perioChangeLine: () => perioChangeLine,
   perioChangeSiteRef: () => perioChangeSiteRef,
   perioChartChanges: () => perioChartChanges,
+  perioHasReading: () => perioHasReading,
   perioJawOfField: () => perioJawOfField,
   perioJawOfTooth: () => perioJawOfTooth,
   perioMismatchLine: () => perioMismatchLine,
@@ -16325,6 +16327,10 @@ function countPerioChart(chart) {
   counts.empty = counts.sitesCharted === 0 && counts.teethSkipped.length === 0 && PERIO_FLAGS.every((flag) => counts[flag] === 0);
   return counts;
 }
+function perioHasReading(counts) {
+  return counts.sitesCharted > 0 || PERIO_FLAGS.some((flag) => counts[flag] > 0);
+}
+var PERIO_NO_READING_REFUSAL = "There are no perio readings on this visit yet, so there is nothing to stage. Skipped teeth do not count \u2014 a skip says a tooth was not charted, not what was measured. Open the perio chart and enter a reading first.";
 function perioProgressLabel(counts) {
   const skipped = counts.teethSkipped.length;
   const tail = skipped === 0 ? "" : ` (${skipped} ${skipped === 1 ? "tooth" : "teeth"} skipped)`;
@@ -17103,6 +17109,7 @@ var import_zod5 = __toESM(require_zod());
   PERIO_FULL_MOUTH_SITES,
   PERIO_LOWER_TEETH,
   PERIO_MAX_DEPTH,
+  PERIO_NO_READING_REFUSAL,
   PERIO_SEGMENTS,
   PERIO_SEND_BATCH,
   PERIO_SEND_STATES,
@@ -17197,6 +17204,7 @@ var import_zod5 = __toESM(require_zod());
   perioChangeLine,
   perioChangeSiteRef,
   perioChartChanges,
+  perioHasReading,
   perioJawOfField,
   perioJawOfTooth,
   perioMismatchLine,

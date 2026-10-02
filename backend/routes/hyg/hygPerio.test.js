@@ -189,6 +189,154 @@ test('staging a visit with no readings refuses rather than staging an empty char
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ITEM 28: A SKIP IS NOT A READING
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The refusal above already existed, but its predicate (`counts.empty`) counted
+// a skipped tooth as content. So a chart of nothing but skips staged, and sent a
+// dated perio exam with NO READINGS into a patient's permanent record. Hand
+// skipping made that reachable; item 27's pre-skip made it reachable with the
+// hygienist having entered nothing at all.
+//
+// THE SERVER IS THE RAIL. A greyed button is a courtesy; these tests go straight
+// at the endpoint.
+
+/** A chart with `teeth` skipped and not one reading on it. */
+function chartOfOnlySkips(teeth) {
+  let chart = contract.emptyPerioChart();
+  for (const tooth of teeth) chart = contract.withPerioSkipped(chart, tooth, true);
+  return contract.normalizePerioChart(chart);
+}
+
+async function storeAndStage(app, chart) {
+  await api(app.baseUrl, 'POST', BASE + '/open' + Q);
+  const put = await api(app.baseUrl, 'PUT', BASE + '/perio' + Q, { body: { chart } });
+  assert.equal(put.status, 200, JSON.stringify(put.body));
+  return api(app.baseUrl, 'POST', BASE + '/staged-writes' + Q, { body: { kind: 'perio' } });
+}
+
+test('ACCEPTANCE 1: a chart of ONLY SKIPS is refused by the server, and says why', async () => {
+  const app = await bootHygApp({ od: od() });
+  try {
+    // The shape item 27's pre-skip produces: Open Dental's missing teeth, and
+    // nothing she measured.
+    const chart = chartOfOnlySkips([1, 16, 17, 32]);
+    const counts = contract.countPerioChart(chart);
+    assert.equal(counts.empty, false, 'this chart is NOT empty — that was the bug');
+    assert.equal(counts.sitesCharted, 0);
+
+    const res = await storeAndStage(app, chart);
+    assert.equal(res.status, 422, JSON.stringify(res.body));
+    assert.equal(res.body.code, 'NOTHING_TO_STAGE');
+    // The message names the rule rather than just refusing.
+    assert.match(res.body.error, /no perio readings/);
+    assert.match(res.body.error, /Skipped teeth do not count/);
+    assert.equal(perioRow(app).state, 'Draft', 'the readings row stays a Draft');
+    assert.equal(perioRow(app).staged_at ?? null, null);
+    assert.deepEqual(app.od.writes, [], 'and nothing went near Open Dental');
+  } finally {
+    await app.close();
+  }
+});
+
+test('ACCEPTANCE 1: one skipped tooth is as refused as four', async () => {
+  const app = await bootHygApp({ od: od() });
+  try {
+    const res = await storeAndStage(app, chartOfOnlySkips([19]));
+    assert.equal(res.status, 422);
+    assert.equal(res.body.code, 'NOTHING_TO_STAGE');
+  } finally {
+    await app.close();
+  }
+});
+
+test('ACCEPTANCE 2: ONE reading plus any number of skips stages exactly as today', async () => {
+  const app = await bootHygApp({ od: od() });
+  try {
+    let chart = chartOfOnlySkips([1, 16, 17, 32]);
+    chart = contract.normalizePerioChart(
+      contract.withPerioSite(chart, 3, 'DB', { depth: 4 })
+    );
+
+    const res = await storeAndStage(app, chart);
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    const row = perioRow(app);
+    assert.equal(row.state, 'Staged');
+    // The skips are still in the payload — they are charting information, they
+    // are just not what makes a chart stageable.
+    assert.deepEqual(
+      contract.countPerioChart(row.payload.chart).teethSkipped,
+      [1, 16, 17, 32]
+    );
+    assert.equal(contract.countPerioChart(row.payload.chart).sitesCharted, 1);
+  } finally {
+    await app.close();
+  }
+});
+
+test('ACCEPTANCE 2: a FLAG with no depth is a reading too — she measured something', async () => {
+  const app = await bootHygApp({ od: od() });
+  try {
+    let chart = chartOfOnlySkips([30]);
+    chart = contract.normalizePerioChart(
+      contract.withPerioSite(chart, 3, 'DB', { bleeding: true })
+    );
+    const counts = contract.countPerioChart(chart);
+    assert.equal(counts.sitesCharted, 0, 'no depth anywhere');
+    assert.equal(counts.bleeding, 1);
+
+    const res = await storeAndStage(app, chart);
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+  } finally {
+    await app.close();
+  }
+});
+
+test('ACCEPTANCE 3: a chart she STAGED keeps working — unstaging and restaging a real chart', async () => {
+  // The narrowed guard must not have moved anything else on the stage path.
+  const app = await bootHygApp({ od: od() });
+  try {
+    const staged = await storeAndStage(app, contract.normalizePerioChart(chartWith(12)));
+    assert.equal(staged.status, 201, JSON.stringify(staged.body));
+    assert.equal(perioRow(app).state, 'Staged');
+
+    // Adding a reading un-stages it, as before.
+    let next = contract.withPerioSite(contract.normalizePerioChart(chartWith(12)), 30, 'MB', {
+      depth: 6,
+    });
+    next = contract.normalizePerioChart(next);
+    const saved = await api(app.baseUrl, 'PUT', BASE + '/perio' + Q, { body: { chart: next } });
+    assert.equal(saved.status, 200);
+    assert.equal(perioRow(app).state, 'Draft');
+
+    const again = await api(app.baseUrl, 'POST', BASE + '/staged-writes' + Q, {
+      body: { kind: 'perio' },
+    });
+    assert.equal(again.status, 201);
+    assert.equal(perioRow(app).state, 'Staged');
+  } finally {
+    await app.close();
+  }
+});
+
+test('ACCEPTANCE 3: a tooth skipped on an ALREADY-STAGED real chart does not refuse it', async () => {
+  const app = await bootHygApp({ od: od() });
+  try {
+    await storeAndStage(app, contract.normalizePerioChart(chartWith(12)));
+    let next = contract.withPerioSkipped(contract.normalizePerioChart(chartWith(12)), 31, true);
+    next = contract.normalizePerioChart(next);
+    await api(app.baseUrl, 'PUT', BASE + '/perio' + Q, { body: { chart: next } });
+
+    const res = await api(app.baseUrl, 'POST', BASE + '/staged-writes' + Q, {
+      body: { kind: 'perio' },
+    });
+    assert.equal(res.status, 201, 'skips alongside readings were never the problem');
+  } finally {
+    await app.close();
+  }
+});
+
 test('a save that changes no reading keeps a chart staged; a changed reading un-stages it', async () => {
   const app = await bootHygApp({ od: od() });
   try {

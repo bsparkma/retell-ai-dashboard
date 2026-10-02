@@ -26,6 +26,8 @@ import {
   firstOpenPerioCursor,
   flagsFromBits,
   normalizePerioChart,
+  PERIO_NO_READING_REFUSAL,
+  perioHasReading,
   perioPreviewLines,
   perioProgressLabel,
   perioSite,
@@ -298,5 +300,69 @@ describe("keyboard entry", () => {
 
     expect(keyToPerioAction(key("KeyC", { ctrlKey: true }))).toBeNull();
     expect(keyToPerioAction(key("Tab"))).toBeNull();
+  });
+});
+
+describe("item 28: staging needs a reading, and a skip is not one", () => {
+  /*
+   * `empty` answers "has anybody touched this chart", which counts a skip.
+   * `perioHasReading` answers "did she measure something", which does not.
+   * Both questions are live in the app, and this suite is the line between them.
+   */
+  const has = (chart: PerioChart) => perioHasReading(countPerioChart(chart));
+
+  it("an untouched chart has no reading", () => {
+    expect(has(emptyPerioChart())).toBe(false);
+  });
+
+  it("a chart of ONLY SKIPS is not empty, and still has no reading", () => {
+    let chart = emptyPerioChart();
+    for (const tooth of [1, 16, 17, 32]) chart = withPerioSkipped(chart, tooth, true);
+    chart = normalizePerioChart(chart);
+
+    // This pair is the whole slice: non-empty, and nothing measured.
+    expect(countPerioChart(chart).empty).toBe(false);
+    expect(has(chart)).toBe(false);
+  });
+
+  it("one depth is a reading, however many teeth are skipped", () => {
+    let chart = emptyPerioChart();
+    for (const tooth of [1, 16, 17, 32]) chart = withPerioSkipped(chart, tooth, true);
+    chart = normalizePerioChart(withPerioSite(chart, 3, "DB", { depth: 4 }));
+    expect(has(chart)).toBe(true);
+  });
+
+  it("a flag with no depth is a reading — bleeding on probing was measured", () => {
+    const chart = normalizePerioChart(
+      withPerioSite(emptyPerioChart(), 3, "DB", { bleeding: true }),
+    );
+    expect(countPerioChart(chart).sitesCharted).toBe(0);
+    expect(has(chart)).toBe(true);
+  });
+
+  it("every flag counts, not just bleeding", () => {
+    for (const flag of ["bleeding", "suppuration", "plaque", "calculus"] as const) {
+      const chart = normalizePerioChart(
+        withPerioSite(emptyPerioChart(), 8, "B", { [flag]: true }),
+      );
+      expect(has(chart)).toBe(true);
+    }
+  });
+
+  it("a reading on a tooth later SKIPPED stops counting, because it is not charted", () => {
+    // Skipping a tooth takes its sites out of the count, so the chart really
+    // does hold no readings any more. Refusing to stage it is correct.
+    let chart = withPerioSite(emptyPerioChart(), 19, "MB", { depth: 5 });
+    chart = normalizePerioChart(chart);
+    expect(has(chart)).toBe(true);
+
+    chart = normalizePerioChart(withPerioSkipped(chart, 19, true));
+    expect(has(chart)).toBe(false);
+    expect(countPerioChart(chart).empty).toBe(false);
+  });
+
+  it("the refusal names the rule, and keeps the words the older tests match on", () => {
+    expect(PERIO_NO_READING_REFUSAL).toMatch(/no perio readings/);
+    expect(PERIO_NO_READING_REFUSAL).toMatch(/Skipped teeth do not count/);
   });
 });

@@ -53,6 +53,7 @@ import {
   normalizePerioChart,
   perioProgressLabel,
   perioSideOf,
+  perioHasReading,
   perioSite,
   perioTooth,
   withPerioSkipped,
@@ -769,6 +770,16 @@ export default function HygPerio() {
   }
 
   const counts = countPerioChart(entry.chart);
+  /*
+   * ITEM 28: staging needs a MEASUREMENT, and the server is the rail. This is
+   * the same predicate `stagedWriteComposer` refuses on, out of the shared
+   * contract, so the button cannot promise something the server will decline.
+   *
+   * It is deliberately NOT `!counts.empty`: a skipped tooth makes a chart
+   * non-empty, and a chart of nothing but skips used to stage and send an exam
+   * with no readings into the chart of record.
+   */
+  const canStage = perioHasReading(counts);
   const { cursor } = entry;
   const target = flagTarget(entry);
   const targetSite = perioSite(entry.chart, target.tooth, target.surface);
@@ -854,8 +865,11 @@ export default function HygPerio() {
           : isStaged
             ? sendBlockedReason ??
               "Staged. It will go with the visit's Send, alongside the note, the slip and the handoff — or send it from here now. Either way every site is read back from Open Dental. Changing a reading takes it off the list until you stage it again."
-            : counts.empty
-              ? "Nothing to stage until there is a reading."
+            : !canStage
+              ? // This line always said this. Until item 28 the predicate behind
+                // it counted a skipped tooth as a reading, so it was a promise
+                // the button did not keep.
+                "Nothing to stage until there is a reading. Skipped teeth do not count."
               : "Staging spells out every reading. Nothing is written to Open Dental until you confirm a send.";
 
   return (
@@ -909,12 +923,12 @@ export default function HygPerio() {
             <button
               type="button"
               onClick={() => void onStage()}
-              disabled={staging || counts.empty || isStaged}
+              disabled={staging || !canStage || isStaged}
               data-testid="hyg-perio-stage"
               className={cn(
                 TAP,
                 "inline-flex items-center gap-1.5",
-                staging || counts.empty || isStaged
+                staging || !canStage || isStaged
                   ? "cursor-not-allowed border-border text-muted-foreground"
                   : "border-primary bg-primary text-primary-foreground",
               )}
