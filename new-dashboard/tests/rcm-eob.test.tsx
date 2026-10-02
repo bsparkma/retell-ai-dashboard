@@ -182,6 +182,28 @@ describe("EOB upload panel", () => {
     expect(screen.getByTestId("rcm-eob-status-d").textContent).toBe("Failed");
   });
 
+  it("renders an ARCHIVED upload without crashing — the chip says Archived", async () => {
+    /*
+     * The staging incident behind fix/rcm-archived-upload-crash. The server
+     * list now excludes archived uploads, but the wire can still ship one — a
+     * poll already in flight when somebody archives the check — and the panel
+     * used to do `STATUS_CHIP[u.status].className` with no entry for it:
+     * "TypeError: Cannot read properties of undefined (reading 'className')",
+     * taking down every page that renders the panel, Today first. The union
+     * stays closed and the Record exhaustive — this pins that 'archived' is IN
+     * them, not that a lookup miss is survivable.
+     */
+    eobState.uploads = [
+      upload({ uploadId: "a", status: "extracted", resultClaimId: "claim-1" }),
+      upload({ uploadId: "z", status: "archived", resultBatchId: "batch-1" }),
+    ];
+    render(<EobUploadPanel office="roland" />);
+    await waitFor(() => expect(screen.getByTestId("rcm-eob-status-a")).toBeTruthy());
+    expect(screen.getByTestId("rcm-eob-status-z").textContent).toBe("Archived");
+    // The neighbour row is untouched — the whole list used to die with it.
+    expect(screen.getByTestId("rcm-eob-status-a").textContent).toBe("Proposal ready");
+  });
+
   it("shows a failure's own reason, not a generic apology", async () => {
     eobState.uploads = [
       upload({

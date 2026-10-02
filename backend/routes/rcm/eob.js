@@ -536,13 +536,28 @@ router.get(
     const offset = parseBound(req.query.offset, 0, Number.MAX_SAFE_INTEGER);
 
     const { rows, total } = await tenantDb.withTenantDb(req, async (pool) => {
+      /*
+       * `status <> 'archived'` — ARCHIVED UPLOADS ARE OFF THE BOARD, the same
+       * partition the Checks list gives archived checks. The archive route
+       * (PR #213) flips a check's linked uploads to 'archived'; a list that
+       * kept showing them re-offered evidence of work that was deliberately
+       * put away. The COUNT carries the same predicate, or the panel would
+       * paginate toward rows it can never show. Unarchive flips the upload
+       * back to 'extracted', so the row reappears by changing state — no
+       * include-archived switch is needed here.
+       */
       const [page, count] = await Promise.all([
         pool.query(
-          `SELECT ${LIST_COLUMNS} FROM rcm_eob_uploads WHERE office_id = $1 ` +
+          `SELECT ${LIST_COLUMNS} FROM rcm_eob_uploads ` +
+            `WHERE office_id = $1 AND status <> 'archived' ` +
             `ORDER BY uploaded_at DESC LIMIT $2 OFFSET $3`,
           [office, limit, offset]
         ),
-        pool.query(`SELECT COUNT(*)::int AS n FROM rcm_eob_uploads WHERE office_id = $1`, [office]),
+        pool.query(
+          `SELECT COUNT(*)::int AS n FROM rcm_eob_uploads ` +
+            `WHERE office_id = $1 AND status <> 'archived'`,
+          [office]
+        ),
       ]);
       return { rows: page.rows, total: num(count.rows[0] && count.rows[0].n) };
     });

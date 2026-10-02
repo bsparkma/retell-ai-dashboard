@@ -668,3 +668,32 @@ test('with no document reader configured, a PDF that will not OPEN is not blamed
     await close();
   }
 });
+
+test('an ARCHIVED upload is off the board — excluded from the list AND the count', async () => {
+  /*
+   * PR #213's archive flips a check's linked uploads to 'archived'. The list is
+   * the "what came in" panel, and an archived check's evidence does not belong
+   * on it — the same partition the Checks list gives archived checks. The COUNT
+   * must move with the rows, or the panel paginates toward uploads it can never
+   * show. Unarchive flips the upload back to 'extracted', so nothing here needs
+   * an "include archived" switch — the row reappears by changing state.
+   */
+  const db = new FakeRcmDb().seed('rcm_eob_uploads', [
+    { upload_id: 'u-live', office_id: 'roland', filename: 'live.pdf', status: 'extracted', uploaded_at: new Date('2026-09-28') },
+    { upload_id: 'u-dead', office_id: 'roland', filename: 'gone.pdf', status: 'archived', uploaded_at: new Date('2026-09-29') },
+    { upload_id: 'u-bad', office_id: 'roland', filename: 'bad.pdf', status: 'failed', uploaded_at: new Date('2026-09-30') },
+  ]);
+  const { baseUrl, close } = await bootEob({ db });
+  try {
+    const res = await api(baseUrl, 'GET', '/api/rcm/eob?office=roland');
+    assert.equal(res.status, 200);
+    assert.deepEqual(
+      res.body.uploads.map((u) => u.uploadId),
+      ['u-bad', 'u-live'],
+      'extracted and failed still show, newest first; archived does not'
+    );
+    assert.equal(res.body.total, 2, 'the count moves with the rows it counts');
+  } finally {
+    await close();
+  }
+});

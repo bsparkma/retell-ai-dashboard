@@ -412,12 +412,27 @@ export function listRcmClaims(
 // ─── EOB ingestion (Slice 4) ─────────────────────────────────────────────────
 
 /**
- * The four states rcm_eob_uploads.status can hold, straight from the CHECK
+ * The five states rcm_eob_uploads.status can hold, straight from the CHECK
  * constraint. A closed union on purpose, the same way TranscribeStatus is on
- * the voice side: adding a fifth state server-side becomes a compile error
- * here, not a chip that silently renders as nothing.
+ * the voice side: adding a state server-side becomes a compile error here, not
+ * a chip that silently renders as nothing.
+ *
+ * THE FIFTH STATE EARNED THAT SENTENCE ITS SCAR. PR #213's archive flips a
+ * check's linked uploads to 'archived', this union never learned the word, and
+ * `STATUS_CHIP[u.status]` came back undefined — a TypeError that took down
+ * every page rendering the upload panel on staging, Today first. The server
+ * list excludes archived uploads now, but a poll already in flight when
+ * somebody archives can still deliver one, so the type tells the truth about
+ * the wire. The union stays CLOSED — no optional chaining, no index signature —
+ * because those would hide the sixth missing status instead of refusing it.
  */
-export const EOB_UPLOAD_STATUSES = ["uploaded", "processing", "extracted", "failed"] as const;
+export const EOB_UPLOAD_STATUSES = [
+  "uploaded",
+  "processing",
+  "extracted",
+  "failed",
+  "archived",
+] as const;
 export type EobUploadStatus = (typeof EOB_UPLOAD_STATUSES)[number];
 
 /**
