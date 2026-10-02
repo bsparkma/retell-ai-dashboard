@@ -184,7 +184,17 @@ No product code changed, so the gates say only that nothing was broken:
 
 ## 7. Push, PR, and the merge tree
 
-Filled in at push time.
+**PR #218**, `feature/hyg-perio-v2` -> `develop`, code commit `26ad69a`. Not
+merged. CI builds `refs/pull/N/merge`, not the branch tip, so the trees were
+compared rather than assumed:
+
+```
+git rev-parse HEAD^{tree}                         eb5d5290d19ca1137c703ec37caea85e627d8178
+git rev-parse refs/pull/218/merge^{tree}          eb5d5290d19ca1137c703ec37caea85e627d8178
+git rev-list --count HEAD..origin/develop         0
+```
+
+The §6 gates were re-run on the final tree after this section was added.
 
 ---
 
