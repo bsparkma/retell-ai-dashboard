@@ -322,18 +322,19 @@ export function reducePerioEntry(state: PerioEntryState, action: PerioEntryActio
       return {
         ...state,
         chart: withPerioSite(state.chart, target.tooth, target.surface, { [action.flag]: !current }),
+        refusal: null,
       };
     }
     case "move": {
       const next = stepPerioCursor(state.chart, state.cursor, action.step);
-      return { ...state, cursor: next ?? state.cursor, lastEntered: null };
+      return { ...state, cursor: next ?? state.cursor, lastEntered: null, refusal: null };
     }
     case "tooth": {
       const next = siteOfNeighbourTooth(state.chart, state.cursor, action.step);
-      return { ...state, cursor: next ?? state.cursor, lastEntered: null };
+      return { ...state, cursor: next ?? state.cursor, lastEntered: null, refusal: null };
     }
     case "select":
-      return { ...state, cursor: action.cursor, lastEntered: null };
+      return { ...state, cursor: action.cursor, lastEntered: null, refusal: null };
     case "erase": {
       // Take back the reading just typed, or the one before the cursor — in the
       // ACTIVE mode, so Backspace undoes what the last digit actually did.
@@ -373,6 +374,7 @@ export function reducePerioEntry(state: PerioEntryState, action: PerioEntryActio
       return {
         ...state,
         chart: { ...state.chart, sweep: { ...state.chart.sweep, [action.segment]: action.direction } },
+        refusal: null,
       };
     case "load":
       // A reload keeps the mode she is working in; it is a property of HER, not
