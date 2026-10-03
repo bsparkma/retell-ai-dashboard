@@ -811,6 +811,21 @@ export function perioPreviewLines(chart: PerioChart): string[] {
         `sites 5 mm or deeper: ${counts.sitesAtLeast5}`,
     );
   }
+  /*
+   * ITEM 26 — AND THE PREVIEW IS WHAT THE FINGERPRINT IS TAKEN OF.
+   *
+   * `visitStore.fingerprintPreview` hashes these lines, and the send refuses when
+   * the fingerprint no longer matches the one she confirmed. So a recession edited
+   * between the preview and the send has to CHANGE A LINE HERE, or the confirm
+   * gate would wave through a chart she never read. Every v2 value is printed per
+   * tooth below for exactly that reason, not only counted.
+   */
+  if (counts.gmSites > 0 || counts.furcationSites > 0 || counts.mobilityTeeth > 0) {
+    lines.push(
+      `Recession: ${counts.gmSites} sites; furcation: ${counts.furcationSites} sites; ` +
+        `mobility: ${counts.mobilityTeeth} teeth`,
+    );
+  }
   lines.push("Depths read DB B MB (facial) and DL L ML (lingual); - is not charted.");
 
   const notCharted: number[] = [];
@@ -831,6 +846,20 @@ export function perioPreviewLines(chart: PerioChart): string[] {
       const at = ALL_SITES.filter((s) => t.sites[s][flag]);
       if (at.length > 0) flagParts.push(`${flag} ${at.join(", ")}`);
     }
+    // ITEM 26: named per site, so an edited value moves the fingerprint.
+    const gmAt = ALL_SITES.filter((site) => t.sites[site].gm !== null);
+    if (gmAt.length > 0) {
+      flagParts.push(
+        "recession " + gmAt.map((site) => `${site} ${t.sites[site].gm} mm`).join(", "),
+      );
+    }
+    const furcationAt = ALL_SITES.filter((site) => t.sites[site].furcation !== null);
+    if (furcationAt.length > 0) {
+      flagParts.push(
+        "furcation " + furcationAt.map((site) => `${site} class ${t.sites[site].furcation}`).join(", "),
+      );
+    }
+    if (t.mobility !== null) flagParts.push(`mobility grade ${t.mobility}`);
     lines.push(
       `  #${tooth} facial ${depths(FACIAL_SITES)}, lingual ${depths(LINGUAL_SITES)}` +
         (flagParts.length > 0 ? "; " + flagParts.join("; ") : ""),

@@ -83,6 +83,11 @@ import {
 } from "@/features/hyg/api";
 import { todayIso } from "@/features/hyg/day";
 import {
+  PERIO_MODES,
+  PERIO_MODE_KEYS,
+  PERIO_MODE_LABELS,
+  PERIO_MODE_RANGES,
+  PERIO_MODE_SCOPE,
   flagTarget,
   initialPerioEntry,
   keyToPerioAction,
@@ -1084,6 +1089,74 @@ export default function HygPerio() {
           </span>{" "}
           because Open Dental records {preSkipStillSkipped.length === 1 ? "it" : "them"} as missing.
           Select a skipped tooth to un-skip it and chart it.
+        </p>
+      ) : null}
+
+      {/*
+        ═══════════════════════════════════════════════════════════════════════════
+        ITEM 26: THE MODE IS LOUD, BECAUSE A DIGIT MEANS WHATEVER IT SAYS
+        ═══════════════════════════════════════════════════════════════════════════
+        A hygienist mid-sweep must never wonder which row a number lands in. The
+        active mode is a filled chip with its range spelled out beside it, the
+        others are plain, and every one is clickable as well as keyable — one hand
+        is on a probe and the other may be on a screen rather than a pad.
+
+        Rendered from `PERIO_MODES` so this bar cannot offer a mode the reducer
+        does not have, or miss one it does.
+      */}
+      <div
+        className="mt-3 flex flex-wrap items-center gap-2"
+        role="group"
+        aria-label="What a number you type is recorded as"
+        data-testid="hyg-perio-modes"
+      >
+        {PERIO_MODES.map((mode) => {
+          const on = entry.mode === mode;
+          return (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => act({ type: "mode", mode })}
+              aria-pressed={on}
+              data-testid={`hyg-perio-mode-${mode}`}
+              data-active={on ? "true" : undefined}
+              className={cn(
+                TAP,
+                "inline-flex items-center gap-1.5 text-sm",
+                on
+                  ? "border-primary bg-primary font-semibold text-primary-foreground"
+                  : "border-border text-muted-foreground",
+              )}
+            >
+              <span className="rounded border border-current px-1 text-[10px] font-bold leading-4">
+                {PERIO_MODE_KEYS[mode]}
+              </span>
+              {PERIO_MODE_LABELS[mode]}
+            </button>
+          );
+        })}
+        <span className="text-xs text-muted-foreground" data-testid="hyg-perio-mode-range">
+          Numbers go in as{" "}
+          <span className="font-medium text-foreground">
+            {PERIO_MODE_LABELS[entry.mode]} {PERIO_MODE_RANGES[entry.mode]}
+          </span>
+          {PERIO_MODE_SCOPE[entry.mode] === "tooth" ? ", per tooth" : ""}
+        </span>
+      </div>
+
+      {/*
+        A digit the mode cannot take is refused in the reducer, and this is where it
+        says so. `role="alert"` because she has just pressed a key and nothing
+        happened, which is the one case worth interrupting her for.
+      */}
+      {entry.refusal !== null ? (
+        <p
+          role="alert"
+          className="mt-3 flex items-start gap-1.5 rounded-xl border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-900 dark:text-amber-300"
+          data-testid="hyg-perio-refusal"
+        >
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          {entry.refusal}
         </p>
       ) : null}
 

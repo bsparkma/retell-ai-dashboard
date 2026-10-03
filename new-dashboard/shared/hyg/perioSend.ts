@@ -68,6 +68,7 @@ import {
   type PerioSite,
   PerioSiteChangeSchema,
   emptyPerioSite,
+  perioGmIsRecession,
   type PerioSiteChange,
 } from "./perio";
 
@@ -600,7 +601,20 @@ export function estimatePerioSendRequests({
 // The read-back
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const PerioMismatchKindSchema = z.enum(["depth", "flags", "skipped", "duplicate"]);
+/**
+ * ITEM 26 adds `gm`, `furcation` and `mobility`: the send reads back EVERY row it
+ * wrote before it says `Written`, and a row it cannot verify is a row it must not
+ * claim.
+ */
+export const PerioMismatchKindSchema = z.enum([
+  "depth",
+  "flags",
+  "skipped",
+  "duplicate",
+  "gm",
+  "furcation",
+  "mobility",
+]);
 
 export const PerioMismatchSchema = z.object({
   tooth: z.number().int(),
@@ -632,6 +646,21 @@ function flagWords(site: PerioSite): string {
  * string finding 4 describes, and it is a mismatch, not noise. A skipped tooth
  * must come back skipped and carry no readings.
  */
+/** "2 mm recession", "102 (unrecognised margin)", "not charted". */
+function gmWords(value: number | null): string {
+  if (value === null) return "not charted";
+  if (!perioGmIsRecession(value)) return `${value} (unrecognised margin)`;
+  return `${value} mm recession`;
+}
+
+function furcationWords(value: number | null): string {
+  return value === null ? "not charted" : `class ${value}`;
+}
+
+function mobilityWords(value: number | null): string {
+  return value === null ? "not charted" : `grade ${value}`;
+}
+
 export function comparePerioReadback(expected: PerioChart, found: PerioChart): PerioMismatch[] {
   const want = normalizePerioChart(expected);
   const have = normalizePerioChart(found);
@@ -648,18 +677,23 @@ export function comparePerioReadback(expected: PerioChart, found: PerioChart): P
         found: f.skipped ? "skipped" : "not skipped",
       });
     }
+    // ITEM 26: mobility is per TOOTH, so it is compared here and carries no surface.
+    // A skipped tooth sends nothing, so nothing must read back on one.
+    const wantMobility = e.skipped ? null : e.mobility;
+    if (wantMobility !== f.mobility) {
+      out.push({
+        tooth,
+        surface: null,
+        kind: "mobility",
+        expected: mobilityWords(wantMobility),
+        found: mobilityWords(f.mobility),
+      });
+    }
     for (const surface of ALL_SURFACES) {
       // A skipped tooth's readings are KEPT on the chart (one key undoes a
       // skip) but never sent, so what must read back there is nothing.
-      /*
-       * ITEM 26: `emptyPerioSite()` rather than a literal, so a site gaining a
-       * field cannot leave this comparison quietly reading `undefined`.
-       *
-       * This function still compares DEPTH AND FLAGS only. Teaching it recession,
-       * furcation and mobility means widening `PerioSiteChange.kind`, which the
-       * drift notice and the resend dialog both render — that is 26b, and the
-       * report says so rather than letting it grow in here.
-       */
+      // ITEM 26: `emptyPerioSite()` rather than a literal, so a site gaining a
+      // field cannot leave this comparison quietly reading `undefined`.
       const wantSite = e.skipped ? emptyPerioSite() : e.sites[surface];
       const haveSite = f.sites[surface];
       if (wantSite.depth !== haveSite.depth) {
@@ -673,6 +707,20 @@ export function comparePerioReadback(expected: PerioChart, found: PerioChart): P
       }
       if (flagWords(wantSite) !== flagWords(haveSite)) {
         out.push({ tooth, surface, kind: "flags", expected: flagWords(wantSite), found: flagWords(haveSite) });
+      }
+      // ITEM 26. Compared by VALUE, so a recession read back in the other family
+      // (101–119) is a mismatch rather than something quietly treated as equal.
+      if (wantSite.gm !== haveSite.gm) {
+        out.push({ tooth, surface, kind: "gm", expected: gmWords(wantSite.gm), found: gmWords(haveSite.gm) });
+      }
+      if (wantSite.furcation !== haveSite.furcation) {
+        out.push({
+          tooth,
+          surface,
+          kind: "furcation",
+          expected: furcationWords(wantSite.furcation),
+          found: furcationWords(haveSite.furcation),
+        });
       }
     }
   }
@@ -698,11 +746,31 @@ export function comparePerioReadback(expected: PerioChart, found: PerioChart): P
  * summary. Item 14 runs it the same way round for drift: `before` is what CareIN
  * wrote, `after` is what Open Dental holds now.
  */
+/**
+ * ⚠️ ITEM 26 DELIBERATELY DOES NOT WIDEN THIS ONE.
+ *
+ * `comparePerioReadback` above now sees recession, furcation and mobility,
+ * because the SEND must read back every row it wrote. Item 14's DRIFT check —
+ * "is the exam CareIN wrote still the exam Open Dental holds?" — is built on the
+ * same comparison, so widening it there would mean widening
+ * `PerioSiteChange.kind`, which the drift notice and the resend dialog both
+ * render and both switch on exhaustively.
+ *
+ * That is 26b, ruled on in this slice's report rather than grown in here. Until
+ * it lands, drift answers the v1 question it already answers, and these three
+ * kinds are dropped on the way through — explicitly, so the next person sees a
+ * decision instead of an oversight.
+ */
+function isDriftKind(kind: PerioMismatch["kind"]): kind is PerioSiteChange["kind"] {
+  return kind === "depth" || kind === "flags" || kind === "skipped";
+}
+
 export function perioChartChanges(before: PerioChart, after: PerioChart): PerioSiteChange[] {
   const out: PerioSiteChange[] = [];
   for (const m of comparePerioReadback(before, after)) {
-    // `duplicate` describes Open Dental holding two rows; two CHARTS cannot differ that way.
-    if (m.kind === "duplicate") continue;
+    // `duplicate` describes Open Dental holding two rows; two CHARTS cannot differ
+    // that way. `gm` / `furcation` / `mobility` are 26b — see above.
+    if (!isDriftKind(m.kind)) continue;
     out.push({ tooth: m.tooth, surface: m.surface, kind: m.kind, from: m.expected, to: m.found });
   }
   return out;
