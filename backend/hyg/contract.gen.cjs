@@ -14873,8 +14873,13 @@ __export(contract_entry_exports, {
   PERIO_FLAG_LABELS: () => PERIO_FLAG_LABELS,
   PERIO_FLAG_LETTERS: () => PERIO_FLAG_LETTERS,
   PERIO_FULL_MOUTH_SITES: () => PERIO_FULL_MOUTH_SITES,
+  PERIO_FURCATION_TEETH: () => PERIO_FURCATION_TEETH,
+  PERIO_GM_FAMILIES: () => PERIO_GM_FAMILIES,
   PERIO_LOWER_TEETH: () => PERIO_LOWER_TEETH,
   PERIO_MAX_DEPTH: () => PERIO_MAX_DEPTH,
+  PERIO_MAX_FURCATION: () => PERIO_MAX_FURCATION,
+  PERIO_MAX_MOBILITY: () => PERIO_MAX_MOBILITY,
+  PERIO_MIN_FURCATION: () => PERIO_MIN_FURCATION,
   PERIO_NO_READING_REFUSAL: () => PERIO_NO_READING_REFUSAL,
   PERIO_SEGMENTS: () => PERIO_SEGMENTS,
   PERIO_SEND_BATCH: () => PERIO_SEND_BATCH,
@@ -14967,9 +14972,11 @@ __export(contract_entry_exports, {
   isWellFormedArchString: () => isWellFormedArchString,
   normalizePerioChart: () => normalizePerioChart,
   perioArchVerdict: () => perioArchVerdict,
+  perioCal: () => perioCal,
   perioChangeLine: () => perioChangeLine,
   perioChangeSiteRef: () => perioChangeSiteRef,
   perioChartChanges: () => perioChartChanges,
+  perioGmIsRecession: () => perioGmIsRecession,
   perioHasReading: () => perioHasReading,
   perioJawOfField: () => perioJawOfField,
   perioJawOfTooth: () => perioJawOfTooth,
@@ -14980,6 +14987,7 @@ __export(contract_entry_exports, {
   perioSideOf: () => perioSideOf,
   perioSite: () => perioSite,
   perioTooth: () => perioTooth,
+  perioToothHasFurcation: () => perioToothHasFurcation,
   planPerioSend: () => planPerioSend,
   recordsNeededFor: () => recordsNeededFor,
   renderVisitNote: () => renderVisitNote,
@@ -14990,6 +14998,7 @@ __export(contract_entry_exports, {
   slipNoteField: () => slipNoteField,
   stepPerioCursor: () => stepPerioCursor,
   suggestVisitType: () => suggestVisitType,
+  withPerioMobility: () => withPerioMobility,
   withPerioSite: () => withPerioSite,
   withPerioSkipped: () => withPerioSkipped,
   z: () => import_zod5.z
@@ -16107,12 +16116,66 @@ var PERIO_SITES_PER_TOOTH = 6;
 var PERIO_FULL_MOUTH_SITES = PERIO_TOOTH_COUNT * PERIO_SITES_PER_TOOTH;
 var PERIO_UPPER_TEETH = Array.from({ length: 16 }, (_, i) => i + 1);
 var PERIO_LOWER_TEETH = Array.from({ length: 16 }, (_, i) => 32 - i);
+var PERIO_GM_FAMILIES = Object.freeze({
+  /** What a recession is stored as — measured. CareIN writes only this range. */
+  recessionMin: 0,
+  recessionMax: 19,
+  /** The other family Open Dental accepts. Recognised on read-back, never written. */
+  otherMin: 101,
+  otherMax: 119
+});
+function perioGmIsRecession(value) {
+  return value !== null && Number.isInteger(value) && value >= PERIO_GM_FAMILIES.recessionMin && value <= PERIO_GM_FAMILIES.recessionMax;
+}
+var PERIO_MAX_MOBILITY = 3;
+var PERIO_MIN_FURCATION = 1;
+var PERIO_MAX_FURCATION = 3;
+var PERIO_FURCATION_TEETH = Object.freeze([
+  1,
+  2,
+  3,
+  14,
+  15,
+  16,
+  // upper molars
+  5,
+  12,
+  // upper first premolars — two-rooted
+  17,
+  18,
+  19,
+  30,
+  31,
+  32
+  // lower molars
+]);
+function perioToothHasFurcation(tooth) {
+  return PERIO_FURCATION_TEETH.includes(tooth);
+}
 var PerioSiteSchema = import_zod3.z.object({
   depth: import_zod3.z.number().int().min(0).max(PERIO_MAX_DEPTH).nullable(),
   bleeding: import_zod3.z.boolean(),
   suppuration: import_zod3.z.boolean(),
   plaque: import_zod3.z.boolean(),
-  calculus: import_zod3.z.boolean()
+  calculus: import_zod3.z.boolean(),
+  /*
+   * ITEM 26. Both carry `.default(null)` so a chart stored before v2 parses —
+   * a strict object with a new required field would refuse every draft in the
+   * database.
+   */
+  /**
+   * Gingival margin, in millimetres of RECESSION (§0: the 0–19 family).
+   *
+   * The schema also admits 101–119 because Open Dental does and a read-back can
+   * carry one. CareIN's entry never produces one — `perioGmIsRecession` is how
+   * the two are told apart, and an unrecognised value gets no CAL.
+   */
+  gm: import_zod3.z.union([
+    import_zod3.z.number().int().min(PERIO_GM_FAMILIES.recessionMin).max(PERIO_GM_FAMILIES.recessionMax),
+    import_zod3.z.number().int().min(PERIO_GM_FAMILIES.otherMin).max(PERIO_GM_FAMILIES.otherMax)
+  ]).nullable().default(null),
+  /** Furcation class I–III. Only on a tooth that has one — see PERIO_FURCATION_TEETH. */
+  furcation: import_zod3.z.number().int().min(PERIO_MIN_FURCATION).max(PERIO_MAX_FURCATION).nullable().default(null)
 }).strict();
 var PERIO_FLAGS = ["bleeding", "suppuration", "plaque", "calculus"];
 var PERIO_FLAG_LABELS = {
@@ -16129,6 +16192,13 @@ var PERIO_FLAG_KEYS = {
 };
 var PerioToothSchema = import_zod3.z.object({
   skipped: import_zod3.z.boolean(),
+  /**
+   * ITEM 26: mobility is PER TOOTH, not per site — Open Dental stores it in
+   * `ToothValue` with every surface column `-1` (probe §4). Clinical range 0–3;
+   * `0` is a real reading ("tested, firm"), which is why it is nullable rather
+   * than defaulting to zero. `.default(null)` so pre-v2 charts parse.
+   */
+  mobility: import_zod3.z.number().int().min(0).max(PERIO_MAX_MOBILITY).nullable().default(null),
   sites: import_zod3.z.object({
     DB: PerioSiteSchema,
     B: PerioSiteSchema,
@@ -16160,11 +16230,20 @@ var PerioChartSchema = import_zod3.z.object({
   sweep: PerioSweepSchema.default(defaultPerioSweep)
 }).strict();
 function emptyPerioSite() {
-  return { depth: null, bleeding: false, suppuration: false, plaque: false, calculus: false };
+  return {
+    depth: null,
+    bleeding: false,
+    suppuration: false,
+    plaque: false,
+    calculus: false,
+    gm: null,
+    furcation: null
+  };
 }
 function emptyPerioTooth() {
   return {
     skipped: false,
+    mobility: null,
     sites: {
       DB: emptyPerioSite(),
       B: emptyPerioSite(),
@@ -16188,6 +16267,8 @@ function withPerioSite(chart, tooth, surface, patch) {
   const current = perioTooth(chart, tooth);
   const next = {
     skipped: current.skipped,
+    // ITEM 26: mobility is a TOOTH value and must survive a change to a site.
+    mobility: current.mobility,
     sites: { ...current.sites, [surface]: { ...current.sites[surface], ...patch } }
   };
   return { ...chart, teeth: { ...chart.teeth, [String(tooth)]: next } };
@@ -16196,7 +16277,17 @@ function withPerioSkipped(chart, tooth, skipped) {
   const current = perioTooth(chart, tooth);
   return {
     ...chart,
-    teeth: { ...chart.teeth, [String(tooth)]: { skipped, sites: current.sites } }
+    teeth: {
+      ...chart.teeth,
+      [String(tooth)]: { skipped, mobility: current.mobility, sites: current.sites }
+    }
+  };
+}
+function withPerioMobility(chart, tooth, mobility) {
+  const current = perioTooth(chart, tooth);
+  return {
+    ...chart,
+    teeth: { ...chart.teeth, [String(tooth)]: { ...current, mobility } }
   };
 }
 function isPatientRight(tooth) {
@@ -16285,7 +16376,14 @@ var PerioCountsSchema = import_zod3.z.object({
   /** Every expected site charted. A partial chart is `false` and SAYS so. */
   complete: import_zod3.z.boolean(),
   /** No depth, no flag, no skipped tooth — nothing to stage. */
-  empty: import_zod3.z.boolean()
+  empty: import_zod3.z.boolean(),
+  /* ITEM 26. `.default(0)` so a response from an older build still parses. */
+  /** Sites carrying a gingival-margin value, on un-skipped teeth. */
+  gmSites: import_zod3.z.number().int().default(0),
+  /** Sites carrying a furcation class. */
+  furcationSites: import_zod3.z.number().int().default(0),
+  /** Teeth carrying a mobility value. */
+  mobilityTeeth: import_zod3.z.number().int().default(0)
 });
 var FACIAL_SITES = ["DB", "B", "MB"];
 var LINGUAL_SITES = ["DL", "L", "ML"];
@@ -16302,7 +16400,10 @@ function countPerioChart(chart) {
     sitesAtLeast5: 0,
     deepest: null,
     complete: false,
-    empty: true
+    empty: true,
+    gmSites: 0,
+    furcationSites: 0,
+    mobilityTeeth: 0
   };
   for (let tooth = 1; tooth <= PERIO_TOOTH_COUNT; tooth += 1) {
     const t = perioTooth(chart, tooth);
@@ -16310,6 +16411,7 @@ function countPerioChart(chart) {
       counts.teethSkipped.push(tooth);
       continue;
     }
+    if (t.mobility !== null) counts.mobilityTeeth += 1;
     for (const surface of ALL_SITES) {
       const site = t.sites[surface];
       if (site.depth !== null) {
@@ -16319,16 +16421,26 @@ function countPerioChart(chart) {
           counts.deepest = { depth: site.depth, tooth, surface };
         }
       }
+      if (site.gm !== null) counts.gmSites += 1;
+      if (site.furcation !== null) counts.furcationSites += 1;
       for (const flag of PERIO_FLAGS) if (site[flag]) counts[flag] += 1;
     }
   }
   counts.sitesExpected = PERIO_FULL_MOUTH_SITES - PERIO_SITES_PER_TOOTH * counts.teethSkipped.length;
   counts.complete = counts.sitesExpected > 0 && counts.sitesCharted === counts.sitesExpected;
-  counts.empty = counts.sitesCharted === 0 && counts.teethSkipped.length === 0 && PERIO_FLAGS.every((flag) => counts[flag] === 0);
+  counts.empty = counts.sitesCharted === 0 && counts.teethSkipped.length === 0 && counts.gmSites === 0 && counts.furcationSites === 0 && counts.mobilityTeeth === 0 && PERIO_FLAGS.every((flag) => counts[flag] === 0);
   return counts;
 }
+function perioCal(site) {
+  if (site.depth === null) return null;
+  if (!perioGmIsRecession(site.gm)) return null;
+  return site.depth + site.gm;
+}
 function perioHasReading(counts) {
-  return counts.sitesCharted > 0 || PERIO_FLAGS.some((flag) => counts[flag] > 0);
+  return counts.sitesCharted > 0 || // ITEM 26: a recession, a furcation class and a mobility grade are all things
+  // she measured, so each one is a reading by item 28's rule. Only a SKIP is
+  // not — and that is still the whole content of the test that pins this.
+  counts.gmSites > 0 || counts.furcationSites > 0 || counts.mobilityTeeth > 0 || PERIO_FLAGS.some((flag) => counts[flag] > 0);
 }
 var PERIO_NO_READING_REFUSAL = "There are no perio readings on this visit yet, so there is nothing to stage. Skipped teeth do not count \u2014 a skip says a tooth was not charted, not what was measured. Open the perio chart and enter a reading first.";
 function perioProgressLabel(counts) {
@@ -16338,7 +16450,7 @@ function perioProgressLabel(counts) {
   return `${head}: ${counts.sitesCharted} of ${counts.sitesExpected} sites charted${tail}`;
 }
 function siteIsEmpty(site) {
-  return site.depth === null && PERIO_FLAGS.every((flag) => !site[flag]);
+  return site.depth === null && site.gm === null && site.furcation === null && PERIO_FLAGS.every((flag) => !site[flag]);
 }
 function normalizePerioChart(chart) {
   const teeth = {};
@@ -16353,7 +16465,11 @@ function normalizePerioChart(chart) {
       L: { ...emptyPerioSite(), ...stored.sites.L },
       ML: { ...emptyPerioSite(), ...stored.sites.ML }
     };
-    const canonical = { skipped: stored.skipped, sites: {} };
+    const canonical = {
+      skipped: stored.skipped,
+      mobility: stored.mobility ?? null,
+      sites: {}
+    };
     for (const surface of ALL_SITES) {
       const s = sites[surface];
       canonical.sites[surface] = {
@@ -16361,10 +16477,12 @@ function normalizePerioChart(chart) {
         bleeding: s.bleeding,
         suppuration: s.suppuration,
         plaque: s.plaque,
-        calculus: s.calculus
+        calculus: s.calculus,
+        gm: s.gm ?? null,
+        furcation: s.furcation ?? null
       };
     }
-    if (!canonical.skipped && ALL_SITES.every((surface) => siteIsEmpty(canonical.sites[surface]))) {
+    if (!canonical.skipped && canonical.mobility === null && ALL_SITES.every((surface) => siteIsEmpty(canonical.sites[surface]))) {
       continue;
     }
     teeth[String(tooth)] = canonical;
@@ -16791,7 +16909,14 @@ function perioArchVerdict(chart, field) {
   }
   return { field, status: "string", string: out, sites: last + 1 };
 }
-var PerioSendSequenceTypeSchema = import_zod4.z.enum(["Probing", "BleedSupPlaqCalc", "SkipTooth"]);
+var PerioSendSequenceTypeSchema = import_zod4.z.enum([
+  "Probing",
+  "BleedSupPlaqCalc",
+  "SkipTooth",
+  "GingMargin",
+  "Furcation",
+  "Mobility"
+]);
 var PerioCursorSchema = import_zod4.z.object({ tooth: import_zod4.z.number().int(), surface: ToothSurfaceSchema });
 var PerioArchPathSchema = import_zod4.z.enum(["string", "per_row", "empty"]);
 var PerioArchPlanSchema = import_zod4.z.object({
@@ -16855,6 +16980,7 @@ function planPerioSend(chart) {
     return { ...partial, label: PERIO_ARCH_STRING_LABELS[v.field], detail: archDetail(partial, normalized) };
   });
   const rows = [];
+  const v2Rows = [];
   const deepSites = [];
   for (let tooth = 1; tooth <= PERIO_TOOTH_COUNT; tooth += 1) {
     const t = normalized.teeth[String(tooth)];
@@ -16870,6 +16996,56 @@ function planPerioSend(chart) {
     for (const surface of ALL_SURFACES) {
       const depth2 = t.sites[surface].depth;
       if (depth2 !== null && depth2 > PERIO_STRING_MAX_DEPTH) deepSites.push({ tooth, surface });
+    }
+    const gmOf = (surface) => t.sites[surface].gm ?? -1;
+    if (ALL_SURFACES.some((surface) => t.sites[surface].gm !== null)) {
+      v2Rows.push({
+        tooth,
+        sequenceType: "GingMargin",
+        body: {
+          // Per site: ToothValue MUST be -1, or Open Dental refuses the row.
+          ToothValue: -1,
+          MBvalue: gmOf("MB"),
+          Bvalue: gmOf("B"),
+          DBvalue: gmOf("DB"),
+          MLvalue: gmOf("ML"),
+          Lvalue: gmOf("L"),
+          DLvalue: gmOf("DL")
+        }
+      });
+    }
+    const furcationOf = (surface) => t.sites[surface].furcation ?? -1;
+    if (ALL_SURFACES.some((surface) => t.sites[surface].furcation !== null)) {
+      v2Rows.push({
+        tooth,
+        sequenceType: "Furcation",
+        body: {
+          ToothValue: -1,
+          MBvalue: furcationOf("MB"),
+          Bvalue: furcationOf("B"),
+          DBvalue: furcationOf("DB"),
+          MLvalue: furcationOf("ML"),
+          Lvalue: furcationOf("L"),
+          DLvalue: furcationOf("DL")
+        }
+      });
+    }
+    if (t.mobility !== null) {
+      v2Rows.push({
+        tooth,
+        sequenceType: "Mobility",
+        // PER TOOTH: the grade is in ToothValue and EVERY surface must be -1, or
+        // Open Dental refuses the row (`MBvalue is invalid...`, measured).
+        body: {
+          ToothValue: t.mobility,
+          MBvalue: -1,
+          Bvalue: -1,
+          DBvalue: -1,
+          MLvalue: -1,
+          Lvalue: -1,
+          DLvalue: -1
+        }
+      });
     }
     if (!perRowJaws.has(perioJawOfTooth(tooth))) continue;
     const depth = (s) => t.sites[s].depth ?? -1;
@@ -16908,6 +17084,7 @@ function planPerioSend(chart) {
       });
     }
   }
+  rows.push(...v2Rows);
   return { strings, arches, rows, deepSites };
 }
 var PERIO_SEND_BATCH = 12;
@@ -16954,7 +17131,7 @@ function comparePerioReadback(expected, found) {
       });
     }
     for (const surface of ALL_SURFACES) {
-      const wantSite = e.skipped ? { depth: null, bleeding: false, suppuration: false, plaque: false, calculus: false } : e.sites[surface];
+      const wantSite = e.skipped ? emptyPerioSite() : e.sites[surface];
       const haveSite = f.sites[surface];
       if (wantSite.depth !== haveSite.depth) {
         out.push({
@@ -17107,8 +17284,13 @@ var import_zod5 = __toESM(require_zod());
   PERIO_FLAG_LABELS,
   PERIO_FLAG_LETTERS,
   PERIO_FULL_MOUTH_SITES,
+  PERIO_FURCATION_TEETH,
+  PERIO_GM_FAMILIES,
   PERIO_LOWER_TEETH,
   PERIO_MAX_DEPTH,
+  PERIO_MAX_FURCATION,
+  PERIO_MAX_MOBILITY,
+  PERIO_MIN_FURCATION,
   PERIO_NO_READING_REFUSAL,
   PERIO_SEGMENTS,
   PERIO_SEND_BATCH,
@@ -17201,9 +17383,11 @@ var import_zod5 = __toESM(require_zod());
   isWellFormedArchString,
   normalizePerioChart,
   perioArchVerdict,
+  perioCal,
   perioChangeLine,
   perioChangeSiteRef,
   perioChartChanges,
+  perioGmIsRecession,
   perioHasReading,
   perioJawOfField,
   perioJawOfTooth,
@@ -17214,6 +17398,7 @@ var import_zod5 = __toESM(require_zod());
   perioSideOf,
   perioSite,
   perioTooth,
+  perioToothHasFurcation,
   planPerioSend,
   recordsNeededFor,
   renderVisitNote,
@@ -17224,6 +17409,7 @@ var import_zod5 = __toESM(require_zod());
   slipNoteField,
   stepPerioCursor,
   suggestVisitType,
+  withPerioMobility,
   withPerioSite,
   withPerioSkipped,
   z
