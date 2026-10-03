@@ -30,6 +30,29 @@
  * A small grey number under today's reading — "last charted 3-2-3" beside
  * today's entry is half the clinical value of the screen. When there is no
  * prior exam the line is BLANK. It is never a zero: a zero is a reading.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THE QUADRANT MIDLINE, AND WHY IT IS DRAWN AND NOT COUNTED (item 18)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Open Dental's chart breaks each arch at the midline, and a hygienist calling
+ * "upper right" means #1–#8. Sixteen identical columns with nothing between #8
+ * and #9 makes her count along the row to find a quadrant. So the boundary is a
+ * RULE on the screen plus a caption naming the quadrant and its tooth range —
+ * `UR #1–8 | UL #9–16` above, `LR #32–25 | LL #24–17` below.
+ *
+ * The halves come from `quadrantOf`, the app's one dentition function, rather
+ * than from a hardcoded 8: a grid that drew its own midline could disagree with
+ * the quadrant every other screen names.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * A SKIPPED TOOTH IS DRAWN AS ABSENT, NOT AS EMPTY
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Open Dental blanks a missing tooth. An un-charted site here is already a faint
+ * `·` on a muted cell, so a skipped tooth drawn the same way would read as "not
+ * done yet" — the one thing it must not read as on a chart that understates
+ * disease when it is incomplete. So a skipped tooth gets a FILLED blank cell and
+ * its number goes grey and struck through, which is legible at a glance from
+ * across an operatory, and its readings are suppressed entirely.
  */
 import { type KeyboardEvent, type Ref } from "react";
 
@@ -45,10 +68,39 @@ import {
   type PerioCursor,
   type PerioSide,
 } from "@shared/hyg/perio";
+import { quadrantOf, type Quadrant } from "@/lib/hyg/dentition";
 import { cn } from "@/lib/utils";
 
 /** Row label column, then sixteen equal tooth columns. */
 const ROW = "grid grid-cols-[3.75rem_repeat(16,minmax(0,1fr))] gap-1";
+
+/**
+ * The quadrant rule, as a left border on the first tooth of the second half.
+ * Applied to every row AND to the numbers row, so it reads as one line down the
+ * grid rather than four unrelated ticks.
+ */
+const MIDLINE = "border-l-2 border-foreground/25 pl-1";
+
+/**
+ * Open Dental's own site names for each row. The facial row holds the three
+ * buccal sites and the lingual row the three lingual ones; which of the three
+ * sits leftmost depends on the side of the mouth (`screenSites`), so this is the
+ * row's SITE SET in OD's naming, not a left-to-right promise.
+ */
+const SIDE_SITES: Record<PerioSide, string> = { facial: "DB·B·MB", lingual: "ML·L·DL" };
+
+/** `UR #1–8` — the quadrant a half of an arch is, named the way she says it. */
+const QUADRANT_LABEL: Record<Quadrant, string> = {
+  UR: "UR #1–8",
+  UL: "UL #9–16",
+  LR: "LR #32–25",
+  LL: "LL #24–17",
+};
+
+/** Is this tooth the first of the arch's second half, i.e. just past the midline? */
+function startsSecondHalf(teeth: readonly number[], index: number): boolean {
+  return index > 0 && quadrantOf(teeth[index]) !== quadrantOf(teeth[index - 1]);
+}
 
 function depthTone(depth: number | null): string {
   if (depth === null) return "bg-muted/60 text-muted-foreground";
@@ -123,8 +175,10 @@ function SiteCell({
   );
 }
 
-function ToothSide(props: Omit<GridProps, "onKeyDown" | "gridRef"> & { tooth: number; side: PerioSide }) {
-  const { chart, tooth, side, cursor, onSelect } = props;
+function ToothSide(
+  props: Omit<GridProps, "onKeyDown" | "gridRef"> & { tooth: number; side: PerioSide; midline: boolean },
+) {
+  const { chart, tooth, side, cursor, onSelect, midline } = props;
   const sites = screenSites(tooth, side);
   if (perioTooth(chart, tooth).skipped) {
     const active = cursor.tooth === tooth && sites.includes(cursor.surface);
@@ -134,18 +188,21 @@ function ToothSide(props: Omit<GridProps, "onKeyDown" | "gridRef"> & { tooth: nu
         tabIndex={-1}
         onClick={() => onSelect({ tooth, surface: sites[0] })}
         data-testid={`hyg-perio-skipped-${tooth}-${side}`}
-        aria-label={`#${tooth} skipped`}
+        // It stays reachable: a pre-skip is a default, and an implant gets probed.
+        aria-label={`#${tooth} skipped — no readings. Select it to un-skip and chart it.`}
         className={cn(
-          "h-11 rounded-sm border border-dashed border-muted-foreground/40 text-[10px] uppercase tracking-wide text-muted-foreground",
+          // FILLED, not dashed: absent, not un-done. See the header.
+          "h-11 rounded-sm bg-muted/80 text-muted-foreground/70",
+          midline && MIDLINE,
           active && "ring-2 ring-primary ring-offset-1 ring-offset-background",
         )}
       >
-        skip
+        <span aria-hidden>—</span>
       </button>
     );
   }
   return (
-    <div className="flex min-w-0 gap-px">
+    <div className={cn("flex min-w-0 gap-px", midline && MIDLINE)}>
       {sites.map((surface) => (
         <SiteCell key={surface} {...props} surface={surface} />
       ))}
@@ -156,24 +213,55 @@ function ToothSide(props: Omit<GridProps, "onKeyDown" | "gridRef"> & { tooth: nu
 function Arch(props: Omit<GridProps, "onKeyDown" | "gridRef"> & { arch: "upper" | "lower" }) {
   const teeth = props.arch === "upper" ? PERIO_UPPER_TEETH : PERIO_LOWER_TEETH;
   const sides: PerioSide[] = props.arch === "upper" ? ["facial", "lingual"] : ["lingual", "facial"];
+
+  /** `UR #1–8 | UL #9–16` — the two quadrants of this arch, in screen order. */
+  const quadrants = (
+    <div className={ROW} aria-hidden data-testid={`hyg-perio-quadrants-${props.arch}`}>
+      <span />
+      {[0, 8].map((start) => (
+        <span
+          key={start}
+          className={cn(
+            "col-span-8 text-center text-[10px] font-semibold uppercase tracking-wide text-muted-foreground",
+            start === 8 && MIDLINE,
+          )}
+        >
+          {QUADRANT_LABEL[quadrantOf(teeth[start])]}
+        </span>
+      ))}
+    </div>
+  );
+
   const numbers = (
-    <div className={ROW} aria-hidden>
+    <div className={ROW} aria-hidden data-testid={`hyg-perio-numbers-${props.arch}`}>
       <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
         {props.arch === "upper" ? "Upper" : "Lower"}
       </span>
-      {teeth.map((tooth) => {
+      {teeth.map((tooth, i) => {
         const failed = (props.failedTeeth ?? []).includes(tooth);
+        // A skipped tooth's NUMBER says so too: the row below it is blank, and a
+        // blank with a black number over it reads as un-charted.
+        const skipped = perioTooth(props.chart, tooth).skipped;
         return (
           <span
             key={tooth}
-            data-testid={failed ? `hyg-perio-failed-tooth-${tooth}` : undefined}
+            data-testid={
+              failed
+                ? `hyg-perio-failed-tooth-${tooth}`
+                : skipped
+                  ? `hyg-perio-skipped-number-${tooth}`
+                  : undefined
+            }
             className={cn(
               "text-center text-xs font-semibold tabular-nums",
+              startsSecondHalf(teeth, i) && MIDLINE,
               failed
                 ? "rounded bg-destructive text-destructive-foreground"
                 : props.cursor.tooth === tooth
                   ? "text-primary"
-                  : "text-muted-foreground",
+                  : skipped
+                    ? "text-muted-foreground/50 line-through"
+                    : "text-muted-foreground",
             )}
           >
             {failed ? `${tooth}!` : tooth}
@@ -185,16 +273,28 @@ function Arch(props: Omit<GridProps, "onKeyDown" | "gridRef"> & { arch: "upper" 
 
   return (
     <div className="space-y-1">
+      {props.arch === "upper" ? quadrants : null}
       {props.arch === "upper" ? numbers : null}
       {sides.map((side) => (
         <div key={side} role="row" className={ROW} data-testid={`hyg-perio-row-${props.arch}-${side}`}>
-          <span className="self-center text-xs font-medium text-muted-foreground">{SIDE_LABEL[side]}</span>
-          {teeth.map((tooth) => (
-            <ToothSide key={tooth} {...props} tooth={tooth} side={side} />
+          <span className="self-center text-xs font-medium leading-tight text-muted-foreground">
+            {SIDE_LABEL[side]}
+            {/* Open Dental's own names for the three sites in this row. */}
+            <span className="block font-mono text-[10px] text-muted-foreground/70">{SIDE_SITES[side]}</span>
+          </span>
+          {teeth.map((tooth, i) => (
+            <ToothSide
+              key={tooth}
+              {...props}
+              tooth={tooth}
+              side={side}
+              midline={startsSecondHalf(teeth, i)}
+            />
           ))}
         </div>
       ))}
       {props.arch === "lower" ? numbers : null}
+      {props.arch === "lower" ? quadrants : null}
     </div>
   );
 }

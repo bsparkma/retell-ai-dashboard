@@ -78,6 +78,7 @@ const visitStore = require('../../services/hyg/visitStore');
 const composer = require('../../services/hyg/stagedWriteComposer');
 const sendVisitService = require('../../services/hyg/sendVisit');
 const odPerio = require('../../services/hyg/odPerio');
+const odToothInitials = require('../../services/hyg/odToothInitials');
 const { refuseUnlessTestPatient } = require('../../config/hygFixtureGate');
 const perioSend = require('../../services/hyg/perioSend');
 const perioDrift = require('../../services/hyg/perioDrift');
@@ -814,6 +815,14 @@ function perioPayload(office, aptNum, visit, perio) {
     chart,
     stagedWrite: perio && perio.row ? visitStore.toStagedWrite(perio.row) : null,
     counts: contract.countPerioChart(chart),
+    /*
+     * ITEM 27: has a chart for this visit ever been STORED? The pre-skip hangs
+     * off this and NOT off `counts.empty`, because an empty chart is not the
+     * same thing as an untouched one — un-skipping the last pre-skipped tooth
+     * leaves an empty chart behind, and re-skipping it on the next open would
+     * be CareIN overruling her. A stored row says she has been here.
+     */
+    chartStored: Boolean(perio && perio.row),
   };
 }
 
@@ -975,9 +984,23 @@ router.get(
      * already fetched whenever CareIN's exam is the newest one, which it is on
      * every ordinary open. Nothing here writes, and a person presses the resend.
      */
-    const context = await tenantDb.withTenantDb(req, (pool) =>
-      visit ? perioDrift.readDriftContext(pool, { office, visit }) : { staged: null, live: null }
-    );
+    /*
+     * ITEM 27: AND WHETHER A CHART HAS EVER BEEN STORED FOR THIS VISIT.
+     *
+     * The pre-skip below can only ever apply to a chart nobody has touched, so
+     * a visit that already holds one does not spend an Open Dental request
+     * asking which teeth are missing. The client gates on the same fact and is
+     * the authority — this read only decides whether the request is worth
+     * making, and getting it wrong in this direction costs a request, never a
+     * reading.
+     */
+    const loaded = await tenantDb.withTenantDb(req, async (pool) => {
+      if (!visit) return { context: { staged: null, live: null }, chartStored: false };
+      const context = await perioDrift.readDriftContext(pool, { office, visit });
+      const perio = await visitStore.getPerio(pool, { office, visitId: visit.visitId });
+      return { context, chartStored: Boolean(perio && perio.row) };
+    });
+    const context = loaded.context;
 
     let prior;
     let read = { ok: false, list: [], error: 'the exam list read threw' };
@@ -1013,6 +1036,32 @@ router.get(
       console.error(`[hygperio] drift check failed: ${String((err && err.message) || err)}`);
     }
 
+    /*
+     * ITEM 27: WHICH TEETH OPEN DENTAL SAYS ARE MISSING, so a chart nobody has
+     * touched opens with them already skipped.
+     *
+     * THIS IS THE ONE PLACE IN THE SLICE THAT SPENDS A REQUEST, and it spends
+     * at most one: `readMissingTeeth` makes a single GET and does not page.
+     * It rides this response rather than one of its own because this is the
+     * request that is already waiting on Open Dental.
+     *
+     * `200 []` IS NOT A FAILURE. It is "this patient has no missing teeth" —
+     * measured, not assumed — and it pre-skips nothing, which is the same
+     * visible outcome as a failed read but an entirely different claim.
+     */
+    let preSkip = { status: 'unavailable' };
+    let initials = null;
+    if (!loaded.chartStored) {
+      try {
+        initials = await odToothInitials.readMissingTeeth(odGet, { patNum });
+        preSkip = initials.preSkip;
+      } catch (err) {
+        // A convenience must never cost the chart its prior panel. Nothing
+        // pre-skipped, nothing said: she skips the teeth herself, as today.
+        console.error(`[hygperio] tooth initials read failed: ${String((err && err.message) || err)}`);
+      }
+    }
+
     // The appointment (a name) and a perio history are both in this body, so
     // both are audited before it is sent — including when the history came
     // back `none`, because the name did not.
@@ -1039,12 +1088,49 @@ router.get(
         priorState: drift.status,
       });
     }
+    /*
+     * SAME RULE FOR THE PRE-SKIP: naming teeth is the disclosure, so naming
+     * teeth is what audits.
+     *
+     * `unavailable` and a `ready` answer with no teeth both say nothing about
+     * this patient — one is a failed fetch and the other is "nothing to show" —
+     * so neither writes a row, exactly as `matches` and `unknown` do not. No
+     * `priorState`: a pre-skip only ever lands on a chart nobody has touched,
+     * so it replaces no decision anybody made.
+     */
+    if (preSkip.status === 'ready' && preSkip.teeth.length > 0) {
+      await audit(req, {
+        action: 'READ',
+        resourceType: 'hyg_perio_missing_teeth',
+        resourceId: aptNum,
+        result: 'SUCCESS',
+        office,
+        sourceRef: null,
+      });
+    }
 
     // Counts and milliseconds only — never a PatNum, never a reading.
     console.log(
       `[hygperio] office=${office} apt=${aptNum} prior=${prior.status} drift=${drift.status} ` +
-        `od_perio_reads=${odPerioReads} ms=${Date.now() - startedAt}`
+        `preskip=${preSkip.status}` +
+        (initials
+          ? `/${initials.missing} rows=${initials.rows} foreign=${initials.foreign} ` +
+            `unparsed=${initials.unparsed} truncated=${initials.truncated}`
+          : '/not_read') +
+        ` od_perio_reads=${odPerioReads} ms=${Date.now() - startedAt}`
     );
+    /*
+     * A ROW FOR ANOTHER PATIENT IS THE ONE THING HERE WORTH SHOUTING ABOUT.
+     * Unfiltered, `/toothinitials` answers with the whole practice (100 rows
+     * across 28 PatNums, measured), so if `PatNum=` ever stops being honoured
+     * this counter is how it gets noticed. Counts only — never a PatNum.
+     */
+    if (initials && initials.foreign > 0) {
+      console.warn(
+        `[hygperio] office=${office} apt=${aptNum} /toothinitials returned ` +
+          `${initials.foreign} row(s) for ANOTHER PatNum; dropped`
+      );
+    }
 
     return res.json({
       success: true,
@@ -1054,6 +1140,7 @@ router.get(
       appointment: resolved.appointment,
       prior,
       drift,
+      preSkip,
     });
   })
 );

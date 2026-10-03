@@ -50,6 +50,7 @@ import {
   withPerioSite,
   withPerioSkipped,
   type PerioChart,
+  type PerioDrift,
   type PerioPrior,
 } from "@shared/hyg/perio";
 import { planPerioSend, type HygPerioSendResponse, type PerioSendView } from "@shared/hyg/perioSend";
@@ -67,6 +68,13 @@ const fixtures = vi.hoisted(() => ({
   chart: null as unknown,
   stagedWrite: null as unknown,
   prior: null as unknown,
+  /**
+   * Item 14's drift answer. The page reads `prior.res.drift`, so a mock without
+   * it renders NOTHING — which is how all sixteen chart-page shots in this file
+   * came to be broken on develop without CI noticing: they only run under
+   * HYG_SHOTS=1. `not_applicable` is what an unsent chart gets.
+   */
+  drift: null as unknown,
   visitStaged: [] as unknown[],
   send: null as unknown,
 }));
@@ -132,6 +140,10 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
         chart,
         stagedWrite: fixtures.stagedWrite as StagedWrite | null,
         counts: perio.countPerioChart(chart),
+        // Item 27: these fixtures are charts somebody has worked on, so none of
+        // them pre-skips. A shot of a pre-skipped chart would need its own
+        // fixture, and the behaviour is pinned by tests rather than by a photo.
+        chartStored: true,
       };
     }),
     fetchPerioSend: vi.fn(async () =>
@@ -151,6 +163,8 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
       date: "2026-09-08",
       appointment: APPOINTMENT,
       prior: fixtures.prior as PerioPrior,
+      drift: fixtures.drift as PerioDrift,
+      preSkip: { status: "unavailable" as const },
     })),
     fetchVisit: vi.fn(async () => ({
       success: true as const,
@@ -259,6 +273,7 @@ beforeEach(() => {
   fixtures.chart = null;
   fixtures.stagedWrite = null;
   fixtures.prior = { status: "none" };
+  fixtures.drift = { status: "not_applicable" };
   fixtures.visitStaged = [];
   fixtures.send = null;
 });
@@ -351,6 +366,21 @@ describe.skipIf(!SHOOT)("perio chart screenshot dumps", () => {
     renderPerio();
     await screen.findByTestId("hyg-perio-prior-found");
     dump("hyg-perio-01-full-with-prior@1180x900");
+  });
+
+  it("01b — the OD layout: quadrant rules named, missing teeth drawn absent (item 18)", async () => {
+    // Several missing teeth, spread across three quadrants, so the greyed-out
+    // treatment is visible beside charted neighbours rather than in isolation.
+    const chart = exam(192, 7, [1, 16, 17, 32, 19]);
+    fixtures.chart = chart;
+    fixtures.stagedWrite = perioWrite("Draft", chart);
+    fixtures.prior = found(exam(192, 5, [1, 16, 17, 32, 19]));
+    renderPerio();
+    // Wait on the page's own async load, as every other shot does; the grid is
+    // not in the DOM until the chart answers.
+    await screen.findByTestId("hyg-perio-prior-found");
+    await screen.findByTestId("hyg-perio-quadrants-upper");
+    dump("hyg-perio-01b-od-layout@1180x900");
   });
 
   it("02 — a partial chart, staged, and labelled partial", async () => {

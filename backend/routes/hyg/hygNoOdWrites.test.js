@@ -497,7 +497,7 @@ test('driving EVERY perio path to success reaches no Open Dental write verb', as
     for (const c of od.calls) {
       assert.match(
         c.path,
-        /^\/(appointments|operatories|appointmenttypes|providers|patients|perioexams|periomeasures)/,
+        /^\/(appointments|operatories|appointmenttypes|providers|patients|perioexams|periomeasures|toothinitials)/,
         'unexpected Open Dental path: ' + c.path
       );
     }

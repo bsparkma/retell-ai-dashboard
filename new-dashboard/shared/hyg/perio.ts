@@ -461,6 +461,41 @@ export function countPerioChart(chart: PerioChart): PerioCounts {
 }
 
 /**
+ * ITEM 28: DOES THIS CHART HOLD A MEASUREMENT? The one gate on staging.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * A SKIP IS A STATEMENT ABOUT A TOOTH. IT IS NOT A READING.
+ * ═════════════════════════════════════════════════════════════════════════════
+ * `empty` counts a skipped tooth as content, which is right for the question it
+ * answers — "has anybody touched this chart at all" — and wrong for this one. A
+ * chart of nothing but skips passed `!empty`, staged, and sent a perio exam with
+ * NO READINGS into the chart of record: a dated exam in a patient's permanent
+ * record saying, in effect, that a perio chart was done and found nothing.
+ *
+ * Hand-skipping made that reachable. Item 27's pre-skip made it reachable with
+ * the hygienist having entered nothing at all — she opens a chart, Open Dental's
+ * missing teeth skip themselves, and Stage lights up. So the gate is a
+ * measurement she took: a depth, or a flag riding a site.
+ *
+ * ⚠️ USE THIS, NOT `!counts.empty`, FOR ANYTHING THAT WRITES. `empty` is still
+ * the right question for "has she touched this chart" — item 27's pre-skip is
+ * suppressed by it, deliberately, because a tooth she skipped by hand is a
+ * decision the pre-skip must not overrule.
+ *
+ * Flags are counted on un-skipped teeth only (see the loop above), so a flag on
+ * a skipped tooth cannot satisfy this either.
+ */
+export function perioHasReading(counts: PerioCounts): boolean {
+  return counts.sitesCharted > 0 || PERIO_FLAGS.some((flag) => counts[flag] > 0);
+}
+
+/** The refusal, in the one wording the server and the screen both use. */
+export const PERIO_NO_READING_REFUSAL =
+  "There are no perio readings on this visit yet, so there is nothing to stage. " +
+  "Skipped teeth do not count — a skip says a tooth was not charted, not what " +
+  "was measured. Open the perio chart and enter a reading first.";
+
+/**
  * "Partial chart: 84 of 192 sites charted" — the words a partial chart is
  * labelled with EVERYWHERE, so the tray, the workspace and the staged preview
  * cannot describe one chart three ways.
@@ -625,6 +660,16 @@ export const HygPerioResponseSchema = z.object({
   chart: PerioChartSchema,
   stagedWrite: StagedWriteSchema.nullable(),
   counts: PerioCountsSchema,
+  /**
+   * ITEM 27: has a perio chart for this visit EVER been stored? Not "is it
+   * empty" — `counts.empty` already answers that, and it is the wrong question
+   * for a pre-skip. A hygienist who un-skips the last pre-skipped tooth leaves
+   * an empty chart behind, and an empty chart is indistinguishable from an
+   * untouched one, so keying the pre-skip on emptiness would undo her un-skip
+   * on the next open. A stored row says she has been here. Defaults false so an
+   * older answer pre-skips as a first open would.
+   */
+  chartStored: z.boolean().default(false),
 });
 export type HygPerioResponse = z.infer<typeof HygPerioResponseSchema>;
 
@@ -747,6 +792,42 @@ export const PerioDriftSchema = z.discriminatedUnion("status", [
 export type PerioDrift = z.infer<typeof PerioDriftSchema>;
 
 /**
+ * ITEM 27: WHICH TEETH OPEN DENTAL RECORDS AS MISSING, so a fresh chart opens
+ * with them already skipped instead of asking her to skip them by hand.
+ *
+ * TWO ANSWERS, AND NEITHER OF THEM IS AN ERROR THE SCREEN SHOWS:
+ *
+ *   `ready`       — `GET /toothinitials?PatNum=` answered. `teeth` is every
+ *                   permanent tooth it marked `Missing`, ascending and unique.
+ *                   **An EMPTY array is a real answer** — "this patient has no
+ *                   missing teeth" — and pre-skips nothing. Measured 2026-10-01:
+ *                   a patient with none answers HTTP 200 with `[]`, like
+ *                   `/perioexams` and NOT like GroupNotes' 404-with-a-sentence.
+ *                   So absence and failure never have to be guessed apart. The
+ *                   capture is tests/fixtures/od-toothinitials-measured.json.
+ *   `unavailable` — the read did not land. The chart opens exactly as it does
+ *                   today, nothing pre-skipped, and the screen says NOTHING —
+ *                   the `NOTE_PRECHECK_UNAVAILABLE` doctrine. A failed read is
+ *                   not evidence that a patient has all 32 teeth, and it is not
+ *                   worth a banner over a convenience.
+ *
+ * ⚠️ A PRE-SKIP IS A DEFAULT, NEVER A LOCK. An implant gets probed, and every
+ * tooth named here can be un-skipped like any other. That is why this carries
+ * TEETH rather than a chart: the server states what Open Dental holds, and the
+ * client applies it only to a chart that has never been stored, so her readings
+ * and her own skips win — including on every later re-open.
+ */
+export const PerioPreSkipSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("ready"),
+    /** Permanent teeth 1–32 marked `Missing`. Empty = none, NOT "unknown". */
+    teeth: z.array(z.number().int().min(1).max(PERIO_TOOTH_COUNT)),
+  }),
+  z.object({ status: z.literal("unavailable") }),
+]);
+export type PerioPreSkip = z.infer<typeof PerioPreSkipSchema>;
+
+/**
  * POST /api/hyg/visit/:aptNum/perio/resend — send a vanished chart again.
  *
  * The exam number is REPEATED by the client, the same way the undo repeats it:
@@ -764,6 +845,12 @@ export type PerioResendRequest = z.infer<typeof PerioResendRequestSchema>;
  * answered from the SAME `/perioexams?PatNum=` read the prior panel already
  * makes. A second endpoint would be a second request per open of a chart, for a
  * question the first request has already answered.
+ *
+ * `preSkip` (item 27) rides it for the neighbouring reason: it DOES cost one
+ * more Open Dental request, so it belongs on the one response that is already
+ * waiting on Open Dental rather than on a third round trip of its own. It
+ * defaults to `unavailable` so a build that answers without it pre-skips
+ * nothing, which is exactly what "we did not read it" should do.
  */
 export const HygPerioPriorResponseSchema = z.object({
   success: z.literal(true),
@@ -773,5 +860,6 @@ export const HygPerioPriorResponseSchema = z.object({
   appointment: HygAppointmentSchema,
   prior: PerioPriorSchema,
   drift: PerioDriftSchema,
+  preSkip: PerioPreSkipSchema.default({ status: "unavailable" }),
 });
 export type HygPerioPriorResponse = z.infer<typeof HygPerioPriorResponseSchema>;

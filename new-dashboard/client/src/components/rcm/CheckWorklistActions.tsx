@@ -77,11 +77,21 @@
  * test still passes unchanged.
  */
 import { useState } from "react";
-import { AlertTriangle, Bookmark, BookmarkX, Loader2, Undo2, XCircle } from "lucide-react";
 import {
+  AlertTriangle,
+  Archive,
+  Bookmark,
+  BookmarkX,
+  Loader2,
+  Undo2,
+  XCircle,
+} from "lucide-react";
+import {
+  archiveRemittance,
   parkRemittance,
   restoreRemittance,
   setAsideRemittance,
+  unarchiveRemittance,
   RcmApiError,
   SET_ASIDE_COPY,
   SET_ASIDE_REASONS,
@@ -95,6 +105,25 @@ import DisabledReason from "@/components/rcm/DisabledReason";
 /** The same ceiling the server enforces (`MAX_WORKLIST_NOTE`). */
 const MAX_NOTE = 500;
 
+/**
+ * Does this check have posting history the SCREEN can already see?
+ *
+ * The server's never-archive-posted guard is the authority — it re-reads the
+ * posting queue inside the archive transaction and refuses by name. This is
+ * the same question answered from the row in hand, so the control can say why
+ * it is greyed BEFORE a round trip rather than after: a claim somebody
+ * approved (`queuedClaimCount`), a posting that ran and stopped
+ * (`posting_failed`), or one that finished (`claims_posted` / `claims_queued`).
+ */
+function hasPostingHistory(r: Remittance): boolean {
+  return (
+    r.queuedClaimCount > 0 ||
+    r.attentionReasons.includes("posting_failed") ||
+    r.attentionObservations.includes("claims_posted") ||
+    r.attentionObservations.includes("claims_queued")
+  );
+}
+
 export default function CheckWorklistActions({
   office,
   remittance: r,
@@ -105,21 +134,31 @@ export default function CheckWorklistActions({
   /** Re-read the check, so every count and chip on the page moves together. */
   onChanged: () => void;
 }) {
-  const [busy, setBusy] = useState<null | "park" | "aside" | "restore">(null);
+  const [busy, setBusy] = useState<null | "park" | "aside" | "restore" | "archive" | "unarchive">(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<null | "park" | "aside">(null);
+  const [dialog, setDialog] = useState<null | "park" | "aside" | "archive">(null);
   const [note, setNote] = useState("");
   const [reason, setReason] = useState<SetAsideReason>("target_gone");
+  /** The archive dialog's own required line — never shared with `note`. */
+  const [archiveReason, setArchiveReason] = useState("");
 
   const setAside = r.setAsideAt != null;
+  const archived = r.archivedAt != null;
+  const postingHistory = hasPostingHistory(r);
 
-  async function run(kind: "park" | "aside" | "restore", fn: () => Promise<unknown>) {
+  async function run(
+    kind: "park" | "aside" | "restore" | "archive" | "unarchive",
+    fn: () => Promise<unknown>,
+  ) {
     setBusy(kind);
     setError(null);
     try {
       await fn();
       setDialog(null);
       setNote("");
+      setArchiveReason("");
       onChanged();
     } catch (err) {
       // The server's own sentence — it names the missing field, which is the
@@ -132,6 +171,48 @@ export default function CheckWorklistActions({
     } finally {
       setBusy(null);
     }
+  }
+
+  // ── A check somebody has archived — off the board, one click back ─────────
+  if (archived) {
+    return (
+      <section
+        className="mt-4 rounded-xl border border-border bg-muted/30 p-4"
+        data-testid="check-archived-banner"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="flex items-center gap-1.5 text-base font-semibold text-foreground">
+              <Archive size={15} />
+              Archived
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {r.archivedReason ?? "No reason recorded"}
+              {r.archivedBy ? ` · ${r.archivedBy}` : ""}
+              {r.archivedAt ? ` · ${officeDay(r.archivedAt, office)}` : ""}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground" data-testid="check-archived-note">
+              It was never posted — only a check with no posting history can be archived. Nothing
+              was deleted, and the same file can be brought in again while this sits here.
+            </p>
+          </div>
+          <button
+            onClick={() => run("unarchive", () => unarchiveRemittance(office, r.batchId))}
+            disabled={busy !== null}
+            data-testid="check-unarchive"
+            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
+          >
+            {busy === "unarchive" ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <Undo2 size={14} />
+            )}
+            Bring it back
+          </button>
+        </div>
+        {error && <Problem message={error} />}
+      </section>
+    );
   }
 
   // ── A check somebody has already set aside ────────────────────────────────
@@ -182,10 +263,10 @@ export default function CheckWorklistActions({
     );
   }
 
-  // ── The ordinary case: two quiet actions ──────────────────────────────────
+  // ── The ordinary case: three quiet actions ────────────────────────────────
   return (
     <section
-      className="mt-4 grid items-start gap-2 sm:grid-cols-[max-content_max-content_minmax(0,1fr)]"
+      className="mt-4 grid items-start gap-2 sm:grid-cols-[max-content_max-content_max-content_minmax(0,1fr)]"
       data-testid="check-worklist-actions"
     >
       <button
@@ -212,14 +293,44 @@ export default function CheckWorklistActions({
         <BookmarkX size={14} />
         Set aside
       </button>
+      {/*
+        ── ARCHIVE — the third action, and the narrowest ─────────────────────
+        Only for a check with no posting history: the server refuses anything
+        else by name, and this control greys itself on the same facts the row
+        already carries so the refusal arrives before the round trip. Greyed
+        with its reason beside it, per the module's disabled-controls rule.
+      */}
+      <div className="flex flex-col items-start gap-1">
+        <button
+          onClick={() => {
+            setError(null);
+            setDialog(dialog === "archive" ? null : "archive");
+          }}
+          aria-expanded={dialog === "archive"}
+          disabled={postingHistory}
+          data-testid="check-archive"
+          className="inline-flex w-fit items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <Archive size={14} />
+          Archive
+        </button>
+        {postingHistory && (
+          /* SHORT ON PURPOSE: this renders on every check with posting
+             history, so it lives inside those screens' pinned word budgets.
+             The server's 409 carries the full sentence, naming the state. */
+          <DisabledReason testId="check-archive-blocked">
+            This check has posting history. Use Set aside instead.
+          </DisabledReason>
+        )}
+      </div>
       <span className="self-center text-xs text-muted-foreground">
-        Neither one writes anything to Open Dental.
+        Nothing here writes to Open Dental.
       </span>
 
       {/* ── Save for tomorrow — anchored under its own button (column 1) ───── */}
       {dialog === "park" && (
         <div
-          className="rounded-lg border border-border bg-card p-3 sm:col-span-3 sm:col-start-1"
+          className="rounded-lg border border-border bg-card p-3 sm:col-span-4 sm:col-start-1"
           data-testid="check-park-dialog"
         >
           <p className="text-sm text-muted-foreground">
@@ -266,7 +377,7 @@ export default function CheckWorklistActions({
       {/* ── Set aside — anchored under ITS own button (column 2) ───────────── */}
       {dialog === "aside" && (
         <div
-          className="rounded-lg border border-border bg-card p-3 sm:col-span-2 sm:col-start-2"
+          className="rounded-lg border border-border bg-card p-3 sm:col-span-3 sm:col-start-2"
           data-testid="check-set-aside-dialog"
         >
           <p className="text-sm text-muted-foreground">
@@ -356,6 +467,65 @@ export default function CheckWorklistActions({
             </button>
           </div>
 
+          {error && <Problem message={error} />}
+        </div>
+      )}
+
+      {/* ── Archive — anchored under ITS own button (column 3) ─────────────── */}
+      {dialog === "archive" && (
+        <div
+          className="rounded-lg border border-border bg-card p-3 sm:col-span-2 sm:col-start-3"
+          data-testid="check-archive-dialog"
+        >
+          <p className="text-sm text-muted-foreground">
+            <strong className="font-medium text-foreground">
+              This is for a check that was never real work
+            </strong>{" "}
+            — a test file, the wrong office&rsquo;s, a duplicate caught early. It disappears from
+            Today, from these tabs and from every count, and the same file can be brought in again.
+            Nothing is deleted: it waits under the <strong>Archived</strong> tab and comes back in
+            one click. A check that has ever been posted or queued cannot be archived at all.
+          </p>
+          <label className="mt-2 block text-xs font-medium text-foreground" htmlFor="archive-reason">
+            In a line, why? (required)
+          </label>
+          <input
+            id="archive-reason"
+            value={archiveReason}
+            maxLength={MAX_NOTE}
+            onChange={(e) => setArchiveReason(e.target.value)}
+            placeholder="Test upload — not a real check"
+            data-testid="check-archive-reason"
+            className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
+          />
+          <div className="mt-2 flex gap-2">
+            <div className="flex flex-col items-start gap-1">
+              <button
+                onClick={() =>
+                  run("archive", () => archiveRemittance(office, r.batchId, archiveReason.trim()))
+                }
+                // The server refuses a blank reason anyway; disabling here means
+                // the rule is met while it can still be acted on.
+                disabled={busy !== null || archiveReason.trim().length === 0}
+                data-testid="check-archive-confirm"
+                className="inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-sm font-semibold text-background transition-opacity hover:opacity-90 disabled:opacity-50"
+              >
+                {busy === "archive" && <Loader2 size={14} className="animate-spin" />}
+                Archive it
+              </button>
+              {archiveReason.trim().length === 0 && (
+                <DisabledReason testId="check-archive-needs-reason">
+                  The reason is the only account of why this check left the board.
+                </DisabledReason>
+              )}
+            </div>
+            <button
+              onClick={() => setDialog(null)}
+              className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+            >
+              Cancel
+            </button>
+          </div>
           {error && <Problem message={error} />}
         </div>
       )}

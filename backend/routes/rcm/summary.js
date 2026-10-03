@@ -77,7 +77,10 @@ router.get(
       // act on. The claims LIST applies the same filter, so the two agree.
       const [claimRows, batchRows, queueRows] = await Promise.all([
         countByStatus(pool, 'rcm_claims', office, ' AND archived_at IS NULL'),
-        countByStatus(pool, 'rcm_payment_batches', office),
+        // Archived checks are excluded on the same argument as archived claims:
+        // they are out of the working set, and the Checks list excludes them
+        // from its own totals, so the two stay one statement (1790000000000).
+        countByStatus(pool, 'rcm_payment_batches', office, ' AND archived_at IS NULL'),
         countByStatus(pool, 'rcm_posting_queue', office),
       ]);
       return { claims: claimRows.rows, batches: batchRows.rows, queue: queueRows.rows };

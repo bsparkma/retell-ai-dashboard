@@ -159,6 +159,24 @@ const CHECKS = Object.freeze({
     label: 'Every line is paired to a chart line',
     fix: 'At least one procedure line has no ClaimProcNum. Re-run the match; if it still cannot pair, the chart and the remittance disagree about what was done.',
   },
+  /**
+   * A LINE A PERSON TYPED IN, OR STRUCK, ON THE CONFIRM SCREEN.
+   *
+   * Both of those make a claim's lines differ from the ones the match paired and
+   * the drain would post, and this slice does not extend the posting spine to
+   * cover either. So the claim is withheld BY NAME.
+   *
+   * Withholding is the whole point rather than a limitation grudgingly recorded.
+   * Adding a line is how an incomplete read becomes able to reconcile — the
+   * arithmetic goes honest, `CLAIM_TOTALS_AGREE` can finally pass, and a biller
+   * can see that the check adds up. What must NOT follow is money moving for a
+   * line Open Dental never heard of, or money moving for a line a person has just
+   * said is not on the page. The alternative to this check is one of those two.
+   */
+  LINES_UNEDITED_BY_HAND: {
+    label: 'The lines are the ones the scan read',
+    fix: 'A line on this claim was typed in by hand, or struck, on the confirm screen. CareIN cannot pair a typed line to a chart line, and it will not post a claim whose lines are no longer the ones it matched — so post this one in Open Dental by hand. If the edit was a mistake, undo it on the confirm screen.',
+  },
   CLAIMPROC_NOT_ALREADY_PLANNED: {
     label: 'No chart line is already on another posting plan',
     fix: 'Another claim in this practice is already planned to post money against one of these Open Dental lines. Two proposals have been confirmed to the same chart claim — release one of them before approving.',
@@ -240,6 +258,16 @@ const CHECK_ORDER = Object.freeze(Object.keys(CHECKS));
  */
 const NOT_CONFIRM_REQUIRED = Object.freeze({
   required: false,
+  /**
+   * NO HAND-ENTERED LINES, and no strikes.
+   *
+   * An 835 cannot have either: both are written only by the confirm screen, which
+   * exists only for a check read off a scan. An empty Map here means
+   * `effectiveLinesFor` falls through to the extracted rows unchanged, which is
+   * the arithmetic every ERA path has always had.
+   */
+  addedLines: new Map(),
+  strikes: new Map(),
   /*
    * NULL, not an empty Map, and the difference is deliberate: `CLAIM_TOTALS_AGREE`
    * branches on it to decide whether to read confirmed figures at all. An empty
@@ -1002,26 +1030,30 @@ function evaluateClaim({
    * person can act on.
    */
   /*
-   * THE FIGURES A PERSON STANDS BEHIND, where there are any.
+   * THE CLAIM'S REAL LINES, AND THE FIGURES A PERSON STANDS BEHIND.
    *
-   * On an OCR-sourced check the confirmed value is the real one — that is what
-   * the confirm step is for — so the sum goes through `figure()` like every
-   * other money read in this module. With no index (an 835, or a caller that
-   * predates the slice) `figure()` returns the extracted value and this is the
-   * old arithmetic, unchanged.
+   * `effectiveLines` is the one function that decides what a claim's lines are:
+   * what the read produced, minus what a person struck, plus what she added from
+   * the page. `claimLineSum` is the one function that sums them, and the confirm
+   * screen renders that same result — so a green line there beside a red check
+   * here is not a bug that can be introduced.
+   *
+   * With no index and no hand edits (an 835, or a caller that predates the
+   * slice) every figure resolves to the extracted value and this is the old
+   * arithmetic, unchanged.
    */
-  const paidOf = (line) =>
-    fieldConfirm.index
-      ? confirmedFigures.figure(
-          fieldConfirm.index,
-          { claimId: claim.claimId, lineId: line.lineId, field: 'line_paid' },
-          line.paidCents
-        )
-      : { cents: line.paidCents, stated: line.paidCents !== null, confirmed: false };
-
-  const paid = lines.map(paidOf);
-  const unstated = paid.filter((p) => !p.stated);
-  const unstatedAndUnconfirmed = unstated.filter((p) => !p.confirmed);
+  const effective = confirmedFigures.effectiveLines({
+    claimId: claim.claimId,
+    extracted: lines,
+    added: fieldConfirm.addedLines,
+    strikes: fieldConfirm.strikes,
+    index: fieldConfirm.index,
+  });
+  const lineSum = confirmedFigures.claimLineSum(fieldConfirm.index, {
+    claimId: claim.claimId,
+    totalPaidCents: claim.totalPaidCents,
+    lines: effective,
+  });
 
   /*
    * A SUM THAT DOES NOT EXIST IS NOT A DISAGREEMENT — and this is the exact case
@@ -1043,18 +1075,19 @@ function evaluateClaim({
    * An UNCONFIRMED absence still fails: nobody has looked, so "the document does
    * not state it" is the reader's guess rather than a person's answer.
    */
-  const lineSum = unstated.length > 0 ? null : paid.reduce((n, p) => n + p.cents, 0);
+  /*
+   * The remittance's own figure for this claim stays a separate comparison. It is
+   * a question about the REMITTANCE — does the batch row agree with the claim row
+   * — and not about the lines, so it does not belong inside `claimLineSum`.
+   */
   const paymentCents = payment ? payment.paidCents : claim.totalPaidCents;
-  const totalsAgree =
-    lineSum === null
-      ? unstatedAndUnconfirmed.length === 0 && paymentCents === claim.totalPaidCents
-      : lineSum === claim.totalPaidCents && paymentCents === claim.totalPaidCents;
+  const totalsAgree = lineSum.ok && paymentCents === claim.totalPaidCents;
   add(
     'CLAIM_TOTALS_AGREE',
     totalsAgree,
-    lineSum === null
-      ? unstatedAndUnconfirmed.length > 0
-        ? `${unstatedAndUnconfirmed.length} line(s) state no payment of their own and have not ` +
+    lineSum.lineSumCents === null
+      ? lineSum.unconfirmedUnstatedCount > 0
+        ? `${lineSum.unconfirmedUnstatedCount} line(s) state no payment of their own and have not ` +
           `been checked against the page, so the lines cannot be summed against the claim total ` +
           `of ${claim.totalPaidCents} (cents)`
         : totalsAgree
@@ -1063,7 +1096,35 @@ function evaluateClaim({
           : `claim ${claim.totalPaidCents}, remittance ${paymentCents} (cents)`
       : totalsAgree
         ? null
-        : `claim ${claim.totalPaidCents}, lines ${lineSum}, remittance ${paymentCents} (cents)`
+        : `claim ${claim.totalPaidCents}, lines ${lineSum.lineSumCents}, remittance ${paymentCents} (cents)`
+  );
+
+  /*
+   * ─────────────────────────────────────────────────────────────────────────
+   * A LINE TYPED IN BY HAND, OR STRUCK
+   * ─────────────────────────────────────────────────────────────────────────
+   * Either one makes this claim's lines differ from the ones the match paired
+   * and the drain would post. The arithmetic above is now right about the
+   * document; the posting spine still knows only the extraction, and this slice
+   * does not extend it. So the claim is withheld, and the detail says which of
+   * the two happened — the shared `fix` covers both because the remedy is the
+   * same.
+   */
+  const handAdded = confirmedFigures
+    .countableLines(effective)
+    .filter((l) => l.kind === 'added').length;
+  const struck = effective.filter((l) => l.struck).length;
+  add(
+    'LINES_UNEDITED_BY_HAND',
+    handAdded === 0 && struck === 0,
+    handAdded === 0 && struck === 0
+      ? null
+      : [
+          handAdded > 0 ? `${handAdded} line(s) typed in by hand` : null,
+          struck > 0 ? `${struck} line(s) struck as not on the page` : null,
+        ]
+          .filter(Boolean)
+          .join('; ')
   );
 
   /*
@@ -1243,8 +1304,23 @@ function evaluateRemittance({
    */
   confirmations = [],
   provenance = null,
+  /**
+   * Lines a person added on the confirm screen, and lines she struck. Both
+   * default to nothing, which is every ERA path and every caller that predates
+   * this slice.
+   */
+  addedLineRows = [],
+  strikeRows = [],
 }) {
-  const fieldConfirm = deriveFieldConfirm({ batch, claims, linesByClaim, confirmations, provenance });
+  const fieldConfirm = deriveFieldConfirm({
+    batch,
+    claims,
+    linesByClaim,
+    confirmations,
+    provenance,
+    addedLineRows,
+    strikeRows,
+  });
 
   const evaluated = claims.map((claim) =>
     evaluateClaim({
@@ -1335,18 +1411,50 @@ function evaluateRemittance({
  * @param {object} args
  * @returns {{ required: boolean, confirmed: object, sums: object }}
  */
-function deriveFieldConfirm({ batch, claims, linesByClaim, confirmations, provenance }) {
+function deriveFieldConfirm({
+  batch,
+  claims,
+  linesByClaim,
+  confirmations,
+  provenance,
+  addedLineRows = [],
+  strikeRows = [],
+}) {
   if (!confirmedFigures.isOcrSourced(provenance)) return NOT_CONFIRM_REQUIRED;
 
   const index = confirmedFigures.indexConfirmations(confirmations);
+  const addedLines = confirmedFigures.indexAddedLines(addedLineRows);
+  const strikes = confirmedFigures.indexStrikes(strikeRows);
 
+  /*
+   * THE SHAPE IS THE CLAIM'S REAL LINES, not the extraction's.
+   *
+   * `requiredFields` counts what still has to be checked against the page, and a
+   * struck line asks for nothing (a person has said it is not there) while an
+   * added line asks for nothing either (she typed every figure on it off the
+   * page). Counting them the old way would leave a check whose outstanding count
+   * could never reach zero, which is a wall — and this module does not build
+   * walls.
+   */
   const shape = claims.map((claim) => ({
     claimId: claim.claimId,
-    lines: (linesByClaim.get(claim.claimId) || []).map((line) => ({ lineId: line.lineId })),
+    lines: confirmedFigures.effectiveLines({
+      claimId: claim.claimId,
+      extracted: linesByClaim.get(claim.claimId) || [],
+      added: addedLines,
+      strikes,
+      index,
+    }),
   }));
 
   return {
     required: true,
+    /*
+     * Handed on so `evaluateClaim` assembles a claim's lines from the same two
+     * indexes, rather than building a second pair from the same rows.
+     */
+    addedLines,
+    strikes,
     // Handed on so `CLAIM_TOTALS_AGREE` sums the figures a person stands behind,
     // rather than building a second index from the same rows.
     index,
@@ -1536,6 +1644,8 @@ async function loadForApproval(client, office, batchId, { lock = false } = {}) {
       batch,
       claims: [],
       linesByClaim: new Map(),
+      addedLineRows: [],
+      strikeRows: [],
       paymentsByClaim,
       plannedClaimprocs: new Map(),
     };
@@ -1676,6 +1786,23 @@ async function loadForApproval(client, office, batchId, { lock = false } = {}) {
     batchId,
   ]);
 
+  /*
+   * AND THE LINES A PERSON TYPED IN, AND THE ONES SHE STRUCK.
+   *
+   * Read under the same lock as everything else in this loader, for the same
+   * reason: `approveRemittance` re-reads and re-evaluates, so a screen that
+   * showed a reconciled claim a moment before somebody struck one of its lines
+   * cannot get it past the gate.
+   */
+  const addedLineRows = await client.query(confirmedFigures.QUERIES.readAddedLinesForBatch, [
+    office,
+    batchId,
+  ]);
+  const strikeRows = await client.query(confirmedFigures.QUERIES.readStrikesForBatch, [
+    office,
+    batchId,
+  ]);
+
   const uploads = await client.query(
     `SELECT text_source FROM rcm_eob_uploads WHERE office_id = $1 AND result_batch_id = $2`,
     [office, batchId]
@@ -1692,6 +1819,8 @@ async function loadForApproval(client, office, batchId, { lock = false } = {}) {
     paymentsByClaim,
     plannedClaimprocs,
     confirmations: confirmationRows.rows,
+    addedLineRows: addedLineRows.rows,
+    strikeRows: strikeRows.rows,
     provenance,
   };
 }

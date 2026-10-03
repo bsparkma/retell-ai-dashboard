@@ -412,12 +412,27 @@ export function listRcmClaims(
 // ─── EOB ingestion (Slice 4) ─────────────────────────────────────────────────
 
 /**
- * The four states rcm_eob_uploads.status can hold, straight from the CHECK
+ * The five states rcm_eob_uploads.status can hold, straight from the CHECK
  * constraint. A closed union on purpose, the same way TranscribeStatus is on
- * the voice side: adding a fifth state server-side becomes a compile error
- * here, not a chip that silently renders as nothing.
+ * the voice side: adding a state server-side becomes a compile error here, not
+ * a chip that silently renders as nothing.
+ *
+ * THE FIFTH STATE EARNED THAT SENTENCE ITS SCAR. PR #213's archive flips a
+ * check's linked uploads to 'archived', this union never learned the word, and
+ * `STATUS_CHIP[u.status]` came back undefined — a TypeError that took down
+ * every page rendering the upload panel on staging, Today first. The server
+ * list excludes archived uploads now, but a poll already in flight when
+ * somebody archives can still deliver one, so the type tells the truth about
+ * the wire. The union stays CLOSED — no optional chaining, no index signature —
+ * because those would hide the sixth missing status instead of refusing it.
  */
-export const EOB_UPLOAD_STATUSES = ["uploaded", "processing", "extracted", "failed"] as const;
+export const EOB_UPLOAD_STATUSES = [
+  "uploaded",
+  "processing",
+  "extracted",
+  "failed",
+  "archived",
+] as const;
 export type EobUploadStatus = (typeof EOB_UPLOAD_STATUSES)[number];
 
 /**
@@ -927,6 +942,27 @@ export interface ClaimAdjustment {
   remarkDescription: string | null;
 }
 
+/**
+ * A line a person typed in from the page image, as the workbench reads it.
+ *
+ * No `odClaimProcNum`, no decision, no verdict arithmetic: it is evidence that
+ * the read was incomplete and a person completed it, and the thing the gate names
+ * when it withholds the claim.
+ */
+export interface HandEnteredLine {
+  addedLineId: string;
+  code: string;
+  description: string | null;
+  billedCents: number | null;
+  allowedCents: number | null;
+  deductibleCents: number | null;
+  copayCents: number | null;
+  paidCents: number | null;
+  addedBy: string | null;
+  addedAt: string | null;
+  struck: LineStruck | null;
+}
+
 export interface ClaimLine {
   lineId: string;
   position: number;
@@ -939,7 +975,14 @@ export interface ClaimLine {
   allowedCents: number;
   deductibleCents: number;
   copayCents: number;
-  paidCents: number;
+  /**
+   * `null` = the page does not state a payment for THIS line (a category-subtotal
+   * layout, #206). Render it as "not stated" — never as $0.00, which asserts the
+   * plan paid nothing. This was `number` while the server already shipped null,
+   * which is how a column of fabricated zeros reached the claim screen with tsc
+   * green; the type now refuses that at the call site.
+   */
+  paidCents: number | null;
   adjustmentCents: number;
   patientRespCents: number;
   writeOffCents: number;
@@ -950,6 +993,14 @@ export interface ClaimLine {
   flags: string[];
   odClaimProcNum: number | null;
   adjustments: ClaimAdjustment[];
+  /**
+   * Non-null when a person read the page image and said this line is not on it.
+   *
+   * The extraction row is untouched and so is the verdict over it; this is the
+   * mark that lets the workbench explain why the claim is being withheld, instead
+   * of a line whose money quietly stopped adding up.
+   */
+  struck?: LineStruck | null;
   /**
    * THE CARRIER'S ARITHMETIC, computed once on the server.
    *
@@ -962,7 +1013,12 @@ export interface ClaimLine {
    * a rounding habit to make this screen disagree with the gate about money.
    */
   contractualWriteOffCents: number;
-  patientRemainderCents: number;
+  /**
+   * `null` when `paidCents` is null: R = allowed − paid is only arithmetic when
+   * the page stated a payment, and a remainder of "the whole allowed amount"
+   * over an unstated figure is an invitation to write off money nobody read.
+   */
+  patientRemainderCents: number | null;
   /** `null` = nobody has said. Reads as `bill_patient` for the money. */
   decision: LineDecision | null;
   /** A canned reason slug. Present exactly when the decision is a write-off. */
@@ -1036,6 +1092,21 @@ export interface WorkbenchClaim {
   approvedAt: string | null;
   createdAt: string | null;
   lines: ClaimLine[];
+  /**
+   * LINES A PERSON TYPED IN on the confirm screen, because the scan missed them.
+   *
+   * Their own list, not folded into `lines`. `lines` here means the lines that
+   * were paired to a chart claim, and the verdict measures each one against what
+   * Open Dental holds for it; a hand-entered line has no chart counterpart — which
+   * is exactly why the approval gate withholds the claim — so putting it in that
+   * list would make the verdict compare a line against nothing and report the
+   * difference as a patient's balance.
+   *
+   * They DO count in what the claim was paid. That arithmetic lives in
+   * `confirmedFigures.claimLineSum` on the server, which both the confirm screen
+   * and the gate read.
+   */
+  handEnteredLines?: HandEnteredLine[];
   matchSnapshot?: MatchSnapshot | null;
   /**
    * A match HAS run, but under an older snapshot shape — so its contents are
@@ -1281,6 +1352,17 @@ export interface Remittance {
   setAsideNote: string | null;
 
   /**
+   * ARCHIVED — off the board entirely, and only reachable for a check with no
+   * posting history (the server refuses anything else by name). Unlike
+   * set-aside it leaves `view=all` too: an archived check appears in exactly
+   * one place, the Archived tab. Reversible. The reason is the person's own
+   * required line, not a slug. Null throughout means not archived.
+   */
+  archivedAt: string | null;
+  archivedBy: string | null;
+  archivedReason: string | null;
+
+  /**
    * DID THE APP GET THIS CHECK RIGHT? — the shadow-mode comparison (C-2).
    *
    * Null means NOBODY HAS ANSWERED, never "no difference found". The panel
@@ -1485,6 +1567,11 @@ export interface RemittanceListPage {
    */
   parkedCount: number;
   setAsideCount: number;
+  /**
+   * The archived partition's size — the one population `total` excludes. An
+   * archived check is counted here and nowhere else.
+   */
+  archivedCount: number;
   /** How many rows the current view holds — what limit/offset page. */
   matchingCount: number;
   limit: number;
@@ -1498,7 +1585,7 @@ export interface RemittanceListPage {
  * are applied in the browser to whatever page came back, and the screens say so.
  * See `features/rcm/worklist.ts`.
  */
-export type RemittanceView = "attention" | "parked" | "set_aside" | "all";
+export type RemittanceView = "attention" | "parked" | "set_aside" | "archived" | "all";
 
 export interface RemittanceDetail {
   office: RcmOfficeId;
@@ -2579,6 +2666,33 @@ export function restoreRemittance(
 }
 
 /**
+ * ARCHIVE a check that was never queued and never posted. `rcm.write`, unlike
+ * the four worklist acts above, because archiving re-arms the dedupe so the
+ * same file can be brought in again — it is the one of these that can lead to
+ * money's file moving twice.
+ *
+ * The reason is required and is her own line, not a slug. The server refuses
+ * any check with posting history (409 `ARCHIVE_POSTING_HISTORY`, naming the
+ * state) — records that explain money are never hidden by archive; Set aside
+ * is the affordance for those.
+ */
+export function archiveRemittance(
+  office: RcmOfficeId,
+  batchId: string,
+  reason: string,
+): Promise<{ batchId: string; archived: boolean }> {
+  return post(`/remittances/${encodeURIComponent(batchId)}/archive`, { office }, { reason });
+}
+
+/** Put an archived check back on the board. Re-arms the dedupe where honest. */
+export function unarchiveRemittance(
+  office: RcmOfficeId,
+  batchId: string,
+): Promise<{ batchId: string; archived: boolean; wasArchived: boolean }> {
+  return post(`/remittances/${encodeURIComponent(batchId)}/unarchive`, { office }, {});
+}
+
+/**
  * "DID THE APP GET THIS CHECK RIGHT?" — the shadow-mode comparison (C-2).
  *
  * `differed` carries both a reason and a line in her own words; `same` carries
@@ -2720,7 +2834,15 @@ export interface ConfirmField {
   /** The figure to USE. null ⇔ `stated === false`. */
   cents: number | null;
   stated: boolean;
-  source: "extracted" | "confirmed" | "corrected";
+  /**
+   * `added` is a figure on a line a person TYPED IN because the scan missed it.
+   *
+   * Its own value rather than `corrected`: a correction is a person disagreeing
+   * with the machine about a figure, and this is a person supplying one the
+   * machine never offered. `extractedCents` is then null because the read
+   * produced no figure, not because it produced a blank one.
+   */
+  source: "extracted" | "confirmed" | "corrected" | "added";
   confirmed: boolean;
   /** What the read produced, always preserved — even after a correction. */
   extractedCents: number | null;
@@ -2764,13 +2886,59 @@ export interface PageRegion {
   height: number;
 }
 
+/**
+ * A LINE A PERSON SAYS IS NOT ON THE PAGE.
+ *
+ * Nothing is deleted: the extraction row stays exactly as the read produced it,
+ * and this is a statement recorded beside it. The reason is required, because a
+ * line leaving a claim's arithmetic with no recorded reason is money that changed
+ * and cannot be accounted for.
+ */
+export interface LineStruck {
+  reason: string;
+  struckBy: string | null;
+  struckAt: string | null;
+}
+
 export interface ConfirmLine {
   lineId: string;
+  /** `added` is a line a person typed in; the screen marks it as one. */
+  kind: "extracted" | "added";
   position: number;
   code: string;
   description: string;
   region: PageRegion | null;
+  /**
+   * Non-null when this line has been struck. A struck line is still SENT and
+   * still rendered — a line that silently vanished would be a claim whose
+   * arithmetic changed with nothing on screen to account for it, and the only way
+   * back from a mis-strike is to be able to see the strike.
+   */
+  struck: LineStruck | null;
   fields: ConfirmField[];
+}
+
+/**
+ * DO A CLAIM'S LINES ADD UP TO WHAT IT WAS PAID?
+ *
+ * The same `claimLineSum` the approval gate refuses on, so a green line here
+ * beside a red check there is not a state this code can reach. It is the figure
+ * that goes from "does not add up" to "adds up" when a biller types in the line
+ * the scan missed — which is why adding a line is not a bypass.
+ *
+ * `comparable: false` means there is no sum to take: a line payment the document
+ * does not state, or a claim total that is not a figure. `differenceCents` is
+ * then null rather than a number computed from a missing value.
+ */
+export interface ConfirmLineSum {
+  lineCount: number;
+  comparable: boolean;
+  lineSumCents: number | null;
+  claimTotalCents: number | null;
+  differenceCents: number | null;
+  unstatedCount: number;
+  unconfirmedUnstatedCount: number;
+  ok: boolean;
 }
 
 export interface ConfirmClaim {
@@ -2780,6 +2948,7 @@ export interface ConfirmClaim {
   serviceDate: string | null;
   totalPaid: ConfirmField;
   lines: ConfirmLine[];
+  lineSum: ConfirmLineSum;
 }
 
 /** How the figures were obtained, and how sure the reader was. */
@@ -2856,6 +3025,21 @@ export interface ConfirmInstruction {
 export interface ConfirmResult {
   office: RcmOfficeId;
   batchId: string;
+  /**
+   * THE WHOLE SCREEN STATE, AS THE SERVER NOW HOLDS IT.
+   *
+   * Identical in shape to what a GET returns, recomputed after the write. The
+   * screen replaces what it has with this and re-renders in place — which is
+   * what keeps the document viewer and the figure list from being thrown back
+   * to the top on every confirm.
+   *
+   * It is the SERVER'S recomputation and not the browser's: `outstanding`,
+   * `sums` and each field's confirmed-or-corrected state are decided by one
+   * accessor on the server, and a screen that worked them out for itself would
+   * be a second opinion about which number is real.
+   */
+  state: FieldConfirmState;
+  /** What THIS request changed — which is how the screen knows where to go next. */
   confirmed: Array<{
     field: ConfirmableField;
     claimId: string | null;
@@ -2893,6 +3077,77 @@ export function confirmFields(
   fields: ConfirmInstruction[],
 ): Promise<ConfirmResult> {
   return post<ConfirmResult>(`/field-confirm/${encodeURIComponent(batchId)}`, { office }, { fields });
+}
+
+/**
+ * A LINE THE SCAN MISSED, typed in from the page.
+ *
+ * Every money key must be PRESENT. `null` is legal and means "the page does not
+ * state this for this line", which is the ordinary case on a category-subtotal
+ * EOB; an OMITTED key is refused, because recording "the page says nothing" about
+ * a figure nobody looked at is the same class of lie as inventing a number for it.
+ */
+export interface AddLineInstruction {
+  code: string;
+  description?: string | null;
+  billedCents: number | null;
+  allowedCents: number | null;
+  deductibleCents: number | null;
+  copayCents: number | null;
+  paidCents: number | null;
+}
+
+/**
+ * Add a line to a claim on this check.
+ *
+ * ADDING LINES IS HOW AN INCOMPLETE READ BECOMES ABLE TO RECONCILE, never a way
+ * around the arithmetic: the added line counts in the claim's sum exactly like a
+ * read one. And it does not open the posting path — a hand-entered line has no
+ * chart line to pair with, so the approval gate withholds the claim by name and
+ * says to post it in Open Dental by hand.
+ *
+ * Returns the whole recomputed state, like a confirm does, so the screen updates
+ * in place.
+ */
+export function addConfirmLine(
+  office: RcmOfficeId,
+  batchId: string,
+  claimId: string,
+  line: AddLineInstruction,
+): Promise<{ addedLineId: string; state: FieldConfirmState }> {
+  return post<{ addedLineId: string; state: FieldConfirmState }>(
+    `/field-confirm/${encodeURIComponent(batchId)}/claims/${encodeURIComponent(claimId)}/lines`,
+    { office },
+    line,
+  );
+}
+
+/**
+ * Strike a line as not on the page — or take that back.
+ *
+ * NOTHING IS DELETED either way. A strike is a row saying a person read the page
+ * and the line is not there; a withdrawal is an update on that row, so the trail
+ * keeps both halves of "she struck it, then changed her mind".
+ *
+ * `reason` is required when striking. A line leaving a claim's arithmetic with no
+ * recorded reason is money that changed and cannot be accounted for.
+ */
+export function strikeConfirmLine(
+  office: RcmOfficeId,
+  batchId: string,
+  body: {
+    claimId: string;
+    lineId?: string;
+    addedLineId?: string;
+    reason?: string;
+    struck?: boolean;
+  },
+): Promise<{ struck: boolean; state: FieldConfirmState }> {
+  return post<{ struck: boolean; state: FieldConfirmState }>(
+    `/field-confirm/${encodeURIComponent(batchId)}/strikes`,
+    { office },
+    body,
+  );
 }
 
 /**

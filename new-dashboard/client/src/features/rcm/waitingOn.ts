@@ -71,6 +71,7 @@ export interface WaitingContext {
  * render an empty cell on one of the two screens.
  */
 export const WAITING_STATES = [
+  "archived",
   "set_aside",
   "other_office",
   "takeback",
@@ -136,6 +137,20 @@ export function isTakeback(r: Remittance): boolean {
 export function waitingFor(r: Remittance, ctx: WaitingContext = {}): Waiting {
   const reasons = r.attentionReasons;
   const observations = r.attentionObservations;
+
+  /*
+   * Archived outranks even set-aside: the row only renders on its own tab, and
+   * what the reader there needs is why it is here and that it comes back.
+   */
+  if (r.archivedAt != null) {
+    return {
+      state: "archived",
+      waitingOn: "Nobody — it was archived",
+      next: "Archived.",
+      detail: "It was never posted. Bring it back and it rejoins the queue.",
+      urgent: false,
+    };
+  }
 
   if (r.setAsideAt != null) {
     return {

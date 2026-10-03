@@ -270,10 +270,15 @@ router.post(
     // line; `sanitizeFilename` only bounds its length for the text column.
     const filename = sanitizeFilename(file.originalname);
 
+    // `status <> 'archived'`: an archived upload belongs to an archived check
+    // (1790000000000), and the whole point of archiving one is that the same
+    // file can come in again cleanly. The partial unique index below the
+    // INSERT excludes 'archived' for the same reason, so the probe and the
+    // index cannot disagree about whether this document is "already here".
     const existing = await tenantDb.withTenantDb(req, (pool) =>
       pool.query(
         `SELECT ${LIST_COLUMNS} FROM rcm_eob_uploads
-          WHERE office_id = $1 AND file_hash = $2
+          WHERE office_id = $1 AND file_hash = $2 AND status <> 'archived'
           ORDER BY uploaded_at DESC LIMIT 1`,
         [office, fileHash]
       )
@@ -431,7 +436,7 @@ router.post(
       const raced = await tenantDb.withTenantDb(req, (pool) =>
         pool.query(
           `SELECT ${LIST_COLUMNS} FROM rcm_eob_uploads
-            WHERE office_id = $1 AND file_hash = $2
+            WHERE office_id = $1 AND file_hash = $2 AND status <> 'archived'
             ORDER BY uploaded_at DESC LIMIT 1`,
           [office, fileHash]
         )
@@ -531,13 +536,28 @@ router.get(
     const offset = parseBound(req.query.offset, 0, Number.MAX_SAFE_INTEGER);
 
     const { rows, total } = await tenantDb.withTenantDb(req, async (pool) => {
+      /*
+       * `status <> 'archived'` — ARCHIVED UPLOADS ARE OFF THE BOARD, the same
+       * partition the Checks list gives archived checks. The archive route
+       * (PR #213) flips a check's linked uploads to 'archived'; a list that
+       * kept showing them re-offered evidence of work that was deliberately
+       * put away. The COUNT carries the same predicate, or the panel would
+       * paginate toward rows it can never show. Unarchive flips the upload
+       * back to 'extracted', so the row reappears by changing state — no
+       * include-archived switch is needed here.
+       */
       const [page, count] = await Promise.all([
         pool.query(
-          `SELECT ${LIST_COLUMNS} FROM rcm_eob_uploads WHERE office_id = $1 ` +
+          `SELECT ${LIST_COLUMNS} FROM rcm_eob_uploads ` +
+            `WHERE office_id = $1 AND status <> 'archived' ` +
             `ORDER BY uploaded_at DESC LIMIT $2 OFFSET $3`,
           [office, limit, offset]
         ),
-        pool.query(`SELECT COUNT(*)::int AS n FROM rcm_eob_uploads WHERE office_id = $1`, [office]),
+        pool.query(
+          `SELECT COUNT(*)::int AS n FROM rcm_eob_uploads ` +
+            `WHERE office_id = $1 AND status <> 'archived'`,
+          [office]
+        ),
       ]);
       return { rows: page.rows, total: num(count.rows[0] && count.rows[0].n) };
     });

@@ -647,21 +647,23 @@ describe("a column whose job is a sentence never cuts itself off", () => {
 
 // ─── The Checks page, after the upload move ──────────────────────────────────
 
-describe("Checks renders four tabs and no way to upload", () => {
-  it("draws exactly the four list questions, and no fifth", async () => {
+describe("Checks renders five tabs and no way to upload", () => {
+  it("draws exactly the five list questions, and no sixth", async () => {
     /*
      * The eight-tab strip was a menu of every predicate the module can express,
      * and a biller had to decide which of *Waiting to be matched*, *Waiting for
      * your review* and *Ready to post* her check was in before she could look
      * for it — a taxonomy question standing in front of the work.
      *
-     * These four are the ones about the LIST rather than about a row, and they
+     * These are the ones about the LIST rather than about a row, and they
      * are exactly `SERVER_VIEWS`, so every count on them is a whole-practice
-     * number. `CHECK_TABS` is asserted rather than a hand-typed list, so a fifth
-     * tab is one red test and not a hunt through four suites.
+     * number. Archived joined as the fifth: the one partition that is off every
+     * other tab must be findable somewhere. `CHECK_TABS` is asserted rather
+     * than a hand-typed list, so a sixth tab is one red test and not a hunt
+     * through four suites.
      */
     const { CHECK_TABS } = await import("@/features/rcm/worklist");
-    expect([...CHECK_TABS]).toEqual(["attention", "parked", "set_aside", "all"]);
+    expect([...CHECK_TABS]).toEqual(["attention", "parked", "set_aside", "archived", "all"]);
 
     state.checks = [check()];
     const RemittanceList = (await import("@/pages/rcm/RemittanceList")).default;

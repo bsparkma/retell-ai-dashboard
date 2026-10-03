@@ -14875,6 +14875,7 @@ __export(contract_entry_exports, {
   PERIO_FULL_MOUTH_SITES: () => PERIO_FULL_MOUTH_SITES,
   PERIO_LOWER_TEETH: () => PERIO_LOWER_TEETH,
   PERIO_MAX_DEPTH: () => PERIO_MAX_DEPTH,
+  PERIO_NO_READING_REFUSAL: () => PERIO_NO_READING_REFUSAL,
   PERIO_SEGMENTS: () => PERIO_SEGMENTS,
   PERIO_SEND_BATCH: () => PERIO_SEND_BATCH,
   PERIO_SEND_STATES: () => PERIO_SEND_STATES,
@@ -14896,6 +14897,7 @@ __export(contract_entry_exports, {
   PerioGradeSchema: () => PerioGradeSchema,
   PerioMismatchKindSchema: () => PerioMismatchKindSchema,
   PerioMismatchSchema: () => PerioMismatchSchema,
+  PerioPreSkipSchema: () => PerioPreSkipSchema,
   PerioPriorSchema: () => PerioPriorSchema,
   PerioResendRequestSchema: () => PerioResendRequestSchema,
   PerioSameDateExamSchema: () => PerioSameDateExamSchema,
@@ -14968,6 +14970,7 @@ __export(contract_entry_exports, {
   perioChangeLine: () => perioChangeLine,
   perioChangeSiteRef: () => perioChangeSiteRef,
   perioChartChanges: () => perioChartChanges,
+  perioHasReading: () => perioHasReading,
   perioJawOfField: () => perioJawOfField,
   perioJawOfTooth: () => perioJawOfTooth,
   perioMismatchLine: () => perioMismatchLine,
@@ -16324,6 +16327,10 @@ function countPerioChart(chart) {
   counts.empty = counts.sitesCharted === 0 && counts.teethSkipped.length === 0 && PERIO_FLAGS.every((flag) => counts[flag] === 0);
   return counts;
 }
+function perioHasReading(counts) {
+  return counts.sitesCharted > 0 || PERIO_FLAGS.some((flag) => counts[flag] > 0);
+}
+var PERIO_NO_READING_REFUSAL = "There are no perio readings on this visit yet, so there is nothing to stage. Skipped teeth do not count \u2014 a skip says a tooth was not charted, not what was measured. Open the perio chart and enter a reading first.";
 function perioProgressLabel(counts) {
   const skipped = counts.teethSkipped.length;
   const tail = skipped === 0 ? "" : ` (${skipped} ${skipped === 1 ? "tooth" : "teeth"} skipped)`;
@@ -16428,7 +16435,17 @@ var HygPerioResponseSchema = import_zod3.z.object({
   visitStarted: import_zod3.z.boolean(),
   chart: PerioChartSchema,
   stagedWrite: StagedWriteSchema.nullable(),
-  counts: PerioCountsSchema
+  counts: PerioCountsSchema,
+  /**
+   * ITEM 27: has a perio chart for this visit EVER been stored? Not "is it
+   * empty" — `counts.empty` already answers that, and it is the wrong question
+   * for a pre-skip. A hygienist who un-skips the last pre-skipped tooth leaves
+   * an empty chart behind, and an empty chart is indistinguishable from an
+   * untouched one, so keying the pre-skip on emptiness would undo her un-skip
+   * on the next open. A stored row says she has been here. Defaults false so an
+   * older answer pre-skips as a first open would.
+   */
+  chartStored: import_zod3.z.boolean().default(false)
 });
 var PerioPriorSchema = import_zod3.z.discriminatedUnion("status", [
   import_zod3.z.object({
@@ -16483,6 +16500,14 @@ var PerioDriftSchema = import_zod3.z.discriminatedUnion("status", [
   }),
   import_zod3.z.object({ status: import_zod3.z.literal("unknown"), examNum: import_zod3.z.number().int() })
 ]);
+var PerioPreSkipSchema = import_zod3.z.discriminatedUnion("status", [
+  import_zod3.z.object({
+    status: import_zod3.z.literal("ready"),
+    /** Permanent teeth 1–32 marked `Missing`. Empty = none, NOT "unknown". */
+    teeth: import_zod3.z.array(import_zod3.z.number().int().min(1).max(PERIO_TOOTH_COUNT))
+  }),
+  import_zod3.z.object({ status: import_zod3.z.literal("unavailable") })
+]);
 var PerioResendRequestSchema = import_zod3.z.object({ examNum: import_zod3.z.number().int().positive() }).strict();
 var HygPerioPriorResponseSchema = import_zod3.z.object({
   success: import_zod3.z.literal(true),
@@ -16491,7 +16516,8 @@ var HygPerioPriorResponseSchema = import_zod3.z.object({
   date: import_zod3.z.string(),
   appointment: HygAppointmentSchema,
   prior: PerioPriorSchema,
-  drift: PerioDriftSchema
+  drift: PerioDriftSchema,
+  preSkip: PerioPreSkipSchema.default({ status: "unavailable" })
 });
 
 // shared/hyg/perioSend.ts
@@ -17083,6 +17109,7 @@ var import_zod5 = __toESM(require_zod());
   PERIO_FULL_MOUTH_SITES,
   PERIO_LOWER_TEETH,
   PERIO_MAX_DEPTH,
+  PERIO_NO_READING_REFUSAL,
   PERIO_SEGMENTS,
   PERIO_SEND_BATCH,
   PERIO_SEND_STATES,
@@ -17104,6 +17131,7 @@ var import_zod5 = __toESM(require_zod());
   PerioGradeSchema,
   PerioMismatchKindSchema,
   PerioMismatchSchema,
+  PerioPreSkipSchema,
   PerioPriorSchema,
   PerioResendRequestSchema,
   PerioSameDateExamSchema,
@@ -17176,6 +17204,7 @@ var import_zod5 = __toESM(require_zod());
   perioChangeLine,
   perioChangeSiteRef,
   perioChartChanges,
+  perioHasReading,
   perioJawOfField,
   perioJawOfTooth,
   perioMismatchLine,

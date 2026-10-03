@@ -289,9 +289,15 @@ export function remittanceHref(batchId: string): string {
  * A step ON a check rather than a screen of its own in the nav: it is reachable
  * from the check and from the approve checklist's refusal, and a biller whose
  * payer sends electronic remittances never meets it.
+ *
+ * `claimId` anchors the screen AT that claim — the "Fix a figure on this
+ * claim" door from the match page and the check's claim rows. It is a scroll
+ * target, nothing more: the confirm screen stays the ONE audited place a
+ * figure is edited, and the door only chooses where it opens.
  */
-export function confirmHref(batchId: string): string {
-  return `/rcm/remittances/${encodeURIComponent(batchId)}/confirm`;
+export function confirmHref(batchId: string, claimId?: string | null): string {
+  const base = `/rcm/remittances/${encodeURIComponent(batchId)}/confirm`;
+  return claimId ? `${base}?claim=${encodeURIComponent(claimId)}` : base;
 }
 
 /**

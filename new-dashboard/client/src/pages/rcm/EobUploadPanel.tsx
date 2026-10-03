@@ -73,6 +73,17 @@ const STATUS_CHIP: Record<EobUploadStatus, { label: string; className: string }>
     label: "Failed",
     className: "bg-destructive/10 text-destructive border-destructive/30",
   },
+  /*
+   * Rarely seen here: the list excludes archived uploads server-side, but a
+   * poll already in flight when somebody archives the check still delivers
+   * one — and a missing entry in this Record was a TypeError that took down
+   * every page rendering this panel (the #213 staging incident). Muted like
+   * `uploaded`: put away, not in trouble.
+   */
+  archived: {
+    label: "Archived",
+    className: "bg-muted text-muted-foreground border-border",
+  },
 };
 
 /**

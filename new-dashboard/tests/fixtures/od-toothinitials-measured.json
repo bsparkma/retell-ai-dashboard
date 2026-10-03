@@ -1,0 +1,33 @@
+{
+  "question": "Four things about GET /toothinitials that item 18 could not settle from Open Dental's documentation, and so shipped without the feature rather than guessing: (1) how is ABSENCE spelled — /perioexams answers 200+[] but /procedurelogs/GroupNotes answers a 404 with a sentence, and item 27's whole premise is telling 'this patient has no missing teeth' apart from 'Open Dental could not be read'; (2) is ToothNum a string or a number, given that the same column carries primary letters A-T; (3) which InitialType values actually appear; (4) is the PatNum filter honoured, or does this endpoint ignore it and answer with the whole practice the way RCM's spikes found other OD list endpoints do?",
+  "verdict": "1. ABSENCE IS HTTP 200 + []. Like /perioexams, NOT like GroupNotes. 2. ToothNum is a STRING. 3. InitialType 'Missing' (exact case). 4. THE FILTER WAS HONOURED, BUT UNFILTERED THE ENDPOINT ANSWERS WITH THE WHOLE PRACTICE — 100 rows across 28 distinct PatNums.",
+  "method": "Ran the checked-in read-only probe backend/scripts/probe-hyg-tooth-initials.js inside the STAGING container (ca-carein-backend / rg-carein-staging, revision --0000206, image a585f3c), where managed identity can load the roland customer key. The probe is fixture-gated: it refuses any PatNum that is not a designated test patient, and apiGetRaw is the only client call in the file. It could not be run from the workstation — config/secrets.js only contacts Key Vault when NODE_ENV=production, so a local run fails with OFFICE_OD_KEY_MISSING before reaching Open Dental. Item 18's report records that; item 27 is the slice built on the answer.",
+  "measured": {
+    "absence": {
+      "request": "GET /toothinitials?PatNum=12827",
+      "answer": "ok=true, status=200, body=array(0)",
+      "reading": "An empty array is an ANSWER: this patient has no tooth initials, so no missing teeth. Only a non-ok response is 'unavailable'. No recogniser like isNoGroupNotesAnswer is needed on this surface, and none should be added — there is no refusal to recognise."
+    },
+    "toothNumType": {
+      "request": "GET /toothinitials?PatNum=12828",
+      "answer": "five rows with InitialType 'Missing', ToothNum \"1\", \"16\", \"9\", \"32\", \"17\" — typeof string, all five",
+      "reading": "PARSE it; never ===-compare a tooth to a number. Note the rows are NOT in tooth order, so the reader sorts. Open Dental also stores primary teeth as letters A-T in this column, so any value that does not parse to an integer 1-32 is IGNORED rather than treated as an error: a child's chart is not a failed read, and v1 charts permanent dentition only."
+    },
+    "initialType": {
+      "observedValues": ["Missing"],
+      "documentedValues": ["Missing", "Hidden", "Primary", "ShiftM", "ShiftO", "ShiftB", "Rotate", "TipM", "TipB"],
+      "reading": "Only InitialType === 'Missing' pre-skips. Every other documented type describes a tooth that IS in the mouth and DOES get probed — a rotated tooth opening pre-skipped would be a reading quietly not taken."
+    },
+    "unfilteredHazard": {
+      "request": "GET /toothinitials (no params)",
+      "answer": "100 rows across 28 distinct PatNums",
+      "reading": "RED FLAG, same class as /periomeasures/{id} returning every row (item 16/17/19). The reader ALWAYS passes PatNum=, and additionally DROPS any returned row whose own PatNum is not the patient asked about — the filter was honoured here, but a row for somebody else must never be one silently-ignored parameter away from skipping teeth on this chart. Dropped rows are COUNTED and warned about once, never logged individually."
+    }
+  },
+  "consequences": [
+    "backend/services/hyg/odToothInitials.js encodes all four: PatNum always passed, per-row PatNum check, parse-not-compare on ToothNum, exact-case 'Missing' only, and 200+[] as a real answer that pre-skips nothing.",
+    "ONE request, not pagedList: the item-27 budget is one added request per chart open, so a patient with more than 100 tooth-initial rows is read short. Under-skipping is the safe direction — those teeth behave exactly as they do today — but it is reported as `truncated` so it does not look like a complete answer.",
+    "The pre-skip is a DEFAULT, never a lock: an implant is marked Missing in Open Dental and still gets probed, so every pre-skipped tooth can be un-skipped."
+  ],
+  "noPhi": "PatNums 12827 and 12828 are the designated roland test fixtures (CLAUDE.md section 3). No name, no phone, no date of birth, and no real patient appears here or in the probe's output. The 'whole practice' answer is recorded as counts only — 100 rows, 28 distinct PatNums — never the PatNums themselves."
+}

@@ -681,3 +681,535 @@ test('a text-layer PDF is not confirmed either — only a scan is', async () => 
     await close();
   }
 });
+
+// ─── The POST answers with the whole state, so a save can happen in place ─────
+
+test('the POST returns the WHOLE recomputed state, not just the rows it wrote', async () => {
+  /*
+   * WHY THE RESPONSE IS THIS BIG.
+   *
+   * The screen used to re-fetch the page after every confirm, which threw the
+   * document viewer and the figure list back to the top — so a biller working
+   * thirty figures down a scanned EOB lost her place thirty times.
+   *
+   * The alternative to a re-fetch is NOT for the browser to work out the new
+   * state for itself: `confirmed` vs `corrected`, the outstanding count and the
+   * sum against the anchor are all decided by one accessor on the server, and a
+   * screen that recomputed them would be a second opinion about which number is
+   * real. So the POST says what it now holds, and the screen takes it verbatim.
+   */
+  const { baseUrl, close } = await bootConfirm();
+  try {
+    const before = await api(baseUrl, 'GET', `/api/rcm/field-confirm/${BATCH}${Q}`);
+    assert.equal(before.body.outstanding.outstanding, 7);
+
+    const res = await api(baseUrl, 'POST', `/api/rcm/field-confirm/${BATCH}${Q}`, {
+      ...json({ fields: [{ field: 'check_total', confirmedCents: 18400 }] }),
+    });
+    assert.equal(res.status, 200);
+
+    // The state is the same shape the GET returns, one field further on.
+    assert.equal(res.body.state.outstanding.outstanding, 6);
+    assert.deepEqual(res.body.state.outstanding.first, {
+      claimId: CLAIM,
+      lineId: null,
+      field: 'claim_total_paid',
+    });
+    assert.equal(res.body.state.checkTotal.confirmed, true);
+    assert.equal(res.body.state.checkTotal.source, 'confirmed');
+    assert.ok(res.body.state.checkTotal.confirmedBy, 'the trail sentence needs a name');
+    assert.equal(res.body.state.batchId, BATCH);
+    assert.ok(res.body.state.claims.length >= 1);
+    assert.ok(res.body.state.sums, 'the sum against the anchor is recomputed too');
+
+    // And it agrees with what a fresh GET would say, field for field. If these
+    // could differ, an in-place save would drift from the page it replaced.
+    const after = await api(baseUrl, 'GET', `/api/rcm/field-confirm/${BATCH}${Q}`);
+    const { success, ...freshState } = after.body;
+    assert.equal(success, true);
+    assert.deepEqual(res.body.state, freshState);
+  } finally {
+    await close();
+  }
+});
+
+test('the POST state covers fields it did NOT write, not only the ones it did', async () => {
+  /*
+   * A request may confirm five figures of which two were already confirmed, and
+   * the upsert's RETURNING describes those five only. Merging the written rows
+   * into what the screen already held would therefore be right by accident on a
+   * fresh check and wrong on a resumed one. The state comes from one indexed
+   * read of every confirmation on the check instead.
+   */
+  const { baseUrl, close } = await bootConfirm();
+  try {
+    await api(baseUrl, 'POST', `/api/rcm/field-confirm/${BATCH}${Q}`, {
+      ...json({ fields: [{ field: 'check_total', confirmedCents: 18400 }] }),
+    });
+    const res = await api(baseUrl, 'POST', `/api/rcm/field-confirm/${BATCH}${Q}`, {
+      ...json({ fields: [{ claimId: CLAIM, field: 'claim_total_paid', confirmedCents: 18400 }] }),
+    });
+
+    assert.equal(res.body.confirmed.length, 1, 'one row written');
+    assert.equal(
+      res.body.state.checkTotal.confirmed,
+      true,
+      'the earlier confirmation is still in the state this response carries'
+    );
+    assert.equal(res.body.state.outstanding.outstanding, 5);
+  } finally {
+    await close();
+  }
+});
+
+// ─── A line the scan missed, and a line it invented ──────────────────────────
+
+/** The body of an add-a-line request, with every figure present. */
+function lineBody(over = {}) {
+  return {
+    code: 'D0220',
+    description: 'Intraoral periapical first film',
+    billedCents: 4200,
+    allowedCents: 3100,
+    deductibleCents: 0,
+    copayCents: 0,
+    paidCents: 3100,
+    ...over,
+  };
+}
+
+const ADD = (claimId = CLAIM) => `/api/rcm/field-confirm/${BATCH}/claims/${claimId}/lines${Q}`;
+const STRIKE = `/api/rcm/field-confirm/${BATCH}/strikes${Q}`;
+
+test('adding a line demands rcm.write — typing a figure is not a read-tier act', async () => {
+  const { baseUrl, close } = await bootConfirm({ role: 'tc' });
+  try {
+    const res = await api(baseUrl, 'POST', ADD(), { ...json(lineBody()) });
+    assert.equal(res.status, 403);
+  } finally {
+    await close();
+  }
+});
+
+test('striking a line demands rcm.write', async () => {
+  const { baseUrl, close } = await bootConfirm({ role: 'tc' });
+  try {
+    const res = await api(baseUrl, 'POST', STRIKE, {
+      ...json({ claimId: CLAIM, lineId: LINE, reason: 'A subtotal row, not a procedure.' }),
+    });
+    assert.equal(res.status, 403);
+  } finally {
+    await close();
+  }
+});
+
+test('another office cannot add a line to this check — a miss, not a refusal', async () => {
+  const { baseUrl, close } = await bootConfirm();
+  try {
+    const res = await api(baseUrl, 'POST', ADD().replace('office=roland', 'office=valley'), {
+      ...json(lineBody()),
+    });
+    assert.equal(res.status, 404);
+    assert.equal(res.body.code, 'BATCH_NOT_FOUND');
+  } finally {
+    await close();
+  }
+});
+
+test('an added line is stored beside the extraction, and never in it', async () => {
+  const { baseUrl, db, close } = await bootConfirm();
+  try {
+    const before = db.table('rcm_procedure_lines').map((r) => ({ ...r }));
+
+    const res = await api(baseUrl, 'POST', ADD(), { ...json(lineBody()) });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.addedLineId, 'the screen needs the id to be able to strike it');
+
+    const rows = db.table('rcm_eob_added_lines');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].code, 'D0220');
+    assert.equal(rows[0].paid_cents, 3100);
+    assert.equal(rows[0].claim_id, CLAIM);
+    assert.ok(rows[0].added_by, 'a line with no author is not a transcription');
+
+    // EXTRACTION IS IMMUTABLE. Not one procedure-line row changed.
+    assert.deepEqual(db.table('rcm_procedure_lines'), before);
+  } finally {
+    await close();
+  }
+});
+
+test('an added line comes back on the claim, marked as human-added, with its trail', async () => {
+  const { baseUrl, close } = await bootConfirm();
+  try {
+    await api(baseUrl, 'POST', ADD(), { ...json(lineBody()) });
+    const res = await api(baseUrl, 'GET', `/api/rcm/field-confirm/${BATCH}${Q}`);
+
+    const lines = res.body.claims[0].lines;
+    assert.equal(lines.length, 2, 'the read line and the one she typed in');
+    assert.equal(lines[0].kind, 'extracted');
+
+    const added = lines[1];
+    assert.equal(added.kind, 'added');
+    assert.equal(added.code, 'D0220');
+    assert.equal(added.struck, null);
+
+    const paid = added.fields.find((f) => f.field === 'line_paid');
+    assert.equal(paid.cents, 3100);
+    assert.equal(paid.stated, true);
+    /*
+     * `added`, not `corrected`. A correction is a person disagreeing with the
+     * machine about a figure; this is a person supplying one the machine never
+     * offered, and the screen says so differently.
+     */
+    assert.equal(paid.source, 'added');
+    assert.equal(paid.confirmed, true, 'typing it off the page IS the confirmation');
+    assert.equal(paid.extractedCents, null, 'the read produced no figure, not a blank one');
+    assert.ok(paid.confirmedBy, 'the mark needs a name');
+  } finally {
+    await close();
+  }
+});
+
+test('an added line asks for no confirmation of its own', async () => {
+  /*
+   * Her typing it off the page is the same act the confirm step records for a
+   * read figure. Demanding she then confirm her own transcription would be
+   * ceremony, and a review step that teaches billers it is ceremony is worse
+   * than none.
+   */
+  const { baseUrl, close } = await bootConfirm();
+  try {
+    const before = await api(baseUrl, 'GET', `/api/rcm/field-confirm/${BATCH}${Q}`);
+    assert.equal(before.body.outstanding.outstanding, 7);
+
+    const res = await api(baseUrl, 'POST', ADD(), { ...json(lineBody()) });
+    assert.equal(
+      res.body.state.outstanding.outstanding,
+      7,
+      'five more figures on screen, and not one more to check'
+    );
+  } finally {
+    await close();
+  }
+});
+
+test('ADDING A LINE IS HOW AN INCOMPLETE READ RECONCILES — the sum goes from off to right', async () => {
+  /*
+   * THE CASE THE FEATURE EXISTS FOR, end to end.
+   *
+   * The claim was paid $184.00. The read found one line, and once a person has
+   * confirmed that line's payment as $153.00, the lines come to $153.00 against a
+   * claim total of $184.00 — $31.00 short, because the scan missed an x-ray line.
+   * Typing that line in makes the arithmetic right by becoming MORE complete.
+   */
+  const { baseUrl, close } = await bootConfirm();
+  try {
+    await api(baseUrl, 'POST', `/api/rcm/field-confirm/${BATCH}${Q}`, {
+      ...json({
+        fields: [{ claimId: CLAIM, lineId: LINE, field: 'line_paid', confirmedCents: 15300 }],
+      }),
+    });
+
+    const off = await api(baseUrl, 'GET', `/api/rcm/field-confirm/${BATCH}${Q}`);
+    const before = off.body.claims[0].lineSum;
+    assert.equal(before.comparable, true);
+    assert.equal(before.lineSumCents, 15300);
+    assert.equal(before.claimTotalCents, 18400);
+    assert.equal(before.differenceCents, -3100);
+    assert.equal(before.ok, false, 'does not add up');
+
+    const res = await api(baseUrl, 'POST', ADD(), {
+      ...json(lineBody({ billedCents: 4200, allowedCents: 3100, paidCents: 3100 })),
+    });
+    const after = res.body.state.claims[0].lineSum;
+    assert.equal(after.lineSumCents, 18400);
+    assert.equal(after.differenceCents, 0);
+    assert.equal(after.ok, true, 'reconciled');
+  } finally {
+    await close();
+  }
+});
+
+test('an omitted figure on an added line is refused, not defaulted to "not stated"', async () => {
+  const { baseUrl, close } = await bootConfirm();
+  try {
+    const body = lineBody();
+    delete body.allowedCents;
+    const res = await api(baseUrl, 'POST', ADD(), { ...json(body) });
+    assert.equal(res.status, 400);
+    assert.equal(res.body.code, 'FIGURE_MISSING');
+    assert.match(res.body.error, /line_allowed/);
+  } finally {
+    await close();
+  }
+});
+
+test('null IS a legal figure on an added line — the page may not state one', async () => {
+  const { baseUrl, close } = await bootConfirm();
+  try {
+    const res = await api(baseUrl, 'POST', ADD(), { ...json(lineBody({ allowedCents: null })) });
+    assert.equal(res.status, 200);
+    const added = res.body.state.claims[0].lines[1];
+    const allowed = added.fields.find((f) => f.field === 'line_allowed');
+    assert.equal(allowed.cents, null);
+    assert.equal(allowed.stated, false, 'never a zero standing in for a figure nobody printed');
+  } finally {
+    await close();
+  }
+});
+
+test('a line with no code, a negative figure and a fractional cent are all refused', async () => {
+  const { baseUrl, close } = await bootConfirm();
+  try {
+    const blank = await api(baseUrl, 'POST', ADD(), { ...json(lineBody({ code: '   ' })) });
+    assert.equal(blank.status, 400);
+    assert.equal(blank.body.code, 'CODE_MISSING');
+
+    const negative = await api(baseUrl, 'POST', ADD(), { ...json(lineBody({ paidCents: -100 })) });
+    assert.equal(negative.status, 400);
+    assert.equal(negative.body.code, 'FIGURE_NEGATIVE');
+    assert.match(negative.body.error, /takeback/);
+
+    const fraction = await api(baseUrl, 'POST', ADD(), { ...json(lineBody({ paidCents: 31.5 })) });
+    assert.equal(fraction.status, 400);
+    assert.equal(fraction.body.code, 'FIGURE_NOT_AN_INTEGER');
+  } finally {
+    await close();
+  }
+});
+
+test('an 835 takes no hand-entered line — there is no page to read one off', async () => {
+  const { baseUrl, close } = await bootConfirm({ textSource: null });
+  try {
+    const res = await api(baseUrl, 'POST', ADD(), { ...json(lineBody()) });
+    assert.equal(res.status, 409);
+    assert.equal(res.body.code, 'NOT_A_SCANNED_CHECK');
+  } finally {
+    await close();
+  }
+});
+
+test('a claim that is not on this check is refused', async () => {
+  const { baseUrl, close } = await bootConfirm();
+  try {
+    const res = await api(baseUrl, 'POST', ADD('11111111-2222-3333-4444-555555555555'), {
+      ...json(lineBody()),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(res.body.code, 'CLAIM_NOT_ON_CHECK');
+  } finally {
+    await close();
+  }
+});
+
+test('adding a line is audited as a CREATE against the check it was read from', async () => {
+  const { baseUrl, db, close } = await bootConfirm();
+  try {
+    await api(baseUrl, 'POST', ADD(), { ...json(lineBody()) });
+    const rows = auditRows(db).filter((r) => r.resource_type === 'rcm_eob_added_line');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].action, 'CREATE');
+    assert.equal(rows[0].result, 'SUCCESS');
+    assert.equal(rows[0].source_ref, BATCH, 'the trail joins back to the document');
+  } finally {
+    await close();
+  }
+});
+
+// ─── Striking a line the read invented ───────────────────────────────────────
+
+test('striking a line records WHY, and deletes no extraction data', async () => {
+  const { baseUrl, db, close } = await bootConfirm();
+  try {
+    const before = db.table('rcm_procedure_lines').map((r) => ({ ...r }));
+    const res = await api(baseUrl, 'POST', STRIKE, {
+      ...json({
+        claimId: CLAIM,
+        lineId: LINE,
+        reason: 'The scan read the benefit subtotal row as a procedure.',
+      }),
+    });
+    assert.equal(res.status, 200);
+
+    const rows = db.table('rcm_eob_line_strikes');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].line_id, LINE);
+    assert.equal(rows[0].added_line_id, null);
+    assert.match(rows[0].reason, /subtotal/);
+    assert.ok(rows[0].struck_by);
+
+    assert.deepEqual(db.table('rcm_procedure_lines'), before);
+  } finally {
+    await close();
+  }
+});
+
+test('a struck line is still SENT, marked struck, with the reason and who struck it', async () => {
+  const { baseUrl, close } = await bootConfirm();
+  try {
+    await api(baseUrl, 'POST', STRIKE, {
+      ...json({ claimId: CLAIM, lineId: LINE, reason: 'Not a procedure row.' }),
+    });
+    const res = await api(baseUrl, 'GET', `/api/rcm/field-confirm/${BATCH}${Q}`);
+
+    /*
+     * NOT DROPPED. A line that silently vanished would be a claim whose
+     * arithmetic changed with nothing on screen to account for it — and the only
+     * way back from a mis-strike is to be able to see the strike.
+     */
+    const lines = res.body.claims[0].lines;
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].struck.reason, 'Not a procedure row.');
+    assert.ok(lines[0].struck.struckBy);
+    assert.ok(lines[0].struck.struckAt);
+  } finally {
+    await close();
+  }
+});
+
+test('a struck line stops asking to be checked against the page', async () => {
+  /*
+   * Otherwise the count could never reach zero: she would be asked to confirm
+   * five figures on a line she has just said is not on the page. That is a wall,
+   * and this module does not build walls.
+   */
+  const { baseUrl, close } = await bootConfirm();
+  try {
+    const res = await api(baseUrl, 'POST', STRIKE, {
+      ...json({ claimId: CLAIM, lineId: LINE, reason: 'Not a procedure row.' }),
+    });
+    assert.equal(res.body.state.outstanding.outstanding, 2, 'the check total and the claim total');
+  } finally {
+    await close();
+  }
+});
+
+test('a strike can be taken back, and the row stays so the trail keeps both halves', async () => {
+  const { baseUrl, db, close } = await bootConfirm();
+  try {
+    await api(baseUrl, 'POST', STRIKE, {
+      ...json({ claimId: CLAIM, lineId: LINE, reason: 'Thought it was a subtotal.' }),
+    });
+    const res = await api(baseUrl, 'POST', STRIKE, {
+      ...json({ claimId: CLAIM, lineId: LINE, struck: false }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.struck, false);
+
+    // The line counts again, and asks to be checked again.
+    assert.equal(res.body.state.claims[0].lines[0].struck, null);
+    assert.equal(res.body.state.outstanding.outstanding, 7);
+
+    const rows = db.table('rcm_eob_line_strikes');
+    assert.equal(rows.length, 1, 'withdrawn, not deleted');
+    assert.ok(rows[0].withdrawn_at);
+    assert.ok(rows[0].withdrawn_by);
+    assert.match(rows[0].reason, /subtotal/, 'why she struck it survives the withdrawal');
+  } finally {
+    await close();
+  }
+});
+
+test('striking the same line twice is refused by name, not stacked', async () => {
+  const { baseUrl, close } = await bootConfirm();
+  try {
+    await api(baseUrl, 'POST', STRIKE, {
+      ...json({ claimId: CLAIM, lineId: LINE, reason: 'Not a procedure row.' }),
+    });
+    const res = await api(baseUrl, 'POST', STRIKE, {
+      ...json({ claimId: CLAIM, lineId: LINE, reason: 'A different reason.' }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(res.body.code, 'ALREADY_STRUCK');
+  } finally {
+    await close();
+  }
+});
+
+test('a strike with no reason is refused — money cannot leave a sum unexplained', async () => {
+  const { baseUrl, close } = await bootConfirm();
+  try {
+    const res = await api(baseUrl, 'POST', STRIKE, {
+      ...json({ claimId: CLAIM, lineId: LINE, reason: '   ' }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(res.body.code, 'REASON_MISSING');
+  } finally {
+    await close();
+  }
+});
+
+test('a strike naming both kinds of line, or neither, is refused', async () => {
+  const { baseUrl, close } = await bootConfirm();
+  try {
+    const neither = await api(baseUrl, 'POST', STRIKE, {
+      ...json({ claimId: CLAIM, reason: 'Not a line.' }),
+    });
+    assert.equal(neither.status, 400);
+    assert.equal(neither.body.code, 'ONE_LINE_ONLY');
+
+    const both = await api(baseUrl, 'POST', STRIKE, {
+      ...json({ claimId: CLAIM, lineId: LINE, addedLineId: LINE, reason: 'Not a line.' }),
+    });
+    assert.equal(both.status, 400);
+    assert.equal(both.body.code, 'ONE_LINE_ONLY');
+  } finally {
+    await close();
+  }
+});
+
+test('a line on another claim cannot be struck from this one', async () => {
+  const { baseUrl, close } = await bootConfirm();
+  try {
+    const res = await api(baseUrl, 'POST', STRIKE, {
+      ...json({
+        claimId: CLAIM,
+        lineId: '99999999-8888-7777-6666-555555555555',
+        reason: 'Not a line.',
+      }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(res.body.code, 'LINE_NOT_ON_CLAIM');
+  } finally {
+    await close();
+  }
+});
+
+test('a line added by mistake can be struck too, and stops counting', async () => {
+  const { baseUrl, close } = await bootConfirm();
+  try {
+    const added = await api(baseUrl, 'POST', ADD(), { ...json(lineBody()) });
+    const addedLineId = added.body.addedLineId;
+
+    const res = await api(baseUrl, 'POST', STRIKE, {
+      ...json({ claimId: CLAIM, addedLineId, reason: 'Typed the wrong code.' }),
+    });
+    assert.equal(res.status, 200);
+
+    const line = res.body.state.claims[0].lines.find((l) => l.lineId === addedLineId);
+    assert.equal(line.kind, 'added');
+    assert.match(line.struck.reason, /wrong code/);
+  } finally {
+    await close();
+  }
+});
+
+test('striking is audited, and taking it back is audited as its own act', async () => {
+  const { baseUrl, db, close } = await bootConfirm();
+  try {
+    await api(baseUrl, 'POST', STRIKE, {
+      ...json({ claimId: CLAIM, lineId: LINE, reason: 'Not a procedure row.' }),
+    });
+    await api(baseUrl, 'POST', STRIKE, { ...json({ claimId: CLAIM, lineId: LINE, struck: false }) });
+
+    const rows = auditRows(db).filter((r) => r.resource_type === 'rcm_eob_line_strike');
+    assert.equal(rows.length, 2);
+    assert.deepEqual(
+      rows.map((r) => r.action),
+      ['CREATE', 'UPDATE']
+    );
+  } finally {
+    await close();
+  }
+});

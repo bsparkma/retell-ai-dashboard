@@ -421,6 +421,33 @@ test('re-uploading a FAILED document is the retry path — it re-queues and clea
   }
 });
 
+test('re-uploading a document whose check was ARCHIVED is a fresh upload, not a duplicate', async () => {
+  /*
+   * The whole point of archiving a test check (1790000000000): the same file
+   * can come in again, cleanly. The probe skips `archived` rows and the fake's
+   * partial unique index — mirroring the real one — no longer holds the hash,
+   * so the second POST takes the INSERT path rather than any duplicate branch.
+   */
+  const db = new FakeRcmDb();
+  const { baseUrl, jobs, close } = await bootEob({ db });
+  try {
+    await postPdf(baseUrl, 'roland');
+    // As the archive route leaves it: extracted once, check archived since.
+    const row = db.table('rcm_eob_uploads')[0];
+    row.status = 'archived';
+    row.result_batch_id = 'batch-1';
+
+    const again = await postPdf(baseUrl, 'roland');
+    assert.equal(again.status, 201);
+    assert.equal(again.body.duplicate, false);
+    assert.equal(db.table('rcm_eob_uploads').length, 2, 'a fresh row beside the kept one');
+    assert.equal(db.table('rcm_eob_uploads')[0].status, 'archived', 'the archived row is untouched');
+    assert.equal(jobs.length, 2, 'the fresh upload queues its own extraction');
+  } finally {
+    await close();
+  }
+});
+
 test('re-uploading while an attempt is IN FLIGHT does not queue a second one', async () => {
   const db = new FakeRcmDb();
   const { baseUrl, jobs, close } = await bootEob({ db });
@@ -637,6 +664,35 @@ test('with no document reader configured, a PDF that will not OPEN is not blamed
     assert.equal(res.status, 201);
     assert.equal(db.table('rcm_eob_uploads').length, 1);
     assert.equal(jobs.length, 1, 'the worker reports PDF_UNREADABLE, which is the true reason');
+  } finally {
+    await close();
+  }
+});
+
+test('an ARCHIVED upload is off the board — excluded from the list AND the count', async () => {
+  /*
+   * PR #213's archive flips a check's linked uploads to 'archived'. The list is
+   * the "what came in" panel, and an archived check's evidence does not belong
+   * on it — the same partition the Checks list gives archived checks. The COUNT
+   * must move with the rows, or the panel paginates toward uploads it can never
+   * show. Unarchive flips the upload back to 'extracted', so nothing here needs
+   * an "include archived" switch — the row reappears by changing state.
+   */
+  const db = new FakeRcmDb().seed('rcm_eob_uploads', [
+    { upload_id: 'u-live', office_id: 'roland', filename: 'live.pdf', status: 'extracted', uploaded_at: new Date('2026-09-28') },
+    { upload_id: 'u-dead', office_id: 'roland', filename: 'gone.pdf', status: 'archived', uploaded_at: new Date('2026-09-29') },
+    { upload_id: 'u-bad', office_id: 'roland', filename: 'bad.pdf', status: 'failed', uploaded_at: new Date('2026-09-30') },
+  ]);
+  const { baseUrl, close } = await bootEob({ db });
+  try {
+    const res = await api(baseUrl, 'GET', '/api/rcm/eob?office=roland');
+    assert.equal(res.status, 200);
+    assert.deepEqual(
+      res.body.uploads.map((u) => u.uploadId),
+      ['u-bad', 'u-live'],
+      'extracted and failed still show, newest first; archived does not'
+    );
+    assert.equal(res.body.total, 2, 'the count moves with the rows it counts');
   } finally {
     await close();
   }

@@ -25,9 +25,11 @@ import {
   normalizePerioChart,
   perioSite,
   withPerioSite,
+  withPerioSkipped,
   type HygPerioPriorResponse,
   type PerioChart,
   type PerioDrift,
+  type PerioPreSkip,
   type PerioPrior,
 } from "@shared/hyg/perio";
 import { planPerioSend, type HygPerioSendResponse, type PerioSendView } from "@shared/hyg/perioSend";
@@ -44,6 +46,13 @@ const server = vi.hoisted(() => ({
    * `not_applicable` is what an unsent chart gets, and is the default here.
    */
   drift: null as unknown,
+  /**
+   * Item 27: which teeth Open Dental records as Missing, and whether a chart has
+   * ever been stored for this visit. `unavailable` + not-stored is the default,
+   * so no test gets a pre-skip it did not ask for.
+   */
+  preSkip: null as unknown,
+  chartStored: false,
   /** When set, the prior request never answers — "not read yet". */
   priorPending: false,
   priorRefusal: null as { status: number; message: string; code: string } | null,
@@ -132,6 +141,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
       chart,
       stagedWrite: server.stagedWrite as StagedWrite | null,
       counts: perio.countPerioChart(chart),
+      chartStored: server.chartStored,
     };
   };
 
@@ -159,6 +169,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
         appointment: APPOINTMENT,
         prior: server.prior as PerioPrior,
         drift: server.drift as PerioDrift,
+        preSkip: server.preSkip as PerioPreSkip,
       };
     }),
     openVisit: vi.fn(async () => {
@@ -169,6 +180,8 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
     savePerio: vi.fn(async (_o: string, _a: number, chart: PerioChart) => {
       server.calls.push("SAVE");
       server.saves.push(chart);
+      // A stored chart is stored forever after, even if she empties it again.
+      server.chartStored = true;
       server.chart = perio.normalizePerioChart(chart);
       const counts = perio.countPerioChart(chart);
       // A correction rests in `Amending`, a first chart in `Draft` — the server's rule.
@@ -269,6 +282,8 @@ beforeEach(() => {
   server.stagedWrite = null;
   server.prior = { status: "none" };
   server.drift = { status: "not_applicable" };
+  server.preSkip = { status: "unavailable" };
+  server.chartStored = false;
   server.priorPending = false;
   server.priorRefusal = null;
   server.saves = [];
@@ -1031,5 +1046,356 @@ describe("a Written chart whose exam has drifted in Open Dental", () => {
     expect(screen.queryByTestId("hyg-perio-drift-changed")).toBeNull();
     // ONE prior read on open, and the drift rides it. No second request for it.
     expect(server.calls.filter((c) => c === "PRIOR")).toHaveLength(1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ITEM 27: MISSING TEETH PRE-SKIP THEMSELVES
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The server states which teeth Open Dental records as Missing. Everything that
+// decides whether that becomes a skip lives here, on the client, because this is
+// the side that knows what she has done to the chart.
+//
+// The teeth below are the five the probe measured on the roland fixture:
+// "1","16","9","32","17" as STRINGS, which the server parses and sorts.
+
+describe("item 27: a fresh chart opens with Open Dental's missing teeth skipped", () => {
+  const MISSING = [1, 9, 16, 17, 32];
+
+  /** Open Dental answered, and named these teeth. */
+  function odSaysMissing(teeth: number[] = MISSING) {
+    server.preSkip = { status: "ready", teeth };
+  }
+
+  it("ACCEPTANCE 1: the named teeth are skipped, and drawn struck through", async () => {
+    odSaysMissing();
+    renderPerio();
+
+    // The strike-through rendering is #211's, and this is what reaches it.
+    for (const tooth of MISSING) {
+      const number = await screen.findByTestId(`hyg-perio-skipped-number-${tooth}`);
+      expect(number.className).toContain("line-through");
+      expect(screen.getByTestId(`hyg-perio-skipped-${tooth}-facial`)).toBeTruthy();
+      expect(screen.getByTestId(`hyg-perio-skipped-${tooth}-lingual`)).toBeTruthy();
+      // A skipped tooth has no sites to chart into.
+      expect(screen.queryByTestId(`hyg-perio-site-${tooth}-MB`)).toBeNull();
+    }
+    // A tooth Open Dental said nothing about is chartable, as always.
+    expect(screen.getByTestId("hyg-perio-site-3-MB")).toBeTruthy();
+    expect(screen.queryByTestId("hyg-perio-skipped-number-3")).toBeNull();
+  });
+
+  it("says CareIN did it, names the teeth, and says it can be undone", async () => {
+    odSaysMissing([1, 16]);
+    renderPerio();
+    const line = await screen.findByTestId("hyg-perio-preskipped");
+    expect(line.textContent).toMatch(/#1, #16 skipped/);
+    expect(line.textContent).toMatch(/Open Dental records them as missing/);
+    expect(line.textContent).toMatch(/un-skip/);
+    // It is not a warning. A correct default is not a problem to report.
+    expect(line.getAttribute("role")).toBeNull();
+  });
+
+  it("the notice describes the chart AS IT IS — un-skipping a tooth drops it", async () => {
+    odSaysMissing([19, 30]);
+    renderPerio();
+    const line = await screen.findByTestId("hyg-perio-preskipped");
+    expect(line.textContent).toMatch(/#19, #30 skipped/);
+
+    // She un-skips the implant.
+    fireEvent.click(screen.getByTestId("hyg-perio-skipped-19-facial"));
+    fireEvent.keyDown(screen.getByTestId("hyg-perio-grid"), { key: "x", code: "KeyX" });
+    await waitFor(() =>
+      expect(screen.getByTestId("hyg-perio-preskipped").textContent).toMatch(/#30 skipped/),
+    );
+    // #19 is gone from the sentence, and the singular reads correctly.
+    expect(screen.getByTestId("hyg-perio-preskipped").textContent).not.toMatch(/#19/);
+    expect(screen.getByTestId("hyg-perio-preskipped").textContent).toMatch(/records it as missing/);
+
+    // And when she has un-skipped them all, the line goes away rather than
+    // standing there claiming teeth are skipped when none are.
+    fireEvent.click(screen.getByTestId("hyg-perio-skipped-30-facial"));
+    fireEvent.keyDown(screen.getByTestId("hyg-perio-grid"), { key: "x", code: "KeyX" });
+    await waitFor(() => expect(screen.queryByTestId("hyg-perio-preskipped")).toBeNull());
+  });
+
+  it("NOTHING IS SAVED, and no visit is started, by a pre-skip alone", async () => {
+    /*
+     * The serious one. `save` starts a visit that has not been started, so a
+     * pre-skip that persisted itself would open a visit and file a draft chart
+     * for every patient whose chart she merely glanced at.
+     */
+    odSaysMissing();
+    renderPerio();
+    await screen.findByTestId("hyg-perio-skipped-number-1");
+
+    await waitFor(() => expect(server.calls).toContain("PRIOR"));
+    // Give the autosave debounce every chance to fire.
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(server.calls).not.toContain("SAVE");
+    expect(server.calls).not.toContain("OPEN");
+    expect(server.saves).toEqual([]);
+    expect(server.visitStarted).toBe(false);
+  });
+
+  it("STAGING stores the chart FIRST, pre-skips and all — the stage composes from storage", async () => {
+    /*
+     * The autosave stands down while the chart is nothing but the pre-skip, and
+     * `save()` must NOT stand down with it. An earlier version of item 27 moved
+     * `lastSaved` to the pre-skipped chart, which suppressed the autosave as
+     * intended AND made `save()` itself a no-op -- so staging asked the server
+     * for a chart it had never been sent. A separate baseline now suppresses the
+     * autosave only, and this is the test that would catch it coming back.
+     *
+     * ITEM 28 changed how this test gets to Stage, not what it proves. Stage is
+     * now refused on a chart of only skips, so she types one reading first --
+     * which is the realistic path anyway.
+     */
+    odSaysMissing([1, 16]);
+    renderPerio();
+    await screen.findByTestId("hyg-perio-skipped-number-1");
+    // The pre-skip alone saved nothing and cannot be staged.
+    expect(server.calls).not.toContain("SAVE");
+    expect((screen.getByTestId("hyg-perio-stage") as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.keyDown(screen.getByTestId("hyg-perio-grid"), digit(4));
+    await waitFor(() =>
+      expect((screen.getByTestId("hyg-perio-stage") as HTMLButtonElement).disabled).toBe(false),
+    );
+    fireEvent.click(screen.getByTestId("hyg-perio-stage"));
+
+    await waitFor(() => expect(server.calls).toContain("STAGE"));
+    // The save went first, and it carried the pre-skips with the reading.
+    expect(server.calls.indexOf("SAVE")).toBeGreaterThan(-1);
+    expect(server.calls.indexOf("SAVE")).toBeLessThan(server.calls.indexOf("STAGE"));
+    const stored = server.saves.at(-1) as PerioChart;
+    expect(countPerioChart(stored).teethSkipped).toEqual([1, 16]);
+    expect(countPerioChart(stored).sitesCharted).toBe(1);
+  });
+
+  it("ACCEPTANCE 2: a pre-skipped tooth can be un-skipped and then charted", async () => {
+    odSaysMissing([19]);
+    renderPerio();
+
+    // An implant is Missing in Open Dental and still gets probed, so the
+    // pre-skip has to be reachable. #211 made the blank cell selectable.
+    const blank = await screen.findByTestId("hyg-perio-skipped-19-facial");
+    expect(blank.getAttribute("aria-label")).toContain("un-skip");
+    fireEvent.click(blank);
+
+    const grid = screen.getByTestId("hyg-perio-grid");
+    fireEvent.keyDown(grid, { key: "x", code: "KeyX" });
+    await waitFor(() => expect(screen.queryByTestId("hyg-perio-skipped-19-facial")).toBeNull());
+
+    // And now it takes a reading like any other tooth.
+    fireEvent.keyDown(grid, digit(4));
+    await waitFor(() => {
+      const chart = server.saves.at(-1) as PerioChart | undefined;
+      expect(chart).toBeTruthy();
+      expect(countPerioChart(chart as PerioChart).sitesCharted).toBe(1);
+    });
+    // Her un-skip went with it: #19 is no longer skipped in what was stored.
+    const stored = server.saves.at(-1) as PerioChart;
+    expect(countPerioChart(stored).teethSkipped).not.toContain(19);
+  });
+
+  it("her first reading saves the pre-skips along with it", async () => {
+    odSaysMissing();
+    renderPerio();
+    await screen.findByTestId("hyg-perio-skipped-number-1");
+
+    fireEvent.keyDown(screen.getByTestId("hyg-perio-grid"), digit(3));
+    await waitFor(() => expect(server.saves.length).toBeGreaterThan(0));
+
+    const stored = server.saves.at(-1) as PerioChart;
+    // Nothing was lost by not saving the pre-skip on its own.
+    expect(countPerioChart(stored).teethSkipped).toEqual(MISSING);
+    expect(countPerioChart(stored).sitesCharted).toBe(1);
+  });
+});
+
+describe("item 27: her state wins, on this open and every later one", () => {
+  it("ACCEPTANCE 3: a chart with READINGS is never re-skipped", async () => {
+    server.preSkip = { status: "ready", teeth: [1, 16] };
+    server.chart = normalizePerioChart(withPerioSite(emptyPerioChart(), 1, "MB", { depth: 4 }));
+    server.chartStored = true;
+    renderPerio();
+
+    await screen.findByTestId("hyg-perio-site-1-MB");
+    // #1 is charted. Open Dental calling it missing does not overrule a reading.
+    expect(screen.queryByTestId("hyg-perio-skipped-number-1")).toBeNull();
+    expect(screen.queryByTestId("hyg-perio-skipped-number-16")).toBeNull();
+    expect(screen.queryByTestId("hyg-perio-preskipped")).toBeNull();
+  });
+
+  it("ACCEPTANCE 3: a chart she skipped HERSELF is never re-skipped either", async () => {
+    server.preSkip = { status: "ready", teeth: [1, 16] };
+    server.chart = normalizePerioChart(withPerioSkipped(emptyPerioChart(), 30, true));
+    server.chartStored = true;
+    renderPerio();
+
+    await screen.findByTestId("hyg-perio-skipped-number-30");
+    // Her skip stands; CareIN's suggestion is not added to it.
+    expect(screen.queryByTestId("hyg-perio-skipped-number-1")).toBeNull();
+    expect(screen.queryByTestId("hyg-perio-preskipped")).toBeNull();
+  });
+
+  it("ACCEPTANCE 3: an EMPTY chart that was nonetheless stored is not re-skipped", async () => {
+    /*
+     * THE UN-SKIP-THE-LAST-TOOTH CASE, and the reason the gate is `chartStored`
+     * and not `counts.empty`. She opened this chart, un-skipped the one tooth
+     * CareIN pre-skipped, and left. The chart is empty again — and re-skipping
+     * it on this open would be CareIN overruling the only decision she made.
+     */
+    server.preSkip = { status: "ready", teeth: [1, 16] };
+    server.chart = normalizePerioChart(emptyPerioChart());
+    server.chartStored = true;
+    renderPerio();
+
+    await screen.findByTestId("hyg-perio-grid");
+    expect(countPerioChart(server.chart as PerioChart).empty).toBe(true);
+    expect(screen.queryByTestId("hyg-perio-skipped-number-1")).toBeNull();
+    expect(screen.queryByTestId("hyg-perio-preskipped")).toBeNull();
+  });
+
+  it("a reading typed while Open Dental is still answering wins the race", async () => {
+    server.preSkip = { status: "ready", teeth: [1, 16] };
+    let release: (() => void) | null = null;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const api = await import("@/features/hyg/api");
+    const real = api.fetchPerioPrior as unknown as (...a: unknown[]) => Promise<unknown>;
+    const spy = vi
+      .spyOn(api, "fetchPerioPrior")
+      .mockImplementation(async (...args: unknown[]) => {
+        await held;
+        return real(...args) as never;
+      });
+    try {
+      renderPerio();
+      // She starts probing #1 before the initials land.
+      const grid = await screen.findByTestId("hyg-perio-grid");
+      fireEvent.keyDown(grid, digit(5));
+      await waitFor(() => expect(perioSite(server.saves.at(-1) as PerioChart, 1, "DB").depth).toBe(5));
+
+      release?.();
+      await waitFor(() => expect(server.calls).toContain("PRIOR"));
+
+      // Her reading stands and #1 was not skipped out from under it.
+      expect(screen.queryByTestId("hyg-perio-skipped-number-1")).toBeNull();
+      expect(screen.getByTestId("hyg-perio-site-1-DB").textContent).toContain("5");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe("item 27: when Open Dental says nothing, neither does the chart", () => {
+  it("ACCEPTANCE 4: `ready` with no teeth pre-skips nothing and shows no message", async () => {
+    // The measured absence, 200 + [], arriving as a real answer naming no teeth.
+    server.preSkip = { status: "ready", teeth: [] };
+    renderPerio();
+
+    await screen.findByTestId("hyg-perio-grid");
+    expect(screen.queryByTestId("hyg-perio-preskipped")).toBeNull();
+    expect(countPerioChart(emptyPerioChart()).teethSkipped).toEqual([]);
+    // Every tooth is chartable, and nothing anywhere says a read failed.
+    expect(screen.getByTestId("hyg-perio-site-1-DB")).toBeTruthy();
+    expect(screen.queryByTestId("hyg-perio-prior-unavailable")).toBeNull();
+  });
+
+  it("ACCEPTANCE 4: an UNAVAILABLE read opens the chart exactly as it does today", async () => {
+    server.preSkip = { status: "unavailable" };
+    renderPerio();
+
+    await screen.findByTestId("hyg-perio-grid");
+    // No skips, no notice, NO ERROR THEATER. A failed read is not evidence that
+    // this patient has all thirty-two teeth, and it is not worth a banner.
+    expect(screen.queryByTestId("hyg-perio-preskipped")).toBeNull();
+    for (const tooth of [1, 9, 16, 17, 32]) {
+      expect(screen.queryByTestId(`hyg-perio-skipped-number-${tooth}`)).toBeNull();
+      expect(screen.getByTestId(`hyg-perio-site-${tooth}-MB`)).toBeTruthy();
+    }
+  });
+
+  it("a refusal about the appointment pre-skips nothing and still says its own thing", async () => {
+    server.priorRefusal = { status: 409, message: "This appointment moved", code: "PATIENT_CHANGED" };
+    renderPerio();
+    await screen.findByTestId("hyg-perio-prior-failed");
+    expect(screen.queryByTestId("hyg-perio-preskipped")).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ITEM 28: STAGE NEEDS A READING, AND THE BUTTON SAYS SO
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The server is the rail (routes/hyg/hygPerio.test.js). These are about the
+// button not offering something the server would decline, and both read the one
+// shared predicate, `perioHasReading`.
+//
+// Item 27 is why this matters on a chart she has not typed into: Open Dental's
+// missing teeth skip themselves, and the Stage button used to light up.
+
+describe("item 28: a chart of only skips cannot be staged from the screen", () => {
+  const stageButton = () => screen.getByTestId("hyg-perio-stage") as HTMLButtonElement;
+
+  it("ACCEPTANCE 4: skips alone leave Stage disabled, and the note says why", async () => {
+    server.chart = normalizePerioChart(
+      [1, 16, 17, 32].reduce((c, t) => withPerioSkipped(c, t, true), emptyPerioChart()),
+    );
+    server.chartStored = true;
+    renderPerio();
+
+    await screen.findByTestId("hyg-perio-skipped-number-1");
+    // Not empty — that is exactly the case the old predicate let through.
+    expect(countPerioChart(server.chart as PerioChart).empty).toBe(false);
+    expect(stageButton().disabled).toBe(true);
+    expect(screen.getByTestId("hyg-perio-stage-note").textContent).toMatch(
+      /Nothing to stage until there is a reading\. Skipped teeth do not count\./,
+    );
+  });
+
+  it("ACCEPTANCE 4: one reading enables it, with the skips still on the chart", async () => {
+    let chart = [1, 16].reduce((c, t) => withPerioSkipped(c, t, true), emptyPerioChart());
+    chart = normalizePerioChart(withPerioSite(chart, 3, "DB", { depth: 4 }));
+    server.chart = chart;
+    server.chartStored = true;
+    renderPerio();
+
+    await screen.findByTestId("hyg-perio-site-3-DB");
+    expect(stageButton().disabled).toBe(false);
+    expect(countPerioChart(chart).teethSkipped).toEqual([1, 16]);
+  });
+
+  it("ACCEPTANCE 4: it enables the moment she types, and nothing had to round-trip", async () => {
+    server.chart = normalizePerioChart(withPerioSkipped(emptyPerioChart(), 19, true));
+    server.chartStored = true;
+    renderPerio();
+
+    await screen.findByTestId("hyg-perio-skipped-number-19");
+    expect(stageButton().disabled).toBe(true);
+
+    fireEvent.keyDown(screen.getByTestId("hyg-perio-grid"), digit(4));
+    await waitFor(() => expect(stageButton().disabled).toBe(false));
+  });
+
+  it("ACCEPTANCE 4: an item-27 pre-skip does not light the button up", async () => {
+    // The case that prompted the ruling: she has entered nothing, Open Dental's
+    // missing teeth pre-skipped themselves, and Stage used to become pressable.
+    server.preSkip = { status: "ready", teeth: [1, 16] };
+    renderPerio();
+
+    await screen.findByTestId("hyg-perio-skipped-number-1");
+    expect(stageButton().disabled).toBe(true);
+    expect(server.calls).not.toContain("STAGE");
+  });
+
+  it("an untouched chart is still disabled, exactly as before", async () => {
+    renderPerio();
+    await screen.findByTestId("hyg-perio-grid");
+    expect(stageButton().disabled).toBe(true);
   });
 });

@@ -1761,3 +1761,167 @@ describe("the claim match panel", () => {
     expect(screen.queryByTestId("approve-link")).toBeNull();
   });
 });
+
+// ─── Hand-entered and struck lines, on the claim page ─────────────────────────
+
+describe("a line the scan missed, and a line it invented, on the claim page", () => {
+  const HAND = {
+    addedLineId: "c7d41f08-2e5b-4a9c-b108-6f3a2d9e4b71",
+    code: "D0220",
+    description: "Intraoral periapical first film",
+    billedCents: 4200,
+    allowedCents: 3100,
+    deductibleCents: 0,
+    copayCents: 0,
+    paidCents: 3100,
+    addedBy: "A Biller",
+    addedAt: "2026-09-30T20:00:00.000Z",
+    struck: null,
+  };
+
+  it("lists a typed line SEPARATELY from the carrier lines, and says why it cannot post", async () => {
+    /*
+     * NOT IN THE CARRIER TABLE. That table is the lines paired to a chart claim,
+     * and the verdict measures each one against what Open Dental holds for it. A
+     * typed line has no chart counterpart — which is exactly why the approval gate
+     * withholds the claim — so putting it there would make the verdict compare a
+     * line against nothing and report the difference as a patient's balance.
+     */
+    state.claim = claim({ handEnteredLines: [HAND] });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+    await waitFor(() => expect(screen.getByTestId("hand-entered-lines")).toBeTruthy());
+
+    const row = screen.getByTestId(`hand-entered-${HAND.addedLineId}`).textContent ?? "";
+    expect(row).toContain("D0220");
+    expect(row).toContain("$31.00");
+    expect(row).toContain("added by A Biller from the page image");
+
+    // The carrier table does not carry it.
+    expect(screen.queryByTestId(`carrier-line-${HAND.addedLineId}`)).toBeNull();
+
+    // And the reason it cannot post is here, where the lines are — not only two
+    // screens away on the checklist.
+    expect(screen.getByTestId("hand-entered-lines").textContent).toContain(
+      "Post this claim in Open Dental by hand",
+    );
+  });
+
+  it("says NOT STATED for a figure the page did not print, never a zero", async () => {
+    state.claim = claim({ handEnteredLines: [{ ...HAND, paidCents: null }] });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+    await waitFor(() => expect(screen.getByTestId("hand-entered-lines")).toBeTruthy());
+    expect(screen.getByTestId(`hand-entered-${HAND.addedLineId}`).textContent).toContain(
+      "not stated",
+    );
+  });
+
+  it("shows nothing at all when no line was typed in", async () => {
+    state.claim = claim();
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+    await waitFor(() => expect(screen.getByTestId("carrier-lines")).toBeTruthy());
+    // An empty panel teaching nothing is its own defect (S7 h).
+    expect(screen.queryByTestId("hand-entered-lines")).toBeNull();
+  });
+
+  it("drops a typed line that was itself struck", async () => {
+    state.claim = claim({
+      handEnteredLines: [
+        { ...HAND, struck: { reason: "Typed the wrong code.", struckBy: "A Biller", struckAt: null } },
+      ],
+    });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+    await waitFor(() => expect(screen.getByTestId("carrier-lines")).toBeTruthy());
+    expect(screen.queryByTestId("hand-entered-lines")).toBeNull();
+  });
+
+  it("marks a carrier line a person struck, and keeps its figures and its verdict", async () => {
+    const struck = {
+      reason: "The scan read the benefit subtotal row as a procedure.",
+      struckBy: "A Biller",
+      struckAt: "2026-09-30T20:05:00.000Z",
+    };
+    const base = claim();
+    const lines = (base as Record<string, unknown>).lines as Record<string, unknown>[];
+    state.claim = claim({ lines: [{ ...lines[0], struck }] });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+
+    const lineId = String(lines[0].lineId);
+    await waitFor(() => expect(screen.getByTestId(`line-struck-${lineId}`)).toBeTruthy());
+    const said = screen.getByTestId(`line-struck-${lineId}`).textContent ?? "";
+    expect(said).toContain("struck by A Biller");
+    expect(said).toContain("subtotal row");
+
+    // NOTHING WAS DELETED. The row, its figures and its decision are all still here.
+    expect(screen.getByTestId(`carrier-line-${lineId}`)).toBeTruthy();
+  });
+});
+
+// ─── An unstated per-line payment, on both screens (fix/rcm-extraction-quality) ─
+//
+// THE REGRESSION THESE PIN. #206 made per-line paidCents nullable (a
+// category-subtotal scan states payment only at benefit-type subtotals), but the
+// wire still coerced the stored NULL to 0 and both line tables priced it — so
+// the night #206 reached prod, every such line showed a fabricated "$0.00 paid"
+// and a patient remainder equal to the whole allowed amount, with a decision
+// control offered over it. A blank must read as honest, never as broken — and
+// never as a zero.
+
+describe("a line whose payment the page does not state", () => {
+  /** Billed 210.00, allowed 150.00, payment printed only at the category subtotal. */
+  const UNSTATED = {
+    lineId: "pl-ns",
+    paidCents: null,
+    patientRemainderCents: null,
+    // W = billed − allowed involves no payment and is still the carrier's figure.
+    contractualWriteOffCents: 6000,
+  };
+
+  it("says NOT STATED on the claim page — never $0.00, and no decision control", async () => {
+    state.claim = claim({ lines: [line(UNSTATED)] });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+    await waitFor(() => expect(screen.getByTestId("carrier-lines")).toBeTruthy());
+
+    expect(screen.getByTestId("paid-not-stated-pl-ns").textContent).toBe("not stated");
+    expect(screen.getByTestId("remainder-not-stated-pl-ns").textContent).toBe("not stated");
+
+    const row = screen.getByTestId("carrier-line-pl-ns").textContent ?? "";
+    expect(row).not.toContain("$0.00");
+    // No remainder means nothing to decide HERE — and it must not read as
+    // "paid in full", which is the other sentence that renders in this cell.
+    expect(screen.getByTestId("decision-unstated-pl-ns").textContent).toContain(
+      "does not state this line's payment",
+    );
+    expect(screen.queryByTestId("decision-pl-ns")).toBeNull();
+    expect(screen.queryByTestId("decision-none-pl-ns")).toBeNull();
+  });
+
+  it("still prices a STATED zero as $0.00 on the claim page", async () => {
+    // "The plan paid nothing" and "the page does not say" are different facts.
+    state.claim = claim({
+      lines: [line({ lineId: "pl-z", paidCents: 0, patientRemainderCents: 15000 })],
+    });
+    renderAt(<ClaimMatch />, "/rcm/claims/c-1");
+    await waitFor(() => expect(screen.getByTestId("carrier-lines")).toBeTruthy());
+
+    const row = screen.getByTestId("carrier-line-pl-z").textContent ?? "";
+    expect(row).toContain("$0.00");
+    expect(screen.queryByTestId("paid-not-stated-pl-z")).toBeNull();
+    // A real remainder still gets the decision control.
+    expect(screen.getByTestId("decision-pl-z")).toBeTruthy();
+  });
+
+  it("says NOT STATED in the check page's line table too", async () => {
+    state.detail = {
+      office: "roland",
+      remittance: { ...remittance(), plbAdjustments: [] },
+      claims: [claim({ lines: [line(UNSTATED)] })],
+    };
+    renderAt(<RemittanceDetail />, "/rcm/remittances/b-1");
+    await waitFor(() => expect(screen.getByTestId("toggle-lines-c-1")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("toggle-lines-c-1"));
+
+    const lines = screen.getByTestId("lines-c-1");
+    expect(lines.textContent).toContain("not stated");
+    expect(screen.getByTestId("paid-not-stated-pl-ns").textContent).toBe("not stated");
+  });
+});

@@ -124,6 +124,7 @@ interface TabCounts {
   attention: number;
   parked: number;
   set_aside: number;
+  archived: number;
   all: number;
 }
 
@@ -136,7 +137,13 @@ function tabCount(
   if (offices.length === 0) return null;
   // EVERY office must have reported. See the note on `counts` in the component.
   if (!offices.every((o) => counts[o])) return null;
-  if (filter !== "attention" && filter !== "parked" && filter !== "set_aside" && filter !== "all") {
+  if (
+    filter !== "attention" &&
+    filter !== "parked" &&
+    filter !== "set_aside" &&
+    filter !== "archived" &&
+    filter !== "all"
+  ) {
     return null;
   }
   return offices.reduce((sum, o) => sum + counts[o][filter], 0);
@@ -409,8 +416,8 @@ export default function RemittanceList() {
             className="mt-4 text-xs text-muted-foreground"
             data-testid="remittance-list-footer"
           >
-            Newest first. A check leaves this list only when it is posted or set aside, and both
-            stay findable under their own tab.
+            Newest first. A check leaves this list only when it is posted, set aside or archived,
+            and each stays findable under its own tab.
           </p>
         </>
       )}
@@ -480,6 +487,9 @@ function OfficeRemittances({
           attention: page.needsAttentionCount,
           parked: page.parkedCount,
           set_aside: page.setAsideCount,
+          // `?? 0` only for a server that predates the field — never a guess
+          // over a server that sent one.
+          archived: page.archivedCount ?? 0,
           all: page.total,
         });
         if (serverBacked) {

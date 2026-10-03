@@ -1343,6 +1343,30 @@ const PERIO_FLAG_BIT = { b: 1, s: 2, p: 4, c: 8 };
  *   A hook returning an envelope REPLACES the answer; `landed: true` on it still
  *   stores the write — a write that landed and did not answer.
  */
+/**
+ * One Open Dental `toothinitial` row, field for field as the probe printed them
+ * (2026-10-01, staging rev --0000206, roland; capture in
+ * new-dashboard/tests/fixtures/od-toothinitials-measured.json).
+ *
+ * ⚠️ `ToothNum` IS A STRING here because it is a string there. A fake that
+ * answered a number would let `===` pass in tests and fail on staging — which is
+ * the exact class of mistake item 18 refused to ship on a guess.
+ */
+function toothInitialRow({ num = 1, patNum = 12827, toothNum = '1', initialType = 'Missing' } = {}) {
+  return {
+    ToothInitialNum: num,
+    PatNum: patNum,
+    ToothNum: String(toothNum),
+    InitialType: initialType,
+    Movement: 0,
+    DrawingSegment: '',
+    ColorDraw: '',
+    SecDateTEntry: '2026-04-02 09:14:11',
+    SecDateTEdit: '2026-04-02 09:14:11',
+    DrawText: '',
+  };
+}
+
 function perioOd({
   date = '2026-09-08',
   patNum = 12827,
@@ -1353,6 +1377,16 @@ function perioOd({
   corrupt = null,
   afterMeasure = null,
   onDelete = null,
+  /*
+   * ITEM 27: what `GET /toothinitials?PatNum=` answers. The DEFAULT is the
+   * measured ABSENCE — HTTP 200 with `[]`, which is what Open Dental really
+   * answers for a patient with no tooth initials, and NOT GroupNotes'
+   * 404-with-a-sentence. So every perio test spends the item-27 request and
+   * pre-skips nothing, which is the ordinary case. A test that wants missing
+   * teeth passes rows built by `toothInitialRow`; a test that wants a FAILED
+   * read assigns an envelope to `od.client.routes['/toothinitials']`.
+   */
+  toothInitials = [],
 } = {}) {
   const probe = require('../../../new-dashboard/tests/fixtures/perio-arch-probe-staging.json');
   const client = new FakeOd({
@@ -1363,6 +1397,7 @@ function perioOd({
     '/appointmenttypes': [{ AppointmentTypeNum: 3, AppointmentTypeName: 'Perio Maint' }],
     '/providers': [{ ProvNum: 7, Abbr: 'HYG1' }],
     ['/patients/' + patNum]: patientRow(),
+    '/toothinitials': toothInitials,
   });
   /**
    * `order` is every WRITE this fake accepted, in the order it accepted them.
@@ -1480,5 +1515,6 @@ module.exports = {
   patientRow,
   operatoryRow,
   perioOd,
+  toothInitialRow,
   PERIO_VALUE_KEY,
 };

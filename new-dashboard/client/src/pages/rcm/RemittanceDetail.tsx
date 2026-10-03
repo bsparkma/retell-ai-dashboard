@@ -56,6 +56,7 @@ import {
   ExternalLink,
   Info,
   Loader2,
+  Pencil,
   ScanLine,
   Search,
   ShieldCheck,
@@ -93,7 +94,7 @@ import {
   stamp,
 } from "@/features/rcm/format";
 import { FLAG_LABELS, label, provenanceLabel, provenanceNote } from "@/features/rcm/labels";
-import { claimHref, remittanceFlow } from "@/features/rcm/flow";
+import { claimHref, confirmHref, remittanceFlow } from "@/features/rcm/flow";
 import { waitingFor } from "@/features/rcm/waitingOn";
 import { checkChip } from "@/features/rcm/worklist";
 import { describePlbAdjustment } from "@/features/rcm/plb";
@@ -1253,6 +1254,16 @@ export default function RemittanceDetailPage() {
               key={claim.claimId}
               claim={claim}
               batchId={r.batchId}
+              /*
+                THE DOOR TO THE EDITS (one per claim). Only on a check with a
+                confirm step — an 835's figures were parsed, and there is no
+                page to fix them against. A LINK: figures are edited in one
+                audited place, the confirm screen, and this chooses where it
+                opens.
+              */
+              fixFigureHref={
+                r.fieldConfirm?.required ? confirmHref(r.batchId, claim.claimId) : null
+              }
               verdict={verdictByClaim.get(claim.claimId) ?? null}
               /* `null` = the gate has not answered yet; `true` = it answered and
                  this claim was not in it, which is a different sentence. */
@@ -1442,6 +1453,7 @@ function Stat({
 function ClaimTriageRow({
   claim,
   batchId,
+  fixFigureHref,
   verdict,
   judged,
   onRematch,
@@ -1455,6 +1467,8 @@ function ClaimTriageRow({
   claim: RemittanceClaim;
   /** Threaded through so the claim page can offer a way back to this one. */
   batchId: string;
+  /** The confirm screen, anchored at this claim — null when there is no confirm step. */
+  fixFigureHref: string | null;
   /** The gate's own verdict for this claim, or null. */
   verdict: ClaimVerdict | null;
   /** Run the match again for THIS claim. See `rematchClaim` above. */
@@ -1658,6 +1672,22 @@ function ClaimTriageRow({
             </DisabledReason>
           ) : null}
         </div>
+        {/*
+          ── FIX A FIGURE — the door, beside the row's other verb ─────────────
+          A wrong number spotted on this row is corrected on the confirm
+          screen, anchored at this claim. Only a link — nothing on this page
+          edits a figure. Absent on an 835: parsed, not read, no page.
+        */}
+        {fixFigureHref && (
+          <Link
+            href={fixFigureHref}
+            data-testid={`fix-figure-${claim.claimId}`}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+          >
+            <Pencil size={11} />
+            Fix a figure on this claim
+          </Link>
+        )}
         {claim.odMatchStatus === "confirmed" && mayRelease && (
           /*
             S7 · ONE OF THESE RENDERS PER CONFIRMED CLAIM.
@@ -1796,7 +1826,22 @@ function LineTable({ claim }: { claim: RemittanceClaim }) {
                 {money(line.allowedCents)}
               </td>
               <td className="px-2 py-2 text-right font-mono text-xs font-semibold tabular-nums text-foreground">
-                {money(line.paidCents)}
+                {/*
+                  A payment the page never stated reads "not stated", never
+                  $0.00 — a zero here asserts the plan paid nothing for the
+                  line. Null arrives from category-subtotal layouts (#206).
+                */}
+                {line.paidCents === null ? (
+                  <span
+                    className="font-sans font-normal text-muted-foreground"
+                    title="The page states payment at a category subtotal, not for this line."
+                    data-testid={`paid-not-stated-${line.lineId}`}
+                  >
+                    not stated
+                  </span>
+                ) : (
+                  money(line.paidCents)
+                )}
               </td>
               <td className="px-2 py-2 text-right font-mono text-xs tabular-nums text-muted-foreground">
                 {money(line.writeOffCents)}

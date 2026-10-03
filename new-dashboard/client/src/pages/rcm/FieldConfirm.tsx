@@ -56,19 +56,23 @@
  * her what to see on her own document.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useRoute } from "wouter";
-import { AlertCircle, ArrowLeft, Check, Loader2, Pencil } from "lucide-react";
+import { Link, useRoute, useSearchParams } from "wouter";
+import { AlertCircle, ArrowLeft, Check, Loader2, Pencil, Plus } from "lucide-react";
 
 import {
+  addConfirmLine,
   confirmFields,
   documentUrl,
   getFieldConfirm,
   getRemittance,
   isRcmOfficeId,
+  strikeConfirmLine,
+  type AddLineInstruction,
   type ConfirmClaim,
   type ConfirmField,
   type ConfirmInstruction,
   type ConfirmLine,
+  type ConfirmLineSum,
   type ConfirmableField,
   type FieldConfirmState,
   type RcmOfficeId,
@@ -76,11 +80,18 @@ import {
 } from "@/features/rcm/api";
 import { money } from "@/features/rcm/format";
 import {
+  ADDED_BY_HAND_MARK,
+  ADD_LINE_CONTROL,
+  ADD_LINE_HINT,
   CONFIRM_FIELD_LABELS,
   CONFIRM_HEADLINE,
   CONFIRM_NOT_STATED,
   CONFIRM_SCAN_CAVEAT,
+  STRIKE_LINE_CONTROL,
+  STRIKE_LINE_HINT,
+  UNSTRIKE_LINE_CONTROL,
   confirmedByLine,
+  struckByLine,
 } from "@/features/rcm/labels";
 import { remittanceFlow, remittanceHref } from "@/features/rcm/flow";
 import { useOffice } from "@/contexts/OfficeContext";
@@ -106,6 +117,44 @@ type State =
       check: RemittanceDetail | null;
     };
 
+/**
+ * A save that did not take, and where it was made.
+ *
+ * `address` is a field's address, or a line's `line:<id>` label for the button
+ * that confirms five figures at once — so the message renders at the control
+ * that was pressed and nowhere else.
+ */
+type SaveFailure = { address: string; message: string } | null;
+
+/**
+ * THE FIVE MONEY FIELDS A LINE CARRIES, in vocabulary order.
+ *
+ * The same five the extraction stores and the confirm step confirms, so a line a
+ * person types in is the same shape as one the reader found. A sixth box here
+ * would be a figure the rest of the screen has no row for.
+ */
+const LINE_FIGURE_FIELDS: ConfirmableField[] = [
+  "line_paid",
+  "line_billed",
+  "line_allowed",
+  "line_deductible",
+  "line_copay",
+];
+
+/** An empty add-a-line form. Every box blank means every figure "not stated". */
+const BLANK_FIGURES = Object.freeze(
+  Object.fromEntries(LINE_FIGURE_FIELDS.map((f) => [f, ""])),
+) as Record<ConfirmableField, string>;
+
+/** What the strike endpoint is told: which line, and whether it is being struck. */
+type StrikeBody = {
+  claimId: string;
+  lineId?: string;
+  addedLineId?: string;
+  reason?: string;
+  struck?: boolean;
+};
+
 /** A field's address, which is also its identity on this screen. */
 function addressOf(field: ConfirmableField, claimId: string | null, lineId: string | null): string {
   return `${claimId ?? ""}|${lineId ?? ""}|${field}`;
@@ -130,6 +179,15 @@ export function centsFromTyped(raw: string): number | undefined {
 
 /** What this field's state is called, in a biller's words. */
 function stateLabel(f: ConfirmField): string {
+  /*
+   * "TYPED", NOT "CHECKED", on a line a person added.
+   *
+   * "Checked" says a figure was compared against what the machine read, and on an
+   * added line the machine read nothing to compare it against. An unstated figure
+   * on such a line is "Not stated" rather than "Not on the page": the LINE is on
+   * the page — she is reading it — and it is this one figure the page omits.
+   */
+  if (f.source === "added") return f.stated ? "Typed" : CONFIRM_NOT_STATED;
   if (f.source === "corrected") return "Corrected";
   if (f.confirmed) return f.stated ? "Checked" : "Not on the page";
   return f.stated ? "From the scan" : CONFIRM_NOT_STATED;
@@ -144,12 +202,39 @@ export default function FieldConfirm() {
   const [, params] = useRoute("/rcm/remittances/:id/confirm");
   const batchId = params?.id ?? "";
   const { office: selected } = useOffice();
+  /**
+   * ARRIVING ANCHORED AT ONE CLAIM — the "Fix a figure on this claim" door.
+   *
+   * `?claim=` names the claim the reader pressed the door on, and the effect
+   * below scrolls its panel into view and selects its first line so the
+   * document panel follows. A scroll target, nothing more: the screen behaves
+   * identically once she is here, because this is the ONE audited place a
+   * figure is edited and the door must not create a second mode of it.
+   */
+  const [search] = useSearchParams();
+  const anchorClaimId = search.get("claim");
 
   const [state, setState] = useState<State>({ kind: "loading" });
   const [saving, setSaving] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  /**
+   * A FAILED SAVE SAYS SO WHERE IT HAPPENED, AND NOTHING MOVES.
+   *
+   * Keyed by the address the save was made under — a field's own address, or a
+   * line's `line:<id>` label for the "these N are right" button. A banner at the
+   * top of a long list is a message about a figure she cannot see from where the
+   * banner is, and she has no way to tell which of fifteen rows it is about.
+   */
+  const [fieldError, setFieldError] = useState<{ address: string; message: string } | null>(null);
   /** Which line the document panel is showing, so the two stay in step. */
   const [activeLineId, setActiveLineId] = useState<string | null>(null);
+  /**
+   * WHICH FIGURE THE WORK IS AT, by address.
+   *
+   * Set from the server's own `outstanding.first` after every save, so the
+   * screen walks the list in the same order the count counts it — not in an
+   * order the browser worked out for itself.
+   */
+  const [focus, setFocus] = useState<string | null>(null);
   /** Open transcription inputs, by field address. */
   const [typing, setTyping] = useState<Record<string, string>>({});
 
@@ -209,6 +294,23 @@ export default function FieldConfirm() {
   const data = state.kind === "loaded" ? state.data : null;
   const office = state.kind === "loaded" ? state.office : null;
 
+  /*
+   * The anchor fires ONCE, on the first load that holds the named claim.
+   * `?.()` on scrollIntoView because jsdom does not implement it — the same
+   * guard `FieldRow` carries, for the same reason.
+   */
+  const anchored = useRef(false);
+  useEffect(() => {
+    if (anchored.current || !anchorClaimId || !data) return;
+    const claim = data.claims.find((c) => c.claimId === anchorClaimId);
+    if (!claim) return;
+    anchored.current = true;
+    if (claim.lines[0]) setActiveLineId(claim.lines[0].lineId);
+    document
+      .querySelector(`[data-testid="rcm-confirm-claim-${anchorClaimId}"]`)
+      ?.scrollIntoView?.({ block: "start" });
+  }, [anchorClaimId, data]);
+
   /** The page the document panel should show. */
   const activePage = useMemo(() => {
     if (!data) return 1;
@@ -220,34 +322,127 @@ export default function FieldConfirm() {
     return 1;
   }, [data, activeLineId]);
 
-  /** Send one or more figures, then re-read so the screen shows the server's answer. */
-  const send = useCallback(
-    async (label: string, fields: ConfirmInstruction[]) => {
-      if (!office) return;
+  /**
+   * Save one or more figures, IN PLACE.
+   *
+   * ─────────────────────────────────────────────────────────────────────────────
+   * WHY THIS DOES NOT RE-FETCH THE PAGE
+   * ─────────────────────────────────────────────────────────────────────────────
+   * It used to call `load()`, which sets `kind: "loading"` — so the whole tree
+   * came down and went back up on every single confirm. Both panes were thrown
+   * to the top: the document viewer remounted and lost its scroll position and
+   * its page, and the figure list reset, so a biller working down a long EOB had
+   * to find her place again after each of thirty figures. That is the defect.
+   *
+   * The old comment here was right about WHY it re-fetched — the server decides
+   * whether a figure was confirmed or corrected, recounts what is outstanding and
+   * re-runs the sum against the anchor, and a screen that guessed any of those
+   * would be a second opinion about which number is real. It was wrong only
+   * about what that requires. The server now returns its whole recomputed state
+   * in the POST response, so the screen can take the server's answer verbatim
+   * WITHOUT going back for the page. Nothing is guessed here, and nothing
+   * unmounts.
+   */
+  const mutate = useCallback(
+    async (
+      label: string,
+      run: (office: RcmOfficeId) => Promise<FieldConfirmState>,
+      after?: (next: FieldConfirmState) => void,
+    ): Promise<boolean> => {
+      /*
+       * IT SAYS WHETHER IT TOOK.
+       *
+       * A form that clears itself on a failed save has thrown away what she typed
+       * and told her to do it again, which is the same class of defect as a page
+       * that loses her scroll position. So the forms close on `true` only.
+       */
+      if (!office) return false;
       setSaving(label);
-      setError(null);
+      setFieldError(null);
       try {
-        await confirmFields(office, batchId, fields);
-        /*
-         * RE-READ rather than patching local state. The server derives whether a
-         * figure was confirmed or corrected, recomputes the outstanding count and
-         * re-runs the sum against the anchor — and a screen that guessed any of
-         * those would be a second opinion about which number is real, which is
-         * the whole thing this slice exists to prevent.
-         */
-        load();
-        setTyping((prev) => {
-          const next = { ...prev };
-          for (const f of fields) delete next[addressOf(f.field, f.claimId ?? null, f.lineId ?? null)];
-          return next;
-        });
+        const next = await run(office);
+
+        // The server's own recomputation, swapped in under a tree that stays
+        // mounted. Every child is keyed by claim, line or field, so React
+        // reconciles what changed and leaves the rest — and the viewer — alone.
+        setState((prev) => (prev.kind === "loaded" ? { ...prev, data: next } : prev));
+        if (after) after(next);
+        return true;
       } catch (err) {
-        setError(err instanceof Error ? err.message : "That could not be saved.");
+        /*
+         * NOTHING MOVES. No state swap, no focus change, and whatever she typed
+         * stays in its box so she can press Save again rather than retype it.
+         */
+        setFieldError({
+          address: label,
+          message: err instanceof Error ? err.message : "That could not be saved.",
+        });
+        return false;
       } finally {
         setSaving(null);
       }
     },
-    [batchId, load, office],
+    [office],
+  );
+
+  const send = useCallback(
+    (label: string, fields: ConfirmInstruction[]) =>
+      mutate(
+        label,
+        (o) => confirmFields(o, batchId, fields).then((r) => r.state),
+        (next) => {
+        setTyping((prev) => {
+          const copy = { ...prev };
+          for (const f of fields) delete copy[addressOf(f.field, f.claimId ?? null, f.lineId ?? null)];
+          return copy;
+        });
+
+        /*
+         * ON TO THE NEXT ONE — the server's `first`, not ours.
+         *
+         * `outstanding.first` is computed by the same accessor that produces the
+         * count beside it, walking the check in the order the remittance prints
+         * it. Picking the next row in the DOM instead would be a second ordering,
+         * and the two would disagree the first time a claim was added by a
+         * re-extraction.
+         */
+          const at = next.outstanding.first;
+          setFocus(at ? addressOf(at.field, at.claimId, at.lineId) : null);
+          // The document follows the work. It only moves the page when the stored
+          // read carries geometry for that line; until then this is the selection,
+          // and the panel stays where she left it.
+          if (at && at.lineId) setActiveLineId(at.lineId);
+        },
+      ),
+    [batchId, mutate],
+  );
+
+  /**
+   * ADD A LINE THE SCAN MISSED.
+   *
+   * Same in-place save as a confirm, and the same reason: the server returns the
+   * whole recomputed state — including the claim's new line sum, which is the
+   * figure that goes from "does not add up" to "adds up" — so nothing here works
+   * anything out and nothing unmounts.
+   *
+   * No advance afterwards. An added line asks for no confirmation of its own
+   * (she typed every figure on it off the page), so there is no next figure that
+   * this act created, and jumping her somewhere else would lose the place she
+   * chose to be.
+   */
+  const addLine = useCallback(
+    (claimId: string, line: AddLineInstruction) =>
+      mutate(`add:${claimId}`, (o) =>
+        addConfirmLine(o, batchId, claimId, line).then((r) => r.state),
+      ),
+    [batchId, mutate],
+  );
+
+  /** Strike a line as not on the page, or take that back. */
+  const strikeLine = useCallback(
+    (label: string, body: Parameters<typeof strikeConfirmLine>[2]) =>
+      mutate(label, (o) => strikeConfirmLine(o, batchId, body).then((r) => r.state)),
+    [batchId, mutate],
   );
 
   if (state.kind === "loading") {
@@ -352,6 +547,8 @@ export default function FieldConfirm() {
             claimId={null}
             lineId={null}
             saving={saving}
+            focus={focus}
+            fieldError={fieldError}
             typing={typing}
             setTyping={setTyping}
             send={send}
@@ -378,16 +575,6 @@ export default function FieldConfirm() {
 
       {/* ── Does it add up? ──────────────────────────────────────────────── */}
       <SumLine sums={sums} outstanding={outstanding.outstanding} />
-
-      {error ? (
-        <div
-          className="mb-4 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
-          data-testid="rcm-confirm-save-error"
-        >
-          <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
-          <span>{error}</span>
-        </div>
-      ) : null}
 
       <div className="grid gap-4 lg:grid-cols-2">
         {/* ── The document. Evidence, not a control. ───────────────────── */}
@@ -427,9 +614,13 @@ export default function FieldConfirm() {
               activeLineId={activeLineId}
               setActiveLineId={setActiveLineId}
               saving={saving}
+              focus={focus}
+              fieldError={fieldError}
               typing={typing}
               setTyping={setTyping}
               send={send}
+              addLine={addLine}
+              strikeLine={strikeLine}
             />
           ))}
         </div>
@@ -518,12 +709,365 @@ function SumLine({
             disagrees with the page.
           </>
         ) : (
-          <>
-            Nothing can be added up yet — the check total, or one claim total, is not a figure yet.
-            Start at the top.
-          </>
+          /*
+            "Start at the top" is gone: since the in-place fix the screen takes
+            her to the next unconfirmed figure itself, so an instruction about
+            where to begin is a sentence the software now performs.
+          */
+          <>Nothing can be added up yet — the check total, or one claim total, is not a figure.</>
         )}
       </span>
+    </div>
+  );
+}
+
+/**
+ * DOES THIS CLAIM ADD UP TO WHAT IT WAS PAID?
+ *
+ * The same `claimLineSum` the approval gate refuses on, rendered as a line a
+ * biller can read — so the thing she is working towards is on screen while she
+ * works. This is the line that goes from "does not add up" to "adds up" when she
+ * types in the line the scan missed, which is why adding one is not a bypass.
+ */
+function ClaimLineSum({ sum }: { sum: ConfirmLineSum }) {
+  if (sum.ok) {
+    return (
+      <p className="mt-3 text-xs text-muted-foreground" data-testid="rcm-confirm-linesum-ok">
+        <Check size={12} className="mr-1 inline" />
+        {/*
+          SHORT, BECAUSE THE CHECK-LEVEL LINE ABOVE ALREADY SAYS THE LONG VERSION.
+          This row is about one claim's lines; the sentence above it is about the
+          whole cheque, and saying the same thing twice in different words is the
+          third telling the budget is there to stop.
+        */}
+        {sum.comparable ? "The lines add up." : "Paid by category, not per line."}
+      </p>
+    );
+  }
+
+  /*
+   * AMBER, and only for disagreement. A difference the screen invented from a
+   * missing figure is one she would go looking for on the page, so an
+   * incomparable sum names no number at all.
+   */
+  return (
+    <p
+      className="mt-3 text-xs text-amber-700 dark:text-amber-400"
+      data-testid="rcm-confirm-linesum-off"
+    >
+      <AlertCircle size={12} className="mr-1 inline" />
+      {sum.comparable && sum.differenceCents !== null ? (
+        <>
+          Lines {money(sum.lineSumCents ?? 0)}, claim {money(sum.claimTotalCents ?? 0)} —{" "}
+          <strong>{money(Math.abs(sum.differenceCents))} apart</strong>.
+          {/*
+            THE DIRECTION IS THE INSTRUCTION. Lines short of the claim total means
+            the read missed something, and the control for that is right below.
+            Lines over it means a figure is wrong, or a line is not on the page.
+          */}
+          {sum.differenceCents < 0 ? " A line may be missing." : " A figure may be wrong."}
+        </>
+      ) : sum.lineCount === 0 ? (
+        "Every line struck — nothing to add up."
+      ) : (
+        "No sum yet — a line payment is not a figure."
+      )}
+    </p>
+  );
+}
+
+/**
+ * ADD A LINE FROM THE PAGE.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY A TEXT BOX FOR A MONEY FIGURE IS ALLOWED HERE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The module's no-amount-fields rule governs DECISIONS — writing an amount off,
+ * billing a patient — where a typed number creates money movement out of
+ * somebody's judgement. This is the opposite act: the line is printed on the
+ * paper in her hand and she is copying it across. Same owner ruling, same scope
+ * as a correction, and nothing outside this screen may read it as precedent.
+ *
+ * EVERY FIGURE IS SENT, including the ones left blank — blank means "the page
+ * does not state this for this line", which is the ordinary case on a
+ * category-subtotal EOB. An omitted key would be the server recording "the page
+ * says nothing" about a figure nobody looked at.
+ */
+function AddLineForm({
+  claimId,
+  saving,
+  fieldError,
+  onAdd,
+}: {
+  claimId: string;
+  saving: string | null;
+  fieldError: SaveFailure;
+  onAdd: (claimId: string, line: AddLineInstruction) => Promise<boolean>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [code, setCode] = useState("");
+  const [description, setDescription] = useState("");
+  const [figures, setFigures] = useState<Record<ConfirmableField, string>>(BLANK_FIGURES);
+
+  const label = `add:${claimId}`;
+  const failed = fieldError && fieldError.address === label ? fieldError.message : null;
+
+  /*
+   * A BLANK BOX IS "NOT STATED", AND A BAD ONE IS NOT A FIGURE.
+   *
+   * `centsFromTyped` returns undefined for both, so the two are told apart here:
+   * an empty string is a deliberate null, anything else that will not parse keeps
+   * the button disabled rather than being sent as a null. Treating "1,84o" as
+   * "the page does not say" would record an answer she did not give.
+   */
+  const parsed = new Map(
+    LINE_FIGURE_FIELDS.map((field) => {
+      const raw = figures[field].trim();
+      if (!raw) return [field, { cents: null as number | null, bad: false }];
+      const cents = centsFromTyped(raw);
+      return [field, { cents: cents ?? null, bad: cents === undefined }];
+    }),
+  );
+  /** By NAME, never by position: a reordered vocabulary must not move a figure. */
+  const centsFor = (field: ConfirmableField) => parsed.get(field)?.cents ?? null;
+  const unparseable = LINE_FIGURE_FIELDS.some((f) => parsed.get(f)?.bad === true);
+  const ready = code.trim().length > 0 && !unparseable;
+
+  const reset = () => {
+    setOpen(false);
+    setCode("");
+    setDescription("");
+    setFigures(BLANK_FIGURES);
+  };
+
+  if (!open) {
+    return (
+      <div className="mt-3 border-t border-border pt-3">
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="inline-flex items-center gap-1.5 text-xs font-medium underline"
+          data-testid={`rcm-confirm-add-open-${claimId}`}
+        >
+          <Plus size={12} />
+          {ADD_LINE_CONTROL}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="mt-3 space-y-2 rounded-lg border border-border bg-muted/30 p-3"
+      data-testid={`rcm-confirm-add-form-${claimId}`}
+    >
+      <p className="text-xs text-muted-foreground">{ADD_LINE_HINT}</p>
+
+      <div className="flex flex-wrap gap-2">
+        <label className="text-xs">
+          <span className="mr-1 text-muted-foreground">Code</span>
+          <input
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            placeholder="D0220"
+            aria-label="The procedure code as the page prints it"
+            className="w-24 rounded-lg border border-border bg-background px-2 py-0.5 text-xs"
+            data-testid={`rcm-confirm-add-code-${claimId}`}
+          />
+        </label>
+        <label className="flex-1 text-xs">
+          <span className="mr-1 text-muted-foreground">What it is</span>
+          <input
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            aria-label="What the page calls this procedure"
+            className="w-full min-w-[10rem] rounded-lg border border-border bg-background px-2 py-0.5 text-xs"
+            data-testid={`rcm-confirm-add-description-${claimId}`}
+          />
+        </label>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        {LINE_FIGURE_FIELDS.map((field) => (
+          <label key={field} className="text-xs">
+            <span className="mr-1 text-muted-foreground">{CONFIRM_FIELD_LABELS[field]}</span>
+            <input
+              value={figures[field]}
+              onChange={(e) => setFigures((prev) => ({ ...prev, [field]: e.target.value }))}
+              inputMode="decimal"
+              placeholder={CONFIRM_NOT_STATED}
+              aria-label={`What the page says for ${CONFIRM_FIELD_LABELS[field]}`}
+              className="w-24 rounded-lg border border-border bg-background px-2 py-0.5 text-xs"
+              data-testid={`rcm-confirm-add-${field}-${claimId}`}
+            />
+          </label>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          disabled={!ready || saving === label}
+          onClick={async () => {
+            const saved = await onAdd(claimId, {
+              code: code.trim(),
+              description: description.trim() || null,
+              billedCents: centsFor("line_billed"),
+              allowedCents: centsFor("line_allowed"),
+              deductibleCents: centsFor("line_deductible"),
+              copayCents: centsFor("line_copay"),
+              paidCents: centsFor("line_paid"),
+            });
+            // Only on success. A refusal leaves the form exactly as she left it,
+            // with the message beside the button, so she can fix one box.
+            if (saved) reset();
+          }}
+          className="rounded-lg bg-foreground px-3 py-1 text-xs font-medium text-background disabled:opacity-50"
+          data-testid={`rcm-confirm-add-save-${claimId}`}
+        >
+          {saving === label ? "Saving…" : "Add this line"}
+        </button>
+        <button
+          type="button"
+          onClick={reset}
+          className="text-xs underline"
+          data-testid={`rcm-confirm-add-cancel-${claimId}`}
+        >
+          Cancel
+        </button>
+        {/*
+          A REASON, NEVER A BARE GREYED BUTTON. `DisabledReason` is the module's
+          rule: a control somebody cannot press has to say why, in words about
+          what is missing rather than about the control.
+        */}
+        {!ready ? (
+          <DisabledReason tone="muted" testId={`rcm-confirm-add-blocked-${claimId}`}>
+            {code.trim().length === 0
+              ? "Type the procedure code printed beside the line."
+              : "One of those figures is not an amount. Leave a box empty if the page does not state it."}
+          </DisabledReason>
+        ) : null}
+        {failed ? (
+          <InlineFailure message={failed} testId={`rcm-confirm-add-error-${claimId}`} />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * NOT A LINE ON THE PAGE.
+ *
+ * A scanned read can invent a line as easily as it can miss one — a benefit
+ * subtotal row read as a procedure, a carried-forward balance read as a payment.
+ * No correction to its figures makes it true, so she says it is not there, with a
+ * reason.
+ *
+ * NOTHING IS DELETED. The extraction row stays exactly as the read produced it;
+ * this records that a person looked at the page and the line is not on it. And it
+ * can be taken back: striking a real line takes its money out of the sum, so a
+ * mis-strike would otherwise leave a check that can never reconcile.
+ */
+function StrikeControl({
+  claimId,
+  line,
+  saving,
+  fieldError,
+  onStrike,
+}: {
+  claimId: string;
+  line: ConfirmLine;
+  saving: string | null;
+  fieldError: SaveFailure;
+  onStrike: (label: string, body: StrikeBody) => Promise<boolean>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+
+  const label = `strike:${line.lineId}`;
+  const failed = fieldError && fieldError.address === label ? fieldError.message : null;
+  /** Which id the server is told about: a read line, or one she added. */
+  const target: StrikeBody =
+    line.kind === "added" ? { claimId, addedLineId: line.lineId } : { claimId, lineId: line.lineId };
+
+  if (line.struck) {
+    return (
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <span className="text-xs text-muted-foreground" data-testid={`rcm-confirm-struck-by-${line.lineId}`}>
+          {struckByLine(line.struck)}
+        </span>
+        <button
+          type="button"
+          disabled={saving === label}
+          onClick={() => void onStrike(label, { ...target, struck: false })}
+          className="text-xs underline"
+          data-testid={`rcm-confirm-unstrike-${line.lineId}`}
+        >
+          {saving === label ? "Saving…" : UNSTRIKE_LINE_CONTROL}
+        </button>
+        {failed ? (
+          <InlineFailure message={failed} testId={`rcm-confirm-strike-error-${line.lineId}`} />
+        ) : null}
+      </div>
+    );
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="mt-2 text-xs underline"
+        data-testid={`rcm-confirm-strike-open-${line.lineId}`}
+      >
+        {STRIKE_LINE_CONTROL}
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      <input
+        value={reason}
+        onChange={(e) => setReason(e.target.value)}
+        placeholder="What is it, then?"
+        aria-label="Why this is not a line on the page"
+        className="w-56 rounded-lg border border-border bg-background px-2 py-0.5 text-xs"
+        data-testid={`rcm-confirm-strike-reason-${line.lineId}`}
+      />
+      <button
+        type="button"
+        disabled={reason.trim().length === 0 || saving === label}
+        onClick={async () => {
+          const saved = await onStrike(label, { ...target, reason: reason.trim() });
+          if (!saved) return;
+          setOpen(false);
+          setReason("");
+        }}
+        className="rounded-lg border border-border px-2 py-0.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
+        data-testid={`rcm-confirm-strike-save-${line.lineId}`}
+      >
+        {saving === label ? "Saving…" : "Strike it"}
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          setOpen(false);
+          setReason("");
+        }}
+        className="text-xs underline"
+        data-testid={`rcm-confirm-strike-cancel-${line.lineId}`}
+      >
+        Cancel
+      </button>
+      {reason.trim().length === 0 ? (
+        <DisabledReason tone="muted" testId={`rcm-confirm-strike-blocked-${line.lineId}`}>
+          {STRIKE_LINE_HINT}
+        </DisabledReason>
+      ) : null}
+      {failed ? (
+        <InlineFailure message={failed} testId={`rcm-confirm-strike-error-${line.lineId}`} />
+      ) : null}
     </div>
   );
 }
@@ -533,17 +1077,25 @@ function ClaimPanel({
   activeLineId,
   setActiveLineId,
   saving,
+  focus,
+  fieldError,
   typing,
   setTyping,
   send,
+  addLine,
+  strikeLine,
 }: {
   claim: ConfirmClaim;
   activeLineId: string | null;
   setActiveLineId: (id: string) => void;
   saving: string | null;
+  focus: string | null;
+  fieldError: SaveFailure;
   typing: Record<string, string>;
   setTyping: React.Dispatch<React.SetStateAction<Record<string, string>>>;
-  send: (label: string, fields: ConfirmInstruction[]) => Promise<void>;
+  send: (label: string, fields: ConfirmInstruction[]) => Promise<boolean>;
+  addLine: (claimId: string, line: AddLineInstruction) => Promise<boolean>;
+  strikeLine: (label: string, body: StrikeBody) => Promise<boolean>;
 }) {
   return (
     <section
@@ -563,6 +1115,8 @@ function ClaimPanel({
         claimId={claim.claimId}
         lineId={null}
         saving={saving}
+        focus={focus}
+        fieldError={fieldError}
         typing={typing}
         setTyping={setTyping}
         send={send}
@@ -577,12 +1131,23 @@ function ClaimPanel({
             active={line.lineId === activeLineId}
             onSelect={() => setActiveLineId(line.lineId)}
             saving={saving}
+            focus={focus}
+            fieldError={fieldError}
             typing={typing}
             setTyping={setTyping}
             send={send}
+            strikeLine={strikeLine}
           />
         ))}
       </div>
+
+      <ClaimLineSum sum={claim.lineSum} />
+      <AddLineForm
+        claimId={claim.claimId}
+        saving={saving}
+        fieldError={fieldError}
+        onAdd={addLine}
+      />
     </section>
   );
 }
@@ -593,36 +1158,80 @@ function LinePanel({
   active,
   onSelect,
   saving,
+  focus,
+  fieldError,
   typing,
   setTyping,
   send,
+  strikeLine,
 }: {
   claimId: string;
   line: ConfirmLine;
   active: boolean;
   onSelect: () => void;
   saving: string | null;
+  focus: string | null;
+  fieldError: SaveFailure;
   typing: Record<string, string>;
   setTyping: React.Dispatch<React.SetStateAction<Record<string, string>>>;
-  send: (label: string, fields: ConfirmInstruction[]) => Promise<void>;
+  send: (label: string, fields: ConfirmInstruction[]) => Promise<boolean>;
+  strikeLine: (label: string, body: StrikeBody) => Promise<boolean>;
 }) {
   const label = `line:${line.lineId}`;
-  const unchecked = line.fields.filter((f) => !f.confirmed);
+  /*
+   * A STRUCK LINE ASKS FOR NOTHING. A person has said it is not on the page, so
+   * its five figures are moot — offering to confirm them against a page they are
+   * not on would be asking her to answer a question she has just withdrawn.
+   */
+  const unchecked = line.struck ? [] : line.fields.filter((f) => !f.confirmed);
 
   return (
     <div
-      className={`rounded-lg border p-3 ${active ? "border-foreground/40 bg-muted/40" : "border-border"}`}
+      className={`rounded-lg border p-3 ${
+        line.struck
+          ? "border-border opacity-60"
+          : active
+            ? "border-foreground/40 bg-muted/40"
+            : "border-border"
+      }`}
       data-testid={`rcm-confirm-line-${line.lineId}`}
+      data-kind={line.kind}
+      data-struck={line.struck ? "true" : undefined}
     >
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <button
           type="button"
           onClick={onSelect}
-          className="text-left text-sm font-medium underline-offset-2 hover:underline"
+          className={`text-left text-sm font-medium underline-offset-2 hover:underline ${
+            line.struck ? "line-through" : ""
+          }`}
           data-testid={`rcm-confirm-line-select-${line.lineId}`}
         >
           {line.code} {line.description}
         </button>
+        {/*
+          THE HUMAN-ADDED MARK, wherever an added line appears.
+
+          Not a colour: red and amber are reserved for disagreement on this
+          screen, and a line somebody typed in correctly is not a disagreement.
+          It is a plain label saying where the figures came from, which is the
+          same thing the trail sentence under each figure says.
+        */}
+        {line.kind === "added" ? (
+          <span
+            className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground"
+            data-testid={`rcm-confirm-added-mark-${line.lineId}`}
+          >
+            {ADDED_BY_HAND_MARK}
+          </span>
+        ) : null}
+        {/*
+          NO CHIP FOR A STRUCK LINE. The strikethrough on its name and the
+          "struck by <name> — <reason>" sentence under it already say it twice;
+          a third label would be the kind of repetition the word budget exists
+          to catch. The ADDED mark stays, because nothing else on the row says
+          where those figures came from.
+        */}
         {/*
           THE PER-LINE VISUAL CHECK (addendum item 1).
 
@@ -648,6 +1257,8 @@ function LinePanel({
             claimId={claimId}
             lineId={line.lineId}
             saving={saving}
+            focus={focus}
+            fieldError={fieldError}
             typing={typing}
             setTyping={setTyping}
             send={send}
@@ -677,7 +1288,39 @@ function LinePanel({
           {saving === label ? "Saving…" : `These ${unchecked.length} are right`}
         </button>
       ) : null}
+
+      {fieldError && fieldError.address === label ? (
+        <InlineFailure message={fieldError.message} testId={`rcm-confirm-line-error-${line.lineId}`} />
+      ) : null}
+
+      <StrikeControl
+        claimId={claimId}
+        line={line}
+        saving={saving}
+        fieldError={fieldError}
+        onStrike={strikeLine}
+      />
     </div>
+  );
+}
+
+/**
+ * A save that did not take, said where it was made.
+ *
+ * Inline rather than at the top of the page: a biller fifteen rows down a long
+ * EOB cannot see a banner above the fold, and a banner cannot tell her which of
+ * fifteen figures it is about.
+ */
+function InlineFailure({ message, testId }: { message: string; testId: string }) {
+  return (
+    <span
+      className="inline-flex items-start gap-1 text-xs text-destructive"
+      role="alert"
+      data-testid={testId}
+    >
+      <AlertCircle size={12} className="mt-0.5 flex-shrink-0" />
+      {message}
+    </span>
   );
 }
 
@@ -687,6 +1330,8 @@ function FieldRow({
   claimId,
   lineId,
   saving,
+  focus,
+  fieldError,
   typing,
   setTyping,
   send,
@@ -696,9 +1341,11 @@ function FieldRow({
   claimId: string | null;
   lineId: string | null;
   saving: string | null;
+  focus: string | null;
+  fieldError: SaveFailure;
   typing: Record<string, string>;
   setTyping: React.Dispatch<React.SetStateAction<Record<string, string>>>;
-  send: (label: string, fields: ConfirmInstruction[]) => Promise<void>;
+  send: (label: string, fields: ConfirmInstruction[]) => Promise<boolean>;
   hideLabel?: boolean;
 }) {
   const address = addressOf(field.field, claimId, lineId);
@@ -706,15 +1353,73 @@ function FieldRow({
   const raw = typing[address] ?? "";
   const parsed = centsFromTyped(raw);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const confirmRef = useRef<HTMLButtonElement | null>(null);
+
+  /** This row is where the work is. Set by the server's count, not by the DOM. */
+  const focused = focus === address;
+  const failed = fieldError && fieldError.address === address ? fieldError.message : null;
 
   useEffect(() => {
     if (open) inputRef.current?.focus();
   }, [open]);
 
+  /*
+   * THE WORK ARRIVES HERE.
+   *
+   * Scrolled into view and then focused, so the next figure is both visible and
+   * ready to answer — Enter confirms it without reaching for the mouse.
+   *
+   * `block: "nearest"` on purpose: it moves the list the smallest amount that
+   * brings the row into view, so a row already on screen does not jump. Centring
+   * would scroll on every single confirm, which is a milder version of the
+   * defect this fixes.
+   *
+   * `?.()` on `scrollIntoView` because jsdom does not implement it. A guard
+   * rather than a test-only stub: this is a convenience, and a browser without it
+   * should still get a working screen.
+   */
+  useEffect(() => {
+    if (!focused) return;
+    rowRef.current?.scrollIntoView?.({ block: "nearest" });
+    confirmRef.current?.focus();
+  }, [focused]);
+
+  /** Confirm the figure AS READ — including "not stated" as a real answer. */
+  const confirmAsRead = () =>
+    send(address, [
+      { claimId, lineId, field: field.field, confirmedCents: field.stated ? field.cents : null },
+    ]);
+
+  const saveTyped = () => {
+    if (parsed === undefined) return;
+    return send(address, [{ claimId, lineId, field: field.field, confirmedCents: parsed }]);
+  };
+
   return (
     <div
-      className="flex flex-wrap items-center gap-2 text-sm"
+      ref={rowRef}
+      /*
+       * ENTER ANSWERS THE ROW.
+       *
+       * On the container rather than on the button, so it works wherever focus
+       * sits inside the row — the confirm button when the work arrives here, or
+       * the text box when she is partway through typing a figure. An explicit
+       * handler rather than relying on a focused button's native Enter, because
+       * "Enter saves what I typed" has to hold in the input too, where the native
+       * behaviour would be nothing at all.
+       */
+      onKeyDown={(e) => {
+        if (e.key !== "Enter" || field.confirmed) return;
+        e.preventDefault();
+        if (open) void saveTyped();
+        else void confirmAsRead();
+      }}
+      className={`flex flex-wrap items-center gap-2 rounded-md text-sm ${
+        focused ? "bg-muted/60 ring-1 ring-foreground/30 px-1.5 py-1" : ""
+      }`}
       data-testid={`rcm-confirm-field-${address}`}
+      data-focused={focused ? "true" : undefined}
     >
       {hideLabel ? null : (
         <dt className="min-w-[7rem] text-muted-foreground">{CONFIRM_FIELD_LABELS[field.field]}</dt>
@@ -740,13 +1445,10 @@ function FieldRow({
       ) : (
         <>
           <button
+            ref={confirmRef}
             type="button"
             disabled={saving === address}
-            onClick={() =>
-              send(address, [
-                { claimId, lineId, field: field.field, confirmedCents: field.stated ? field.cents : null },
-              ])
-            }
+            onClick={() => void confirmAsRead()}
             className="rounded-lg border border-border px-2 py-0.5 text-xs font-medium hover:bg-muted"
             data-testid={`rcm-confirm-yes-${address}`}
           >
@@ -781,10 +1483,7 @@ function FieldRow({
           <button
             type="button"
             disabled={parsed === undefined || saving === address}
-            onClick={() =>
-              parsed !== undefined &&
-              send(address, [{ claimId, lineId, field: field.field, confirmedCents: parsed }])
-            }
+            onClick={() => void saveTyped()}
             className="rounded-lg border border-border px-2 py-0.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
             data-testid={`rcm-confirm-save-${address}`}
           >
@@ -806,6 +1505,8 @@ function FieldRow({
           </button>
         </span>
       ) : null}
+
+      {failed ? <InlineFailure message={failed} testId={`rcm-confirm-error-${address}`} /> : null}
     </div>
   );
 }
