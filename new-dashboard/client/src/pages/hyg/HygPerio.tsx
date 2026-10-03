@@ -1132,7 +1132,7 @@ export default function HygPerio() {
               <button
                 key={depth}
                 type="button"
-                onClick={() => act({ type: "depth", depth })}
+                onClick={() => act({ type: "number", value: depth })}
                 disabled={cursorSkipped || locked}
                 data-testid={`hyg-perio-key-${depth}`}
                 className={cn(

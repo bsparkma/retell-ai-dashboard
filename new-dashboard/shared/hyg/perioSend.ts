@@ -67,6 +67,7 @@ import {
   type PerioFlag,
   type PerioSite,
   PerioSiteChangeSchema,
+  emptyPerioSite,
   type PerioSiteChange,
 } from "./perio";
 
@@ -292,8 +293,26 @@ export function perioArchVerdict(chart: PerioChart, field: PerioArchStringField)
 // The plan
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The only SequenceTypes a perio send writes row by row. NEVER CAL — Open Dental derives it. */
-export const PerioSendSequenceTypeSchema = z.enum(["Probing", "BleedSupPlaqCalc", "SkipTooth"]);
+/**
+ * The only SequenceTypes a perio send writes row by row.
+ *
+ * ⚠️ **NEVER CAL.** Open Dental derives CAL itself from Probing + GingMargin, so a
+ * CAL CareIN wrote could disagree with the chart of record — and the chart of
+ * record would be the one that looked wrong. `perioCal` computes it for the
+ * SCREEN; it has no path to a payload, `odPerioWriter.js` refuses the type before
+ * the transport, and a test asserts no plan ever carries one.
+ *
+ * GingMargin, Furcation and Mobility are item 26. There is no `Recession` type —
+ * the probe asked, and Open Dental answered `400 SequenceType is invalid.`
+ */
+export const PerioSendSequenceTypeSchema = z.enum([
+  "Probing",
+  "BleedSupPlaqCalc",
+  "SkipTooth",
+  "GingMargin",
+  "Furcation",
+  "Mobility",
+]);
 export type PerioSendSequenceType = z.infer<typeof PerioSendSequenceTypeSchema>;
 
 /** One `POST /periomeasures` body, minus the PerioExamNum it learns once the exam exists. */
@@ -415,6 +434,13 @@ export function planPerioSend(chart: PerioChart): PerioSendPlan {
   });
 
   const rows: PerioMeasurePlan[] = [];
+  /*
+   * ITEM 26: the v2 rows are collected separately and appended AFTER the v1 ones,
+   * so the send keeps its phases — the arch strings and probing first, then
+   * recession, furcation and mobility. The send UI names the phase it is in, and
+   * a plan that interleaved them could not.
+   */
+  const v2Rows: PerioMeasurePlan[] = [];
   const deepSites: PerioCursor[] = [];
   for (let tooth = 1; tooth <= PERIO_TOOTH_COUNT; tooth += 1) {
     const t = normalized.teeth[String(tooth)];
@@ -431,6 +457,75 @@ export function planPerioSend(chart: PerioChart): PerioSendPlan {
       const depth = t.sites[surface].depth;
       if (depth !== null && depth > PERIO_STRING_MAX_DEPTH) deepSites.push({ tooth, surface });
     }
+
+    /*
+     * ═══════════════════════════════════════════════════════════════════════════
+     * ITEM 26's ROWS — ALWAYS PER ROW, WHICHEVER PATH THE ARCHES TAKE
+     * ═══════════════════════════════════════════════════════════════════════════
+     * The four arch strings carry probing depths and flags only. Recession,
+     * furcation and mobility have no string form at all, so they are emitted here
+     * — ABOVE the `perRowJaws` gate below, which decides only whether this jaw's
+     * PROBING has to go row by row.
+     *
+     * ABSENCE OVER ZERO, the arch-string doctrine: `-1` is Open Dental's "no
+     * measurement" and `0` is a real reading, so an unvisited site is `-1` and a
+     * tooth with nothing on it gets NO ROW at all. A row of six `-1`s is a row
+     * that says nothing; Open Dental will store one (measured), and we will not
+     * write one.
+     */
+    const gmOf = (surface: ToothSurface) => t.sites[surface].gm ?? -1;
+    if (ALL_SURFACES.some((surface) => t.sites[surface].gm !== null)) {
+      v2Rows.push({
+        tooth,
+        sequenceType: "GingMargin",
+        body: {
+          // Per site: ToothValue MUST be -1, or Open Dental refuses the row.
+          ToothValue: -1,
+          MBvalue: gmOf("MB"),
+          Bvalue: gmOf("B"),
+          DBvalue: gmOf("DB"),
+          MLvalue: gmOf("ML"),
+          Lvalue: gmOf("L"),
+          DLvalue: gmOf("DL"),
+        },
+      });
+    }
+
+    const furcationOf = (surface: ToothSurface) => t.sites[surface].furcation ?? -1;
+    if (ALL_SURFACES.some((surface) => t.sites[surface].furcation !== null)) {
+      v2Rows.push({
+        tooth,
+        sequenceType: "Furcation",
+        body: {
+          ToothValue: -1,
+          MBvalue: furcationOf("MB"),
+          Bvalue: furcationOf("B"),
+          DBvalue: furcationOf("DB"),
+          MLvalue: furcationOf("ML"),
+          Lvalue: furcationOf("L"),
+          DLvalue: furcationOf("DL"),
+        },
+      });
+    }
+
+    if (t.mobility !== null) {
+      v2Rows.push({
+        tooth,
+        sequenceType: "Mobility",
+        // PER TOOTH: the grade is in ToothValue and EVERY surface must be -1, or
+        // Open Dental refuses the row (`MBvalue is invalid...`, measured).
+        body: {
+          ToothValue: t.mobility,
+          MBvalue: -1,
+          Bvalue: -1,
+          DBvalue: -1,
+          MLvalue: -1,
+          Lvalue: -1,
+          DLvalue: -1,
+        },
+      });
+    }
+
     if (!perRowJaws.has(perioJawOfTooth(tooth))) continue;
 
     // -1 is Open Dental's "no measurement". An uncharted site is -1, NEVER 0.
@@ -473,6 +568,8 @@ export function planPerioSend(chart: PerioChart): PerioSendPlan {
     }
   }
 
+  // v1 first, then v2 — see the comment where `v2Rows` is declared.
+  rows.push(...v2Rows);
   return { strings, arches, rows, deepSites };
 }
 
@@ -554,9 +651,16 @@ export function comparePerioReadback(expected: PerioChart, found: PerioChart): P
     for (const surface of ALL_SURFACES) {
       // A skipped tooth's readings are KEPT on the chart (one key undoes a
       // skip) but never sent, so what must read back there is nothing.
-      const wantSite = e.skipped
-        ? { depth: null, bleeding: false, suppuration: false, plaque: false, calculus: false }
-        : e.sites[surface];
+      /*
+       * ITEM 26: `emptyPerioSite()` rather than a literal, so a site gaining a
+       * field cannot leave this comparison quietly reading `undefined`.
+       *
+       * This function still compares DEPTH AND FLAGS only. Teaching it recession,
+       * furcation and mobility means widening `PerioSiteChange.kind`, which the
+       * drift notice and the resend dialog both render — that is 26b, and the
+       * report says so rather than letting it grow in here.
+       */
+      const wantSite = e.skipped ? emptyPerioSite() : e.sites[surface];
       const haveSite = f.sites[surface];
       if (wantSite.depth !== haveSite.depth) {
         out.push({
