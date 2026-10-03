@@ -25,6 +25,7 @@ import {
   normalizePerioChart,
   perioSite,
   withPerioSite,
+  withPerioMobility,
   withPerioSkipped,
   type HygPerioPriorResponse,
   type PerioChart,
@@ -1397,5 +1398,177 @@ describe("item 28: a chart of only skips cannot be staged from the screen", () =
     renderPerio();
     await screen.findByTestId("hyg-perio-grid");
     expect(stageButton().disabled).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ITEM 26: FOUR MODES ON ONE GRID, AND A CAL THAT IS ONLY EVER SHOWN
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The arithmetic and the refusals are pinned in tests/hyg-perio-v2.test.ts. These
+// are about the screen: that the mode is impossible to mistake, that a digit lands
+// where the mode says, and that an unrecognised margin is drawn as a raw number
+// with a marker rather than quietly turned into a CAL.
+
+describe("item 26: the mode is loud, and a digit lands where it says", () => {
+  const mode = (name: string) => screen.getByTestId(`hyg-perio-mode-${name}`);
+
+  it("ACCEPTANCE 2: all four modes are offered, with Depth active to start", async () => {
+    renderPerio();
+    await screen.findByTestId("hyg-perio-modes");
+    for (const name of ["depth", "gm", "mobility", "furcation"]) {
+      expect(mode(name)).toBeTruthy();
+    }
+    expect(mode("depth").getAttribute("aria-pressed")).toBe("true");
+    expect(mode("gm").getAttribute("aria-pressed")).toBe("false");
+    // And the bar SAYS what a number will be recorded as.
+    expect(screen.getByTestId("hyg-perio-mode-range").textContent).toMatch(/Depth 0-19 mm/);
+  });
+
+  it("ACCEPTANCE 2: switching mode changes what the next digit means", async () => {
+    renderPerio();
+    await screen.findByTestId("hyg-perio-modes");
+    const grid = screen.getByTestId("hyg-perio-grid");
+
+    // Depth mode: the big number.
+    fireEvent.keyDown(grid, digit(4));
+    await waitFor(() => expect(screen.getByTestId("hyg-perio-site-1-DB").textContent).toContain("4"));
+
+    // Gingival margin mode, by KEY, and the same digit lands somewhere else.
+    fireEvent.keyDown(grid, { key: "g", code: "KeyG" });
+    await waitFor(() => expect(mode("gm").getAttribute("aria-pressed")).toBe("true"));
+    expect(screen.getByTestId("hyg-perio-mode-range").textContent).toMatch(/Gingival margin/);
+    // The depth advanced the cursor to #1 B, as it does in every mode. Come back
+    // to #1 DB so the recession lands beside the depth just entered.
+    fireEvent.click(screen.getByTestId("hyg-perio-site-1-DB"));
+    fireEvent.keyDown(grid, digit(2));
+
+    // #1 DB now has a depth of 4 and a recession of 2 — and a CAL of 6.
+    await waitFor(() => expect(screen.getByTestId("hyg-perio-gm-1-DB")).toBeTruthy());
+    expect(screen.getByTestId("hyg-perio-gm-1-DB").textContent).toBe("2");
+    expect(screen.getByTestId("hyg-perio-cal-1-DB").textContent).toBe("6");
+  });
+
+  it("ACCEPTANCE 2: the mode is clickable as well as keyable", async () => {
+    renderPerio();
+    await screen.findByTestId("hyg-perio-modes");
+    fireEvent.click(mode("mobility"));
+    await waitFor(() => expect(mode("mobility").getAttribute("aria-pressed")).toBe("true"));
+    expect(screen.getByTestId("hyg-perio-mode-range").textContent).toMatch(/per tooth/);
+
+    fireEvent.keyDown(screen.getByTestId("hyg-perio-grid"), digit(2));
+    await waitFor(() => expect(screen.getByTestId("hyg-perio-mobility-1").textContent).toBe("m2"));
+  });
+
+  it("ACCEPTANCE 5: a refused digit says why, and charts nothing", async () => {
+    renderPerio();
+    await screen.findByTestId("hyg-perio-modes");
+    const grid = screen.getByTestId("hyg-perio-grid");
+    fireEvent.click(mode("mobility"));
+    fireEvent.keyDown(grid, digit(7));
+
+    const refusal = await screen.findByTestId("hyg-perio-refusal");
+    expect(refusal.textContent).toMatch(/Mobility is 0-3/);
+    expect(screen.queryByTestId("hyg-perio-mobility-1")).toBeNull();
+
+    // It goes away the moment she does something else.
+    fireEvent.keyDown(grid, { key: "ArrowRight", code: "ArrowRight" });
+    await waitFor(() => expect(screen.queryByTestId("hyg-perio-refusal")).toBeNull());
+  });
+
+  it("ACCEPTANCE 5: furcation on a single-rooted tooth is refused on screen", async () => {
+    renderPerio();
+    await screen.findByTestId("hyg-perio-modes");
+    const grid = screen.getByTestId("hyg-perio-grid");
+    // #1 is a molar, so move to #8 — a central incisor — and try there.
+    fireEvent.click(screen.getByTestId("hyg-perio-site-8-DB"));
+    fireEvent.click(mode("furcation"));
+    fireEvent.keyDown(grid, digit(2));
+
+    const refusal = await screen.findByTestId("hyg-perio-refusal");
+    expect(refusal.textContent).toMatch(/#8 has one root/);
+    expect(screen.queryByTestId("hyg-perio-furcation-8-DB")).toBeNull();
+
+    // And on a molar it goes in.
+    fireEvent.click(screen.getByTestId("hyg-perio-site-3-DB"));
+    fireEvent.keyDown(grid, digit(2));
+    await waitFor(() => expect(screen.getByTestId("hyg-perio-furcation-3-DB").textContent).toBe("f2"));
+  });
+
+  it("ACCEPTANCE 2: the legend lists every mode key, from the entry constants", async () => {
+    renderPerio();
+    await screen.findByTestId("hyg-perio-modes");
+    const legend = screen.getByTestId("hyg-perio-legend");
+    expect(legend.textContent).toMatch(/Depth mode \(0-19 mm\)/);
+    expect(legend.textContent).toMatch(/Gingival margin mode \(0-19 mm recession\)/);
+    expect(legend.textContent).toMatch(/Mobility mode \(0-3\)/);
+    expect(legend.textContent).toMatch(/Furcation mode \(1-3\)/);
+  });
+});
+
+describe("item 26: CAL is shown, and never invented", () => {
+  it("ACCEPTANCE 4: CAL appears only once BOTH a depth and a recession exist", async () => {
+    server.chart = normalizePerioChart(
+      withPerioSite(
+        withPerioSite(emptyPerioChart(), 3, "DB", { depth: 4 }),
+        3,
+        "B",
+        { depth: 5, gm: 2 },
+      ),
+    );
+    server.chartStored = true;
+    renderPerio();
+
+    await screen.findByTestId("hyg-perio-site-3-B");
+    // Both operands: 5 + 2.
+    expect(screen.getByTestId("hyg-perio-cal-3-B").textContent).toBe("7");
+    // Depth but no recession: nothing at all — no 0, no dash.
+    expect(screen.queryByTestId("hyg-perio-cal-3-DB")).toBeNull();
+    expect(screen.queryByTestId("hyg-perio-gm-3-DB")).toBeNull();
+  });
+
+  it("ACCEPTANCE 3: a margin in the OTHER family shows RAW with a marker and no CAL", async () => {
+    // It can only have come from a writer that is not us — CareIN cannot enter one.
+    server.chart = normalizePerioChart(
+      withPerioSite(emptyPerioChart(), 3, "DB", { depth: 4, gm: 102 }),
+    );
+    server.chartStored = true;
+    renderPerio();
+
+    const gm = await screen.findByTestId("hyg-perio-gm-3-DB");
+    expect(gm.textContent).toContain("102");
+    expect(screen.getByTestId("hyg-perio-gm-unknown-3-DB")).toBeTruthy();
+    expect(gm.getAttribute("title")).toMatch(/unrecognized margin/);
+    // H0 says subtract 100. That sign was never observed, so no number is shown.
+    expect(screen.queryByTestId("hyg-perio-cal-3-DB")).toBeNull();
+    // And a screen reader hears the same thing.
+    expect(screen.getByTestId("hyg-perio-site-3-DB").getAttribute("aria-label")).toMatch(
+      /margin 102 unrecognized margin/,
+    );
+  });
+
+  it("a recession of 0 is a reading: CAL equals the depth", async () => {
+    server.chart = normalizePerioChart(
+      withPerioSite(emptyPerioChart(), 3, "DB", { depth: 4, gm: 0 }),
+    );
+    server.chartStored = true;
+    renderPerio();
+    await screen.findByTestId("hyg-perio-site-3-DB");
+    expect(screen.getByTestId("hyg-perio-gm-3-DB").textContent).toBe("0");
+    expect(screen.getByTestId("hyg-perio-cal-3-DB").textContent).toBe("4");
+  });
+
+  it("mobility is drawn on the TOOTH, and a skipped tooth shows none", async () => {
+    let chart = withPerioMobility(emptyPerioChart(), 3, 2);
+    chart = withPerioMobility(chart, 30, 0);
+    chart = withPerioSkipped(chart, 30, true);
+    server.chart = normalizePerioChart(chart);
+    server.chartStored = true;
+    renderPerio();
+
+    await screen.findByTestId("hyg-perio-mobility-3");
+    expect(screen.getByTestId("hyg-perio-mobility-3").textContent).toBe("m2");
+    // #30 is skipped, so it sends no mobility and shows none.
+    expect(screen.queryByTestId("hyg-perio-mobility-30")).toBeNull();
   });
 });
