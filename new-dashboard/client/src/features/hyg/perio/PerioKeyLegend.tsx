@@ -12,6 +12,10 @@ import { Keyboard, X } from "lucide-react";
 
 import { PERIO_FLAG_KEYS, PERIO_FLAG_LABELS } from "@shared/hyg/perio";
 import {
+  PERIO_MODES,
+  PERIO_MODE_KEYS,
+  PERIO_MODE_LABELS,
+  PERIO_MODE_RANGES,
   NUMPAD_FLAG_KEYS,
   NUMPAD_NEXT_TOOTH_KEY,
   NUMPAD_PREVIOUS_TOOTH_KEY,
@@ -42,11 +46,20 @@ export function PerioKeyLegend({ onHide }: { onHide: () => void }) {
     // ONE cap, not "0", "–", "9": a lone dash here would read as the plaque key.
     { keys: ["0–9"], does: "Depth on this site, then the next site" },
     { keys: ["Shift", "0–9"], does: "10–19 mm (main keyboard)" },
+    /*
+     * ITEM 26 + ITEM 17's DOCTRINE: the modes are rendered FROM `PERIO_MODE_KEYS`
+     * and `PERIO_MODE_RANGES`, never typed out here. A legend that spelled the
+     * keys itself could promise one the reducer does not honour.
+     */
+    ...PERIO_MODES.map((mode) => ({
+      keys: [PERIO_MODE_KEYS[mode]],
+      does: `${PERIO_MODE_LABELS[mode]} mode (${PERIO_MODE_RANGES[mode]})`,
+    })),
     { keys: ["Enter", "Space", "→"], does: "Next site, no reading" },
     { keys: ["←"], does: "Previous site" },
     ...PAD_FLAGS.map(([key, flag]) => ({
       keys: [key, PERIO_FLAG_KEYS[flag]],
-      does: `${PERIO_FLAG_LABELS[flag]} on the reading just entered`,
+      does: `${PERIO_FLAG_LABELS[flag]} on the reading just entered (depth mode)`,
     })),
     { keys: [NUMPAD_SKIP_KEY, "X"], does: "Skip or un-skip this tooth" },
     { keys: ["Backspace"], does: "Step back one site and erase it" },

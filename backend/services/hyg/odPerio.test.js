@@ -183,9 +183,10 @@ test('-1 is "no measurement", never zero; flags unpack from one integer; SkipToo
     // bleed 1 + sup 2 on DB, plaque 4 + calc 8 on ML, -1 on B.
     measure(3, 'BleedSupPlaqCalc', [3, -1, 0, 0, 0, 12]),
     measure(1, 'SkipTooth', [-1, -1, -1, -1, -1, -1], { ToothValue: 1 }),
-    // Out of scope, and a primary tooth: both ignored, neither throws.
-    measure(4, 'GingMargin', [101, 0, 0, 0, 0, 0]),
+    // A primary tooth: ignored, and it does not throw.
     measure(51, 'Probing', [3, 3, 3, 3, 3, 3]),
+    // Out of scope even for v2, and read off the same page.
+    measure(6, 'MGJ', [2, 2, 2, 2, 2, 2]),
   ]);
   const t3 = chart.teeth['3'].sites;
   assert.equal(t3.DB.depth, 0, 'a zero is a reading');
@@ -201,8 +202,70 @@ test('-1 is "no measurement", never zero; flags unpack from one integer; SkipToo
   );
   assert.equal(t3.B.bleeding, false);
   assert.equal(chart.teeth['1'].skipped, true);
-  assert.equal(chart.teeth['4'], undefined, 'recession is out of v1 scope and draws nothing');
   assert.equal(chart.teeth['51'], undefined);
+  assert.equal(chart.teeth['6'], undefined, 'MGJ is still out of scope and draws nothing');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ITEM 26: the three v2 types are READ BACK, because the send must verify them
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('ITEM 26: a gingival margin comes back as sent, in EITHER family, and -1 is nothing', async () => {
+  // `measure()` takes its six values as [DB, B, MB, DL, L, ML].
+  const { chart } = odPerio.chartFromMeasures([
+    measure(3, 'GingMargin', [2, -1, 0, 101, 119, -1]),
+  ]);
+  const t3 = chart.teeth['3'].sites;
+  // §0's family, taken as the recession it is.
+  assert.equal(t3.DB.gm, 2);
+  assert.equal(t3.MB.gm, 0, 'a zero margin is a reading');
+  // The OTHER family. NOT converted — H0 says subtract 100 and that sign has
+  // never been observed. It comes through as what Open Dental holds.
+  assert.equal(t3.DL.gm, 101);
+  assert.equal(t3.L.gm, 119);
+  // And it gets no CAL, however much depth sits beside it.
+  assert.equal(contract.perioCal({ ...t3.DL, depth: 4 }), null);
+  assert.equal(contract.perioCal({ ...t3.DB, depth: 4 }), 6, 'depth + recession');
+  // -1 is "nothing charted", never a value.
+  assert.equal(t3.B.gm, null);
+  assert.equal(t3.ML.gm, null);
+});
+
+test('ITEM 26: a GingMargin row of all -1 is tolerated and read as nothing', async () => {
+  // MEASURED: Open Dental really does store an empty GingMargin row. Reading one
+  // as a value would put a 0 mm recession on six sites nobody charted.
+  const { chart } = odPerio.chartFromMeasures([
+    measure(3, 'GingMargin', [-1, -1, -1, -1, -1, -1]),
+  ]);
+  assert.equal(chart.teeth['3'], undefined, 'a row that says nothing charts nothing');
+});
+
+test('ITEM 26: mobility comes back from ToothValue, and the surfaces are ignored', async () => {
+  const { chart } = odPerio.chartFromMeasures([
+    measure(30, 'Mobility', [-1, -1, -1, -1, -1, -1], { ToothValue: 2 }),
+    measure(19, 'Mobility', [-1, -1, -1, -1, -1, -1], { ToothValue: 0 }),
+    // Out of the clinical range: read as nothing, so the read-back disagrees with
+    // whatever we sent rather than importing a grade no tooth has.
+    measure(18, 'Mobility', [-1, -1, -1, -1, -1, -1], { ToothValue: 9 }),
+  ]);
+  assert.equal(chart.teeth['30'].mobility, 2);
+  assert.equal(chart.teeth['19'].mobility, 0, 'grade 0 is a reading — tested, firm');
+  assert.equal(chart.teeth['18'], undefined);
+});
+
+test('ITEM 26: furcation comes back per site, classes 1-3 only', async () => {
+  const { chart } = odPerio.chartFromMeasures([
+    measure(3, 'Furcation', [1, 2, 3, -1, -1, -1]),
+    // Open Dental ACCEPTED a 5 when the probe sent one (§7), so one may already
+    // be in a chart. It is not read as a class.
+    measure(14, 'Furcation', [5, -1, -1, -1, -1, -1]),
+  ]);
+  const t3 = chart.teeth['3'].sites;
+  assert.equal(t3.DB.furcation, 1);
+  assert.equal(t3.B.furcation, 2);
+  assert.equal(t3.MB.furcation, 3);
+  assert.equal(t3.ML.furcation, null);
+  assert.equal(chart.teeth['14'], undefined, 'there is no class 5');
 });
 
 test('no exam on file is NONE — an honest empty, not a chart of zeros', async () => {

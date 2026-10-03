@@ -48,6 +48,8 @@ import {
   normalizePerioChart,
   perioProgressLabel,
   withPerioSite,
+  perioSite,
+  withPerioMobility,
   withPerioSkipped,
   type PerioChart,
   type PerioDrift,
@@ -625,5 +627,73 @@ describe.skipIf(!SHOOT)("perio chart screenshot dumps", () => {
     fireEvent.keyDown(await screen.findByTestId("hyg-perio-grid"), { key: "Home", code: "Numpad7", location: 3 });
     await screen.findByTestId("hyg-perio-numlock");
     dump("hyg-perio-numpad-17-numlock-off@1180x900");
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // ITEM 26: the four modes, the three values, and a CAL that is only shown
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /** A charted upper-right quadrant carrying one of each v2 value. */
+  function v2Chart(): PerioChart {
+    let chart = exam(48, 7, []);
+    // Recession on the molars and premolars she has just walked.
+    for (const [tooth, surface, gm] of [
+      [2, "DB", 1],
+      [2, "B", 2],
+      [3, "B", 3],
+      [3, "MB", 2],
+      [4, "B", 1],
+      [5, "B", 2],
+    ] as const) {
+      chart = withPerioSite(chart, tooth, surface, { ...perioSite(chart, tooth, surface), gm });
+    }
+    // Furcation on two molars, and a margin from ANOTHER writer in the family
+    // CareIN cannot enter — shown raw, marked, and given no CAL.
+    chart = withPerioSite(chart, 3, "ML", { ...perioSite(chart, 3, "ML"), furcation: 2 });
+    chart = withPerioSite(chart, 2, "ML", { ...perioSite(chart, 2, "ML"), furcation: 1 });
+    chart = withPerioSite(chart, 6, "B", { ...perioSite(chart, 6, "B"), gm: 102 });
+    // Mobility on two teeth, including a grade 0 — tested, firm.
+    chart = withPerioMobility(chart, 3, 2);
+    chart = withPerioMobility(chart, 5, 0);
+    return normalizePerioChart(chart);
+  }
+
+  it("26a — gingival-margin mode: recession above, CAL below, furcation and mobility", async () => {
+    const chart = v2Chart();
+    fixtures.chart = chart;
+    fixtures.stagedWrite = perioWrite("Draft", chart);
+    fixtures.prior = found(exam(192, 3, [16]));
+    renderPerio();
+    await screen.findByTestId("hyg-perio-modes");
+    // In the mode she would be in while charting recession.
+    fireEvent.click(await screen.findByTestId("hyg-perio-mode-gm"));
+    await screen.findByTestId("hyg-perio-gm-3-B");
+    dump("hyg-perio-26a-v2-gm-mode@1180x900");
+  });
+
+  it("26b — a refused class: furcation on a tooth with one root", async () => {
+    const chart = v2Chart();
+    fixtures.chart = chart;
+    fixtures.stagedWrite = perioWrite("Draft", chart);
+    fixtures.prior = found(exam(192, 3, [16]));
+    renderPerio();
+    await screen.findByTestId("hyg-perio-modes");
+    fireEvent.click(await screen.findByTestId("hyg-perio-site-8-DB"));
+    fireEvent.click(await screen.findByTestId("hyg-perio-mode-furcation"));
+    fireEvent.keyDown(await screen.findByTestId("hyg-perio-grid"), { key: "2", code: "Digit2" });
+    await screen.findByTestId("hyg-perio-refusal");
+    dump("hyg-perio-26b-v2-refused@1180x900");
+  });
+
+  it("26c — the confirm: the phases in order, and how long it will take", async () => {
+    const chart = v2Chart();
+    fixtures.chart = chart;
+    fixtures.stagedWrite = perioWrite("Staged", chart);
+    fixtures.prior = found(exam(192, 5, [16]));
+    renderPerio();
+    await screen.findByText(/Kiwi, Sam/);
+    fireEvent.click(await screen.findByTestId("hyg-perio-send-open"));
+    await screen.findByTestId("hyg-perio-confirm-phases");
+    dump("hyg-perio-26c-v2-confirm-phases@1180x1000");
   });
 });

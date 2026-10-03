@@ -77,6 +77,88 @@ export const PERIO_LOWER_TEETH: readonly number[] = Array.from({ length: 16 }, (
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * ITEM 26 §0 — WHICH FAMILY OF GINGIVAL-MARGIN VALUES MEANS RECESSION.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * MEASURED, NOT INFERRED. THIS IS THE ONE CONSTANT THE SLICE TURNS ON.
+ * ═════════════════════════════════════════════════════════════════════════════
+ * `POST /periomeasures` with `SequenceType: GingMargin` accepts TWO families —
+ * `0–19` and `101–119` — and item 19's probe measured that both store VERBATIM:
+ * 101/102 are not converted, clamped or re-signed in either direction. H0's prose
+ * documents 101–119 as "negative (subtract 100)". Neither the API nor the docs
+ * say which family a RECESSION goes in; that is a convention of Open Dental's own
+ * user interface, and no amount of writing to the API can reveal it.
+ *
+ * So a person entered one. Beau hand-entered a perio exam in **Open Dental's own
+ * perio chart** on roland test patient 12828 on 2026-09-29 with a known
+ * **2 mm recession on #3 buccal**, and the probe
+ * (`backend/scripts/probe-hyg-perio-gm-sign.js`) read it back from staging
+ * (revision `--0000211`). The raw row, quoted:
+ *
+ *     {"PerioExamNum":2268,"SequenceType":"GingMargin","IntTooth":3,
+ *      "ToothValue":-1,"MBvalue":-1,"Bvalue":2, ...}
+ *
+ * **`Bvalue` is 2 for a 2 mm recession. THE RECESSION FAMILY IS THE LOW ONE,
+ * 0–19.** Therefore `CAL = depth + recession`, by ADDITION, and CareIN's entry
+ * writes 0–19 and never 101–119.
+ *
+ * Two consequences this constant also carries:
+ *
+ * - `101–119` is the OTHER family. CareIN never writes it. It can still arrive on
+ *   a READ-BACK, from a writer that is not us, and when it does the value is
+ *   shown raw and marked unrecognised — **never** turned into a CAL. H0 says to
+ *   subtract 100; that sign has never been observed, and a guess here becomes a
+ *   clinical number that reads as plausible.
+ * - Open Dental's own UI **refused a negative** (Beau, same session): overgrowth,
+ *   a margin coronal to the CEJ, could not be typed there at all. So CareIN
+ *   charts recession only. That is parity with the chart of record, not a gap.
+ */
+export const PERIO_GM_FAMILIES = Object.freeze({
+  /** What a recession is stored as — measured. CareIN writes only this range. */
+  recessionMin: 0,
+  recessionMax: 19,
+  /** The other family Open Dental accepts. Recognised on read-back, never written. */
+  otherMin: 101,
+  otherMax: 119,
+});
+
+/** Is this gingival-margin value a recession, in the §0-proven family? */
+export function perioGmIsRecession(value: number | null): boolean {
+  return (
+    value !== null &&
+    Number.isInteger(value) &&
+    value >= PERIO_GM_FAMILIES.recessionMin &&
+    value <= PERIO_GM_FAMILIES.recessionMax
+  );
+}
+
+/** Clinical mobility, Miller 0–3. Open Dental would take 0–19; we do not. */
+export const PERIO_MAX_MOBILITY = 3;
+
+/** Furcation classes I–III. Open Dental accepted a 5 (probe §7); we refuse it. */
+export const PERIO_MIN_FURCATION = 1;
+export const PERIO_MAX_FURCATION = 3;
+
+/**
+ * THE TEETH THAT HAVE A FURCATION AT ALL — molars, plus the upper first premolars
+ * (#5 and #12), which are the two-rooted ones.
+ *
+ * Open Dental does not know this: the probe posted Furcation on #8, a central
+ * incisor, and it was **accepted and stored** (§7). A single-rooted tooth has no
+ * furcation, so a class on one is a corruption of the chart of record, and the
+ * product is the only thing standing between a typo and that.
+ */
+export const PERIO_FURCATION_TEETH: readonly number[] = Object.freeze([
+  1, 2, 3, 14, 15, 16, // upper molars
+  5, 12, // upper first premolars — two-rooted
+  17, 18, 19, 30, 31, 32, // lower molars
+]);
+
+export function perioToothHasFurcation(tooth: number): boolean {
+  return PERIO_FURCATION_TEETH.includes(tooth);
+}
+
+/**
  * One site. `depth: null` is "not charted", which is NOT zero — a zero is a
  * reading. The four flags can be set on a site with no depth, because Open
  * Dental stores them in a separate row and a hygienist can see bleeding on a
@@ -89,6 +171,33 @@ export const PerioSiteSchema = z
     suppuration: z.boolean(),
     plaque: z.boolean(),
     calculus: z.boolean(),
+    /*
+     * ITEM 26. Both carry `.default(null)` so a chart stored before v2 parses —
+     * a strict object with a new required field would refuse every draft in the
+     * database.
+     */
+    /**
+     * Gingival margin, in millimetres of RECESSION (§0: the 0–19 family).
+     *
+     * The schema also admits 101–119 because Open Dental does and a read-back can
+     * carry one. CareIN's entry never produces one — `perioGmIsRecession` is how
+     * the two are told apart, and an unrecognised value gets no CAL.
+     */
+    gm: z
+      .union([
+        z.number().int().min(PERIO_GM_FAMILIES.recessionMin).max(PERIO_GM_FAMILIES.recessionMax),
+        z.number().int().min(PERIO_GM_FAMILIES.otherMin).max(PERIO_GM_FAMILIES.otherMax),
+      ])
+      .nullable()
+      .default(null),
+    /** Furcation class I–III. Only on a tooth that has one — see PERIO_FURCATION_TEETH. */
+    furcation: z
+      .number()
+      .int()
+      .min(PERIO_MIN_FURCATION)
+      .max(PERIO_MAX_FURCATION)
+      .nullable()
+      .default(null),
   })
   .strict();
 export type PerioSite = z.infer<typeof PerioSiteSchema>;
@@ -120,6 +229,13 @@ export const PERIO_FLAG_KEYS: Record<PerioFlag, string> = {
 export const PerioToothSchema = z
   .object({
     skipped: z.boolean(),
+    /**
+     * ITEM 26: mobility is PER TOOTH, not per site — Open Dental stores it in
+     * `ToothValue` with every surface column `-1` (probe §4). Clinical range 0–3;
+     * `0` is a real reading ("tested, firm"), which is why it is nullable rather
+     * than defaulting to zero. `.default(null)` so pre-v2 charts parse.
+     */
+    mobility: z.number().int().min(0).max(PERIO_MAX_MOBILITY).nullable().default(null),
     sites: z
       .object({
         DB: PerioSiteSchema,
@@ -185,12 +301,21 @@ export const PerioChartSchema = z
 export type PerioChart = z.infer<typeof PerioChartSchema>;
 
 export function emptyPerioSite(): PerioSite {
-  return { depth: null, bleeding: false, suppuration: false, plaque: false, calculus: false };
+  return {
+    depth: null,
+    bleeding: false,
+    suppuration: false,
+    plaque: false,
+    calculus: false,
+    gm: null,
+    furcation: null,
+  };
 }
 
 export function emptyPerioTooth(): PerioTooth {
   return {
     skipped: false,
+    mobility: null,
     sites: {
       DB: emptyPerioSite(),
       B: emptyPerioSite(),
@@ -225,6 +350,8 @@ export function withPerioSite(
   const current = perioTooth(chart, tooth);
   const next: PerioTooth = {
     skipped: current.skipped,
+    // ITEM 26: mobility is a TOOTH value and must survive a change to a site.
+    mobility: current.mobility,
     sites: { ...current.sites, [surface]: { ...current.sites[surface], ...patch } },
   };
   return { ...chart, teeth: { ...chart.teeth, [String(tooth)]: next } };
@@ -235,7 +362,23 @@ export function withPerioSkipped(chart: PerioChart, tooth: number, skipped: bool
   const current = perioTooth(chart, tooth);
   return {
     ...chart,
-    teeth: { ...chart.teeth, [String(tooth)]: { skipped, sites: current.sites } },
+    teeth: {
+      ...chart.teeth,
+      [String(tooth)]: { skipped, mobility: current.mobility, sites: current.sites },
+    },
+  };
+}
+
+/** A new chart with one tooth's mobility set or cleared. Never mutates. */
+export function withPerioMobility(
+  chart: PerioChart,
+  tooth: number,
+  mobility: number | null,
+): PerioChart {
+  const current = perioTooth(chart, tooth);
+  return {
+    ...chart,
+    teeth: { ...chart.teeth, [String(tooth)]: { ...current, mobility } },
   };
 }
 
@@ -411,6 +554,13 @@ export const PerioCountsSchema = z.object({
   complete: z.boolean(),
   /** No depth, no flag, no skipped tooth — nothing to stage. */
   empty: z.boolean(),
+  /* ITEM 26. `.default(0)` so a response from an older build still parses. */
+  /** Sites carrying a gingival-margin value, on un-skipped teeth. */
+  gmSites: z.number().int().default(0),
+  /** Sites carrying a furcation class. */
+  furcationSites: z.number().int().default(0),
+  /** Teeth carrying a mobility value. */
+  mobilityTeeth: z.number().int().default(0),
 });
 export type PerioCounts = z.infer<typeof PerioCountsSchema>;
 
@@ -432,6 +582,9 @@ export function countPerioChart(chart: PerioChart): PerioCounts {
     deepest: null,
     complete: false,
     empty: true,
+    gmSites: 0,
+    furcationSites: 0,
+    mobilityTeeth: 0,
   };
   for (let tooth = 1; tooth <= PERIO_TOOTH_COUNT; tooth += 1) {
     const t = perioTooth(chart, tooth);
@@ -439,6 +592,7 @@ export function countPerioChart(chart: PerioChart): PerioCounts {
       counts.teethSkipped.push(tooth);
       continue;
     }
+    if (t.mobility !== null) counts.mobilityTeeth += 1;
     for (const surface of ALL_SITES) {
       const site = t.sites[surface];
       if (site.depth !== null) {
@@ -448,6 +602,8 @@ export function countPerioChart(chart: PerioChart): PerioCounts {
           counts.deepest = { depth: site.depth, tooth, surface };
         }
       }
+      if (site.gm !== null) counts.gmSites += 1;
+      if (site.furcation !== null) counts.furcationSites += 1;
       for (const flag of PERIO_FLAGS) if (site[flag]) counts[flag] += 1;
     }
   }
@@ -456,8 +612,38 @@ export function countPerioChart(chart: PerioChart): PerioCounts {
   counts.empty =
     counts.sitesCharted === 0 &&
     counts.teethSkipped.length === 0 &&
+    counts.gmSites === 0 &&
+    counts.furcationSites === 0 &&
+    counts.mobilityTeeth === 0 &&
     PERIO_FLAGS.every((flag) => counts[flag] === 0);
   return counts;
+}
+
+/**
+ * ITEM 26: CAL — CLINICAL ATTACHMENT LEVEL, COMPUTED FOR THE SCREEN AND NOWHERE
+ * ELSE.
+ *
+ * `CAL = probing depth + recession`, by ADDITION, because §0 measured that a
+ * recession is stored in the 0–19 family (see PERIO_GM_FAMILIES).
+ *
+ * ⚠️ IT IS NEVER TYPED, NEVER STAGED AND NEVER WRITTEN TO OPEN DENTAL. Open
+ * Dental derives its own CAL from Probing + GingMargin, so a CAL CareIN wrote
+ * could disagree with the chart of record — and the chart of record would be the
+ * one that looked wrong. `odPerioWriter.js` refuses the SequenceType outright and
+ * a test asserts no CAL reaches any payload.
+ *
+ * `null` means "do not show a number", and the three ways to get there are all
+ * honest absences rather than zeros:
+ *   - no depth at this site
+ *   - no gingival margin at this site
+ *   - a gingival margin in the OTHER family (101–119). It came from a writer that
+ *     is not us, its sign has never been observed, and H0's "subtract 100" is a
+ *     guess. The screen shows the raw value and marks it unrecognised.
+ */
+export function perioCal(site: PerioSite): number | null {
+  if (site.depth === null) return null;
+  if (!perioGmIsRecession(site.gm)) return null;
+  return site.depth + (site.gm as number);
 }
 
 /**
@@ -486,7 +672,16 @@ export function countPerioChart(chart: PerioChart): PerioCounts {
  * a skipped tooth cannot satisfy this either.
  */
 export function perioHasReading(counts: PerioCounts): boolean {
-  return counts.sitesCharted > 0 || PERIO_FLAGS.some((flag) => counts[flag] > 0);
+  return (
+    counts.sitesCharted > 0 ||
+    // ITEM 26: a recession, a furcation class and a mobility grade are all things
+    // she measured, so each one is a reading by item 28's rule. Only a SKIP is
+    // not — and that is still the whole content of the test that pins this.
+    counts.gmSites > 0 ||
+    counts.furcationSites > 0 ||
+    counts.mobilityTeeth > 0 ||
+    PERIO_FLAGS.some((flag) => counts[flag] > 0)
+  );
 }
 
 /** The refusal, in the one wording the server and the screen both use. */
@@ -509,7 +704,12 @@ export function perioProgressLabel(counts: PerioCounts): string {
 }
 
 function siteIsEmpty(site: PerioSite): boolean {
-  return site.depth === null && PERIO_FLAGS.every((flag) => !site[flag]);
+  return (
+    site.depth === null &&
+    site.gm === null &&
+    site.furcation === null &&
+    PERIO_FLAGS.every((flag) => !site[flag])
+  );
 }
 
 /**
@@ -533,7 +733,11 @@ export function normalizePerioChart(chart: PerioChart): PerioChart {
       L: { ...emptyPerioSite(), ...stored.sites.L },
       ML: { ...emptyPerioSite(), ...stored.sites.ML },
     };
-    const canonical: PerioTooth = { skipped: stored.skipped, sites: {} as PerioTooth["sites"] };
+    const canonical: PerioTooth = {
+      skipped: stored.skipped,
+      mobility: stored.mobility ?? null,
+      sites: {} as PerioTooth["sites"],
+    };
     for (const surface of ALL_SITES) {
       const s = sites[surface];
       canonical.sites[surface] = {
@@ -542,9 +746,16 @@ export function normalizePerioChart(chart: PerioChart): PerioChart {
         suppuration: s.suppuration,
         plaque: s.plaque,
         calculus: s.calculus,
+        gm: s.gm ?? null,
+        furcation: s.furcation ?? null,
       };
     }
-    if (!canonical.skipped && ALL_SITES.every((surface) => siteIsEmpty(canonical.sites[surface]))) {
+    // A tooth holding ONLY a mobility reading is still a charted tooth.
+    if (
+      !canonical.skipped &&
+      canonical.mobility === null &&
+      ALL_SITES.every((surface) => siteIsEmpty(canonical.sites[surface]))
+    ) {
       continue;
     }
     teeth[String(tooth)] = canonical;
@@ -600,6 +811,21 @@ export function perioPreviewLines(chart: PerioChart): string[] {
         `sites 5 mm or deeper: ${counts.sitesAtLeast5}`,
     );
   }
+  /*
+   * ITEM 26 — AND THE PREVIEW IS WHAT THE FINGERPRINT IS TAKEN OF.
+   *
+   * `visitStore.fingerprintPreview` hashes these lines, and the send refuses when
+   * the fingerprint no longer matches the one she confirmed. So a recession edited
+   * between the preview and the send has to CHANGE A LINE HERE, or the confirm
+   * gate would wave through a chart she never read. Every v2 value is printed per
+   * tooth below for exactly that reason, not only counted.
+   */
+  if (counts.gmSites > 0 || counts.furcationSites > 0 || counts.mobilityTeeth > 0) {
+    lines.push(
+      `Recession: ${counts.gmSites} sites; furcation: ${counts.furcationSites} sites; ` +
+        `mobility: ${counts.mobilityTeeth} teeth`,
+    );
+  }
   lines.push("Depths read DB B MB (facial) and DL L ML (lingual); - is not charted.");
 
   const notCharted: number[] = [];
@@ -620,6 +846,20 @@ export function perioPreviewLines(chart: PerioChart): string[] {
       const at = ALL_SITES.filter((s) => t.sites[s][flag]);
       if (at.length > 0) flagParts.push(`${flag} ${at.join(", ")}`);
     }
+    // ITEM 26: named per site, so an edited value moves the fingerprint.
+    const gmAt = ALL_SITES.filter((site) => t.sites[site].gm !== null);
+    if (gmAt.length > 0) {
+      flagParts.push(
+        "recession " + gmAt.map((site) => `${site} ${t.sites[site].gm} mm`).join(", "),
+      );
+    }
+    const furcationAt = ALL_SITES.filter((site) => t.sites[site].furcation !== null);
+    if (furcationAt.length > 0) {
+      flagParts.push(
+        "furcation " + furcationAt.map((site) => `${site} class ${t.sites[site].furcation}`).join(", "),
+      );
+    }
+    if (t.mobility !== null) flagParts.push(`mobility grade ${t.mobility}`);
     lines.push(
       `  #${tooth} facial ${depths(FACIAL_SITES)}, lingual ${depths(LINGUAL_SITES)}` +
         (flagParts.length > 0 ? "; " + flagParts.join("; ") : ""),
