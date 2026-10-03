@@ -60,6 +60,8 @@ import { type ToothSurface } from "@shared/hyg/contract";
 import {
   PERIO_LOWER_TEETH,
   PERIO_UPPER_TEETH,
+  perioCal,
+  perioGmIsRecession,
   perioSite,
   perioTooth,
   sameCursor,
@@ -124,6 +126,9 @@ interface GridProps {
   failedTeeth?: number[];
 }
 
+/** What an out-of-family gingival margin is called, in one place. */
+const UNRECOGNISED_MARGIN = "unrecognized margin";
+
 function SiteCell({
   chart,
   prior,
@@ -139,6 +144,9 @@ function SiteCell({
   const here = { tooth, surface };
   const active = sameCursor(cursor, here);
   const justEntered = !active && sameCursor(lastEntered, here);
+  // ITEM 26. CAL is DERIVED — never stored, never staged, never sent.
+  const cal = perioCal(site);
+  const recognisedGm = site.gm === null || perioGmIsRecession(site.gm);
 
   return (
     <button
@@ -149,7 +157,15 @@ function SiteCell({
       data-active={active ? "true" : undefined}
       aria-label={
         `#${tooth} ${surface}: ${site.depth === null ? "not charted" : `${site.depth} mm`}` +
-        (priorDepth !== null ? `, last exam ${priorDepth} mm` : "")
+        (priorDepth !== null ? `, last exam ${priorDepth} mm` : "") +
+        // ITEM 26: a screen reader hears the same values the cell shows.
+        (site.gm === null
+          ? ""
+          : recognisedGm
+            ? `, recession ${site.gm} mm`
+            : `, margin ${site.gm} ${UNRECOGNISED_MARGIN}`) +
+        (cal === null ? "" : `, CAL ${cal} mm`) +
+        (site.furcation === null ? "" : `, furcation class ${site.furcation}`)
       }
       className={cn(
         "relative flex h-11 min-w-0 flex-1 flex-col items-center justify-center rounded-sm text-sm font-semibold leading-none tabular-nums",
@@ -171,6 +187,45 @@ function SiteCell({
         {site.plaque ? <span className="size-1.5 rounded-full bg-sky-500" /> : null}
         {site.calculus ? <span className="size-1.5 rounded-full bg-stone-500" /> : null}
       </span>
+      {/*
+        ITEM 26. THE DEPTH STAYS THE BIG NUMBER IN EVERY MODE — swapping it for the
+        active mode's value would hide the depths while she charts a recession, and
+        the depths are what she reads the chart against.
+
+        Recession sits ABOVE the depth, which is where the margin is. CAL sits
+        below, because it is derived from both. An unrecognised margin (the 101-119
+        family, only ever from a writer that is not us) shows RAW with a marker and
+        gets no CAL: guessing its sign would print a clinical number nobody measured.
+      */}
+      {site.gm !== null ? (
+        <span
+          className={cn(
+            "absolute left-0.5 top-0.5 text-[10px] font-semibold leading-none",
+            recognisedGm ? "text-violet-700 dark:text-violet-300" : "text-amber-700 dark:text-amber-400",
+          )}
+          data-testid={`hyg-perio-gm-${tooth}-${surface}`}
+          title={recognisedGm ? undefined : UNRECOGNISED_MARGIN}
+        >
+          {site.gm}
+          {recognisedGm ? null : <span data-testid={`hyg-perio-gm-unknown-${tooth}-${surface}`}>?</span>}
+        </span>
+      ) : null}
+      {site.furcation !== null ? (
+        <span
+          className="absolute bottom-0.5 left-0.5 text-[10px] font-semibold leading-none text-teal-700 dark:text-teal-300"
+          data-testid={`hyg-perio-furcation-${tooth}-${surface}`}
+        >
+          {"f" + site.furcation}
+        </span>
+      ) : null}
+      {cal !== null ? (
+        <span
+          className="absolute bottom-0.5 right-0.5 text-[10px] font-normal leading-none text-violet-700 dark:text-violet-300"
+          data-testid={`hyg-perio-cal-${tooth}-${surface}`}
+        >
+          {cal}
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -242,6 +297,8 @@ function Arch(props: Omit<GridProps, "onKeyDown" | "gridRef"> & { arch: "upper" 
         // A skipped tooth's NUMBER says so too: the row below it is blank, and a
         // blank with a black number over it reads as un-charted.
         const skipped = perioTooth(props.chart, tooth).skipped;
+        // A skipped tooth sends no mobility, so it shows none.
+        const mobility = skipped ? null : perioTooth(props.chart, tooth).mobility;
         return (
           <span
             key={tooth}
@@ -265,6 +322,19 @@ function Arch(props: Omit<GridProps, "onKeyDown" | "gridRef"> & { arch: "upper" 
             )}
           >
             {failed ? `${tooth}!` : tooth}
+            {/*
+              ITEM 26: mobility is a TOOTH value, so it is shown with the tooth
+              number rather than in a site cell — there is no site it belongs to.
+              Grade 0 is a real reading ("tested, firm") and prints as m0.
+            */}
+            {mobility !== null ? (
+              <span
+                className="ml-0.5 font-normal text-rose-700 dark:text-rose-300"
+                data-testid={`hyg-perio-mobility-${tooth}`}
+              >
+                m{mobility}
+              </span>
+            ) : null}
           </span>
         );
       })}
@@ -306,7 +376,7 @@ export function PerioGrid({ gridRef, onKeyDown, ...props }: GridProps) {
       role="grid"
       tabIndex={0}
       onKeyDown={onKeyDown}
-      aria-label="Perio chart. Type a depth to enter it and move on. B, S, P and C toggle flags; X skips a tooth."
+      aria-label="Perio chart. Type a number to enter it in the active mode and move on. D, G, M and F switch between depth, gingival margin, mobility and furcation. B, S, P and C toggle flags in depth mode; X skips a tooth."
       data-testid="hyg-perio-grid"
       className="rounded-2xl border border-border bg-card p-3 outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >

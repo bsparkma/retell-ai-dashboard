@@ -46,9 +46,25 @@
  * ═════════════════════════════════════════════════════════════════════════════
  * ONLY WHAT v1 CHARTS IS MAPPED
  * ═════════════════════════════════════════════════════════════════════════════
- * Probing, BleedSupPlaqCalc and SkipTooth. GingMargin, Mobility, Furcation and
- * MGJ rows are read (they arrive on the same pages) and ignored; CAL is never
- * stored by Open Dental and so is never read.
+ * Probing, BleedSupPlaqCalc, SkipTooth, and — since item 26 — GingMargin,
+ * Furcation and Mobility. MGJ is read (it arrives on the same pages) and ignored;
+ * CAL is never stored by Open Dental and so is never read.
+ *
+ * ⚠️ ITEM 26's THREE ARE MAPPED SO THE SEND CAN READ BACK WHAT IT WROTE. A row
+ * posted and never verified is a row the send would claim without checking, and
+ * `Written` means every site was read back and matched.
+ *
+ * A GINGIVAL MARGIN IS TAKEN AS SENT, IN EITHER FAMILY. Open Dental accepts 0–19
+ * and 101–119 and stores both verbatim (item 19 §2). §0 proved the low family is
+ * recession, which is the only one CareIN writes — but a row written by somebody
+ * else can carry the other one, and this reader does not convert it. It comes
+ * through as the number Open Dental holds, and `perioCal` refuses to compute a
+ * CAL from it. H0 says subtract 100; that sign has never been observed, and a
+ * guess here becomes a clinical number that looks plausible.
+ *
+ * A row whose every surface is `-1` carries nothing, which is a shape Open Dental
+ * really does store (measured). It is tolerated and read as "nothing charted" —
+ * never as a value.
  */
 
 const contract = require('../../hyg/contract.gen.cjs');
@@ -177,8 +193,36 @@ function chartFromMeasures(rows) {
       }
     } else if (type === 'SkipTooth') {
       chart = contract.withPerioSkipped(chart, tooth, true);
+    } else if (type === 'GingMargin') {
+      // ITEM 26. Either family, as sent — see the header.
+      const { recessionMin, recessionMax, otherMin, otherMax } = contract.PERIO_GM_FAMILIES;
+      for (const [surface, field] of Object.entries(SURFACE_FIELDS)) {
+        const v = odInt(row[field]);
+        const known =
+          v !== null && ((v >= recessionMin && v <= recessionMax) || (v >= otherMin && v <= otherMax));
+        chart = contract.withPerioSite(chart, tooth, surface, { gm: known ? v : null });
+      }
+    } else if (type === 'Furcation') {
+      for (const [surface, field] of Object.entries(SURFACE_FIELDS)) {
+        const v = odInt(row[field]);
+        /*
+         * CLASSES 1–3 ONLY, EVEN ON THE WAY IN. Open Dental accepted and stored a
+         * `5` when the probe sent one (§7), so a value outside the clinical range
+         * is already in some chart somewhere. Reading it as a class would carry
+         * that corruption into CareIN's comparison; it is read as nothing charted,
+         * and the read-back then disagrees with what we sent, which is the honest
+         * outcome.
+         */
+        const known = v !== null && v >= contract.PERIO_MIN_FURCATION && v <= contract.PERIO_MAX_FURCATION;
+        chart = contract.withPerioSite(chart, tooth, surface, { furcation: known ? v : null });
+      }
+    } else if (type === 'Mobility') {
+      // PER TOOTH: the grade is in ToothValue and the surface columns are -1.
+      const v = odInt(row.ToothValue);
+      const known = v !== null && v >= 0 && v <= contract.PERIO_MAX_MOBILITY;
+      chart = contract.withPerioMobility(chart, tooth, known ? v : null);
     } else {
-      // GingMargin, Mobility, Furcation, MGJ — out of v1's locked scope.
+      // MGJ — out of scope, and read off the same pages.
       ignored += 1;
     }
   }

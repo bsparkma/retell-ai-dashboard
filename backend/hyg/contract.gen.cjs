@@ -16517,6 +16517,11 @@ function perioPreviewLines(chart) {
       `Deepest: ${counts.deepest.depth} mm at #${counts.deepest.tooth} ${counts.deepest.surface}; sites 5 mm or deeper: ${counts.sitesAtLeast5}`
     );
   }
+  if (counts.gmSites > 0 || counts.furcationSites > 0 || counts.mobilityTeeth > 0) {
+    lines.push(
+      `Recession: ${counts.gmSites} sites; furcation: ${counts.furcationSites} sites; mobility: ${counts.mobilityTeeth} teeth`
+    );
+  }
   lines.push("Depths read DB B MB (facial) and DL L ML (lingual); - is not charted.");
   const notCharted = [];
   for (let tooth = 1; tooth <= PERIO_TOOTH_COUNT; tooth += 1) {
@@ -16535,6 +16540,19 @@ function perioPreviewLines(chart) {
       const at = ALL_SITES.filter((s) => t.sites[s][flag]);
       if (at.length > 0) flagParts.push(`${flag} ${at.join(", ")}`);
     }
+    const gmAt = ALL_SITES.filter((site) => t.sites[site].gm !== null);
+    if (gmAt.length > 0) {
+      flagParts.push(
+        "recession " + gmAt.map((site) => `${site} ${t.sites[site].gm} mm`).join(", ")
+      );
+    }
+    const furcationAt = ALL_SITES.filter((site) => t.sites[site].furcation !== null);
+    if (furcationAt.length > 0) {
+      flagParts.push(
+        "furcation " + furcationAt.map((site) => `${site} class ${t.sites[site].furcation}`).join(", ")
+      );
+    }
+    if (t.mobility !== null) flagParts.push(`mobility grade ${t.mobility}`);
     lines.push(
       `  #${tooth} facial ${depths(FACIAL_SITES)}, lingual ${depths(LINGUAL_SITES)}` + (flagParts.length > 0 ? "; " + flagParts.join("; ") : "")
     );
@@ -17096,7 +17114,15 @@ function estimatePerioSendRequests({
   const rows = Math.max(0, rowsRemaining);
   return (examCreated ? 0 : 3) + rows + Math.ceil(rows / PERIO_SEND_BATCH) + 1;
 }
-var PerioMismatchKindSchema = import_zod4.z.enum(["depth", "flags", "skipped", "duplicate"]);
+var PerioMismatchKindSchema = import_zod4.z.enum([
+  "depth",
+  "flags",
+  "skipped",
+  "duplicate",
+  "gm",
+  "furcation",
+  "mobility"
+]);
 var PerioMismatchSchema = import_zod4.z.object({
   tooth: import_zod4.z.number().int(),
   /** null for a whole-tooth difference (skipped, or a duplicate row). */
@@ -17114,6 +17140,17 @@ function flagWords(site) {
   const on = PERIO_FLAGS.filter((flag) => site[flag]).map((flag) => PERIO_FLAG_LABELS[flag].toLowerCase());
   return on.length === 0 ? "no flags" : on.join(", ");
 }
+function gmWords(value) {
+  if (value === null) return "not charted";
+  if (!perioGmIsRecession(value)) return `${value} (unrecognised margin)`;
+  return `${value} mm recession`;
+}
+function furcationWords(value) {
+  return value === null ? "not charted" : `class ${value}`;
+}
+function mobilityWords(value) {
+  return value === null ? "not charted" : `grade ${value}`;
+}
 function comparePerioReadback(expected, found) {
   const want = normalizePerioChart(expected);
   const have = normalizePerioChart(found);
@@ -17128,6 +17165,16 @@ function comparePerioReadback(expected, found) {
         kind: "skipped",
         expected: e.skipped ? "skipped" : "not skipped",
         found: f.skipped ? "skipped" : "not skipped"
+      });
+    }
+    const wantMobility = e.skipped ? null : e.mobility;
+    if (wantMobility !== f.mobility) {
+      out.push({
+        tooth,
+        surface: null,
+        kind: "mobility",
+        expected: mobilityWords(wantMobility),
+        found: mobilityWords(f.mobility)
       });
     }
     for (const surface of ALL_SURFACES) {
@@ -17145,14 +17192,29 @@ function comparePerioReadback(expected, found) {
       if (flagWords(wantSite) !== flagWords(haveSite)) {
         out.push({ tooth, surface, kind: "flags", expected: flagWords(wantSite), found: flagWords(haveSite) });
       }
+      if (wantSite.gm !== haveSite.gm) {
+        out.push({ tooth, surface, kind: "gm", expected: gmWords(wantSite.gm), found: gmWords(haveSite.gm) });
+      }
+      if (wantSite.furcation !== haveSite.furcation) {
+        out.push({
+          tooth,
+          surface,
+          kind: "furcation",
+          expected: furcationWords(wantSite.furcation),
+          found: furcationWords(haveSite.furcation)
+        });
+      }
     }
   }
   return out;
 }
+function isDriftKind(kind) {
+  return kind === "depth" || kind === "flags" || kind === "skipped";
+}
 function perioChartChanges(before, after) {
   const out = [];
   for (const m of comparePerioReadback(before, after)) {
-    if (m.kind === "duplicate") continue;
+    if (!isDriftKind(m.kind)) continue;
     out.push({ tooth: m.tooth, surface: m.surface, kind: m.kind, from: m.expected, to: m.found });
   }
   return out;
