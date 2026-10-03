@@ -82,6 +82,24 @@ export function PerioSendConfirm({
     plan.rows.length === 0
       ? `One request: the exam and ${strings} ${strings === 1 ? "arch" : "arches"} together`
       : `The exam${strings > 0 ? ` with ${strings} ${strings === 1 ? "arch" : "arches"}` : ""}, then ${plan.rows.length} ${plan.rows.length === 1 ? "row" : "rows"} one at a time`;
+  /*
+   * ITEM 26: WHAT THE ROWS ARE, NOT JUST HOW MANY. A full v2 chart is about 80
+   * requests and a minute and a half of waiting, and "80 rows" tells her nothing
+   * about why. Naming the phases is what makes the wait legible rather than
+   * alarming -- and the phases are the order the plan really posts them in.
+   */
+  const phases: string[] = [];
+  for (const [type, label] of [
+    ["Probing", "depths"],
+    ["BleedSupPlaqCalc", "bleeding and deposits"],
+    ["SkipTooth", "skipped teeth"],
+    ["GingMargin", "recession"],
+    ["Furcation", "furcation"],
+    ["Mobility", "mobility"],
+  ] as const) {
+    const n = plan.rows.filter((row) => row.sequenceType === type).length;
+    if (n > 0) phases.push(`${n} ${label}`);
+  }
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onCancel()}>
@@ -112,6 +130,11 @@ export function PerioSendConfirm({
                 <dt className="text-muted-foreground">Open Dental</dt>
                 <dd className="text-foreground" data-testid="hyg-perio-confirm-shape">
                   {shape}, then every site read back — about {formatRemaining(seconds)}
+                  {phases.length > 1 ? (
+                    <span className="block text-xs text-muted-foreground" data-testid="hyg-perio-confirm-phases">
+                      In order: {phases.join(", then ")}.
+                    </span>
+                  ) : null}
                 </dd>
               </dl>
 

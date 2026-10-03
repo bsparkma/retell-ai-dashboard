@@ -1,216 +1,249 @@
-# Item 26 — Perio v2: STOPPED AT THE §0 GATE
+# Item 26 — Perio v2: recession, mobility, furcation, and a CAL that is never written
 
-`feature/hyg-perio-v2` → `develop`. **No product code was written.** That is the
-instruction, not a shortfall: §0 gates the slice, and §0 could not be answered
-from here.
+`feature/hyg-perio-v2` → `develop`. No migration. All Open Dental writes stay
+inside `backend/services/hyg/odPerioWriter.js`.
 
-Nothing in this branch changes the running product. It adds one read-only probe
-script and this report.
-
----
-
-## 1. §0 — attempted, and not answered
-
-### 1.1 The question
-
-`POST /periomeasures` with `SequenceType: GingMargin` accepts **two families** of
-values — `0–19` and `101–119` — and item 19's probe measured that both store
-**verbatim**: 101/102 are not converted, clamped or re-signed in either
-direction (`docs/reports/feature-hyg-perio-v2-probe.md` §2). H0's prose documents
-101–119 as "negative (subtract 100)".
-
-Neither the API nor the documentation says **which family means recession**. That
-is a convention of Open Dental's own user interface, and the probe could not
-observe it: it wrote both families itself and read both back unchanged. The probe
-report says so in terms, and draws the same line this slice stops at:
-
-> **Sign convention: the API does not say which is recession.** … **One check by
-> a person closes it:** enter a known 2 mm recession on a fixture in Open
-> Dental's perio chart, then read that row through the API and see whether it is
-> `2` or `102`. **Product code must not be written before that answer.**
-
-It is load-bearing twice:
-
-1. CareIN's gingival-margin entry must write the family Open Dental's own chart
-   writes, or **every recession CareIN sends is recorded as its opposite** in the
-   chart of record.
-2. CAL is `depth + recession` or `depth − recession` depending on it. A CAL wrong
-   by twice the recession is a clinical number that still looks plausible.
-   Computing CAL for display only (Part 2) limits the blast radius to what she
-   sees on screen; it does not make a wrong number acceptable.
-
-### 1.2 What I could not do
-
-The read itself is two GETs and is trivially safe. Reaching Open Dental from here
-is the problem, and all three lanes are closed — the same three item 18 hit, in
-the same state:
-
-| lane | result |
-| --- | --- |
-| **Workstation** | `OdOfficeError: office 'roland' cannot reach Open Dental: OFFICE_OD_KEY_MISSING`, after `[secrets] non-production: using .env / process.env (Key Vault not contacted)`. **No permission fixes this**: `config/secrets.js` only contacts Key Vault when `NODE_ENV=production`, and the OD customer key lives nowhere else. `loadSecrets()` cannot use the az CLI token. |
-| **Staging container** | the correct lane, where managed identity supplies the key. `az containerapp exec` is denied to me by the sandbox classifier, as it has been on every prior slice. It is also not yet possible for this script: staging runs `develop`, and the script below is on a branch. |
-| **Mining the app's own logs** | **cannot answer this question even in principle.** The app does call `/perioexams` and `/periomeasures`, so there are log lines — but `[hygperio]` is built to carry **counts and milliseconds only, never a reading**. The one thing §0 needs is the value in a row. |
-
-### 1.3 "Cannot find the exam" vs "cannot read at all"
-
-The brief says to stop if the exam cannot be found on 12828. **I cannot
-distinguish the two cases**, and I am not going to present an access failure as
-an absent exam. A `[hygperio] … prior=found` line proves *some* exam exists for
-*some* appointment, not that the 2026-09-29 exam is there, because the log line
-carries neither an exam number nor a date. So the honest statement is: the
-read-back was never performed.
-
-### 1.4 The finding that IS recorded
-
-Beau established, in Open Dental's own perio chart on roland test patient 12828
-on 2026-09-29:
-
-> **Open Dental's UI refused a negative.** Overgrowth — a gingival margin coronal
-> to the CEJ — **could not be typed at all**.
-
-That is recorded here as a finding, and it already settles a design question
-independently of which family is which: **CareIN charts recession only, and there
-is no overgrowth entry.** That is parity with Open Dental's own chart, not a
-feature gap, and it is why Part 1 was specified with no negative entry and no
-literal negative ever sent (the API refuses those too — probe §7).
-
-What it does **not** settle is the §0 question. "The UI refuses negatives" is
-consistent with either family being the recession one.
+This branch previously stopped at the §0 gate. §0 is now answered, and this is
+the slice built on it.
 
 ---
 
-## 2. What this branch contains
+## 0. §0 — the sign convention, measured
 
-`backend/scripts/probe-hyg-perio-gm-sign.js` — **new, read-only, UNRUN.**
+Open Dental's `GingMargin` surface accepts **two families** of values, `0–19` and
+`101–119`, and item 19's probe measured that **both store verbatim**: 101/102 are
+not converted, clamped or re-signed in either direction. H0's prose documents
+101–119 as "negative (subtract 100)". Which family a **recession** goes in is a
+convention of Open Dental's own user interface, and no amount of writing to the
+API reveals it.
 
-- `apiGetRaw` is the only client call in the file. There is no write path.
-- Fixture-gated: it refuses any PatNum that is not a designated test patient,
-  and `require`-safe, so importing it reaches Open Dental for nothing.
-- Lists every exam for the fixture with its raw row, **calls out the
-  2026-09-29 date** rather than filtering to it, then reads that exam's measures
-  and prints every `GingMargin` row raw, per surface, with the family each value
-  falls in — and states the §0 answer in one line.
-- 🔴 It uses **`GET /periomeasures?PerioExamNum=` only**. Probe §6 measured that
-  `GET /periomeasures/{id}` **ignores the id and returns the whole practice's
-  perio table**. It additionally drops any row whose own `PerioExamNum` is not
-  the exam asked about, and any exam row whose `PatNum` is not the patient asked
-  about — the filters were honoured when measured; this is for the day one is not.
-- If no `GingMargin` row for #3 is found, it says so explicitly rather than
-  printing nothing.
+So a person entered one. Beau hand-entered a perio exam in **Open Dental's own
+perio chart** on roland test patient 12828 on **2026-09-29**, with a known
+**2 mm recession on #3 buccal**. `backend/scripts/probe-hyg-perio-gm-sign.js`
+read it back from staging (revision `--0000211`). The raw row, quoted:
 
-One command answers §0:
-
-```
-cd backend && env HYG_PROBE_OFFICE=roland HYG_PROBE_PATNUMS=12828 \
-  node scripts/probe-hyg-perio-gm-sign.js
+```json
+{"PerioExamNum":2268,"SequenceType":"GingMargin","IntTooth":3,
+ "ToothValue":-1,"MBvalue":-1,"Bvalue":2, ...}
 ```
 
-It must run where the customer key is reachable — the staging container, or any
-environment with the roland key in its process environment.
+**`Bvalue` is `2` for a 2 mm recession. The recession family is the LOW one,
+0–19.** Therefore **`CAL = depth + recession`, by addition**, and CareIN's entry
+writes 0–19 and never 101–119.
+
+Encoded as **one named constant**, `PERIO_GM_FAMILIES` in
+`new-dashboard/shared/hyg/perio.ts`, with that raw row quoted at its definition
+and the reasoning beside it.
+
+### 0.1 The other two findings from the same sitting
+
+- **Open Dental's UI refused a negative.** Overgrowth — a margin coronal to the
+  CEJ — could not be typed there at all. So CareIN charts **recession only**, and
+  that is **parity with the chart of record, not a feature gap**. There is no key
+  sequence that produces a negative, and a literal negative is never sent (the
+  API refuses those too, probe §7).
+- **A `GingMargin` row can carry all `-1`.** An empty row is a shape Open Dental
+  really stores. It is **tolerated on read and never read as a value** — reading
+  one as data would put a 0 mm recession on six sites nobody charted — and CareIN
+  never writes one (`odPerioWriter` refuses a row that says nothing).
 
 ---
 
-## 3. The scope question the brief asked me to rule on
+## 1. What a digit means now: four modes, one grid, one walk
 
-> *"If item 14's drift comparison is in by now, v2 rows join the same
-> site-by-site comparison; if that is material extra scope, SAY SO in the report
-> and stop — it becomes 26b, not silent scope growth."*
+| mode | key | takes | scope |
+| --- | --- | --- | --- |
+| Depth | `D` | 0–19 mm | per site (unchanged) |
+| Gingival margin | `G` | 0–19 mm recession | per site |
+| Mobility | `M` | 0–3 | **per tooth** — the walk advances by tooth |
+| Furcation | `F` | 1–3 | per site, multi-rooted teeth only |
 
-Item 14 **is** in (`#207`, merged). **Extending drift to v2 rows is material
-extra scope. It should be 26b.** The specifics, read off the code rather than
-guessed:
+Navigation, skip, Backspace and Delete behave identically in all four, because a
+hygienist mid-sweep should not have to relearn the keyboard to record a
+recession. Backspace and Delete act on the **active mode's** value, so Delete in
+Depth mode cannot quietly discard a recession recorded a minute earlier.
 
-1. `odPerio.chartFromMeasures` maps **Probing, BleedSupPlaqCalc and SkipTooth
-   only** — `odPerio.js:181` reads GingMargin / Mobility / Furcation / MGJ off
-   the same pages and deliberately drops them. Drift compares
-   `perioChartChanges(baseline, odChart)` against that mapper's output, so v2
-   rows are invisible to it today.
-2. `PerioSiteChangeSchema.kind` is a **closed** `z.enum(["depth","flags","skipped"])`
-   (`shared/hyg/perio.ts:720`). Adding kinds is a compile error at every switch —
-   which is the schema working as designed, and is also the work: the drift
-   notice and the resend dialog both render these.
-3. A full v2 exam is **~130 rows, spanning two of `pagedList`'s 100-row pages**
-   (probe §5). I checked whether that would make every full v2 chart report
-   `unknown`, since the drift path treats a truncated read that way — **it would
-   not**: `MAX_PAGES` is 25 (`odDay.js:100`), so `readExamMeasures` reads both
-   pages and `truncated` stays false. The cost is one extra request on the drift
-   path, not a correctness problem. Recorded because it was worth checking, and
-   because the answer is the opposite of what the row count suggests.
-4. `PerioMismatchKindSchema` (`perioSend.ts:506`) is a **separate** closed enum
-   for the send's read-back. Extending that one *is* inside item 26 Part 4; it is
-   worth not confusing the two.
+The digit action is now `{ type: "number", value }` rather than
+`{ type: "depth", depth }`. A key cannot know the mode; the reducer is the one
+place that does, and the old name would have been a lie in three modes out of
+four.
 
-None of that is hard, and none of it is "v2 rows join the same comparison" either.
-It is a second slice with its own tests and its own UI surface.
+**Mode is loud**: a chip row with the active mode filled, its range spelled out
+beside it (*"Numbers go in as Gingival margin 0-19 mm recession"*), clickable as
+well as keyable. The keys live in `PERIO_MODE_KEYS` and **the legend renders from
+them** (item 17's doctrine: the legend cannot promise what the reducer does not
+honour). A test asserts no letter is in both the mode table and the flag table.
+
+**Flags do nothing outside Depth mode.** A flag rides a probing depth; there is
+no bleeding on a mobility grade.
 
 ---
 
-## 4. What is already measured, so 26 is short once §0 lands
+## 2. Refused at entry, with a reason
 
-Everything else this slice needs is in the probe report and does **not** depend on
-§0. Recorded here so the build does not re-litigate it:
+Item 19's probe found the two corruption hazards: Open Dental **accepted and
+stored** furcation class `5`, and furcation on **#8, a central incisor**. It does
+not know which teeth have roots to fork. So the product enforces it, twice —
+in the reducer, where she finds out while the probe is still in her hand, and
+again in `odPerioWriter.js` before the transport.
 
-| | measured |
+| | refused | because |
+| --- | --- | --- |
+| Mobility | > 3 | clinical range is 0–3; Open Dental would take 0–19 |
+| Furcation | outside 1–3 | there is no class 5 |
+| Furcation | single-rooted tooth | a class on one is a corruption of the chart of record |
+| Gingival margin | outside 0–19 | the other family is **unenterable**, not merely refused |
+
+`state.refusal` carries the sentence and every other action clears it, so the
+screen describes what just happened rather than something stale. The on-screen
+number pad **disables** the numbers the mode cannot take — a button she can see
+has no excuse for being a trap — while the keyboard still refuses with a
+sentence, because a pad cannot be stopped from sending a 7.
+
+`PERIO_FURCATION_TEETH` is the named constant: molars plus **#5 and #12**, the
+two-rooted upper first premolars.
+
+---
+
+## 3. CAL — computed on sight, never written
+
+```ts
+export function perioCal(site: PerioSite): number | null {
+  if (site.depth === null) return null;
+  if (!perioGmIsRecession(site.gm)) return null;
+  return site.depth + (site.gm as number);
+}
+```
+
+Three ways to get `null`, all of them honest absences rather than zeros: no
+depth, no margin, or **a margin in the other family**. H0 says subtract 100; that
+sign has never been observed, and a guess there becomes a clinical number that
+reads as plausible. Such a value is shown **raw with an "unrecognized margin"
+marker** and gets no CAL.
+
+A site missing an operand shows **nothing** — no 0, no dash that could read as
+one.
+
+**It is never typed, never staged and never written.** `odPerioWriter.js` refuses
+the SequenceType before the transport, and a test builds a full-mouth v2 chart,
+plans it, and asserts no row, no body key, and no byte of the serialised plan
+matches `/cal/i`.
+
+---
+
+## 4. The send
+
+v2 rows ride the existing send as per-row `POST /periomeasures`, **after** the v1
+arch-string and probing phase, in the exact bodies the probe measured:
+
+| type | ToothValue | surfaces |
+| --- | --- | --- |
+| GingMargin | `-1` | recession, or `-1` |
+| Furcation | `-1` | class, or `-1` |
+| Mobility | **the grade** | **every one `-1`** |
+
+**Absence over zero**: an unvisited site is `-1`, a tooth with nothing on it gets
+**no row**, and a row of six `-1`s is refused rather than written.
+
+### 4.1 What already worked, and what did not
+
+The send has always **read before every write** and compared what it found, so
+the *"already exists"* branch worked for the new rows the moment they were in the
+plan — match is success, mismatch is an honest failure naming tooth and type,
+never a blind re-POST (which Open Dental **refuses**, measured, turning a
+recoverable pause into a dead send).
+
+What did **not** work was the verification. `odPerio.chartFromMeasures` dropped
+GingMargin, Furcation and Mobility, so v2 rows would have been posted and then
+**never checked** before the chart was called `Written`. It maps all three now.
+
+### 4.2 Three things the tests corrected me on
+
+- **`samePerioReadings` already covers v2.** It compares the normalised `teeth`
+  object as JSON, so an edited recession **un-stages** the chart exactly as an
+  edited depth does. The first refusal is therefore `NOT_STAGED`;
+  **`PREVIEW_CHANGED` is the second line of defence**, for a client holding a
+  preview from before the edit. The acceptance-8 tests exercise exactly that: edit,
+  re-stage, then confirm with the **old** fingerprint — refused only because the
+  fingerprint moved when the recession did. The preview names every v2 value per
+  site for that reason.
+- **An unanswered row pauses, it does not stop.** "It may have landed" is not "it
+  failed", and the next step reads Open Dental and finds out.
+- **A failed send does not roll itself back.** The undo is **offered**
+  (`canDelete`) and a person takes it, because a rollback CareIN decided on its
+  own would delete an exam a hygienist may be looking at. The test takes the undo
+  and proves the whole exam goes, rows with it.
+
+### 4.3 Duration honesty
+
+`estimatePerioSendRequests` already counted rows, so it counts v2 rows now. The
+confirm dialog adds the **phases in the order they are posted** — *"In order: 5
+recession, then 2 furcation, then 2 mobility"* — because "80 rows" tells her
+nothing about why she is waiting ninety seconds.
+
+---
+
+## 5. 26b: drift is NOT widened, deliberately
+
+Item 14's drift check is built on the same comparison the send's read-back uses.
+Teaching `comparePerioReadback` about v2 — which item 26 must, to verify what it
+writes — would therefore have taught drift about it too, and that means widening
+`PerioSiteChange.kind`, a closed enum the drift notice and the resend dialog both
+render and switch on.
+
+So `perioChartChanges` **filters the three new kinds out** through a named guard
+with the reasoning at its definition, and a test asserts both halves: a recession
+change produces no drift, and a depth change still does. **That is 26b**, as this
+report said before the slice was built — not silent scope growth.
+
+One thing I checked and got the opposite answer to what the row count suggests: a
+~130-row v2 exam does **not** truncate on the drift path. `MAX_PAGES` is 25, so
+`readExamMeasures` reads both pages and `truncated` stays false. It costs one
+extra request, not correctness.
+
+---
+
+## 6. Acceptance
+
+| # | | where |
+|---|---|---|
+| 1 | §0 recorded verbatim, raw row quoted, encoded as ONE named constant | §0 above; `PERIO_GM_FAMILIES` |
+| 2 | Four modes; digits land only in the active mode; mode always visible; legend renders from `entry.ts` | `hyg-perio-v2.test.ts` "ACCEPTANCE 2" (×7), `hyg-perio-page.test.tsx` (×5) |
+| 3 | GM stores only the recession family; the other family and negatives unenterable; read-back shows raw + marker, no CAL | "ACCEPTANCE 3 + 5"; page test "a margin in the OTHER family" |
+| 4 | CAL correct incl. missing operands; never in any payload | "ACCEPTANCE 4" (×5 unit, ×3 page) |
+| 5 | Furcation > 3 and non-eligible teeth refused; mobility > 3 refused | "ACCEPTANCE 3 + 5", `odPerioWriter.test.js` (×4) |
+| 6 | Uncharted teeth/sites produce no rows | "ACCEPTANCE 6" (×5) |
+| 7 | Read-back before `Written`; "already exists" = read-and-compare, both branches | `hygPerioV2Send.test.js` (×4) |
+| 8 | Fingerprint covers v2 — edit then stale confirm = `PREVIEW_CHANGED` | `hygPerioV2Send.test.js` (×2) |
+| 9 | Failed mid-send: nothing claimed, whole-exam undo offered and taken | `hygPerioV2Send.test.js` "ACCEPTANCE 9" |
+| 10 | Send UI states duration and phases; screenshots light + dark | `hyg-perio-26a/26b/26c`, six PNGs |
+
+**Tests added: 71** — 41 shared/unit, 9 send-route, 5 writer, 4 read-back,
+9 page, 3 screenshot dumps.
+
+### 6.1 Existing tests that changed, and why none is a weakening
+
+| test | change |
 | --- | --- |
-| GingMargin | per site, six surface columns, `ToothValue` must be `-1` |
-| Furcation | per site, `ToothValue` must be `-1`; **OD accepted class 5, and furcation on a central incisor** — the product must enforce classes 1–3 and the multi-rooted tooth list itself |
-| Mobility | per tooth in `ToothValue`; **every** surface column must be `-1`; `25` refused |
-| one read-back | all types come back in one `?PerioExamNum=` answer, distinguishable by `SequenceType`; the filter was honoured |
-| retry | a second POST for the same (tooth, type) is **refused, not overwritten** — so "already exists" means read, compare, and be honest |
-| no `Recession` type | `SequenceType: "Recession"` → `400 SequenceType is invalid.` GingMargin is the only surface for it |
-| arithmetic | typical v2 send ≈ 50 requests, full ≈ 80 |
+| `odPerio.test.js` "recession is out of v1 scope and draws nothing" | v2 **is** in scope now; replaced with MGJ, which still is not, plus four new read-back tests |
+| `odPerioWriter.test.js` `Mobility → SEQUENCE_TYPE_NOT_ALLOWED` | Mobility is an allowed **type** now and that row is refused for its **shape** instead; `CAL`, `Recession` and `MGJ` added to the never-allowed list |
+| `hyg-perio-numpad.test.ts` two action-shape assertions | `{type:"depth"}` → `{type:"number"}` |
 
 ---
 
-## 5. Acceptance
-
-**All ten items are unmet, and deliberately so.** Item 1 cannot be met without
-the read-back; items 2–10 are product code, which item 1 gates. Encoding the
-named constant now would mean choosing a family — the one thing the brief, the
-probe report and plain sense all forbid.
-
-## 6. Gates
-
-No product code changed, so the gates say only that nothing was broken:
+## 7. Gates
 
 | gate | result |
 | --- | --- |
-| `node --check` on the new script | clean |
-| `node scripts/shard-runner.mjs` | 4/4 green (unchanged tree) |
+| `node scripts/shard-runner.mjs` | 4/4 green, 2969 tests, 2966 pass, 0 fail, 3 skipped |
+| `node --check server.js` | clean |
 | `pnpm run check` | clean |
-| `pnpm run test` | pass |
-| `odPerioWriter.js` | untouched |
+| `pnpm run test` | 2186 pass, 0 fail |
+| `HYG_SHOTS=1` perio shots | 22/22, photographed light + dark |
+| no `any` | none added |
 | migrations | none |
+| OD writes | `odPerioWriter.js` only (`OD_WRITE_LAYER` unchanged as a list) |
 
-## 7. Push, PR, and the merge tree
+## 8. Push, PR, and the merge tree
 
-**PR #218**, `feature/hyg-perio-v2` -> `develop`, code commit `26ad69a`. Not
-merged. CI builds `refs/pull/N/merge`, not the branch tip, so the trees were
-compared rather than assumed:
-
-```
-git rev-parse HEAD^{tree}                         eb5d5290d19ca1137c703ec37caea85e627d8178
-git rev-parse refs/pull/218/merge^{tree}          eb5d5290d19ca1137c703ec37caea85e627d8178
-git rev-list --count HEAD..origin/develop         0
-```
-
-The §6 gates were re-run on the final tree after this section was added.
-
----
-
-## 8. What I need
-
-**The output of one read-only command**, run where the roland customer key is
-reachable:
-
-```
-cd backend && env HYG_PROBE_OFFICE=roland HYG_PROBE_PATNUMS=12828 \
-  node scripts/probe-hyg-perio-gm-sign.js
-```
-
-Paste it into §1 and item 26 proceeds: the family becomes one named constant with
-that read-back quoted beside it, and Parts 1–4 are built to it.
-
-If the 2026-09-29 exam turns out not to be on 12828 after all, the same two GETs
-on 12827 or valley 7115 would do — or the hand entry repeated. What cannot happen
-is the constant being chosen without it.
+Filled in at push time.
