@@ -246,4 +246,20 @@ extra request, not correctness.
 
 ## 8. Push, PR, and the merge tree
 
-Filled in at push time.
+**PR #220**, `feature/hyg-perio-v2-build` -> `develop`. Not merged.
+
+PR #218 — this branch stopped at the §0 gate — was MERGED while the build was in
+progress, so this is a fresh branch cut off current `develop` with the four build
+commits rebased onto it, rather than more commits on a dead branch.
+
+CI builds `refs/pull/N/merge`, not the branch tip, so the trees were compared
+rather than assumed:
+
+```
+git rev-parse HEAD^{tree}                         3ffb923f236c834ad9b7970de9df34867aa8dae4
+git rev-parse refs/pull/220/merge^{tree}          3ffb923f236c834ad9b7970de9df34867aa8dae4
+git rev-list --count HEAD..origin/develop         0
+```
+
+The §7 gates were re-run on the rebased tree before the push, and again after
+this section was added.
