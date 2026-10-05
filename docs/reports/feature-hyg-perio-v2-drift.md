@@ -1,7 +1,7 @@
 # Item 31 — drift notices the v2 rows too (26b)
 
 Branch `feature/hyg-perio-v2-drift` → `develop`. **LANE: RED.** Not merged.
-PR: _see §5_.
+PR: **#221**.
 
 ## 1. What changed
 
@@ -106,7 +106,7 @@ Local, on the branch tip:
 - new-dashboard: `pnpm install --frozen-lockfile` ✅ · `pnpm run check` (tsc) clean ✅ ·
   `pnpm run test` 128 files / 2197 tests passed ✅
 
-CI: _see below._
+CI: **PR #221**, `build-test` **passed** on the merge tree (`refs/pull/221/merge`) for head `f6e4a7f`, first run, with no re-runs and no flakes. Run: https://github.com/bsparkma/retell-ai-dashboard/actions/runs/37345863350
 
 ## 6. Staging test steps
 
