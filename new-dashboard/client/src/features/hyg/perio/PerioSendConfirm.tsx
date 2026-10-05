@@ -145,7 +145,8 @@ export function PerioSendConfirm({
               {replacesExamNum !== null ? (
                 <div className="rounded-lg border border-primary/50" data-testid="hyg-perio-confirm-changes">
                   <p className="border-b border-border px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    What changes ({changes.length} {changes.length === 1 ? "site" : "sites"})
+                    {/* ITEM 31: a mobility change is a TOOTH, not a site, so it counts readings. */}
+                    What changes ({changes.length} {changes.length === 1 ? "reading" : "readings"})
                   </p>
                   <ul className="max-h-40 space-y-0.5 overflow-y-auto p-2 text-sm tabular-nums">
                     {changes.map((change, i) => (
