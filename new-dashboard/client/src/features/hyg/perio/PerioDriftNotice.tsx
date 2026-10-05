@@ -25,6 +25,11 @@
  * 3. It must not press anything itself. There is no effect in here, no timer and
  *    no auto-confirm. A person reads the list of exams the patient already has on
  *    this date and decides.
+ *
+ * ITEM 31: `changed` now covers recession, furcation and mobility as well as
+ * probing. Each line names its family ("#3 B gingival margin: …") and mobility
+ * names the TOOTH, so a changed recession never reads as a changed depth. The
+ * three rules above hold for every family alike.
  */
 import { AlertTriangle, Send, Trash2 } from "lucide-react";
 
@@ -113,8 +118,13 @@ export function PerioDriftNotice({
           NO "Send again" HERE, DELIBERATELY. Somebody corrected this chart in
           Open Dental. What is there is newer than what CareIN wrote.
         */}
+        {/*
+          ITEM 31: the line runs CareIN → Open Dental (`perioChartChanges(baseline,
+          odChart)`), so CareIN's reading is on the LEFT. Before item 31 this
+          sentence said the opposite.
+        */}
         <p className="mt-1 text-muted-foreground">
-          Open Dental holds the readings on the left; CareIN wrote the ones on the right. Somebody edited
+          CareIN wrote the readings on the left; Open Dental holds the ones on the right. Somebody edited
           the exam there, so what is in the chart is newer than this. Use{" "}
           <span className="font-medium text-foreground">Amend chart</span> to start from what Open Dental
           holds now.

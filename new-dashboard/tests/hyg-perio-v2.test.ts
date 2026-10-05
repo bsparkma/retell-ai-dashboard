@@ -455,11 +455,15 @@ describe("ACCEPTANCE 7: the read-back compares every v2 value", () => {
     expect(comparePerioReadback(chart, chart)).toEqual([]);
   });
 
-  it("DRIFT still answers the v1 question — the v2 kinds are filtered, not forgotten", () => {
-    // 26b, ruled on in the report: widening drift means widening
-    // PerioSiteChange.kind, which the drift notice and the resend dialog render.
+  it("DRIFT sees the v2 kinds too (item 31 — the 26b this slice deferred)", () => {
+    // Item 26 pinned the deferral here: `perioChartChanges` dropped gm. Item 31
+    // reverses that ruling on purpose — an edited recession in Open Dental is a
+    // change drift must report — so this half now pins the opposite, stronger
+    // claim. See docs/reports/feature-hyg-perio-v2-drift.md.
     const changes = perioChartChanges(withGm(2), withGm(3));
-    expect(changes).toEqual([]);
+    expect(changes.map((c) => [c.tooth, c.surface, c.kind, c.from, c.to])).toEqual([
+      [3, "DB", "gm", "2 mm recession", "3 mm recession"],
+    ]);
     // And a DEPTH change still comes through, so drift is not simply broken.
     const a = normalizePerioChart(withPerioSite(emptyPerioChart(), 3, "DB", { depth: 4 }));
     const b = normalizePerioChart(withPerioSite(emptyPerioChart(), 3, "DB", { depth: 5 }));

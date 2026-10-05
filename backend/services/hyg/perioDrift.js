@@ -38,6 +38,10 @@
  *   exam present, sites DIFFER         → say it, name them.  no resend
  *   Open Dental could not be read      → say nothing.        no resend
  *
+ * "Every site" is every FAMILY a send writes — probing, flags, skips, and since
+ * item 31 recession, furcation and mobility. A v2 value Open Dental holds that
+ * CareIN cannot interpret is the fourth row, never the first: see `driftAnswer`.
+ *
  * The third row is the whole design. A reading that differs is A HUMAN WHO
  * CORRECTED THE CHART IN OPEN DENTAL. Resending there would create a duplicate
  * exam and bury a deliberate correction under CareIN's stale numbers. "It does
@@ -172,6 +176,7 @@ async function checkDrift({ staged, live, exams, latest, odGet, careinExamNums =
   if (!baseline) return { drift: { status: 'unknown', examNum }, odReads: 0 };
 
   let odChart = latest && latest.examNum === examNum ? latest.chart : null;
+  let unreadable = odChart ? latest.uninterpretable || [] : [];
   let odReads = 0;
   if (!odChart) {
     // The live exam is not the newest one — somebody charted a newer exam in Open
@@ -179,15 +184,45 @@ async function checkDrift({ staged, live, exams, latest, odGet, careinExamNums =
     const read = await odPerio.readExamMeasures(odGet, { examNum });
     odReads = read.odReads;
     if (!read.ok || read.truncated) return { drift: { status: 'unknown', examNum }, odReads };
-    odChart = odPerio.chartFromMeasures(read.rows).chart;
+    ({ chart: odChart, uninterpretable: unreadable } = odPerio.chartFromMeasures(read.rows));
   }
 
-  const changes = contract.perioChartChanges(baseline, odChart);
-  if (changes.length === 0) return { drift: { status: 'matches', examNum }, odReads };
-  return {
-    drift: { status: 'changed', examNum, changes: changes.slice(0, MAX_REPORTED_CHANGES) },
-    odReads,
-  };
+  return { drift: driftAnswer({ examNum, baseline, odChart, unreadable }), odReads };
+}
+
+/**
+ * `matches`, `changed` or `unknown`, from two charts and what could not be read.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * ITEM 31: SILENCE IS EARNED ONLY WHEN EVERY COMPARED FAMILY MATCHED
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Since item 31 the comparison covers recession, furcation and mobility as well
+ * as probing. A v2 value Open Dental holds that CareIN cannot interpret
+ * (`chartFromMeasures`' `uninterpretable`) sits in the chart as "nothing
+ * charted", so the comparison at that position is not a comparison at all:
+ *
+ *   - A change reported AT an unreadable position would say "not charted", which
+ *     is false — something IS charted there. Those lines are dropped.
+ *   - Every other change is real and is reported: `changed`, naming them. One
+ *     unreadable site does not hide a recession somebody plainly edited.
+ *   - No reportable change, but something unreadable: `unknown`. NEVER `matches`
+ *     — CareIN did not see that position agree, so it does not say it did.
+ *
+ * Pure, so the three outcomes are tested without Open Dental.
+ *
+ * @param {{ examNum: number, baseline: object, odChart: object,
+ *           unreadable: Array<{ tooth: number|null, surface: string|null, kind: string }> }} args
+ */
+function driftAnswer({ examNum, baseline, odChart, unreadable = [] }) {
+  const blind = new Set(unreadable.map((u) => `${u.tooth}|${u.surface}|${u.kind}`));
+  const changes = contract
+    .perioChartChanges(baseline, odChart)
+    .filter((c) => !blind.has(`${c.tooth}|${c.surface}|${c.kind}`));
+  if (changes.length > 0) {
+    return { status: 'changed', examNum, changes: changes.slice(0, MAX_REPORTED_CHANGES) };
+  }
+  if (unreadable.length > 0) return { status: 'unknown', examNum };
+  return { status: 'matches', examNum };
 }
 
 /**
@@ -280,6 +315,7 @@ async function resendVanishedChart({ pool, office, visit, odGet, request, actor 
 module.exports = {
   readDriftContext,
   checkDrift,
+  driftAnswer,
   resendVanishedChart,
   sameDateExams,
   NOT_APPLICABLE,

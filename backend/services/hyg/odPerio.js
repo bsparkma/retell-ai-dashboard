@@ -70,6 +70,9 @@
 const contract = require('../../hyg/contract.gen.cjs');
 const { pagedList, odInt } = require('./odDay');
 
+/** Item 26's three SequenceTypes → the change kind each one is compared as. */
+const V2_KINDS = Object.freeze({ GingMargin: 'gm', Furcation: 'furcation', Mobility: 'mobility' });
+
 /** `MBvalue` etc. → the contract's surface codes. */
 const SURFACE_FIELDS = Object.freeze({
   MB: 'MBvalue',
@@ -155,12 +158,46 @@ async function readLatestExam(odGet, { patNum }) {
  * zero. When the same (tooth, SequenceType) appears twice the higher
  * PerioMeasureNum wins — it is the later write.
  *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * ITEM 31: A v2 VALUE IT CANNOT INTERPRET IS NAMED, NOT ABSORBED
+ * ═════════════════════════════════════════════════════════════════════════════
+ * A GingMargin outside both families, a Furcation outside classes 1–3, a Mobility
+ * grade outside 0–3, or a v2 row on a tooth it cannot place all land in the chart
+ * as `null` — "nothing charted" — because the chart has no way to hold them. That
+ * is right for the chart and WRONG for a comparison: CareIN never writes such a
+ * value, so one being there means somebody put it there, and comparing the `null`
+ * would either say "matches" (when CareIN also wrote nothing) or report it as
+ * "not charted" (when it is charted, with something unreadable).
+ *
+ * So each one is listed in `uninterpretable`, with where it is and the raw value,
+ * and the drift check refuses to call that position matching. `-1` is NOT on the
+ * list: it is Open Dental's own "nothing here", and an all-`-1` row is a shape it
+ * really stores (measured, item 26).
+ *
+ * v1 rows are unchanged — what they did before item 31 they still do.
+ *
  * @param {object[]} rows already filtered to one exam
- * @returns {{ chart: object, ignored: number }}
+ * @returns {{ chart: object, ignored: number,
+ *             uninterpretable: Array<{ tooth: number|null, surface: string|null, kind: string, raw: unknown }> }}
  */
 function chartFromMeasures(rows) {
   let chart = contract.emptyPerioChart();
   let ignored = 0;
+  /**
+   * Keyed by position, so the later of two rows for one (tooth, type) decides it
+   * exactly as it decides the chart: a readable later row clears an unreadable
+   * earlier one, and an unreadable later row replaces a readable one.
+   */
+  // A readable position is recorded as `null`, never removed: this file is
+  // scanned for write-shaped calls (hygNoOdWrites.test.js), and a `.delete(` on
+  // a local Map reads exactly like one.
+  const unreadable = new Map();
+  /** `-1` is OD's absence. Anything else that did not map is unreadable. */
+  const note = (tooth, surface, kind, raw, known) => {
+    const key = `${tooth}|${surface}|${kind}`;
+    const readable = known || odInt(raw) === -1;
+    unreadable.set(key, readable ? null : { tooth, surface, kind, raw: raw === undefined ? null : raw });
+  };
 
   const ordered = [...rows].sort(
     (a, b) => (odInt(a.PerioMeasureNum) ?? 0) - (odInt(b.PerioMeasureNum) ?? 0)
@@ -168,12 +205,23 @@ function chartFromMeasures(rows) {
 
   for (const row of ordered) {
     const tooth = odInt(row.IntTooth);
+    const type = typeof row.SequenceType === 'string' ? row.SequenceType.trim() : '';
     if (tooth === null || tooth < 1 || tooth > 32) {
       // Primary teeth and anything unreadable. v1 is the permanent chart.
       ignored += 1;
+      // ITEM 31: a v2 row CareIN cannot place, CARRYING a value, is still a
+      // value somebody wrote. An all -1 one carries nothing and is let go.
+      if (V2_KINDS[type]) {
+        const fields = type === 'Mobility' ? ['ToothValue'] : Object.values(SURFACE_FIELDS);
+        if (fields.some((f) => odInt(row[f]) !== -1)) {
+          // Set directly, NOT through `note`: its `-1` test is for a VALUE, and a
+          // row on IntTooth -1 carrying a grade would otherwise read as absent.
+          const kind = V2_KINDS[type];
+          unreadable.set(`${tooth}|null|${kind}`, { tooth, surface: null, kind, raw: row.IntTooth ?? null });
+        }
+      }
       continue;
     }
-    const type = typeof row.SequenceType === 'string' ? row.SequenceType.trim() : '';
 
     if (type === 'Probing') {
       for (const [surface, field] of Object.entries(SURFACE_FIELDS)) {
@@ -200,6 +248,7 @@ function chartFromMeasures(rows) {
         const v = odInt(row[field]);
         const known =
           v !== null && ((v >= recessionMin && v <= recessionMax) || (v >= otherMin && v <= otherMax));
+        note(tooth, surface, 'gm', row[field], known);
         chart = contract.withPerioSite(chart, tooth, surface, { gm: known ? v : null });
       }
     } else if (type === 'Furcation') {
@@ -214,12 +263,14 @@ function chartFromMeasures(rows) {
          * outcome.
          */
         const known = v !== null && v >= contract.PERIO_MIN_FURCATION && v <= contract.PERIO_MAX_FURCATION;
+        note(tooth, surface, 'furcation', row[field], known);
         chart = contract.withPerioSite(chart, tooth, surface, { furcation: known ? v : null });
       }
     } else if (type === 'Mobility') {
       // PER TOOTH: the grade is in ToothValue and the surface columns are -1.
       const v = odInt(row.ToothValue);
       const known = v !== null && v >= 0 && v <= contract.PERIO_MAX_MOBILITY;
+      note(tooth, null, 'mobility', row.ToothValue, known);
       chart = contract.withPerioMobility(chart, tooth, known ? v : null);
     } else {
       // MGJ — out of scope, and read off the same pages.
@@ -227,7 +278,7 @@ function chartFromMeasures(rows) {
     }
   }
 
-  return { chart: contract.normalizePerioChart(chart), ignored };
+  return { chart: contract.normalizePerioChart(chart), ignored, uninterpretable: [...unreadable.values()].filter(Boolean) };
 }
 
 /**
@@ -259,7 +310,7 @@ function chartFromMeasures(rows) {
  * @param {{ patNum: number }} opts
  * @returns {Promise<{ prior: object, odReads: number,
  *                     exams: { ok: boolean, list: Array<object>, error: string|null },
- *                     latest: { examNum: number, chart: object }|null }>}
+ *                     latest: { examNum: number, chart: object, uninterpretable: object[] }|null }>}
  */
 async function readPriorPerio(odGet, { patNum }) {
   if (!Number.isSafeInteger(patNum) || patNum <= 0) {
@@ -310,7 +361,7 @@ async function readPriorPerio(odGet, { patNum }) {
   }
 
   const mine = list.rows.filter((r) => r && odInt(r.PerioExamNum) === examNum);
-  const { chart } = chartFromMeasures(mine);
+  const { chart, uninterpretable } = chartFromMeasures(mine);
   // A page that failed after the first, or a budget that ran out: some
   // readings are missing and the screen must say so.
   const truncated = list.truncated || Boolean(list.error);
@@ -320,7 +371,7 @@ async function readPriorPerio(odGet, { patNum }) {
     // A PARTIAL chart is not a baseline anything may be compared against: the
     // sites that did not come back would read as changed. Withheld, so the
     // drift check reaches its own honest `unknown` instead.
-    latest: truncated ? null : { examNum, chart },
+    latest: truncated ? null : { examNum, chart, uninterpretable },
     prior: {
       status: 'found',
       examNum,
@@ -389,4 +440,5 @@ module.exports = {
   chartFromMeasures,
   examDateOf,
   SURFACE_FIELDS,
+  V2_KINDS,
 };
