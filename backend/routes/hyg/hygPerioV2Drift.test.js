@@ -426,6 +426,8 @@ test('ACCEPTANCE 8: a v2 value the comparison cannot interpret is `unknown`, nev
     ['unparseable margin', (od, n) => editInOpenDental(od, n, 3, 'GingMargin', 'MBvalue', 'x')],
     // A v2 row with a value on a tooth CareIN cannot place.
     ['v2 row on an unplaceable tooth', (od, n) => addInOpenDental(od, n, 0, 'Mobility', { ToothValue: 2 })],
+    // …including tooth -1, which must not be mistaken for Open Dental's -1 "nothing here".
+    ['v2 row on tooth -1', (od, n) => addInOpenDental(od, n, -1, 'Mobility', { ToothValue: 2 })],
   ];
   for (const [label, edit] of cases) {
     const od = perioFake();
@@ -491,6 +493,8 @@ test('chartFromMeasures names every v2 value it cannot interpret, and nothing el
     row('Mobility', 4, {}, 5), // all -1: nothing charted, not unreadable
     row('Probing', 3, { Bvalue: 99 }, 6), // v1 rows are untouched by item 31
     row('MGJ', 3, { Bvalue: 4 }, 7), // out of scope, as before
+    row('Mobility', -1, { ToothValue: 2 }, 8), // a value on a tooth that cannot be placed
+    row('GingMargin', -1, {}, 9), // an all -1 row on one: carries nothing
   ]);
   assert.deepEqual(
     uninterpretable.map((u) => [u.tooth, u.surface, u.kind, u.raw]),
@@ -498,6 +502,7 @@ test('chartFromMeasures names every v2 value it cannot interpret, and nothing el
       [4, 'B', 'gm', 50],
       [3, 'ML', 'furcation', 5],
       [3, null, 'mobility', 7],
+      [-1, null, 'mobility', -1],
     ]
   );
 });

@@ -214,7 +214,10 @@ function chartFromMeasures(rows) {
       if (V2_KINDS[type]) {
         const fields = type === 'Mobility' ? ['ToothValue'] : Object.values(SURFACE_FIELDS);
         if (fields.some((f) => odInt(row[f]) !== -1)) {
-          note(tooth, null, V2_KINDS[type], row.IntTooth ?? null, false);
+          // Set directly, NOT through `note`: its `-1` test is for a VALUE, and a
+          // row on IntTooth -1 carrying a grade would otherwise read as absent.
+          const kind = V2_KINDS[type];
+          unreadable.set(`${tooth}|null|${kind}`, { tooth, surface: null, kind, raw: row.IntTooth ?? null });
         }
       }
       continue;
