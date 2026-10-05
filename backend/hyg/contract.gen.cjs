@@ -14868,6 +14868,7 @@ __export(contract_entry_exports, {
   PERIO_ARCH_STRING_LABELS: () => PERIO_ARCH_STRING_LABELS,
   PERIO_ARCH_STRING_SITES: () => PERIO_ARCH_STRING_SITES,
   PERIO_ARCH_STRING_SITES_PER_ARCH: () => PERIO_ARCH_STRING_SITES_PER_ARCH,
+  PERIO_CHANGE_KIND_LABEL: () => PERIO_CHANGE_KIND_LABEL,
   PERIO_FLAGS: () => PERIO_FLAGS,
   PERIO_FLAG_KEYS: () => PERIO_FLAG_KEYS,
   PERIO_FLAG_LABELS: () => PERIO_FLAG_LABELS,
@@ -14911,6 +14912,7 @@ __export(contract_entry_exports, {
   PerioSendSequenceTypeSchema: () => PerioSendSequenceTypeSchema,
   PerioSendStateSchema: () => PerioSendStateSchema,
   PerioSendViewSchema: () => PerioSendViewSchema,
+  PerioSiteChangeKindSchema: () => PerioSiteChangeKindSchema,
   PerioSiteChangeSchema: () => PerioSiteChangeSchema,
   PerioSiteSchema: () => PerioSiteSchema,
   PerioStageSchema: () => PerioStageSchema,
@@ -16603,10 +16605,11 @@ var PerioPriorSchema = import_zod3.z.discriminatedUnion("status", [
     detail: import_zod3.z.string().nullable()
   })
 ]);
+var PerioSiteChangeKindSchema = import_zod3.z.enum(["depth", "flags", "skipped", "gm", "furcation", "mobility"]);
 var PerioSiteChangeSchema = import_zod3.z.object({
   tooth: import_zod3.z.number().int(),
   surface: ToothSurfaceSchema.nullable(),
-  kind: import_zod3.z.enum(["depth", "flags", "skipped"]),
+  kind: PerioSiteChangeKindSchema,
   from: import_zod3.z.string(),
   to: import_zod3.z.string()
 });
@@ -17208,20 +17211,29 @@ function comparePerioReadback(expected, found) {
   }
   return out;
 }
-function isDriftKind(kind) {
-  return kind === "depth" || kind === "flags" || kind === "skipped";
+function isChangeKind(kind) {
+  return kind !== "duplicate";
 }
 function perioChartChanges(before, after) {
   const out = [];
   for (const m of comparePerioReadback(before, after)) {
-    if (!isDriftKind(m.kind)) continue;
+    if (!isChangeKind(m.kind)) continue;
     out.push({ tooth: m.tooth, surface: m.surface, kind: m.kind, from: m.expected, to: m.found });
   }
   return out;
 }
+var PERIO_CHANGE_KIND_LABEL = Object.freeze({
+  depth: null,
+  flags: null,
+  skipped: null,
+  gm: "gingival margin",
+  furcation: "furcation",
+  mobility: "mobility"
+});
 function perioChangeLine(c) {
   const where = c.surface === null ? `#${c.tooth}` : `#${c.tooth} ${c.surface}`;
-  return `${where}: ${c.from} \u2192 ${c.to}`;
+  const label = PERIO_CHANGE_KIND_LABEL[c.kind];
+  return `${label === null ? where : `${where} ${label}`}: ${c.from} \u2192 ${c.to}`;
 }
 function perioChangeSiteRef(c) {
   return c.surface === null ? `#${c.tooth}` : `#${c.tooth} ${c.surface}`;
@@ -17341,6 +17353,7 @@ var import_zod5 = __toESM(require_zod());
   PERIO_ARCH_STRING_LABELS,
   PERIO_ARCH_STRING_SITES,
   PERIO_ARCH_STRING_SITES_PER_ARCH,
+  PERIO_CHANGE_KIND_LABEL,
   PERIO_FLAGS,
   PERIO_FLAG_KEYS,
   PERIO_FLAG_LABELS,
@@ -17384,6 +17397,7 @@ var import_zod5 = __toESM(require_zod());
   PerioSendSequenceTypeSchema,
   PerioSendStateSchema,
   PerioSendViewSchema,
+  PerioSiteChangeKindSchema,
   PerioSiteChangeSchema,
   PerioSiteSchema,
   PerioStageSchema,

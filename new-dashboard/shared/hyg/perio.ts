@@ -954,10 +954,23 @@ export type PerioPrior = z.infer<typeof PerioPriorSchema>;
  * shape and perio.ts cannot import from perioSend.ts — the import runs one way
  * only. The formatters stay with the comparison.
  */
+/**
+ * ITEM 31 widens this from the v1 three to every family a send writes. Before it,
+ * a recession, furcation or mobility edited in Open Dental after a `Written` send
+ * was dropped on the way through the drift check, and CareIN went on saying the
+ * chart matched — the exact false claim item 14 exists to prevent.
+ *
+ * `mobility` is per TOOTH, so its `surface` is null, like `skipped`. `gm` is a
+ * gingival margin in whichever family Open Dental holds it: a value in 101–119
+ * against a CareIN-written 0–19 is a CHANGE, never quietly normalised.
+ */
+export const PerioSiteChangeKindSchema = z.enum(["depth", "flags", "skipped", "gm", "furcation", "mobility"]);
+export type PerioSiteChangeKind = z.infer<typeof PerioSiteChangeKindSchema>;
+
 export const PerioSiteChangeSchema = z.object({
   tooth: z.number().int(),
   surface: ToothSurfaceSchema.nullable(),
-  kind: z.enum(["depth", "flags", "skipped"]),
+  kind: PerioSiteChangeKindSchema,
   from: z.string(),
   to: z.string(),
 });

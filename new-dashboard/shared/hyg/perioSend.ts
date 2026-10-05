@@ -747,39 +747,54 @@ export function comparePerioReadback(expected: PerioChart, found: PerioChart): P
  * wrote, `after` is what Open Dental holds now.
  */
 /**
- * ⚠️ ITEM 26 DELIBERATELY DOES NOT WIDEN THIS ONE.
+ * ITEM 31: EVERY FAMILY A SEND WRITES IS A FAMILY DRIFT COMPARES.
  *
- * `comparePerioReadback` above now sees recession, furcation and mobility,
- * because the SEND must read back every row it wrote. Item 14's DRIFT check —
- * "is the exam CareIN wrote still the exam Open Dental holds?" — is built on the
- * same comparison, so widening it there would mean widening
- * `PerioSiteChange.kind`, which the drift notice and the resend dialog both
- * render and both switch on exhaustively.
+ * Item 26 widened `comparePerioReadback` to recession, furcation and mobility so
+ * the send could read back every row it wrote, and filtered those three out here
+ * on purpose (26b). This is 26b: they come through now, so a hygienist's
+ * recession or mobility edited in Open Dental is reported as `changed` instead of
+ * silently matching. The doctrine is unchanged — a difference is somebody's
+ * correction, and `changed` still offers no resend.
  *
- * That is 26b, ruled on in this slice's report rather than grown in here. Until
- * it lands, drift answers the v1 question it already answers, and these three
- * kinds are dropped on the way through — explicitly, so the next person sees a
- * decision instead of an oversight.
+ * Only `duplicate` is dropped: it describes Open Dental holding two ROWS, and two
+ * charts cannot differ that way.
  */
-function isDriftKind(kind: PerioMismatch["kind"]): kind is PerioSiteChange["kind"] {
-  return kind === "depth" || kind === "flags" || kind === "skipped";
+function isChangeKind(kind: PerioMismatch["kind"]): kind is PerioSiteChange["kind"] {
+  return kind !== "duplicate";
 }
 
 export function perioChartChanges(before: PerioChart, after: PerioChart): PerioSiteChange[] {
   const out: PerioSiteChange[] = [];
   for (const m of comparePerioReadback(before, after)) {
-    // `duplicate` describes Open Dental holding two rows; two CHARTS cannot differ
-    // that way. `gm` / `furcation` / `mobility` are 26b — see above.
-    if (!isDriftKind(m.kind)) continue;
+    if (!isChangeKind(m.kind)) continue;
     out.push({ tooth: m.tooth, surface: m.surface, kind: m.kind, from: m.expected, to: m.found });
   }
   return out;
 }
 
-/** "#14 B: 3 mm → 4 mm" */
+/**
+ * The word a change line carries for its family, so a changed recession reads as
+ * a recession change and not as a depth change. The v1 kinds carry none: their
+ * words ("4 mm", "bleeding", "skipped") already say what they are, and every line
+ * a hygienist has seen since item 13 stays exactly as it was.
+ */
+export const PERIO_CHANGE_KIND_LABEL: Readonly<Record<PerioSiteChange["kind"], string | null>> = Object.freeze({
+  depth: null,
+  flags: null,
+  skipped: null,
+  gm: "gingival margin",
+  furcation: "furcation",
+  mobility: "mobility",
+});
+
+/**
+ * "#14 B: 3 mm → 4 mm", "#3 B gingival margin: 2 mm recession → 3 mm recession",
+ * "#30 mobility: grade 1 → grade 2" — mobility names the TOOTH, never a site.
+ */
 export function perioChangeLine(c: PerioSiteChange): string {
   const where = c.surface === null ? `#${c.tooth}` : `#${c.tooth} ${c.surface}`;
-  return `${where}: ${c.from} → ${c.to}`;
+  const label = PERIO_CHANGE_KIND_LABEL[c.kind];
+  return `${label === null ? where : `${where} ${label}`}: ${c.from} → ${c.to}`;
 }
 
 /** "#14 B" — the sites an amendment touches, for the audit trail and the grid. */
