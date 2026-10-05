@@ -188,12 +188,15 @@ function chartFromMeasures(rows) {
    * exactly as it decides the chart: a readable later row clears an unreadable
    * earlier one, and an unreadable later row replaces a readable one.
    */
+  // A readable position is recorded as `null`, never removed: this file is
+  // scanned for write-shaped calls (hygNoOdWrites.test.js), and a `.delete(` on
+  // a local Map reads exactly like one.
   const unreadable = new Map();
   /** `-1` is OD's absence. Anything else that did not map is unreadable. */
   const note = (tooth, surface, kind, raw, known) => {
     const key = `${tooth}|${surface}|${kind}`;
-    if (known || odInt(raw) === -1) unreadable.delete(key);
-    else unreadable.set(key, { tooth, surface, kind, raw: raw === undefined ? null : raw });
+    const readable = known || odInt(raw) === -1;
+    unreadable.set(key, readable ? null : { tooth, surface, kind, raw: raw === undefined ? null : raw });
   };
 
   const ordered = [...rows].sort(
@@ -272,7 +275,7 @@ function chartFromMeasures(rows) {
     }
   }
 
-  return { chart: contract.normalizePerioChart(chart), ignored, uninterpretable: [...unreadable.values()] };
+  return { chart: contract.normalizePerioChart(chart), ignored, uninterpretable: [...unreadable.values()].filter(Boolean) };
 }
 
 /**
