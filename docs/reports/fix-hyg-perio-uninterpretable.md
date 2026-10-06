@@ -1,0 +1,115 @@
+# fix/hyg-perio-uninterpretable — item 32
+
+Queue: `pm-prompts/queue/32-hyg-perio-uninterpretable-followups.md`. LANE: RED.
+Branch `fix/hyg-perio-uninterpretable` off `origin/develop` @ `52abe86`, the merge of #221.
+PR: **#PR_NUMBER** → `develop`. Not merged.
+
+## What changed
+
+Since item 31, two surfaces still read an uninterpretable v2 value as "nothing charted". Both are fixed.
+
+### 1. The amend path refuses `AMEND_BASE_UNREADABLE`
+
+- `perioSend.readExamChart` now returns `chartFromMeasures`' `uninterpretable` list as well as `.chart` (`backend/services/hyg/perioSend.js:219-225`).
+- New helper `refuseUnreadableBase` (`perioSend.js:239`) returns 409 `AMEND_BASE_UNREADABLE`. Its first sentence names the exam and the position, for example: *"Exam 7001 in Open Dental holds a value CareIN can't read (#3 B gingival margin)."* The raw value is never printed.
+- The refusal fires at two points:
+  - **Opening a correction** — `beginAmendment` (`perioSend.js:999`). The queue calls this `beginPerioAmendment`. The service entry point is `perioSend.beginAmendment`, which is the only caller that reads Open Dental before calling `visitStore.beginPerioAmendment`. The check runs before `setSendChart`, `visitStore.beginPerioAmendment` and `savePerioDraft`, so nothing in CareIN changes either.
+  - **Sending a correction** — `startPerioSend` (`perioSend.js:383`), which also guards the `AMEND_BASE_CHANGED` path. It runs before the diff, because the diff would misname an unreadable position as "not charted". It also runs before `markSending` and `createSend`, and before any Open Dental write.
+- The refusal **prevents** a write. It never causes one.
+- New code in `HYG_VISIT_ERROR_CODES`: `AMEND_BASE_UNREADABLE` (`new-dashboard/shared/hyg/contract.ts:1198`).
+
+### 2. `unknown` now carries a reason
+
+- `PerioDriftSchema`'s `unknown` member (`new-dashboard/shared/hyg/perio.ts:1082`) gains two fields:
+  - `reason: 'unreadable_od' | 'uninterpretable'`, defaulting to `unreadable_od`.
+  - `positions: { tooth, surface, kind }[]`, defaulting to `[]`.
+- The enum stays closed: any other reason fails the parse.
+- An answer that carries no reason parses as `unreadable_od`, which is silent, as before.
+- Backend:
+  - `perioDrift.unreadableOd()` (`perioDrift.js:81`) covers a failed read, a truncated read, no baseline, and the route's catch.
+  - `driftAnswer` returns `uninterpretable` with positions and strips `raw` (`perioDrift.js:247`).
+- Screen (`PerioDriftNotice.tsx:144`):
+  - `unreadable_od` renders nothing. Item 14's ruling stands.
+  - `uninterpretable` renders one quiet, neutral `text-muted-foreground` line with no amber, no icon and no button: *"Open Dental holds a value here CareIN can't read (#3 B gingival margin). Check it in Open Dental."*
+  - With several positions, the line names three and counts the rest.
+- Shared wording: `perioUnreadableRef` and `perioUnreadableList` (`new-dashboard/shared/hyg/perioSend.ts:806, 820`). The screen line and the refusal use the same helpers, so they can never name a position two different ways. Mobility names the tooth. A row on a tooth CareIN can't place reads "mobility on a tooth CareIN cannot place".
+- `backend/hyg/contract.gen.cjs` was regenerated with the pinned esbuild and `--alias:zod`. The bundle test is green.
+
+### 3. Fold-in: "N readings corrected"
+
+- `PerioSendPanel.tsx:323` now says "reading" / "readings" instead of "site" / "sites".
+- **Existing-test edit (the only one):** in `new-dashboard/tests/hyg-perio-page.test.tsx:861`, the pinned string `/1 site corrected · …/` became `/1 reading corrected · …/`. This is a copy change only. The rest of that regex and every other assertion in the file are unchanged.
+
+## Acceptance
+
+| # | Row | Test |
+|---|---|---|
+| 1 | Amend refuses `AMEND_BASE_UNREADABLE`, naming the position; nothing is written | `backend/routes/hyg/hygPerioUninterpretable.test.js`, three tests:<br>• *"Amend on an exam holding an uninterpretable value…"* snapshots Open Dental's order, posts and deletes plus CareIN's staged and send rows. All are unchanged and the chart stays `Written`.<br>• *"…turns uninterpretable AFTER Amend refuses at send time"* — no exam is posted and nothing is deleted.<br>• *"a fully readable exam still opens"* checks the refusal isn't blanket. |
+| 2 | A transient Open Dental read failure still renders nothing | Backend *"ACCEPTANCE 2"*: 503 → `{unknown, unreadable_od, positions: []}` and no audit row.<br>Dashboard `tests/hyg-perio-uninterpretable.test.tsx` *"ACCEPTANCE 2"*: empty render, the legacy no-reason answer parses as `unreadable_od` and renders nothing, and a bogus reason is refused. |
+| 3 | The quiet line names tooth + surface + family; no Send again, no amber | Backend *"ACCEPTANCE 3"*: the positions are exact and carry no `raw`.<br>Dashboard *"ACCEPTANCE 3"*: exact text, no resend, changed or missing testids, no button, no svg, no amber or destructive class. A multi-position case covers mobility and "and 1 more". |
+| 4 | Every reader of drift `status` handles `reason` | The list below. |
+| 5 | "N readings corrected" | Dashboard *"ACCEPTANCE 5"*: three amendDiff lines give `3 readings corrected`. The pinned page test covers the singular. |
+
+### Row 4: every reader of drift `status` and of `PerioDriftNotice` props
+
+Found by grepping `backend/` and `new-dashboard/{client,shared,server}`, excluding tests and the generated bundle.
+
+| File:line | Reads | How it handles `reason` |
+|---|---|---|
+| `backend/services/hyg/perioDrift.js:174` | list read not ok → `unknown` | `unreadableOd()` |
+| `backend/services/hyg/perioDrift.js:196` | no baseline → `unknown` | `unreadableOd()` (silent, as before) |
+| `backend/services/hyg/perioDrift.js:206` | measures read failed or truncated → `unknown` | `unreadableOd()` |
+| `backend/services/hyg/perioDrift.js:247` | `driftAnswer` unreadable → `unknown` | `reason: 'uninterpretable'` plus positions, with `raw` stripped |
+| `backend/routes/hyg/visit.js:1034` | the drift check threw → `unknown` | `perioDrift.unreadableOd()` |
+| `backend/routes/hyg/visit.js:1083` | audit on `missing`/`changed` | `unknown` is still not audited for either reason; see "Not built" |
+| `backend/routes/hyg/visit.js:1117-1118` | log line `drift=` | logs `unknown:<reason>` (an enum only, never a position) |
+| `new-dashboard/shared/hyg/perio.ts:1082` | `PerioDriftSchema` | `reason` and `positions`, both with defaults |
+| `new-dashboard/client/src/features/hyg/perio/PerioDriftNotice.tsx:77` | `missing` | unchanged |
+| `new-dashboard/client/src/features/hyg/perio/PerioDriftNotice.tsx:105` | `changed` | unchanged |
+| `new-dashboard/client/src/features/hyg/perio/PerioDriftNotice.tsx:144` | `unknown` | `uninterpretable` gets the quiet line; `unreadable_od` falls through to `null` |
+| `new-dashboard/client/src/pages/hyg/HygPerio.tsx:828` | builds `drift` from the prior response | passes it through unchanged |
+| `new-dashboard/client/src/pages/hyg/HygPerio.tsx:1066` | renders `PerioDriftNotice` | props unchanged; the comment above it is updated |
+| `new-dashboard/client/src/pages/hyg/HygPerio.tsx:1371` | `missing` → resend dialog | `missing` only; `unknown` never reaches it |
+| `new-dashboard/client/src/features/hyg/api.ts:621` | doc comment on `fetchPerioPrior` | comment updated; the parse uses the schema above |
+
+## Gates (local, before push)
+
+- Backend:
+  - `npm ci` ok.
+  - `node --check server.js` ok.
+  - `node scripts/shard-runner.mjs`: 4 shards all green, 2988 tests, 2985 pass, 0 fail, 3 skipped.
+- Dashboard:
+  - `pnpm install --frozen-lockfile` ok.
+  - `pnpm run check` (tsc) clean.
+  - `pnpm run test`: 129 files, 2203 passed, 149 skipped.
+- **First run was red, and the cause was mine.** I had also made `unknown`/`uninterpretable` write a `hyg_perio_drift` audit row (`prior_state 'unknown:uninterpretable'`). The existing item 31 test `hygPerioV2Drift.test.js:417` (ACCEPTANCE 8) pins that `unknown` writes no audit row. Rather than touch that assertion, I removed the audit (commit `5bc0dd3`). The full suite is green after that.
+
+## Reviewer
+
+A fresh-context reviewer subagent got the queue file and `git diff origin/develop...HEAD`.
+
+- **Round 1: PASS.** All rows were built and tested, and the row-4 reader list matched an independent grep. The refusal fires before every CareIN and Open Dental state change. `odPerioWriter.js` and the migrations are untouched. The only existing-test edit is the copy string.
+- **Round 2** (after the audit revert): **PASS**. No other existing test conflicts: backend `routes/hyg` + `services/hyg` 352 pass, including ACCEPTANCE 8, and dashboard `tests/hyg*` 418 pass. The bare `{status:'unknown', examNum}` fixtures in existing tests still pass via the default.
+
+## CI
+
+CI_RESULT
+
+## Staging test steps
+
+Use test patients only: roland **12827**, or valley **7115**. Do not use 11373.
+
+1. Chart and send a perio exam for 12827 through CareIN so it reaches `Written`. Include a recession at #3 B.
+2. In Open Dental's perio chart for that exam, set #3 B's gingival margin to a value in neither family (for example 50). If OD's UI won't accept it, use a furcation class of 5 or a mobility grade of 7 through the API on staging.
+3. Reopen the chart in CareIN. You should see one grey line: "Open Dental holds a value here CareIN can't read (#3 B gingival margin). Check it in Open Dental." There should be no amber notice and no Send again.
+4. Press **Amend chart**. It should refuse with "Exam N in Open Dental holds a value CareIN can't read (#3 B gingival margin). …". The chart stays Written, and Open Dental shows no new exam and no deletion.
+5. Put the value back to a readable one in Open Dental and reopen the chart. The line disappears and Amend opens normally.
+6. Make a correction that changes two readings and send it. The panel should say "2 readings corrected · …".
+7. Optional, to check item 14 is unchanged: with Open Dental unreachable, reopen the chart. Nothing is drawn beside the Written line.
+
+## Deliberately not built
+
+- **No audit row for `uninterpretable`.** The quiet line now names tooth and surface positions in a chart of record. By the route's own doctrine ("naming teeth is the disclosure"), that arguably should audit. But item 31 pinned "`unknown` discloses nothing, audits nothing", and I may not weaken that assertion. **Open question for Beau:** should `unknown:uninterpretable` audit? If yes, it is a one-line route change plus an explicit amendment to item 31's ACCEPTANCE 8.
+- No change to `odPerioWriter.js`, no migration, and no change to `counts.empty` or `perioHasReading`.
+- The no-baseline case (a send that predates item 13) is filed under `unreadable_od`. It is silent, as before, because the queue allows only two reasons.
+- `visitStore.beginPerioAmendment` (the DB transition) has no Open Dental read and was left alone. The guard sits in its only Open Dental-reading caller. `backend/scripts/rehearse-hyg-visit.js` calls the DB transition directly as a rehearsal tool and is unchanged.
