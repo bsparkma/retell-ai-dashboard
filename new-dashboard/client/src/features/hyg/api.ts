@@ -30,11 +30,13 @@ import {
   HygAppointmentSchema,
   HygDayIdentitiesResponseSchema,
   HygDayResponseSchema,
+  HygOrthoSendResponseSchema,
   HygSendResponseSchema,
   HygVisitSchema,
   OfficeIdSchema,
   type HygDayIdentitiesResponse,
   type HygDayResponse,
+  type HygOrthoSendResponse,
   type HygSendResponse,
   type HygSlip,
   type OfficeId,
@@ -772,6 +774,39 @@ export async function removePerioReplacedExam(
  * something she never read. Changing the visit and staging again is the other,
  * explicit path.
  */
+/**
+ * Send the ortho screening to TC, now (item 33).
+ *
+ * THE BODY IS EMPTY, ON PURPOSE. Office and PatNum come off the stored visit and
+ * the patient and provider off the server's own read of the appointment; there
+ * is nothing this page may tell the server about who the case is for. A 200 is
+ * TC's case, read back onto the visit — `visit.orthoSend` is what the tab
+ * renders as "Sent", never this call's own success.
+ */
+export async function sendOrthoScreening(
+  office: OfficeId,
+  aptNum: number,
+): Promise<HygOrthoSendResponse> {
+  return mutate(
+    "POST",
+    `/visit/${aptNum}/ortho-screening/send`,
+    { office },
+    (raw) => {
+      const parsed = HygOrthoSendResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new HygApiError(
+          "CareIN answered the ortho send with something this page could not read",
+          0,
+          "CONTRACT_MISMATCH",
+          { issues: parsed.error.issues.slice(0, 5) },
+        );
+      }
+      return parsed.data;
+    },
+    {},
+  );
+}
+
 export async function retryStagedWrite(
   office: OfficeId,
   aptNum: number,
