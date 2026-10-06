@@ -212,11 +212,9 @@ test('ACCEPTANCE 3: an uninterpretable value is `unknown` for `uninterpretable`,
       'the same words the refusal uses'
     );
 
-    // Naming positions in a chart of record is a disclosure, so it audits.
-    const rows = driftAudits(app);
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].prior_state, 'unknown:uninterpretable');
-    assert.match(rows[0].prior_state, /^[a-z0-9_]{1,32}(:[a-z0-9_]{1,31})?$/, 'fits the audit_log prior_state CHECK');
+    // `unknown` writes no drift audit row for either reason (item 31's ruling,
+    // pinned by hygPerioV2Drift ACCEPTANCE 8).
+    assert.deepEqual(driftAudits(app), []);
   } finally {
     await app.close();
   }

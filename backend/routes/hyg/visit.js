@@ -1077,16 +1077,10 @@ router.get(
      * disclosure, and it carries which of the answers it was and the exam number.
      * Fail-CLOSED, like every other audit on this path: no trail, no answer.
      */
-    /*
-     * ITEM 32: an `uninterpretable` answer NAMES positions in the chart of record,
-     * so it is a disclosure and audits like `changed`. `unreadable_od` names
-     * nothing and stays unaudited, exactly as before.
-     */
-    const driftDiscloses =
-      drift.status === 'missing' ||
-      drift.status === 'changed' ||
-      (drift.status === 'unknown' && drift.reason === 'uninterpretable');
-    if (driftDiscloses) {
+    // ITEM 32: `unknown` is not audited for EITHER reason — item 31 pins that
+    // (hygPerioV2Drift ACCEPTANCE 8). Whether naming an uninterpretable position
+    // should audit is an open question in docs/reports/fix-hyg-perio-uninterpretable.md.
+    if (drift.status === 'missing' || drift.status === 'changed') {
       await audit(req, {
         action: 'READ',
         resourceType: 'hyg_perio_drift',
@@ -1094,7 +1088,7 @@ router.get(
         result: 'SUCCESS',
         office,
         sourceRef: `perio_exam:${drift.examNum}`,
-        priorState: drift.status === 'unknown' ? `unknown:${drift.reason}` : drift.status,
+        priorState: drift.status,
       });
     }
     /*
