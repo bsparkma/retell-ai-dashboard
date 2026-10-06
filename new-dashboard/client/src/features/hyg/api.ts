@@ -768,13 +768,6 @@ export async function removePerioReplacedExam(
 }
 
 /**
- * Put a FAILED write back on the list, with the same words.
- *
- * Deliberately not a re-compose: a retry that rebuilt the preview would send
- * something she never read. Changing the visit and staging again is the other,
- * explicit path.
- */
-/**
  * Send the ortho screening to TC, now (item 33).
  *
  * THE BODY IS EMPTY, ON PURPOSE. Office and PatNum come off the stored visit and
@@ -807,6 +800,13 @@ export async function sendOrthoScreening(
   );
 }
 
+/**
+ * Put a FAILED write back on the list, with the same words.
+ *
+ * Deliberately not a re-compose: a retry that rebuilt the preview would send
+ * something she never read. Changing the visit and staging again is the other,
+ * explicit path.
+ */
 export async function retryStagedWrite(
   office: OfficeId,
   aptNum: number,
