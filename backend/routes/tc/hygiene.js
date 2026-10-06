@@ -151,6 +151,9 @@ router.post(
         insuranceNoted: input.insuranceNoted ?? '',
         patientInterestLevel: input.patientInterestLevel,
         flagUrgent: input.flagUrgent,
+        // Item 33. Null for every intake that is not an ortho screening —
+        // including the treatment handoff and TC's own intake form.
+        orthoScreening: input.orthoScreening ?? null,
       },
     });
 

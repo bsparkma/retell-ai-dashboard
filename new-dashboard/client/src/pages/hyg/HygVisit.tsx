@@ -52,6 +52,17 @@
  * route, exactly as the chart page does — so every write still happens inside a
  * request the confirming person made. Leaving stops asking; Retry carries on the
  * same send, and it reads Open Dental before it writes anything.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THE ORTHO SCREENING IS A SECOND TAB, AND IT SENDS ON ITS OWN (item 33)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The work column has two tabs: the visit (note, slip, treatment — unchanged)
+ * and the ortho screening. The tray stays beside both, so nothing that reaches
+ * a chart is ever composed out of sight. The screening reaches no chart: its
+ * "Send to TC" button sends immediately, because the TC may want to catch the
+ * patient before they leave. It flushes the slip's pending autosave first, so
+ * the sheet TC gets is the sheet on screen, and it renders "Sent" only from the
+ * server's `orthoSend`.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
@@ -75,6 +86,7 @@ import {
   removeTreatmentItem,
   retryStagedWrite,
   saveSlip,
+  sendOrthoScreening,
   sendVisit,
   stageWrite,
   stepPerioSend,
@@ -92,6 +104,8 @@ import { RouterSlip } from "@/features/hyg/visit/RouterSlip";
 import { VisitNoteFields } from "@/features/hyg/visit/VisitNoteFields";
 import { StagedWritesTray, type TrayPerio } from "@/features/hyg/visit/StagedWritesTray";
 import { TreatmentItems } from "@/features/hyg/visit/TreatmentItems";
+import { OrthoScreening } from "@/features/hyg/visit/OrthoScreening";
+import type { OrthoScreening as OrthoScreeningValue } from "@shared/hyg/orthoScreening";
 import { cn } from "@/lib/utils";
 
 /** How long after the last keystroke the slip is stored. */
@@ -224,6 +238,15 @@ export default function HygVisit() {
   /** The slip being edited, which may be a keystroke ahead of what is stored. */
   const [draft, setDraft] = useState<HygSlip>(emptySlip());
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * ITEM 33: the slip the debounce has not stored yet, and the save in flight.
+   * The ortho send reads the STORED screening, so it must not race either.
+   */
+  const pendingSlip = useRef<HygSlip | null>(null);
+  const saveInFlight = useRef<Promise<void> | null>(null);
+  const [tab, setTab] = useState<"visit" | "ortho">("visit");
+  const [orthoSending, setOrthoSending] = useState(false);
+  const [orthoError, setOrthoError] = useState<string | null>(null);
   /**
    * The tray, so the end of the form can point at it.
    *
@@ -410,11 +433,13 @@ export default function HygVisit() {
   const onSlipChange = useCallback(
     (next: HygSlip) => {
       setDraft(next);
+      pendingSlip.current = next;
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
         if (!isOfficeId(office)) return;
+        pendingSlip.current = null;
         setSaving(true);
-        void (async () => {
+        const saving = (async () => {
           try {
             if (!page?.visit) await openVisit(office, aptNum, date);
             adopt(await saveSlip(office, aptNum, next));
@@ -424,10 +449,57 @@ export default function HygVisit() {
             setSaving(false);
           }
         })();
+        saveInFlight.current = saving;
+        void saving.finally(() => {
+          if (saveInFlight.current === saving) saveInFlight.current = null;
+        });
       }, SAVE_DEBOUNCE_MS);
     },
     [office, aptNum, date, page, adopt],
   );
+
+  /** A screening change is a slip change: it autosaves exactly like the rest. */
+  const onOrthoChange = useCallback(
+    (next: OrthoScreeningValue) => onSlipChange({ ...draft, orthoScreening: next }),
+    [draft, onSlipChange],
+  );
+
+  /**
+   * Send the screening to TC, NOW (item 33).
+   *
+   * First the slip: a debounced save that has not fired is stored here, and one
+   * in flight is waited for — the server sends the STORED screening, so sending
+   * before the store would file a case from a sheet one tap behind the screen.
+   * Then the send, whose answer is the visit read back: "Sent" is
+   * `visit.orthoSend`, set only after TC answered with a case.
+   */
+  const onOrthoSend = useCallback(async () => {
+    if (!isOfficeId(office) || !page) return;
+    setOrthoSending(true);
+    setOrthoError(null);
+    try {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      if (saveInFlight.current) await saveInFlight.current;
+      const unsaved = pendingSlip.current;
+      pendingSlip.current = null;
+      if (!page.visit) await openVisit(office, aptNum, date);
+      if (unsaved) adopt(await saveSlip(office, aptNum, unsaved));
+      const res = await sendOrthoScreening(office, aptNum);
+      adopt(res);
+      setDraft(withSuggestedType(res.visit.slip, page.appointment));
+    } catch (err) {
+      // TC down, a refusal, a timeout: said here, beside the button, in words.
+      // The sheet stays as it is on screen and stays editable.
+      setOrthoError(
+        err instanceof HygApiError
+          ? err.message
+          : "The screening was not sent to the TC. It is saved here; try again.",
+      );
+    } finally {
+      setOrthoSending(false);
+    }
+  }, [office, aptNum, date, page, adopt]);
 
   const onStage = useCallback(
     async (kind: StagedWriteKind) => {
@@ -655,27 +727,72 @@ export default function HygVisit() {
 
       <div className="mt-4 flex flex-col gap-4 lg:flex-row">
         <div className="min-w-0 flex-1 space-y-6">
-          <VisitNoteFields
-            slip={draft}
-            doctorOptions={page.doctorOptions}
-            suggestion={suggestion}
-            onChange={onSlipChange}
-          />
-          <RouterSlip slip={draft} recordsNeeded={page.recordsNeeded} onChange={onSlipChange} />
-          <TreatmentItems
-            items={items}
-            busy={busy}
-            onAdd={(input: TreatmentItemInput) =>
-              void run(() => addTreatmentItem(office, aptNum, input))
-            }
-            onPatch={(itemId, patch) =>
-              void run(() => updateTreatmentItem(office, aptNum, itemId, patch))
-            }
-            onRemove={(itemId) => void run(() => removeTreatmentItem(office, aptNum, itemId))}
-            onReviewAndSend={() =>
-              trayRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
-            }
-          />
+          <div
+            role="tablist"
+            aria-label="Visit sections"
+            className="inline-flex rounded-xl border border-border p-1"
+            data-testid="hyg-visit-tabs"
+          >
+            {(
+              [
+                ["visit", "Note & treatment"],
+                ["ortho", "Ortho screening"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={tab === id}
+                onClick={() => setTab(id)}
+                className={cn(
+                  "min-h-11 rounded-lg px-4 text-sm font-medium transition-colors",
+                  tab === id
+                    ? "bg-primary/10 text-foreground"
+                    : "text-muted-foreground hover:bg-accent/40",
+                )}
+                data-testid={`hyg-visit-tab-${id}`}
+              >
+                {label}
+                {id === "ortho" && page.visit?.orthoSend ? " · Sent" : ""}
+              </button>
+            ))}
+          </div>
+
+          {tab === "ortho" ? (
+            <OrthoScreening
+              screening={draft.orthoScreening}
+              sent={page.visit?.orthoSend ?? null}
+              sending={orthoSending}
+              error={orthoError}
+              onChange={onOrthoChange}
+              onSend={() => void onOrthoSend()}
+            />
+          ) : (
+            <>
+              <VisitNoteFields
+                slip={draft}
+                doctorOptions={page.doctorOptions}
+                suggestion={suggestion}
+                onChange={onSlipChange}
+              />
+              <RouterSlip slip={draft} recordsNeeded={page.recordsNeeded} onChange={onSlipChange} />
+              <TreatmentItems
+                items={items}
+                busy={busy}
+                onAdd={(input: TreatmentItemInput) =>
+                  void run(() => addTreatmentItem(office, aptNum, input))
+                }
+                onPatch={(itemId, patch) =>
+                  void run(() => updateTreatmentItem(office, aptNum, itemId, patch))
+                }
+                onRemove={(itemId) => void run(() => removeTreatmentItem(office, aptNum, itemId))}
+                onReviewAndSend={() =>
+                  trayRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+                }
+              />
+            </>
+          )}
         </div>
 
         {/* STICKY on a wide screen, so the tray is in view while she works the

@@ -22,7 +22,9 @@ import type { ExistingState } from "./types";
 
 /** Columns whose values are objects/arrays destined for jsonb — stringified
  *  explicitly so node-pg does not misformat JS arrays as PG arrays. */
-const JSONB_COLUMNS = new Set(["legacy_snapshot", "blocks", "value", "detail"]);
+// ortho_screening (item 33): the legacy import only ever carries null, but a
+// jsonb column is listed here so a non-null value would bind as jsonb, not text.
+const JSONB_COLUMNS = new Set(["legacy_snapshot", "blocks", "value", "detail", "ortho_screening"]);
 
 export class PgImportTarget implements ImportTarget {
   private client: pg.Client;

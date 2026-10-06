@@ -19,6 +19,7 @@ import { CaseCommandBar } from "@/features/tc/caseview/CaseCommandBar";
 import { FinancingTab } from "@/features/tc/caseview/FinancingTab";
 import { FollowupsTab } from "@/features/tc/caseview/FollowupsTab";
 import { NotesTab } from "@/features/tc/caseview/NotesTab";
+import { OrthoScreeningSection } from "@/features/tc/caseview/OrthoScreeningSection";
 import { ObjectionsTab } from "@/features/tc/caseview/ObjectionsTab";
 import { StatusTransitionDialog } from "@/features/tc/caseview/StatusTransitionDialog";
 import { TreatmentTab } from "@/features/tc/caseview/TreatmentTab";
@@ -155,6 +156,10 @@ function CaseViewInner({ office }: { office: OfficeId }) {
         onOpenChange={setStatusDialogOpen}
         onSuccess={setTcCase}
       />
+
+      {/* What hygiene handed over (item 33). Renders nothing for a case without
+          a screening. Item 22's hygiene treatment list belongs in this slot too. */}
+      <OrthoScreeningSection tcCase={tcCase} />
 
       <Tabs defaultValue="treatment">
         <TabsList>

@@ -83,6 +83,8 @@ const { refuseUnlessTestPatient } = require('../../config/hygFixtureGate');
 const perioSend = require('../../services/hyg/perioSend');
 const perioDrift = require('../../services/hyg/perioDrift');
 const hygStaff = require('../../config/hygStaff');
+const tcHandoff = require('../../services/hyg/tcHandoffClient');
+const { snapshotFromAppointment } = require('../../services/hyg/appointmentSnapshot');
 const contract = require('../../hyg/contract.gen.cjs');
 
 const router = express.Router();
@@ -304,6 +306,33 @@ async function resolveAppointment(req, { office, aptNum, date }) {
 }
 
 /**
+ * Record the appointment as this request just read it (item 33).
+ *
+ * Costs no Open Dental request: the appointment is the one `resolveAppointment`
+ * already returned, and age/phone come from the patient cache only. A failure
+ * here must not cost the hygienist her page - the ortho send says plainly when
+ * it has no snapshot to file from - so it is logged and swallowed.
+ */
+async function rememberAppointment(req, office, aptNum, appointment) {
+  try {
+    const snapshot = await snapshotFromAppointment(office, appointment);
+    await tenantDb.withTenantDb(req, (pool) =>
+      visitStore.saveAppointmentSnapshot(pool, {
+        office,
+        aptNum,
+        patNum: appointment.patNum,
+        snapshot,
+      })
+    );
+  } catch (err) {
+    console.warn(
+      `[hygvisit] could not record the appointment snapshot for ${office} apt ${aptNum}: ` +
+        ((err && err.message) || String(err))
+    );
+  }
+}
+
+/**
  * Load the visit for a mutation, or answer the refusal.
  *
  * Every mutation below except `open` needs an EXISTING visit. Creating one here
@@ -379,6 +408,13 @@ router.get(
       visitStore.getVisit(pool, { office, aptNum })
     );
 
+    // ITEM 33: remember what Open Dental just said about this appointment, so
+    // the ortho send can file a TC case without asking Open Dental again. Only
+    // onto an existing visit of the SAME patient (the store re-checks pat_num).
+    if (visit && visit.patNum === resolved.appointment.patNum) {
+      await rememberAppointment(req, office, aptNum, resolved.appointment);
+    }
+
     return res.json({
       success: true,
       office,
@@ -448,6 +484,8 @@ router.post(
         actor: actorEmail(req),
       })
     );
+    // Item 33 - see GET above. The row was just upserted with this PatNum.
+    await rememberAppointment(req, office, aptNum, resolved.appointment);
 
     await audit(req, {
       action: 'CREATE',
@@ -1861,6 +1899,157 @@ router.post(
       sourceRef: null,
     });
     return res.json(visitPayload(moved));
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/hyg/visit/:aptNum/ortho-screening/send   (item 33)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Send the ortho screening to TC — NOW, not with the visit's Send.
+ *
+ * The TC may want to catch the patient before they leave, so this is its own
+ * button and its own request. It is NOT a staged write: it reaches no chart,
+ * so the preview-fingerprint machinery that guards a chart write has nothing
+ * to guard, and the summary line the hygienist reads above the button is
+ * computed by the same shared function from the same stored screening.
+ *
+ * ⚠️ ZERO OPEN DENTAL CALLS ON THIS PATH. ⚠️ Office and PatNum come off the
+ * stored visit; name, age, phone, chair and provider off the snapshot the GET
+ * and open routes recorded when THEY read the appointment.
+ * `hygOrthoSend.test.js` drives this route against the recording Open Dental
+ * fake and asserts its call log is empty.
+ *
+ * ⚠️ NOTHING IN THE BODY IS READ. ⚠️ The schema strips every key, so a client
+ * that sends an office, a PatNum, a name or a provider has them discarded
+ * unread — the test sends all four and asserts TC received the visit's own.
+ *
+ * ONE CASE PER VISIT. A sent visit answers 200 with `alreadySent: true` and
+ * creates nothing; two racing presses are serialised by a conditional claim
+ * (visitStore.claimOrthoSend). HONEST STATES: `orthoSend` is written only after
+ * TC answered with a case id; any other answer releases the claim, leaves the
+ * screening saved and editable, and is reported as the refusal it is.
+ */
+router.post(
+  '/:aptNum/ortho-screening/send',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) {
+      return res.status(400).json({
+        success: false,
+        error: 'aptNum must be a positive whole number',
+        code: 'INVALID_APT_NUM',
+        office,
+      });
+    }
+    if (parseBody(res, contract.OrthoSendRequestSchema, req.body ?? {}) === null) return undefined;
+
+    const ctx = await tenantDb.withTenantDb(req, (pool) =>
+      visitStore.getOrthoSendContext(pool, { office, aptNum })
+    );
+    if (!ctx) {
+      return res.status(404).json({
+        success: false,
+        error: 'No visit has been started for this appointment yet',
+        code: 'VISIT_NOT_FOUND',
+        office,
+      });
+    }
+
+    // Already sent: say so, create nothing.
+    if (ctx.visit.orthoSend) {
+      return res.json({ ...visitPayload(ctx.visit), alreadySent: true });
+    }
+
+    const date = ctx.visit.visitDate || new Date().toISOString().slice(0, 10);
+    const built = tcHandoff.buildOrthoIntake({ visit: ctx.visit, snapshot: ctx.snapshot, date });
+    if (!built.ok) {
+      return res.status(built.code === 'ORTHO_NOTHING_TO_SEND' ? 422 : 409).json({
+        success: false,
+        error: built.error,
+        code: built.code,
+        office,
+      });
+    }
+
+    const claimed = await tenantDb.withTenantDb(req, (pool) =>
+      visitStore.claimOrthoSend(pool, { office, aptNum })
+    );
+    if (!claimed) {
+      // Lost the race: either the other press already landed (the idempotent
+      // answer) or it is still talking to TC (nothing is claimed here).
+      const current = await tenantDb.withTenantDb(req, (pool) =>
+        visitStore.getVisit(pool, { office, aptNum })
+      );
+      if (current && current.orthoSend) {
+        return res.json({ ...visitPayload(current), alreadySent: true });
+      }
+      return res.status(409).json({
+        success: false,
+        error: 'This screening is already being sent to the TC. Wait a moment and reload.',
+        code: 'ORTHO_SEND_IN_PROGRESS',
+        office,
+      });
+    }
+
+    const submit = req.app.get('hygTcSubmit') || tcHandoff.submitHygieneIntake;
+    let sent;
+    try {
+      // The office is the STORED visit's, never a request's.
+      sent = await submit(req, { office: ctx.visit.office, body: built.body });
+    } catch (err) {
+      sent = {
+        ok: false,
+        code: 'TC_UNREACHABLE',
+        error: (err && err.message) || 'The TC app did not respond',
+      };
+    }
+
+    if (!sent.ok) {
+      await tenantDb.withTenantDb(req, (pool) =>
+        visitStore.releaseOrthoClaim(pool, { office, aptNum })
+      );
+      await audit(req, {
+        action: 'CREATE',
+        resourceType: 'hyg_ortho_screening_send',
+        resourceId: aptNum,
+        result: 'ERROR',
+        office,
+        sourceRef: null,
+      });
+      console.warn(`[hygortho] office=${office} apt=${aptNum} TC refused: ${sent.code}`);
+      return res.status(502).json({
+        success: false,
+        error: `The screening was NOT sent to the TC: ${sent.error}. It is saved here; try again.`,
+        code: sent.code,
+        office,
+      });
+    }
+
+    const after = await tenantDb.withTenantDb(req, (pool) =>
+      visitStore.markOrthoSent(pool, {
+        office,
+        aptNum,
+        caseId: sent.caseId,
+        actor: actorEmail(req),
+      })
+    );
+    await audit(req, {
+      action: 'CREATE',
+      resourceType: 'hyg_ortho_screening_send',
+      resourceId: aptNum,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+    console.log(`[hygortho] office=${office} apt=${aptNum} sent as case ${sent.caseId}`);
+
+    const visit =
+      after ||
+      (await tenantDb.withTenantDb(req, (pool) => visitStore.getVisit(pool, { office, aptNum })));
+    return res.json({ ...visitPayload(visit), alreadySent: false });
   })
 );
 

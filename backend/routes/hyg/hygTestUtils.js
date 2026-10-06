@@ -190,6 +190,17 @@ class FakeHygDb extends FakeAuditDb {
   static KINDS = ['router', 'perio', 'note', 'tc-handoff'];
   static STATES = ['Draft', 'Staged', 'Sending', 'Written', 'Failed', 'Amending'];
 
+  /**
+   * Item 33: whether a row holds an ortho-send claim younger than the two
+   * minutes visitStore treats as live. A test makes a claim stale by back-dating
+   * `ortho_send_claimed_at`.
+   */
+  orthoClaimFresh(row) {
+    const at = row.ortho_send_claimed_at;
+    if (at === null || at === undefined) return false;
+    return Date.now() - new Date(at).getTime() < 2 * 60 * 1000;
+  }
+
   checkOffice(office) {
     if (!FakeHygDb.OFFICES.includes(office)) {
       throw new Error(`hyg office_check violated: '${office}'`);
@@ -217,6 +228,17 @@ class FakeHygDb extends FakeAuditDb {
    */
   async query(sql, params = []) {
     const res = await this.queryInner(sql, params);
+    // hyg_visit_ortho_sent_check (item 33): the case id, the time and the
+    // sender are all set or all null. Written the long way in the migration
+    // because Postgres accepts a CHECK that evaluates to NULL.
+    for (const row of this.hyg_visit) {
+      const set = [row.ortho_tc_case_id, row.ortho_sent_at, row.ortho_sent_by].map(
+        (v) => v !== null && v !== undefined
+      );
+      if (new Set(set).size !== 1) {
+        throw new Error('hyg_visit_ortho_sent_check violated: ' + JSON.stringify(set));
+      }
+    }
     for (const row of this.hyg_staged_write) {
       const hasRef = row.written_ref !== null && row.written_ref !== undefined;
       if ((row.state === 'Written') !== hasRef) {
@@ -533,6 +555,11 @@ class FakeHygDb extends FakeAuditDb {
         pat_num: Number(patNum),
         visit_date: visitDate,
         slip: FakeHygDb.json(slip),
+        appointment_snapshot: null,
+        ortho_tc_case_id: null,
+        ortho_sent_at: null,
+        ortho_sent_by: null,
+        ortho_send_claimed_at: null,
         created_by: actor,
         created_at: new Date(),
         updated_by: actor,
@@ -548,9 +575,68 @@ class FakeHygDb extends FakeAuditDb {
         (r) => r.office === office && Number(r.apt_num) === Number(aptNum)
       );
       if (!row) return { rows: [], rowCount: 0 };
-      row.slip = FakeHygDb.json(slip);
+      const incoming = FakeHygDb.json(slip);
+      // Item 33: the CASE in visitStore.saveSlip. A sent screening, or one a
+      // fresh claim is sending, keeps its STORED value; the rest of the slip
+      // saves as before.
+      if (!/ortho_tc_case_id IS NULL/.test(text)) {
+        throw new Error('[hygTestUtils] saveSlip lost its ortho freeze: ' + text.trim().slice(0, 80));
+      }
+      const frozen = row.ortho_tc_case_id != null || this.orthoClaimFresh(row);
+      row.slip = frozen
+        ? { ...incoming, orthoScreening: (row.slip && row.slip.orthoScreening) ?? null }
+        : incoming;
       row.updated_by = actor;
       row.updated_at = new Date();
+      return { rows: [row], rowCount: 1 };
+    }
+
+    // ── hyg_visit, item 33: the appointment snapshot and the ortho send ──────
+    if (/UPDATE hyg_visit SET appointment_snapshot/i.test(text)) {
+      const [office, aptNum, patNum, snapshot] = params;
+      const row = this.hyg_visit.find(
+        (r) =>
+          r.office === office &&
+          Number(r.apt_num) === Number(aptNum) &&
+          Number(r.pat_num) === Number(patNum)
+      );
+      if (row) row.appointment_snapshot = FakeHygDb.json(snapshot);
+      return { rows: [], rowCount: row ? 1 : 0 };
+    }
+
+    if (/UPDATE hyg_visit SET ortho_send_claimed_at = now\(\)/i.test(text)) {
+      const [office, aptNum] = params;
+      const row = this.hyg_visit.find(
+        (r) =>
+          r.office === office &&
+          Number(r.apt_num) === Number(aptNum) &&
+          r.ortho_tc_case_id == null &&
+          !this.orthoClaimFresh(r)
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      row.ortho_send_claimed_at = new Date();
+      return { rows: [{ visit_id: row.visit_id }], rowCount: 1 };
+    }
+
+    if (/UPDATE hyg_visit SET ortho_send_claimed_at = NULL/i.test(text)) {
+      const [office, aptNum] = params;
+      const row = this.hyg_visit.find(
+        (r) => r.office === office && Number(r.apt_num) === Number(aptNum) && r.ortho_tc_case_id == null
+      );
+      if (row) row.ortho_send_claimed_at = null;
+      return { rows: [], rowCount: row ? 1 : 0 };
+    }
+
+    if (/UPDATE hyg_visit\s+SET ortho_tc_case_id/i.test(text)) {
+      const [office, aptNum, caseId, actor] = params;
+      const row = this.hyg_visit.find(
+        (r) => r.office === office && Number(r.apt_num) === Number(aptNum) && r.ortho_tc_case_id == null
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      row.ortho_tc_case_id = caseId;
+      row.ortho_sent_at = new Date();
+      row.ortho_sent_by = actor;
+      row.ortho_send_claimed_at = null;
       return { rows: [row], rowCount: 1 };
     }
 

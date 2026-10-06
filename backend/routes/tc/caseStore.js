@@ -142,6 +142,9 @@ const INTAKE_COLS = [
   'insurance_noted',
   'patient_interest_level',
   'flag_urgent',
+  // The hygienist's ortho screening (item 33) — jsonb, NULL when there is none.
+  // See the 1790100000000_tc_ortho_screening migration.
+  'ortho_screening',
 ];
 
 /** `INSERT INTO t (a, b) VALUES ($1, $2)` for a column list. */

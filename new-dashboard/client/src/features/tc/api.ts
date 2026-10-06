@@ -16,6 +16,7 @@
  */
 import { handleUnauthorized } from "@/lib/api";
 import type { z } from "zod";
+import type { OrthoScreening } from "@shared/hyg/orthoScreening";
 import type {
   CaseCategory,
   CaseStatus,
@@ -193,7 +194,16 @@ async function tcRequest<T>(path: string, options: TcRequestOptions): Promise<T>
 export type TcCaseSummary = Omit<
   TcCase,
   "phases" | "objections" | "followups" | "events" | "hygieneIntake"
-> & { createdAt: string; updatedAt: string };
+> & {
+  createdAt: string;
+  updatedAt: string;
+  /**
+   * Item 33: the case arrived with a hygienist's ortho screening. Computed by
+   * the list route from one office-scoped query; optional because a summary
+   * folded back from a full TcCase (mergeCase) keeps the row's own value.
+   */
+  hasOrthoScreening?: boolean;
+};
 
 export interface TcCaseListFilters {
   status?: CaseStatusId;
@@ -563,6 +573,12 @@ export interface TcIntakeSubmit {
    * already carried.
    */
   hygienistName?: string;
+  /**
+   * The hygienist's ortho screening (item 33). Sent only by the hygiene visit's
+   * own send, server-assembled; TC's intake form never sets it, and the server
+   * stores null when it is absent.
+   */
+  orthoScreening?: OrthoScreening | null;
 }
 
 export interface TcMyIntake {
@@ -587,6 +603,8 @@ export interface TcMyIntake {
    * `officeId` — PatNum numbering restarts in every OD database.
    */
   odPatientId: number | null;
+  /** Item 33. Null for every intake that is not an ortho screening. */
+  orthoScreening: OrthoScreening | null;
 }
 
 export interface TcInboxIntake {
@@ -622,6 +640,8 @@ export interface TcInboxIntake {
    * Only meaningful with `officeId`.
    */
   odPatientId: number | null;
+  /** Item 33. Null for every intake that is not an ortho screening. */
+  orthoScreening: OrthoScreening | null;
 }
 
 interface IntakeRowBase {
@@ -646,6 +666,8 @@ interface IntakeRowBase {
   insurance_noted: string;
   patient_interest_level: z.infer<typeof PatientInterestLevel>;
   flag_urgent: boolean;
+  /** jsonb (item 33). Absent from a server older than the column — read as null. */
+  ortho_screening?: OrthoScreening | null;
 }
 
 export function submitHygieneIntake(
@@ -686,6 +708,7 @@ export function myHygieneIntakes(office: OfficeId): Promise<TcMyIntake[]> {
       patientName: row.patient_name,
       caseStatus: row.case_status,
       odPatientId: row.od_patient_id ?? null,
+      orthoScreening: row.ortho_screening ?? null,
     })),
   );
 }
@@ -744,6 +767,7 @@ export function hygieneSubmissions(
       patientName: row.patient_name,
       caseStatus: row.case_status,
       odPatientId: row.od_patient_id ?? null,
+      orthoScreening: row.ortho_screening ?? null,
     })),
     hygienists: r.hygienists,
   }));
@@ -788,6 +812,7 @@ export function hygieneInbox(office: OfficeId): Promise<TcInboxIntake[]> {
       urgency: row.urgency,
       diagnosingProvider: row.diagnosing_provider,
       odPatientId: row.od_patient_id ?? null,
+      orthoScreening: row.ortho_screening ?? null,
     })),
   );
 }

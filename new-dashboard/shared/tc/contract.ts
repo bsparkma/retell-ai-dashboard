@@ -19,6 +19,10 @@
  */
 import { z } from "zod";
 import { EmailBlocks } from "./emailBlocks";
+// The hygienist's ortho screening (item 33). ONE vocabulary for both modules:
+// the hygiene slip stores this object and TC carries it, so the schema lives
+// with the screening rather than being restated here.
+import { OrthoScreeningSchema } from "../hyg/orthoScreening";
 
 // ── Shared primitives ────────────────────────────────────────────────────────
 
@@ -354,6 +358,18 @@ export const TcHygieneIntake = z.object({
   insuranceNoted: LongText,
   patientInterestLevel: PatientInterestLevel,
   flagUrgent: z.boolean(),
+  /**
+   * The hygienist's ortho screening, structured (item 33). NULLABLE and
+   * ADDITIVE: every intake before this — and every treatment handoff, which
+   * has no screening — is `null`, and renders exactly as it did. Defaulted so
+   * every pre-existing construction site (legacy import, voice intake, the
+   * treatment handoff) stays valid without naming it.
+   *
+   * The same object the hygiene slip stores, parsed by the same schema; the
+   * text-only `suspectedTreatment` beside it carries the summary line for the
+   * surfaces that do not render structure yet.
+   */
+  orthoScreening: OrthoScreeningSchema.nullable().default(null),
 });
 export type TcHygieneIntake = z.infer<typeof TcHygieneIntake>;
 
