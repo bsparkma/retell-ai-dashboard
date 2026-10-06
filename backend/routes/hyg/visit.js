@@ -1071,24 +1071,29 @@ router.get(
      * THE RE-READ IS A FETCH AND DOES NOT AUDIT. THE MOMENT IT TELLS HER
      * SOMETHING, IT DOES.
      *
-     * `matches` and `unknown` say nothing to the user, so there is nothing
+     * `matches` says nothing to the user, and neither does `unknown` for
+     * `unreadable_od` (Open Dental could not be read), so there is nothing
      * disclosed and nothing to record. `missing` and `changed` are a statement
      * about what a chart of record does and does not contain — that is the
      * disclosure, and it carries which of the answers it was and the exam number.
+     *
+     * ITEM 32: `unknown` for `uninterpretable` NAMES TEETH — "Open Dental holds a
+     * value here CareIN can't read (#3 B gingival margin)" — and naming teeth is
+     * the disclosure, so it audits too. `prior_state` is `unknown:uninterpretable`
+     * and `source_ref` carries the exam number AND the positions it named
+     * (`perioDrift.driftAuditRef`): identifiers only, never the raw value.
+     *
      * Fail-CLOSED, like every other audit on this path: no trail, no answer.
      */
-    // ITEM 32: `unknown` is not audited for EITHER reason — item 31 pins that
-    // (hygPerioV2Drift ACCEPTANCE 8). Whether naming an uninterpretable position
-    // should audit is an open question in docs/reports/fix-hyg-perio-uninterpretable.md.
-    if (drift.status === 'missing' || drift.status === 'changed') {
+    if (perioDrift.driftDiscloses(drift)) {
       await audit(req, {
         action: 'READ',
         resourceType: 'hyg_perio_drift',
         resourceId: aptNum,
         result: 'SUCCESS',
         office,
-        sourceRef: `perio_exam:${drift.examNum}`,
-        priorState: drift.status,
+        sourceRef: perioDrift.driftAuditRef(drift),
+        priorState: drift.status === 'unknown' ? `unknown:${drift.reason}` : drift.status,
       });
     }
     /*

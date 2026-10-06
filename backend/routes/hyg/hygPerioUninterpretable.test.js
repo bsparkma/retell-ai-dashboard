@@ -212,12 +212,80 @@ test('ACCEPTANCE 3: an uninterpretable value is `unknown` for `uninterpretable`,
       'the same words the refusal uses'
     );
 
-    // `unknown` writes no drift audit row for either reason (item 31's ruling,
-    // pinned by hygPerioV2Drift ACCEPTANCE 8).
-    assert.deepEqual(driftAudits(app), []);
+    // Naming teeth is the disclosure, so it audits: ONE row, identifiers only.
+    const rows = driftAudits(app);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].action, 'READ');
+    assert.equal(Number(rows[0].resource_id), 900001);
+    assert.equal(rows[0].office, 'roland');
+    assert.equal(rows[0].prior_state, 'unknown:uninterpretable');
+    assert.match(rows[0].prior_state, /^[a-z0-9_]{1,32}(:[a-z0-9_]{1,31})?$/, 'fits the audit_log prior_state CHECK');
+    assert.equal(rows[0].source_ref, `perio_exam:${examNum};3-B:gm`);
+    assert.doesNotMatch(JSON.stringify(rows[0]), /50/, 'the raw value is nowhere in the trail');
   } finally {
     await app.close();
   }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The audit is fail-CLOSED: no trail, no answer — exactly as for `changed`
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Fail ONLY the drift row's INSERT, so the earlier read audits on the route still land. */
+function failDriftAudit(app) {
+  const real = app.db.query.bind(app.db);
+  app.db.query = async (sql, params = []) => {
+    if (/INSERT INTO audit_log/i.test(String(sql)) && params.includes('hyg_perio_drift')) {
+      throw new Error('simulated audit_log outage');
+    }
+    return real(sql, params);
+  };
+}
+
+test('fail-closed: when the drift audit cannot be written, an uninterpretable answer is withheld, exactly as `changed` is', async () => {
+  const cases = [
+    ['changed', (od, n) => editInOpenDental(od, n, 3, 'GingMargin', 'Bvalue', 4)],
+    ['uninterpretable', (od, n) => editInOpenDental(od, n, 3, 'GingMargin', 'Bvalue', 50)],
+  ];
+  for (const [label, edit] of cases) {
+    const od = perioFake();
+    const app = await bootHygApp({ od: od.client });
+    try {
+      const examNum = await writeChart(app, v2Chart());
+      edit(od, examNum);
+      failDriftAudit(app);
+      const res = await prior(app);
+      assert.equal(res.status, 500, `${label}: ${JSON.stringify(res.body)}`);
+      assert.equal(res.body.code, 'AUDIT_FAILED', label);
+      assert.equal(res.body.drift, undefined, `${label}: no trail, no answer`);
+      assert.doesNotMatch(JSON.stringify(res.body), /gingival margin|#3/, `${label}: nothing named`);
+      assert.deepEqual(driftAudits(app), [], label);
+    } finally {
+      await app.close();
+    }
+  }
+});
+
+test('driftAuditRef / driftDiscloses: the exam, the positions, and nothing for a failed read', () => {
+  const { driftAuditRef, driftDiscloses, unreadableOd } = require('../../services/hyg/perioDrift');
+  const un = {
+    status: 'unknown',
+    reason: 'uninterpretable',
+    examNum: 7001,
+    positions: [
+      { tooth: 3, surface: 'B', kind: 'gm' },
+      { tooth: 30, surface: null, kind: 'mobility' },
+      { tooth: null, surface: null, kind: 'mobility' },
+    ],
+  };
+  assert.equal(driftAuditRef(un), 'perio_exam:7001;3-B:gm,30:mobility,x:mobility');
+  assert.equal(driftAuditRef({ status: 'changed', examNum: 7001, changes: [] }), 'perio_exam:7001');
+  assert.equal(driftDiscloses(un), true);
+  assert.equal(driftDiscloses({ status: 'missing', examNum: 1, sameDateExams: [] }), true);
+  assert.equal(driftDiscloses({ status: 'changed', examNum: 1, changes: [] }), true);
+  assert.equal(driftDiscloses(unreadableOd(7001)), false);
+  assert.equal(driftDiscloses({ status: 'matches', examNum: 1 }), false);
+  assert.equal(driftDiscloses({ status: 'not_applicable' }), false);
 });
 
 test('perioUnreadableList: position + family, a tooth CareIN cannot place, and the count past three', () => {

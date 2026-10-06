@@ -41,6 +41,8 @@
  * "Every site" is every FAMILY a send writes — probing, flags, skips, and since
  * item 31 recession, furcation and mobility. A v2 value Open Dental holds that
  * CareIN cannot interpret is the fourth row, never the first: see `driftAnswer`.
+ * ITEM 32: that one is not silent — it names the position on a quiet line, and
+ * so it audits (`driftDiscloses`). A failed read stays silent and unaudited.
  *
  * The third row is the whole design. A reading that differs is A HUMAN WHO
  * CORRECTED THE CHART IN OPEN DENTAL. Resending there would create a duplicate
@@ -250,6 +252,41 @@ function driftAnswer({ examNum, baseline, odChart, unreadable = [] }) {
 }
 
 /**
+ * ITEM 32: does this answer TELL HER something about the chart of record? Then
+ * it is a disclosure and the route audits it, fail-closed.
+ *
+ *   missing, changed            → yes (item 14)
+ *   unknown / uninterpretable   → yes: it names tooth, surface and family
+ *   unknown / unreadable_od     → no: nothing is drawn, nothing is disclosed
+ *   matches, not_applicable     → no
+ */
+function driftDiscloses(drift) {
+  if (drift.status === 'missing' || drift.status === 'changed') return true;
+  return drift.status === 'unknown' && drift.reason === 'uninterpretable';
+}
+
+/**
+ * The audit row's `source_ref` for a disclosing drift answer.
+ *
+ * `perio_exam:7001` for `missing` and `changed`, exactly as item 14 wrote it.
+ * For `uninterpretable`, the positions the screen named are appended:
+ *
+ *     perio_exam:7001;3-B:gm,30:mobility
+ *
+ * `tooth-surface` is the same form `hyg_perio_amend_site` uses, and the family
+ * is the closed `kind` vocabulary. Identifiers only — the raw value never
+ * reaches this function (`unreadablePositions` already dropped it).
+ */
+function driftAuditRef(drift) {
+  const exam = `perio_exam:${drift.examNum}`;
+  if (drift.status !== 'unknown' || drift.reason !== 'uninterpretable') return exam;
+  const where = drift.positions.map(
+    (p) => `${p.tooth === null ? 'x' : p.tooth}${p.surface ? '-' + p.surface : ''}:${p.kind}`
+  );
+  return `${exam};${where.join(',')}`;
+}
+
+/**
  * THE RESEND — the existing send path, re-armed. Writes NOTHING to Open Dental.
  *
  * It does two things and no more: it records that the exam this chart claimed is
@@ -340,6 +377,8 @@ module.exports = {
   readDriftContext,
   checkDrift,
   driftAnswer,
+  driftDiscloses,
+  driftAuditRef,
   resendVanishedChart,
   sameDateExams,
   unreadableOd,
