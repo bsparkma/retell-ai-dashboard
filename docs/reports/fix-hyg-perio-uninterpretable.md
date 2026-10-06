@@ -61,8 +61,8 @@ Found by grepping `backend/` and `new-dashboard/{client,shared,server}`, excludi
 | `backend/services/hyg/perioDrift.js:206` | measures read failed or truncated → `unknown` | `unreadableOd()` |
 | `backend/services/hyg/perioDrift.js:247` | `driftAnswer` unreadable → `unknown` | `reason: 'uninterpretable'` plus positions, with `raw` stripped |
 | `backend/routes/hyg/visit.js:1034` | the drift check threw → `unknown` | `perioDrift.unreadableOd()` |
-| `backend/routes/hyg/visit.js:1083` | audit on `missing`/`changed` | `unknown` is still not audited for either reason; see "Not built" |
-| `backend/routes/hyg/visit.js:1117-1118` | log line `drift=` | logs `unknown:<reason>` (an enum only, never a position) |
+| `backend/routes/hyg/visit.js:1088-1097` | drift audit | `perioDrift.driftDiscloses` audits `missing`, `changed` and `unknown`/`uninterpretable`; `unreadable_od` is not audited. Fix round 1. |
+| `backend/routes/hyg/visit.js:1122-1123` | log line `drift=` | logs `unknown:<reason>` (an enum only, never a position) |
 | `new-dashboard/shared/hyg/perio.ts:1082` | `PerioDriftSchema` | `reason` and `positions`, both with defaults |
 | `new-dashboard/client/src/features/hyg/perio/PerioDriftNotice.tsx:77` | `missing` | unchanged |
 | `new-dashboard/client/src/features/hyg/perio/PerioDriftNotice.tsx:105` | `changed` | unchanged |
@@ -82,7 +82,7 @@ Found by grepping `backend/` and `new-dashboard/{client,shared,server}`, excludi
   - `pnpm install --frozen-lockfile` ok.
   - `pnpm run check` (tsc) clean.
   - `pnpm run test`: 129 files, 2203 passed, 149 skipped.
-- **First run was red, and the cause was mine.** I had also made `unknown`/`uninterpretable` write a `hyg_perio_drift` audit row (`prior_state 'unknown:uninterpretable'`). The existing item 31 test `hygPerioV2Drift.test.js:417` (ACCEPTANCE 8) pins that `unknown` writes no audit row. Rather than touch that assertion, I removed the audit (commit `5bc0dd3`). The full suite is green after that.
+- **First run was red, and the cause was mine.** (Superseded by fix round 1, which adds the audit back on Beau's ruling with an explicit update to ACCEPTANCE 8.) I had also made `unknown`/`uninterpretable` write a `hyg_perio_drift` audit row (`prior_state 'unknown:uninterpretable'`). The existing item 31 test `hygPerioV2Drift.test.js:417` (ACCEPTANCE 8) pins that `unknown` writes no audit row. Rather than touch that assertion, I removed the audit (commit `5bc0dd3`). The full suite is green after that.
 
 ## Reviewer
 
@@ -107,9 +107,55 @@ Use test patients only: roland **12827**, or valley **7115**. Do not use 11373.
 6. Make a correction that changes two readings and send it. The panel should say "2 readings corrected · …".
 7. Optional, to check item 14 is unchanged: with Open Dental unreachable, reopen the chart. Nothing is drawn beside the Written line.
 
+## Fix round 1: auditing the uninterpretable answer
+
+**Ruling (Beau):** naming an uninterpretable position MUST write an audit row. The route's own doctrine says "naming teeth is the disclosure, so naming teeth is what audits", and the standing rule is that an audit equals a disclosure and fails closed.
+
+**Built:**
+1. **Route** (`backend/routes/hyg/visit.js:1088-1097`).
+   - A drift answer audits when `perioDrift.driftDiscloses(drift)` is true (`perioDrift.js:263`): for `missing`, `changed`, and `unknown` with `reason 'uninterpretable'`.
+   - It writes one row with the same shape as `missing`/`changed`: `READ` · `hyg_perio_drift` · `resource_id` = aptNum · `office`.
+   - `prior_state` is `unknown:uninterpretable`, which fits the `audit_log_prior_state_check` grammar.
+   - `source_ref` comes from `perioDrift.driftAuditRef` (`perioDrift.js:280`): `perio_exam:<N>` for `missing`/`changed`, unchanged, and `perio_exam:<N>;<tooth>-<surface>:<family>,…` for `uninterpretable`, e.g. `perio_exam:7001;3-B:gm,30:mobility`.
+   - The `tooth-surface` form matches the existing `hyg_perio_amend_site` rows. `x` stands in for a tooth Open Dental didn't number.
+   - Identifiers only: the raw value was already dropped by `unreadablePositions` and never reaches the audit.
+   - `unreadable_od` is still not audited. The write is fail-closed through the same `audit()` call: if it fails, the request returns 500 `AUDIT_FAILED` and no answer is served.
+2. **New audit vocabulary, and its readers.** `unknown:uninterpretable` is a new `prior_state` value, and the `source_ref` shape is new for this row. Repo-wide grep (excluding `node_modules` and `contract.gen.cjs`) for readers of `hyg_perio_drift` rows, `prior_state` and `source_ref`:
+   - **Production:** the generic platform audit viewer.
+     - `backend/routes/platform.js:356-375` filters on `resource_type`/`resource_id` and selects `source_ref` without parsing it. It does not select `prior_state`.
+     - `new-dashboard/client/src/pages/platform/PracticeAuditPanel.tsx:250-251` displays `resourceType` and `resourceId` as text.
+     - Neither needs a change.
+   - **Tests:**
+     - `backend/routes/hyg/hygPerioDrift.test.js:93, 414-432` covers item 14's `missing`/`changed` rows. Its `/^perio_exam:\d+$/` loop sees only `missing` rows, and that format is unchanged.
+     - `backend/routes/hyg/hygPerioV2Drift.test.js:89` (ACCEPTANCE 8, below).
+     - `backend/routes/hyg/hygPerioUninterpretable.test.js:85`.
+   - **Docs:** `docs/reports/feature-hyg-perio-drift.md:77, 178` is item 14's historical report and was left as history.
+3. **Item 31's ACCEPTANCE 8** (`hygPerioV2Drift.test.js`) was updated explicitly, and **this is a premise update, not a weakening.**
+   - The old assertion, "`unknown` says nothing, so it discloses nothing", was pinned when `unknown` named nothing.
+   - Since item 32, the `uninterpretable` answer names a position on screen, so the old premise no longer holds.
+   - Each of the six uninterpretable cases now expects **exactly one** row with `resource_type hyg_perio_drift`, `prior_state unknown:uninterpretable` and an exact identifiers-only `source_ref`.
+   - A new block in the same test proves `unreadable_od` (a 503 on `/perioexams`) still writes **no** row.
+   - Nothing else in that test changed: the cases, their labels, the status/examNum/schema assertions and the "unreadable doesn't hide a readable change" block are untouched.
+4. **Fail-closed test** (`hygPerioUninterpretable.test.js`). It fails only the drift row's INSERT, so the route's earlier read audits still land. Then it runs `changed` and `uninterpretable` side by side and asserts both get 500 `AUDIT_FAILED`, no `drift` in the body, no position named, and no drift row.
+5. **Doctrine comments.** The route comment above the audit now says `unknown`/`uninterpretable` audits and why. The `perioDrift.js` header says the same.
+
+**Mutation check:** with `driftDiscloses` forced to `false` for `uninterpretable`, four tests fail (ACCEPTANCE 3, the fail-closed test, the helper test, and item 31's ACCEPTANCE 8). The file was restored, and the gates below ran on the real code.
+
+**Gates (fix round 1):**
+- Backend: `npm ci` ok; `node --check server.js` ok; shard-runner 4/4 green with 2990 tests, 2987 pass, 0 fail, 3 skipped.
+- Dashboard: `pnpm install --frozen-lockfile` ok; `pnpm run check` clean; `pnpm run test` 2203 passed, 149 skipped.
+
+**Reviewer (fix round 1):** **PASS** in one round. It confirmed:
+- Items 1-5 are done, and only ACCEPTANCE 8 changed in `hygPerioV2Drift.test.js`.
+- The fail-closed test fails only the drift INSERT and covers both `changed` and `uninterpretable`.
+- `source_ref` carries identifiers only, and the raw value appears nowhere in the row.
+- No non-test code parses `hyg_perio_drift` rows. The generic platform viewer only filters and displays them.
+- Its one non-blocking note was that this report still said `unknown` was unaudited. That is fixed here.
+
+**CI (fix round 1):** FIX_CI
+
 ## Deliberately not built
 
-- **No audit row for `uninterpretable`.** The quiet line now names tooth and surface positions in a chart of record. By the route's own doctrine ("naming teeth is the disclosure"), that arguably should audit. But item 31 pinned "`unknown` discloses nothing, audits nothing", and I may not weaken that assertion. **Open question for Beau:** should `unknown:uninterpretable` audit? If yes, it is a one-line route change plus an explicit amendment to item 31's ACCEPTANCE 8.
 - No change to `odPerioWriter.js`, no migration, and no change to `counts.empty` or `perioHasReading`.
 - The no-baseline case (a send that predates item 13) is filed under `unreadable_od`. It is silent, as before, because the queue allows only two reasons.
 - `visitStore.beginPerioAmendment` (the DB transition) has no Open Dental read and was left alone. The guard sits in its only Open Dental-reading caller. `backend/scripts/rehearse-hyg-visit.js` calls the DB transition directly as a rehearsal tool and is unchanged.
