@@ -1,7 +1,7 @@
 # Item 33: Ortho screening, the hygienist's green sheet sent to the TC
 
 Branch `feature/hyg-ortho-screening`, cut from `origin/develop` at c423593. Lane: RED (adds a tenant migration and a field on a shared TC contract).
-PR: _filled in below once it is open._ **Not merged.**
+PR: **#223** → develop. **Not merged.**
 
 ## What the hygienist and the TC get
 
@@ -114,7 +114,7 @@ A fresh-context reviewer subagent checked the queue file against `git diff origi
 
 ## CI
 
-_Filled in below once the PR's CI has finished._
+PR #223, `build-test` on `refs/pull/223/merge` (run 37408404485, `pull_request` event, head d6417fe): **success** on the first push. No failures, no flakes, no fix pushes. This report-only commit triggers one more run of the same gate.
 
 ## Screenshots
 
