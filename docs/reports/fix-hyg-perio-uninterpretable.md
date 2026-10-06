@@ -152,7 +152,7 @@ Use test patients only: roland **12827**, or valley **7115**. Do not use 11373.
 - No non-test code parses `hyg_perio_drift` rows. The generic platform viewer only filters and displays them.
 - Its one non-blocking note was that this report still said `unknown` was unaudited. That is fixed here.
 
-**CI (fix round 1):** FIX_CI
+**CI (fix round 1):** PR #222, `build-test`: **pass** (4m21s). Run 37396697696 on head `d9c5120` checked out `refs/remotes/pull/222/merge` at `e0f24ce`. No flakes, and no fix pushes were needed. The push after it is this docs-only CI note.
 
 ## Deliberately not built
 
