@@ -49,6 +49,10 @@ import {
   VisitTypeSourceSchema,
   type NoteField,
 } from "./noteTemplates";
+// The ortho screening (item 33). Imported one direction only and NOT
+// re-exported: backend/hyg/contract.entry.ts exports orthoScreening.ts beside
+// this file, and exporting a name twice is an esbuild error.
+import { OrthoScreeningSchema } from "./orthoScreening";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Offices
@@ -881,6 +885,20 @@ export const HygSlipSchema = z
      * exists to not write.
      */
     perioChartUpdated: YesNoSchema.nullable().default(null),
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // THE ORTHO SCREENING (item 33)
+    // ─────────────────────────────────────────────────────────────────────────
+    //
+    // `null` means nobody has opened the green sheet on this visit. Defaulted
+    // for the same load-bearing reason as the note fields above: a slip saved
+    // before this branch must parse and gain the key, not read back blank.
+    //
+    // ONCE SENT, THE SERVER FREEZES IT. `visitStore.saveSlip` keeps the stored
+    // screening whenever the visit carries an ortho case id, so the sheet the
+    // TC was sent is the sheet this visit shows — a client cannot edit it after
+    // the fact by sending a whole slip.
+    orthoScreening: OrthoScreeningSchema.nullable().default(null),
   })
   .strict();
 export type HygSlip = z.infer<typeof HygSlipSchema>;
@@ -914,6 +932,7 @@ export function emptySlip(): HygSlip {
     noteFields: {},
     rtc: "",
     perioChartUpdated: null,
+    orthoScreening: null,
   };
 }
 
@@ -1027,6 +1046,20 @@ export const StagedWriteSchema = z.object({
 });
 export type StagedWrite = z.infer<typeof StagedWriteSchema>;
 
+/**
+ * The ortho screening's TC send, once it landed (item 33).
+ *
+ * READ-ONLY over the wire, like a staged write's state: the server sets it after
+ * TC answers with a case, and no request schema accepts it. `null` means it has
+ * not been sent — never "it failed", which leaves nothing behind on the visit.
+ */
+export const OrthoSendSchema = z.object({
+  caseId: z.string().min(1),
+  sentAt: z.string(),
+  sentBy: z.string(),
+});
+export type OrthoSend = z.infer<typeof OrthoSendSchema>;
+
 /** The whole visit: the slip, the items, and what is staged. */
 export const HygVisitSchema = z.object({
   visitId: z.string().min(1),
@@ -1038,6 +1071,8 @@ export const HygVisitSchema = z.object({
   slip: HygSlipSchema,
   items: z.array(TreatmentItemSchema),
   stagedWrites: z.array(StagedWriteSchema),
+  /** Item 33. Defaulted so a response from an older server still parses. */
+  orthoSend: OrthoSendSchema.nullable().default(null),
   createdBy: z.string(),
   createdAt: z.string(),
   updatedBy: z.string().nullable(),
@@ -1157,6 +1192,34 @@ export const HygSendResponseSchema = z.object({
 });
 export type HygSendResponse = z.infer<typeof HygSendResponseSchema>;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/hyg/visit/:aptNum/ortho-screening/send  (item 33)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The ortho send's body: NOTHING.
+ *
+ * ⚠️ OFFICE, PATNUM, PATIENT AND PROVIDER ARE NEVER INPUTS. ⚠️ The server takes
+ * the office and PatNum off the stored visit, and the name, age, phone and
+ * provider off the appointment snapshot it recorded when it last read the
+ * appointment itself. `.strip()` rather than `.strict()` because the acceptance
+ * is that a client-sent value is IGNORED — discarded unread — and the send
+ * still files the case under the visit's own patient and office.
+ */
+export const OrthoSendRequestSchema = z.object({}).strip();
+export type OrthoSendRequest = z.infer<typeof OrthoSendRequestSchema>;
+
+export const HygOrthoSendResponseSchema = z.object({
+  success: z.literal(true),
+  visit: HygVisitSchema,
+  recordsNeeded: z.array(z.string()),
+  handoffCategory: HandoffCategorySchema,
+  doctorOptions: z.array(z.string()),
+  /** True when this press found it already sent and created nothing. */
+  alreadySent: z.boolean(),
+});
+export type HygOrthoSendResponse = z.infer<typeof HygOrthoSendResponseSchema>;
+
 /** The refusal codes slice 2 adds on top of HYG_ERROR_CODES. */
 export const HYG_VISIT_ERROR_CODES = [
   "INVALID_APT_NUM",
@@ -1197,5 +1260,15 @@ export const HYG_VISIT_ERROR_CODES = [
   // Item 32: the exam holds a v2 value CareIN cannot interpret. Never superseded.
   "AMEND_BASE_UNREADABLE",
   "NOT_REPLACED",
+  // Item 33: the ortho screening's send to TC.
+  "ORTHO_NOTHING_TO_SEND",
+  "ORTHO_SEND_IN_PROGRESS",
+  "PATIENT_NAME_UNAVAILABLE",
+  "PROVIDER_UNAVAILABLE",
+  "TC_UNREACHABLE",
+  "TC_FORBIDDEN",
+  "TC_ENDPOINT_MISSING",
+  "TC_ERROR",
+  "TC_BAD_RESPONSE",
 ] as const;
 export type HygVisitErrorCode = (typeof HYG_VISIT_ERROR_CODES)[number];

@@ -14813,10 +14813,10 @@ var require_zod = __commonJS({
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.z = void 0;
-    var z4 = __importStar(require_external());
-    exports2.z = z4;
+    var z5 = __importStar(require_external());
+    exports2.z = z5;
     __exportStar(require_external(), exports2);
-    exports2.default = z4;
+    exports2.default = z5;
   }
 });
 
@@ -14886,7 +14886,7 @@ __export(contract_entry_exports, {
   Urgency: () => Urgency,
   Uuid: () => Uuid,
   VoiceHandoffDetail: () => VoiceHandoffDetail,
-  ZodError: () => import_zod3.ZodError,
+  ZodError: () => import_zod4.ZodError,
   caseFromRows: () => caseFromRows,
   caseToRows: () => caseToRows,
   communicationToRow: () => communicationToRow,
@@ -14897,12 +14897,12 @@ __export(contract_entry_exports, {
   simulationToRow: () => simulationToRow,
   templateToRow: () => templateToRow,
   userMapEntryToRow: () => userMapEntryToRow,
-  z: () => import_zod3.z
+  z: () => import_zod4.z
 });
 module.exports = __toCommonJS(contract_entry_exports);
 
 // shared/tc/contract.ts
-var import_zod2 = __toESM(require_zod(), 1);
+var import_zod3 = __toESM(require_zod(), 1);
 
 // shared/tc/emailBlocks.ts
 var import_zod = __toESM(require_zod(), 1);
@@ -14996,15 +14996,162 @@ var EmailBlock = import_zod.z.discriminatedUnion("type", [
 ]);
 var EmailBlocks = import_zod.z.array(EmailBlock).min(1).max(40);
 
+// shared/hyg/orthoScreening.ts
+var import_zod2 = __toESM(require_zod(), 1);
+function enumOf(options) {
+  const ids = options.map((o) => o.id);
+  return import_zod2.z.enum(ids);
+}
+var ORTHO_INTEREST_OPTIONS = [
+  { id: "yes", label: "Yes" },
+  { id: "maybe", label: "Maybe" },
+  { id: "not_now", label: "Not now" }
+];
+var ORTHO_DECIDER_OPTIONS = [
+  { id: "patient", label: "Patient decides" },
+  { id: "parent", label: "Parent decides" }
+];
+var ORTHO_CONCERN_OPTIONS = [
+  { id: "crowding", label: "Crowding" },
+  { id: "spacing", label: "Spacing" },
+  { id: "overbite", label: "Overbite" },
+  { id: "underbite", label: "Underbite" },
+  { id: "crossbite", label: "Crossbite" },
+  { id: "open_bite", label: "Open bite" },
+  { id: "protrusion", label: "Protrusion" },
+  { id: "midline_off", label: "Midline off" },
+  { id: "bite_jaw", label: "Bite / jaw" },
+  { id: "snoring_airway", label: "Snoring / airway" }
+];
+var ORTHO_ARCH_OPTIONS = [
+  { id: "upper", label: "Upper" },
+  { id: "lower", label: "Lower" },
+  { id: "comprehensive", label: "Comprehensive (both)" }
+];
+var ORTHO_MODALITY_OPTIONS = [
+  { id: "aligners", label: "Clear aligners" },
+  { id: "braces", label: "Traditional braces" },
+  { id: "doctor_decides", label: "Doctor to decide" }
+];
+var ORTHO_MONTH_OPTIONS = [6, 9, 12, 15, 18, 21, 24, 30, 36];
+var ORTHO_PHASE_OPTIONS = [
+  { id: "phase_1", label: "Phase 1" },
+  { id: "phase_2", label: "Phase 2" }
+];
+var ORTHO_UPPER_APPLIANCE_OPTIONS = [
+  { id: "expansion_rpe", label: "Expansion / RPE" },
+  { id: "niti_rpe", label: "NiTi RPE" },
+  { id: "mda", label: "MDA" },
+  { id: "rmd", label: "RMD" },
+  { id: "nance", label: "Nance" },
+  { id: "reverse_pull_hg", label: "Reverse-pull HG" }
+];
+var ORTHO_LOWER_APPLIANCE_OPTIONS = [
+  { id: "expansion", label: "Expansion" },
+  { id: "lip_bumper", label: "Lip bumper" },
+  { id: "lingual_3d", label: "3D lingual" },
+  { id: "fla", label: "FLA" },
+  { id: "rmd", label: "RMD" },
+  { id: "mda", label: "MDA" }
+];
+var ORTHO_MYO_OPTIONS = [
+  { id: "not_needed", label: "Not needed" },
+  { id: "before", label: "Before" },
+  { id: "during", label: "During" },
+  { id: "after", label: "After" }
+];
+var ORTHO_MYO_REASON_OPTIONS = [
+  { id: "tongue_thrust", label: "Tongue thrust" },
+  { id: "mouth_breathing", label: "Mouth breathing" },
+  { id: "low_tongue", label: "Low tongue" },
+  { id: "asymmetry", label: "Asymmetry" },
+  { id: "airway", label: "Airway" }
+];
+var ORTHO_AFTER_OPTIONS = [
+  { id: "none", label: "None" },
+  { id: "peg_laterals", label: "Peg laterals" },
+  { id: "anterior_bonding", label: "Anterior bonding" },
+  { id: "implants", label: "Implants" },
+  { id: "pontic_maryland", label: "Pontic / Maryland" },
+  { id: "smile_makeover", label: "Smile makeover" },
+  { id: "fmr", label: "FMR" }
+];
+var ORTHO_RECORD_OPTIONS = [
+  { id: "photos", label: "Photos" },
+  { id: "pano", label: "Pano" },
+  { id: "scan", label: "Scan" },
+  { id: "ceph", label: "Ceph" }
+];
+var ORTHO_BENEFIT_OPTIONS = [
+  { id: "has_benefit", label: "Has ortho benefit" },
+  { id: "no_benefit", label: "No ortho benefit" },
+  { id: "not_sure", label: "Not sure, TC will verify" }
+];
+var ORTHO_CONSULT_OPTIONS = [
+  { id: "in_office", label: "In-office consult" },
+  { id: "phone", label: "Phone consult" },
+  { id: "tc_to_call", label: "TC to call" }
+];
+var ORTHO_AFTER_TEETH_MAX = 40;
+var ORTHO_NOTE_MAX = 280;
+var AFTER_TEETH_PATTERN = /^[0-9A-Ta-t#,\s-]*$/;
+var OrthoInterestSchema = enumOf(ORTHO_INTEREST_OPTIONS);
+var OrthoDeciderSchema = enumOf(ORTHO_DECIDER_OPTIONS);
+var OrthoConcernSchema = enumOf(ORTHO_CONCERN_OPTIONS);
+var OrthoArchSchema = enumOf(ORTHO_ARCH_OPTIONS);
+var OrthoModalitySchema = enumOf(ORTHO_MODALITY_OPTIONS);
+var OrthoPhaseSchema = enumOf(ORTHO_PHASE_OPTIONS);
+var OrthoUpperApplianceSchema = enumOf(ORTHO_UPPER_APPLIANCE_OPTIONS);
+var OrthoLowerApplianceSchema = enumOf(ORTHO_LOWER_APPLIANCE_OPTIONS);
+var OrthoMyoSchema = enumOf(ORTHO_MYO_OPTIONS);
+var OrthoMyoReasonSchema = enumOf(ORTHO_MYO_REASON_OPTIONS);
+var OrthoAfterSchema = enumOf(ORTHO_AFTER_OPTIONS);
+var OrthoRecordSchema = enumOf(ORTHO_RECORD_OPTIONS);
+var OrthoBenefitSchema = enumOf(ORTHO_BENEFIT_OPTIONS);
+var OrthoConsultSchema = enumOf(ORTHO_CONSULT_OPTIONS);
+var OrthoMonthSchema = import_zod2.z.number().int().refine((n) => ORTHO_MONTH_OPTIONS.includes(n), {
+  message: `Estimated months must be one of ${ORTHO_MONTH_OPTIONS.join(", ")}`
+});
+function picks(item, max) {
+  return import_zod2.z.array(item).max(max).refine((values) => new Set(values).size === values.length, {
+    message: "An option was picked twice"
+  }).default([]);
+}
+var OrthoScreeningSchema = import_zod2.z.object({
+  interest: OrthoInterestSchema.nullable().default(null),
+  decider: OrthoDeciderSchema.nullable().default(null),
+  concerns: picks(OrthoConcernSchema, ORTHO_CONCERN_OPTIONS.length),
+  arches: OrthoArchSchema.nullable().default(null),
+  modality: OrthoModalitySchema.nullable().default(null),
+  months: picks(OrthoMonthSchema, ORTHO_MONTH_OPTIONS.length),
+  phase: OrthoPhaseSchema.nullable().default(null),
+  upperAppliances: picks(OrthoUpperApplianceSchema, ORTHO_UPPER_APPLIANCE_OPTIONS.length),
+  lowerAppliances: picks(OrthoLowerApplianceSchema, ORTHO_LOWER_APPLIANCE_OPTIONS.length),
+  myo: OrthoMyoSchema.nullable().default(null),
+  myoReasons: picks(OrthoMyoReasonSchema, ORTHO_MYO_REASON_OPTIONS.length),
+  afterOrtho: picks(OrthoAfterSchema, ORTHO_AFTER_OPTIONS.length).refine(
+    (values) => !values.includes("none") || values.length === 1,
+    { message: '"None" cannot be picked with other work after ortho' }
+  ),
+  afterOrthoTeeth: import_zod2.z.string().max(ORTHO_AFTER_TEETH_MAX).regex(AFTER_TEETH_PATTERN, "Which teeth takes universal tooth numbers only").default(""),
+  recordsToday: picks(OrthoRecordSchema, ORTHO_RECORD_OPTIONS.length),
+  orthoBenefit: OrthoBenefitSchema.nullable().default(null),
+  consult: OrthoConsultSchema.nullable().default(null),
+  /** Optional. A local calendar date, never an instant. */
+  bookedFor: import_zod2.z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Booked for must be YYYY-MM-DD").nullable().default(null),
+  noteForTc: import_zod2.z.string().max(ORTHO_NOTE_MAX).default("")
+}).strict();
+var AFTER_ORDER = ORTHO_AFTER_OPTIONS.map((o) => o.id);
+
 // shared/tc/contract.ts
-var OfficeId = import_zod2.z.enum(["roland", "valley"]);
-var Cents = import_zod2.z.number().int().min(0);
-var Uuid = import_zod2.z.string().uuid();
-var IsoTimestamp = import_zod2.z.string().datetime({ offset: true });
-var IsoDate = import_zod2.z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD");
-var ShortText = import_zod2.z.string().max(200);
-var LongText = import_zod2.z.string().max(8e3);
-var CaseCategory = import_zod2.z.enum([
+var OfficeId = import_zod3.z.enum(["roland", "valley"]);
+var Cents = import_zod3.z.number().int().min(0);
+var Uuid = import_zod3.z.string().uuid();
+var IsoTimestamp = import_zod3.z.string().datetime({ offset: true });
+var IsoDate = import_zod3.z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD");
+var ShortText = import_zod3.z.string().max(200);
+var LongText = import_zod3.z.string().max(8e3);
+var CaseCategory = import_zod3.z.enum([
   "single_tooth",
   "quadrant",
   "implant",
@@ -15013,7 +15160,7 @@ var CaseCategory = import_zod2.z.enum([
   "cosmetic",
   "ortho"
 ]);
-var CaseStatus = import_zod2.z.enum([
+var CaseStatus = import_zod3.z.enum([
   "hygiene_review",
   "diagnosed",
   "pending_tc",
@@ -15029,17 +15176,17 @@ var CaseStatus = import_zod2.z.enum([
   "lost",
   "nurture"
 ]);
-var Urgency = import_zod2.z.enum(["high", "medium", "low", "elective"]);
-var NurtureCadence = import_zod2.z.enum(["light", "standard", "high_touch"]);
-var ContactPreference = import_zod2.z.enum(["phone", "text", "email"]);
-var LostReason = import_zod2.z.enum([
+var Urgency = import_zod3.z.enum(["high", "medium", "low", "elective"]);
+var NurtureCadence = import_zod3.z.enum(["light", "standard", "high_touch"]);
+var ContactPreference = import_zod3.z.enum(["phone", "text", "email"]);
+var LostReason = import_zod3.z.enum([
   "moved",
   "chose_another_provider",
   "declined_permanently",
   "unresponsive",
   "other"
 ]);
-var ReferralSource = import_zod2.z.enum([
+var ReferralSource = import_zod3.z.enum([
   "google",
   "existing_patient",
   "doctor_referral",
@@ -15049,12 +15196,12 @@ var ReferralSource = import_zod2.z.enum([
   "hygiene",
   "other"
 ]);
-var FollowupKind = import_zod2.z.enum(["followup", "nurture"]);
-var FollowupChannel = import_zod2.z.enum(["phone_call", "text", "email", "in_person"]);
-var FollowupStatus = import_zod2.z.enum(["pending", "completed", "skipped"]);
-var FollowupSource = import_zod2.z.enum(["auto", "manual", "legacy"]);
-var NurtureType = import_zod2.z.enum(["check_in", "seasonal", "life_event", "financing"]);
-var CaseEventType = import_zod2.z.enum([
+var FollowupKind = import_zod3.z.enum(["followup", "nurture"]);
+var FollowupChannel = import_zod3.z.enum(["phone_call", "text", "email", "in_person"]);
+var FollowupStatus = import_zod3.z.enum(["pending", "completed", "skipped"]);
+var FollowupSource = import_zod3.z.enum(["auto", "manual", "legacy"]);
+var NurtureType = import_zod3.z.enum(["check_in", "seasonal", "life_event", "financing"]);
+var CaseEventType = import_zod3.z.enum([
   "status_change",
   "follow_up_completed",
   "objection_logged",
@@ -15090,8 +15237,8 @@ var TERMINAL_CASE_STATUSES = [
   "completed",
   "lost"
 ];
-var PreauthType = import_zod2.z.enum(["treatment", "perio", "manual"]);
-var PreauthStatus = import_zod2.z.enum([
+var PreauthType = import_zod3.z.enum(["treatment", "perio", "manual"]);
+var PreauthStatus = import_zod3.z.enum([
   "pending",
   "submitted",
   "in_review",
@@ -15100,8 +15247,8 @@ var PreauthStatus = import_zod2.z.enum([
   "appealing",
   "expired"
 ]);
-var CommunicationStatus = import_zod2.z.enum(["sent", "stubbed", "error"]);
-var EmailTemplateCategory = import_zod2.z.enum([
+var CommunicationStatus = import_zod3.z.enum(["sent", "stubbed", "error"]);
+var EmailTemplateCategory = import_zod3.z.enum([
   "consult_confirmation",
   "consult_followup",
   "financing_followup",
@@ -15110,7 +15257,7 @@ var EmailTemplateCategory = import_zod2.z.enum([
   "treatment_presentation",
   "general"
 ]);
-var PerioStatus = import_zod2.z.enum([
+var PerioStatus = import_zod3.z.enum([
   "healthy",
   "gingivitis",
   "early_perio",
@@ -15118,14 +15265,14 @@ var PerioStatus = import_zod2.z.enum([
   "advanced_perio",
   "unknown"
 ]);
-var RecallType = import_zod2.z.enum(["prophy", "perio_maint", "srp_needed", "d4346", "fmd", "none"]);
-var Radiograph = import_zod2.z.enum(["BWX", "PANO", "FMX", "PA", "none"]);
-var PatientInterestLevel = import_zod2.z.enum(["hot", "warm", "cold", "unknown"]);
-var TcCaseItem = import_zod2.z.object({
+var RecallType = import_zod3.z.enum(["prophy", "perio_maint", "srp_needed", "d4346", "fmd", "none"]);
+var Radiograph = import_zod3.z.enum(["BWX", "PANO", "FMX", "PA", "none"]);
+var PatientInterestLevel = import_zod3.z.enum(["hot", "warm", "cold", "unknown"]);
+var TcCaseItem = import_zod3.z.object({
   itemId: Uuid,
-  legacyItemId: import_zod2.z.string().max(60).nullable(),
-  odProcNum: import_zod2.z.number().int().positive().nullable(),
-  position: import_zod2.z.number().int().min(0),
+  legacyItemId: import_zod3.z.string().max(60).nullable(),
+  odProcNum: import_zod3.z.number().int().positive().nullable(),
+  position: import_zod3.z.number().int().min(0),
   tooth: ShortText,
   procedureName: ShortText.min(1),
   patientDescription: LongText,
@@ -15134,18 +15281,18 @@ var TcCaseItem = import_zod2.z.object({
   patientPortionCents: Cents,
   urgency: Urgency,
   timeEstimate: ShortText,
-  benefits: import_zod2.z.array(ShortText).max(20),
-  risksOfDelay: import_zod2.z.array(ShortText).max(20),
+  benefits: import_zod3.z.array(ShortText).max(20),
+  risksOfDelay: import_zod3.z.array(ShortText).max(20),
   expectedOutcome: LongText
 });
-var TcCasePhase = import_zod2.z.object({
+var TcCasePhase = import_zod3.z.object({
   phaseId: Uuid,
-  position: import_zod2.z.number().int().min(0),
+  position: import_zod3.z.number().int().min(0),
   name: ShortText.min(1),
   description: LongText,
-  items: import_zod2.z.array(TcCaseItem).max(100)
+  items: import_zod3.z.array(TcCaseItem).max(100)
 });
-var TcObjection = import_zod2.z.object({
+var TcObjection = import_zod3.z.object({
   objectionId: Uuid,
   category: ShortText.min(1),
   note: LongText,
@@ -15153,9 +15300,9 @@ var TcObjection = import_zod2.z.object({
   // PHI — verbatim patient speech
   loggedAt: IsoTimestamp
 });
-var TcFollowup = import_zod2.z.object({
+var TcFollowup = import_zod3.z.object({
   followupId: Uuid,
-  legacyId: import_zod2.z.string().max(60).nullable(),
+  legacyId: import_zod3.z.string().max(60).nullable(),
   kind: FollowupKind,
   dueDate: IsoDate,
   channel: FollowupChannel,
@@ -15167,31 +15314,31 @@ var TcFollowup = import_zod2.z.object({
   completedBy: ShortText.nullable(),
   // nurture: TC name or 'system'
   source: FollowupSource,
-  patientResponded: import_zod2.z.boolean().nullable(),
+  patientResponded: import_zod3.z.boolean().nullable(),
   // null = not recorded
   nurtureType: NurtureType.nullable()
   // present iff kind === 'nurture'
 });
-var ContactAttemptDetail = import_zod2.z.object({
-  channel: import_zod2.z.enum(["call", "text", "email"]),
-  outcome: import_zod2.z.enum(["reached", "voicemail", "no_answer"])
+var ContactAttemptDetail = import_zod3.z.object({
+  channel: import_zod3.z.enum(["call", "text", "email"]),
+  outcome: import_zod3.z.enum(["reached", "voicemail", "no_answer"])
 });
-var VoiceHandoffDetail = import_zod2.z.object({
-  callUrl: import_zod2.z.string().max(500).nullable(),
+var VoiceHandoffDetail = import_zod3.z.object({
+  callUrl: import_zod3.z.string().max(500).nullable(),
   callSummary: LongText.nullable(),
   /** True if the handoff attached to an existing open case, false if it created one. */
-  attached: import_zod2.z.boolean()
+  attached: import_zod3.z.boolean()
 });
-var TcCaseEventDetail = import_zod2.z.union([ContactAttemptDetail, VoiceHandoffDetail]);
+var TcCaseEventDetail = import_zod3.z.union([ContactAttemptDetail, VoiceHandoffDetail]);
 function isContactAttemptDetail(detail) {
   return detail != null && "channel" in detail;
 }
 function isVoiceHandoffDetail(detail) {
   return detail != null && "attached" in detail;
 }
-var TcCaseEvent = import_zod2.z.object({
+var TcCaseEvent = import_zod3.z.object({
   eventId: Uuid,
-  legacyId: import_zod2.z.string().max(60).nullable(),
+  legacyId: import_zod3.z.string().max(60).nullable(),
   ts: IsoTimestamp,
   type: CaseEventType,
   description: LongText,
@@ -15205,9 +15352,9 @@ var TcCaseEvent = import_zod2.z.object({
    * idempotency key that makes a repeated "Send to TC" a no-op instead of a
    * duplicate case. Defaulted so pre-existing construction sites stay valid.
    */
-  sourceCallId: import_zod2.z.string().max(200).nullable().default(null)
+  sourceCallId: import_zod3.z.string().max(200).nullable().default(null)
 });
-var TcHygieneIntake = import_zod2.z.object({
+var TcHygieneIntake = import_zod3.z.object({
   /**
    * WHO WAS SIGNED IN. Audit identity, server-stamped from the SSO session —
    * never client-supplied, never edited.
@@ -15239,26 +15386,38 @@ var TcHygieneIntake = import_zod2.z.object({
   chiefConcern: LongText,
   perioStatus: PerioStatus,
   recallType: RecallType,
-  radiographs: import_zod2.z.array(Radiograph).max(10),
-  intraoralPhotosTaken: import_zod2.z.boolean(),
+  radiographs: import_zod3.z.array(Radiograph).max(10),
+  intraoralPhotosTaken: import_zod3.z.boolean(),
   areasOfConcern: LongText,
   suspectedTreatment: LongText,
   hygienistRecommendation: LongText,
   insuranceNoted: LongText,
   patientInterestLevel: PatientInterestLevel,
-  flagUrgent: import_zod2.z.boolean()
+  flagUrgent: import_zod3.z.boolean(),
+  /**
+   * The hygienist's ortho screening, structured (item 33). NULLABLE and
+   * ADDITIVE: every intake before this — and every treatment handoff, which
+   * has no screening — is `null`, and renders exactly as it did. Defaulted so
+   * every pre-existing construction site (legacy import, voice intake, the
+   * treatment handoff) stays valid without naming it.
+   *
+   * The same object the hygiene slip stores, parsed by the same schema; the
+   * text-only `suspectedTreatment` beside it carries the summary line for the
+   * surfaces that do not render structure yet.
+   */
+  orthoScreening: OrthoScreeningSchema.nullable().default(null)
 });
-var TcCase = import_zod2.z.object({
+var TcCase = import_zod3.z.object({
   caseId: Uuid,
-  legacyId: import_zod2.z.string().max(60).nullable(),
+  legacyId: import_zod3.z.string().max(60).nullable(),
   officeId: OfficeId,
   // Patient identity (PHI).
   patientName: ShortText.min(1),
-  patientAge: import_zod2.z.number().int().min(0).max(130).nullable(),
+  patientAge: import_zod3.z.number().int().min(0).max(130).nullable(),
   phone: ShortText.nullable(),
   email: ShortText.nullable(),
   // legacy data holds '' and non-emails; not z.email() by design
-  odPatientId: import_zod2.z.number().int().positive().nullable(),
+  odPatientId: import_zod3.z.number().int().positive().nullable(),
   // Classification.
   caseType: ShortText,
   category: CaseCategory,
@@ -15276,13 +15435,13 @@ var TcCase = import_zod2.z.object({
   // legacy slug/name; platform identity via tc_legacy_user_map
   // Value / readiness.
   caseValueCents: Cents,
-  readinessScore: import_zod2.z.number().int().min(0).max(100),
+  readinessScore: import_zod3.z.number().int().min(0).max(100),
   financingStatus: ShortText,
   preferredFinancingProvider: ShortText.nullable(),
   // Discovery / context (PHI).
   decisionMakers: ShortText,
-  financialSituation: import_zod2.z.array(ShortText).max(20),
-  keyMotivators: import_zod2.z.array(ShortText).max(20),
+  financialSituation: import_zod3.z.array(ShortText).max(20),
+  keyMotivators: import_zod3.z.array(ShortText).max(20),
   contactPreference: ContactPreference.nullable(),
   bestTimeToReach: ShortText,
   notes: LongText,
@@ -15293,28 +15452,28 @@ var TcCase = import_zod2.z.object({
   statusChangedAt: IsoTimestamp.nullable(),
   // Nurture scalars (touchpoints are TcFollowup kind='nurture').
   nurtureCadence: NurtureCadence,
-  inLongTailMode: import_zod2.z.boolean(),
+  inLongTailMode: import_zod3.z.boolean(),
   nurtureEnrolledAt: IsoTimestamp.nullable(),
   nurturePhaseChangedAt: IsoTimestamp.nullable(),
-  nurturePhase1DaysOverride: import_zod2.z.number().int().min(0).max(365).nullable(),
-  nurturePhase2DaysOverride: import_zod2.z.number().int().min(0).max(365).nullable(),
-  nurtureUnsubscribed: import_zod2.z.boolean(),
+  nurturePhase1DaysOverride: import_zod3.z.number().int().min(0).max(365).nullable(),
+  nurturePhase2DaysOverride: import_zod3.z.number().int().min(0).max(365).nullable(),
+  nurtureUnsubscribed: import_zod3.z.boolean(),
   // Children.
-  phases: import_zod2.z.array(TcCasePhase).max(20),
-  objections: import_zod2.z.array(TcObjection).max(200),
-  followups: import_zod2.z.array(TcFollowup).max(500),
-  events: import_zod2.z.array(TcCaseEvent).max(2e3),
+  phases: import_zod3.z.array(TcCasePhase).max(20),
+  objections: import_zod3.z.array(TcObjection).max(200),
+  followups: import_zod3.z.array(TcFollowup).max(500),
+  events: import_zod3.z.array(TcCaseEvent).max(2e3),
   hygieneIntake: TcHygieneIntake.nullable()
 });
-var TcPreauthCase = import_zod2.z.object({
+var TcPreauthCase = import_zod3.z.object({
   preauthId: Uuid,
-  legacyId: import_zod2.z.string().max(60).nullable(),
+  legacyId: import_zod3.z.string().max(60).nullable(),
   officeId: OfficeId,
   caseId: Uuid.nullable(),
   patientName: ShortText.min(1),
   phone: ShortText.nullable(),
   email: ShortText.nullable(),
-  odPatientId: import_zod2.z.number().int().positive().nullable(),
+  odPatientId: import_zod3.z.number().int().positive().nullable(),
   preauthType: PreauthType,
   description: LongText,
   insuranceCarrier: ShortText,
@@ -15326,20 +15485,20 @@ var TcPreauthCase = import_zod2.z.object({
   referenceNumber: ShortText,
   notes: LongText
 });
-var TcEmailTemplate = import_zod2.z.object({
+var TcEmailTemplate = import_zod3.z.object({
   templateId: Uuid,
-  legacyId: import_zod2.z.string().max(60).nullable(),
+  legacyId: import_zod3.z.string().max(60).nullable(),
   officeId: OfficeId,
   name: ShortText.min(1),
   category: EmailTemplateCategory,
-  subject: import_zod2.z.string().min(1).max(160),
-  preheader: import_zod2.z.string().max(160),
+  subject: import_zod3.z.string().min(1).max(160),
+  preheader: import_zod3.z.string().max(160),
   blocks: EmailBlocks,
-  isSeed: import_zod2.z.boolean()
+  isSeed: import_zod3.z.boolean()
 });
-var TcCommunication = import_zod2.z.object({
+var TcCommunication = import_zod3.z.object({
   commId: Uuid,
-  legacyId: import_zod2.z.string().max(60).nullable(),
+  legacyId: import_zod3.z.string().max(60).nullable(),
   officeId: OfficeId,
   caseId: Uuid.nullable(),
   templateId: Uuid.nullable(),
@@ -15352,13 +15511,13 @@ var TcCommunication = import_zod2.z.object({
   subject: ShortText,
   // PHI
   status: CommunicationStatus,
-  providerMessageId: import_zod2.z.string().max(200).nullable(),
-  error: import_zod2.z.string().max(2e3).nullable(),
+  providerMessageId: import_zod3.z.string().max(200).nullable(),
+  error: import_zod3.z.string().max(2e3).nullable(),
   sentAt: IsoTimestamp
 });
-var TcGalleryCase = import_zod2.z.object({
+var TcGalleryCase = import_zod3.z.object({
   galleryId: Uuid,
-  legacyId: import_zod2.z.string().max(60).nullable(),
+  legacyId: import_zod3.z.string().max(60).nullable(),
   officeId: OfficeId,
   title: ShortText.min(1),
   // PHI — legacy titles embed patient names
@@ -15369,9 +15528,9 @@ var TcGalleryCase = import_zod2.z.object({
   afterBlobKey: ShortText.min(1),
   createdAt: IsoTimestamp
 });
-var TcSmileSimulation = import_zod2.z.object({
+var TcSmileSimulation = import_zod3.z.object({
   simId: Uuid,
-  legacyId: import_zod2.z.string().max(60).nullable(),
+  legacyId: import_zod3.z.string().max(60).nullable(),
   officeId: OfficeId,
   caseId: Uuid.nullable(),
   treatmentType: ShortText.min(1),
@@ -15380,110 +15539,110 @@ var TcSmileSimulation = import_zod2.z.object({
   originalBlobKey: ShortText.min(1),
   // PHI by reference (face photo)
   resultBlobKey: ShortText.min(1),
-  savedToGallery: import_zod2.z.boolean(),
+  savedToGallery: import_zod3.z.boolean(),
   galleryId: Uuid.nullable(),
   createdBy: ShortText,
   createdAt: IsoTimestamp
 });
-var LibraryStage = import_zod2.z.object({
-  key: import_zod2.z.string().min(1).max(40),
-  label: import_zod2.z.string().min(1).max(40),
-  color: import_zod2.z.string().min(1).max(64),
-  slaWarnDays: import_zod2.z.number().int().min(0).max(365),
-  slaCriticalDays: import_zod2.z.number().int().min(0).max(365),
-  order: import_zod2.z.number().int().min(0),
-  system: import_zod2.z.boolean()
+var LibraryStage = import_zod3.z.object({
+  key: import_zod3.z.string().min(1).max(40),
+  label: import_zod3.z.string().min(1).max(40),
+  color: import_zod3.z.string().min(1).max(64),
+  slaWarnDays: import_zod3.z.number().int().min(0).max(365),
+  slaCriticalDays: import_zod3.z.number().int().min(0).max(365),
+  order: import_zod3.z.number().int().min(0),
+  system: import_zod3.z.boolean()
 });
-var LibraryTag = import_zod2.z.object({
-  key: import_zod2.z.string().min(1).max(60),
-  label: import_zod2.z.string().min(1).max(80),
-  color: import_zod2.z.string().max(64).nullable(),
-  archived: import_zod2.z.boolean()
+var LibraryTag = import_zod3.z.object({
+  key: import_zod3.z.string().min(1).max(60),
+  label: import_zod3.z.string().min(1).max(80),
+  color: import_zod3.z.string().max(64).nullable(),
+  archived: import_zod3.z.boolean()
 });
-var LibraryObjection = import_zod2.z.object({
-  key: import_zod2.z.string().min(1).max(40),
-  label: import_zod2.z.string().min(1).max(120),
+var LibraryObjection = import_zod3.z.object({
+  key: import_zod3.z.string().min(1).max(40),
+  label: import_zod3.z.string().min(1).max(120),
   script: LongText,
-  suggestedFollowUpDays: import_zod2.z.number().int().min(0).max(90)
+  suggestedFollowUpDays: import_zod3.z.number().int().min(0).max(90)
 });
-var LibraryTreatmentCategory = import_zod2.z.object({
-  key: import_zod2.z.string().min(1).max(60),
-  label: import_zod2.z.string().min(1).max(80),
-  defaultFinancingProviderKey: import_zod2.z.string().max(60).nullable()
+var LibraryTreatmentCategory = import_zod3.z.object({
+  key: import_zod3.z.string().min(1).max(60),
+  label: import_zod3.z.string().min(1).max(80),
+  defaultFinancingProviderKey: import_zod3.z.string().max(60).nullable()
 });
-var LibraryFinancingProvider = import_zod2.z.object({
-  key: import_zod2.z.string().min(1).max(60),
-  label: import_zod2.z.string().min(1).max(80),
-  logo: import_zod2.z.string().max(8),
-  color: import_zod2.z.string().min(1).max(64),
+var LibraryFinancingProvider = import_zod3.z.object({
+  key: import_zod3.z.string().min(1).max(60),
+  label: import_zod3.z.string().min(1).max(80),
+  logo: import_zod3.z.string().max(8),
+  color: import_zod3.z.string().min(1).max(64),
   description: LongText,
-  terms: import_zod2.z.array(import_zod2.z.number().int().min(1).max(120)).max(20),
-  promoTerms: import_zod2.z.array(import_zod2.z.number().int().min(1).max(120)).max(20),
+  terms: import_zod3.z.array(import_zod3.z.number().int().min(1).max(120)).max(20),
+  promoTerms: import_zod3.z.array(import_zod3.z.number().int().min(1).max(120)).max(20),
   minAmountCents: Cents,
-  promoApr: import_zod2.z.number().min(0).max(100),
-  regularApr: import_zod2.z.number().min(0).max(100),
-  enabled: import_zod2.z.boolean()
+  promoApr: import_zod3.z.number().min(0).max(100),
+  regularApr: import_zod3.z.number().min(0).max(100),
+  enabled: import_zod3.z.boolean()
 });
-var LibraryCrownPricing = import_zod2.z.object({
+var LibraryCrownPricing = import_zod3.z.object({
   economyCents: Cents,
   standardCents: Cents,
   premiumCents: Cents,
   implantCents: Cents
 });
-var LibraryFinancingConfig = import_zod2.z.object({
-  serviceFeeEnabled: import_zod2.z.boolean(),
-  serviceFeePercent: import_zod2.z.number().min(0).max(15),
+var LibraryFinancingConfig = import_zod3.z.object({
+  serviceFeeEnabled: import_zod3.z.boolean(),
+  serviceFeePercent: import_zod3.z.number().min(0).max(15),
   /**
    * Pay-in-full cash discount — server truth for the legacy hardcoded "5%
    * cash discount" (Slice 4 honesty-debt fix). Defaults keep pre-existing
    * stored sections parseable: disabled until an office turns it on.
    */
-  cashDiscountEnabled: import_zod2.z.boolean().default(false),
-  cashDiscountPercent: import_zod2.z.number().min(0).max(50).default(5)
+  cashDiscountEnabled: import_zod3.z.boolean().default(false),
+  cashDiscountPercent: import_zod3.z.number().min(0).max(50).default(5)
 });
-var LibraryCadenceTier = import_zod2.z.object({
+var LibraryCadenceTier = import_zod3.z.object({
   key: NurtureCadence,
-  label: import_zod2.z.string().min(1).max(40),
-  intervals: import_zod2.z.array(import_zod2.z.number().int().min(0).max(365)).min(1).max(12)
+  label: import_zod3.z.string().min(1).max(40),
+  intervals: import_zod3.z.array(import_zod3.z.number().int().min(0).max(365)).min(1).max(12)
 });
-var LibraryCadenceConfig = import_zod2.z.object({
-  tiers: import_zod2.z.array(LibraryCadenceTier).length(3),
-  thresholds: import_zod2.z.object({
+var LibraryCadenceConfig = import_zod3.z.object({
+  tiers: import_zod3.z.array(LibraryCadenceTier).length(3),
+  thresholds: import_zod3.z.object({
     standardMinCents: Cents,
     highTouchMinCents: Cents
   }),
-  highUrgencyFirstDay: import_zod2.z.number().int().min(0).max(30),
-  spouseFamilyMinFirstDay: import_zod2.z.number().int().min(0).max(30)
+  highUrgencyFirstDay: import_zod3.z.number().int().min(0).max(30),
+  spouseFamilyMinFirstDay: import_zod3.z.number().int().min(0).max(30)
 });
-var LibraryFinancingSettings = import_zod2.z.object({
-  enabledProviders: import_zod2.z.record(import_zod2.z.string().max(60), import_zod2.z.boolean()),
-  serviceFeeEnabled: import_zod2.z.boolean(),
-  serviceFeePercent: import_zod2.z.number().min(0).max(15),
-  providerOverrides: import_zod2.z.record(
-    import_zod2.z.string().max(60),
-    import_zod2.z.object({
-      promoEnabled: import_zod2.z.boolean(),
-      promoApr: import_zod2.z.number().min(0).max(100),
-      regularApr: import_zod2.z.number().min(0).max(100)
+var LibraryFinancingSettings = import_zod3.z.object({
+  enabledProviders: import_zod3.z.record(import_zod3.z.string().max(60), import_zod3.z.boolean()),
+  serviceFeeEnabled: import_zod3.z.boolean(),
+  serviceFeePercent: import_zod3.z.number().min(0).max(15),
+  providerOverrides: import_zod3.z.record(
+    import_zod3.z.string().max(60),
+    import_zod3.z.object({
+      promoEnabled: import_zod3.z.boolean(),
+      promoApr: import_zod3.z.number().min(0).max(100),
+      regularApr: import_zod3.z.number().min(0).max(100)
     })
   )
 });
 var LibrarySectionSchemas = {
-  stages: import_zod2.z.array(LibraryStage).max(50),
-  objections: import_zod2.z.array(LibraryObjection).max(100),
-  motivators: import_zod2.z.array(LibraryTag).max(100),
-  lost_reasons: import_zod2.z.array(LibraryTag).max(100),
-  referral_sources: import_zod2.z.array(LibraryTag).max(100),
-  treatment_categories: import_zod2.z.array(LibraryTreatmentCategory).max(100),
-  financing_providers: import_zod2.z.array(LibraryFinancingProvider).max(50),
+  stages: import_zod3.z.array(LibraryStage).max(50),
+  objections: import_zod3.z.array(LibraryObjection).max(100),
+  motivators: import_zod3.z.array(LibraryTag).max(100),
+  lost_reasons: import_zod3.z.array(LibraryTag).max(100),
+  referral_sources: import_zod3.z.array(LibraryTag).max(100),
+  treatment_categories: import_zod3.z.array(LibraryTreatmentCategory).max(100),
+  financing_providers: import_zod3.z.array(LibraryFinancingProvider).max(50),
   crown_pricing: LibraryCrownPricing,
   financing_config: LibraryFinancingConfig,
   cadence_config: LibraryCadenceConfig,
   financing_settings: LibraryFinancingSettings
 };
-var TcLegacyUserMapEntry = import_zod2.z.object({
-  legacyUserId: import_zod2.z.string().min(1).max(40),
-  platformEmail: import_zod2.z.string().email(),
+var TcLegacyUserMapEntry = import_zod3.z.object({
+  legacyUserId: import_zod3.z.string().min(1).max(40),
+  platformEmail: import_zod3.z.string().email(),
   displayName: ShortText,
   legacyRole: ShortText
 });
@@ -15625,7 +15784,8 @@ function caseToRows(tcCase, newId) {
     hygienist_recommendation: c.hygieneIntake.hygienistRecommendation,
     insurance_noted: c.hygieneIntake.insuranceNoted,
     patient_interest_level: c.hygieneIntake.patientInterestLevel,
-    flag_urgent: c.hygieneIntake.flagUrgent
+    flag_urgent: c.hygieneIntake.flagUrgent,
+    ortho_screening: c.hygieneIntake.orthoScreening
   } : null;
   return { caseRow, phaseRows, itemRows, objectionRows, followupRows, eventRows, hygieneIntakeRow };
 }
@@ -15746,7 +15906,8 @@ function caseFromRows(rows) {
       hygienistRecommendation: hygieneIntakeRow.hygienist_recommendation,
       insuranceNoted: hygieneIntakeRow.insurance_noted,
       patientInterestLevel: hygieneIntakeRow.patient_interest_level,
-      flagUrgent: hygieneIntakeRow.flag_urgent
+      flagUrgent: hygieneIntakeRow.flag_urgent,
+      orthoScreening: hygieneIntakeRow.ortho_screening ?? null
     } : null
   });
 }
@@ -15842,7 +16003,7 @@ function userMapEntryToRow(u) {
 }
 
 // ../backend/tc/contract.entry.ts
-var import_zod3 = __toESM(require_zod());
+var import_zod4 = __toESM(require_zod());
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   ButtonBlock,
