@@ -295,8 +295,30 @@ router.get(
       )
     );
 
+    // ITEM 33: which of these cases arrived with a hygienist's ortho screening,
+    // so the board can mark them without loading every case's children. One
+    // office-scoped query over exactly the ids on this page.
+    const ids = rows.rows.map((r) => r.case_id);
+    const screened = new Set();
+    if (ids.length > 0) {
+      const found = await tenantDb.withTenantDb(req, (pool) =>
+        pool.query(
+          `SELECT case_id FROM tc_hygiene_intakes
+            WHERE office_id = $1 AND case_id = ANY($2) AND ortho_screening IS NOT NULL`,
+          [req.tcOffice, ids]
+        )
+      );
+      for (const r of found.rows) screened.add(r.case_id);
+    }
+
     await auditTc(req, 'READ', 'tc_case', null);
-    res.json({ success: true, cases: rows.rows.map(caseRowToSummary) });
+    res.json({
+      success: true,
+      cases: rows.rows.map((r) => ({
+        ...caseRowToSummary(r),
+        hasOrthoScreening: screened.has(r.case_id),
+      })),
+    });
   })
 );
 

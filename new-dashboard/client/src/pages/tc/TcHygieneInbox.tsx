@@ -31,6 +31,7 @@ import {
   UrgencyBadge,
 } from "@/features/tc/components/TcShell";
 import { OfficeBadge } from "@/features/tc/components/OfficeBadge";
+import { OrthoWorkupChip } from "@/features/tc/caseview/OrthoScreeningSection";
 import {
   fanOutOfficeRows,
   hardErrorMessage,
@@ -206,6 +207,9 @@ function InboxList({
                     </Badge>
                   )}
                   <UrgencyBadge urgency={r.urgency} />
+                  {/* Item 33: the inbox is the hygiene_review queue, so a
+                      screening here is always a work-up waiting. */}
+                  {r.orthoScreening !== null && <OrthoWorkupChip />}
                   {showOfficeBadges && <OfficeBadge officeId={r.officeId} />}
                   {r.odPatientId !== null && (
                     // The hygienist already identified this person in Open
