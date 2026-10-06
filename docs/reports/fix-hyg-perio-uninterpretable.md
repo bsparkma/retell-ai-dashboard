@@ -2,7 +2,7 @@
 
 Queue: `pm-prompts/queue/32-hyg-perio-uninterpretable-followups.md`. LANE: RED.
 Branch `fix/hyg-perio-uninterpretable` off `origin/develop` @ `52abe86`, the merge of #221.
-PR: **#PR_NUMBER** → `develop`. Not merged.
+PR: **#222** → `develop`. Not merged.
 
 ## What changed
 
@@ -93,7 +93,7 @@ A fresh-context reviewer subagent got the queue file and `git diff origin/develo
 
 ## CI
 
-CI_RESULT
+PR #222, `build-test`: **pass** (4m20s). Run 37394956908 on head `519ffc9`. It checked out `refs/remotes/pull/222/merge` at `93d0eee`, the merge tree, not just the branch head. No flakes. No fix pushes were needed. The only later push is this docs-only report update.
 
 ## Staging test steps
 
