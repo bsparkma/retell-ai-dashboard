@@ -26,6 +26,14 @@
  *    no auto-confirm. A person reads the list of exams the patient already has on
  *    this date and decides.
  *
+ * ITEM 32: rule 1 is now about a REASON, not a status. `unknown` used to mean
+ * only "Open Dental could not be read" (transient) and stays silent for that
+ * (`reason: 'unreadable_od'`). Since item 31 it can also mean "Open Dental holds
+ * a value CareIN cannot interpret" (`reason: 'uninterpretable'`) — durable, and
+ * somebody's hand. That gets ONE quiet, neutral line naming where: not the
+ * amber notice, no icon, no button. CareIN does not know what the value means,
+ * so it does not print it — only the tooth, surface and family.
+ *
  * ITEM 31: `changed` now covers recession, furcation and mobility as well as
  * probing. Each line names its family ("#3 B gingival margin: …") and mobility
  * names the TOOTH, so a changed recession never reads as a changed depth. The
@@ -34,7 +42,7 @@
 import { AlertTriangle, Send, Trash2 } from "lucide-react";
 
 import { type PerioDrift, type PerioSameDateExam } from "@shared/hyg/perio";
-import { perioChangeLine } from "@shared/hyg/perioSend";
+import { perioChangeLine, perioUnreadableList } from "@shared/hyg/perioSend";
 import {
   Dialog,
   DialogContent,
@@ -53,8 +61,8 @@ const SHOWN_CHANGES = 8;
 /**
  * The notice, or nothing at all.
  *
- * Returns null for `not_applicable`, `matches` and `unknown` — see the header.
- * That is three of the five answers, and it is the point.
+ * Returns null for `not_applicable`, `matches` and an `unknown` whose reason is
+ * `unreadable_od` — see the header. That silence is the point.
  */
 export function PerioDriftNotice({
   drift,
@@ -133,7 +141,20 @@ export function PerioDriftNotice({
     );
   }
 
-  // `not_applicable`, `matches`, `unknown` — the Written line stands, unqualified.
+  if (drift.status === "unknown" && drift.reason === "uninterpretable" && drift.positions.length > 0) {
+    // QUIET AND NEUTRAL, DELIBERATELY: no amber, no icon, no button. Nothing here
+    // is known to be wrong — CareIN only knows it cannot read it.
+    const plural = drift.positions.length > 1;
+    return (
+      <p className="px-1 text-sm text-muted-foreground" data-testid="hyg-perio-drift-uninterpretable">
+        Open Dental holds {plural ? "values" : "a value"} here CareIN can&rsquo;t read (
+        {perioUnreadableList(drift.positions)}). Check {plural ? "them" : "it"} in Open Dental.
+      </p>
+    );
+  }
+
+  // `not_applicable`, `matches`, `unknown` for an unreadable Open Dental — the
+  // Written line stands, unqualified.
   return null;
 }
 

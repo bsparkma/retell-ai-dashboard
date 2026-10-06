@@ -858,7 +858,7 @@ describe("correcting a sent chart (item 13)", () => {
     await waitFor(() => expect(screen.queryByTestId("hyg-perio-replaced-left")).toBeNull());
     expect(server.removed).toEqual([7001]);
     expect(screen.getByTestId("hyg-perio-amended").textContent).toMatch(
-      /1 site corrected · #1 DB: 2 mm → 7 mm · exam 7001 deleted/,
+      /1 reading corrected · #1 DB: 2 mm → 7 mm · exam 7001 deleted/,
     );
   });
 });
