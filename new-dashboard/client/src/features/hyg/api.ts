@@ -621,7 +621,8 @@ export async function savePerio(
  * `drift` rides the same response because it is answered from the same
  * `/perioexams` read. Two of its five answers say NOTHING to the user: `matches`
  * (checked, still true) and `unknown` (Open Dental could not be read). Drawing
- * either of them would be worse than silence.
+ * either of them would be worse than silence. Item 32: `unknown` whose `reason`
+ * is `uninterpretable` is the exception — one quiet line naming where.
  */
 export async function fetchPerioPrior(
   office: OfficeId,

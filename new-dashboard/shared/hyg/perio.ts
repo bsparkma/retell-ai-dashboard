@@ -993,6 +993,26 @@ export const PerioSameDateExamSchema = z.object({
 export type PerioSameDateExam = z.infer<typeof PerioSameDateExamSchema>;
 
 /**
+ * ITEM 32: WHERE Open Dental holds a v2 value CareIN cannot interpret.
+ *
+ * The position only — tooth, surface, family. The raw value is deliberately NOT
+ * carried: CareIN does not know what it means, so it does not print it as
+ * though it did. `tooth` is null (or outside 1–32) for a row Open Dental filed
+ * on a tooth CareIN cannot place; `surface` is null for mobility, which is per
+ * tooth.
+ */
+export const PerioUnreadablePositionSchema = z.object({
+  tooth: z.number().int().nullable(),
+  surface: ToothSurfaceSchema.nullable(),
+  kind: z.enum(["gm", "furcation", "mobility"]),
+});
+export type PerioUnreadablePosition = z.infer<typeof PerioUnreadablePositionSchema>;
+
+/** ITEM 32: the two reasons drift can be `unknown`. See `PerioDriftSchema`. */
+export const PerioDriftUnknownReasonSchema = z.enum(["unreadable_od", "uninterpretable"]);
+export type PerioDriftUnknownReason = z.infer<typeof PerioDriftUnknownReasonSchema>;
+
+/**
  * IS THE EXAM CAREIN WROTE STILL THE EXAM OPEN DENTAL HOLDS? (item 14)
  *
  * `Written` means every site was read back and matched — AT THE MOMENT IT WAS
@@ -1010,7 +1030,9 @@ export type PerioSameDateExam = z.infer<typeof PerioSameDateExamSchema>;
  *   `changed`        — the exam is there and the readings DIFFER. SAID, naming
  *                      the sites, and NO resend is offered.
  *   `unknown`        — Open Dental could not be read. NOTHING is said, and the
- *                      `Written` line stands unqualified.
+ *                      `Written` line stands unqualified. ITEM 32: or Open
+ *                      Dental holds a value CareIN cannot interpret — then a
+ *                      quiet neutral line names where (see `reason`).
  *
  * ⚠️ `changed` OFFERS NO RESEND, AND THAT IS THE DESIGN. A reading that differs
  * is a human who corrected the chart in Open Dental. Resending would create a
@@ -1040,7 +1062,27 @@ export const PerioDriftSchema = z.discriminatedUnion("status", [
     /** What Open Dental holds now, against what CareIN wrote. Never empty here. */
     changes: z.array(PerioSiteChangeSchema),
   }),
-  z.object({ status: z.literal("unknown"), examNum: z.number().int() }),
+  z.object({
+    status: z.literal("unknown"),
+    examNum: z.number().int(),
+    /**
+     * ITEM 32: WHY CareIN cannot say. Two causes that need different treatment:
+     *
+     *   `unreadable_od`   — Open Dental could not be read (or there is no baseline
+     *                       to compare with). TRANSIENT. Item 14's ruling stands:
+     *                       NOTHING is said.
+     *   `uninterpretable` — Open Dental WAS read, and holds a v2 value CareIN
+     *                       cannot interpret. DURABLE: somebody's hand put it
+     *                       there. A quiet neutral line names where — never the
+     *                       amber notice, never a button.
+     *
+     * Defaults to `unreadable_od` so an answer that does not carry a reason is
+     * read as the silent one it always was.
+     */
+    reason: PerioDriftUnknownReasonSchema.default("unreadable_od"),
+    /** Where the uninterpretable values are. Empty for `unreadable_od`. Never the value. */
+    positions: z.array(PerioUnreadablePositionSchema).default([]),
+  }),
 ]);
 export type PerioDrift = z.infer<typeof PerioDriftSchema>;
 

@@ -1059,7 +1059,8 @@ export default function HygPerio() {
       {/*
         ITEM 14: above the prior panel, because it is about THIS chart's claim and
         not about the patient's history. It draws nothing at all for three of the
-        five answers — `matches` and `unknown` included, on purpose.
+        five answers — `matches` and `unknown` included, on purpose. ITEM 32: the
+        exception is `unknown` for `uninterpretable`, which draws one quiet line.
       */}
       <div className="mt-3">
         <PerioDriftNotice

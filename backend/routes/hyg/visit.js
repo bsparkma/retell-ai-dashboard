@@ -1031,7 +1031,7 @@ router.get(
       // `unknown` row of the table.
       drift =
         context.live && context.live.exam_num !== null
-          ? { status: 'unknown', examNum: context.live.exam_num }
+          ? perioDrift.unreadableOd(context.live.exam_num)
           : perioDrift.NOT_APPLICABLE;
       console.error(`[hygperio] drift check failed: ${String((err && err.message) || err)}`);
     }
@@ -1071,21 +1071,29 @@ router.get(
      * THE RE-READ IS A FETCH AND DOES NOT AUDIT. THE MOMENT IT TELLS HER
      * SOMETHING, IT DOES.
      *
-     * `matches` and `unknown` say nothing to the user, so there is nothing
+     * `matches` says nothing to the user, and neither does `unknown` for
+     * `unreadable_od` (Open Dental could not be read), so there is nothing
      * disclosed and nothing to record. `missing` and `changed` are a statement
      * about what a chart of record does and does not contain — that is the
      * disclosure, and it carries which of the answers it was and the exam number.
+     *
+     * ITEM 32: `unknown` for `uninterpretable` NAMES TEETH — "Open Dental holds a
+     * value here CareIN can't read (#3 B gingival margin)" — and naming teeth is
+     * the disclosure, so it audits too. `prior_state` is `unknown:uninterpretable`
+     * and `source_ref` carries the exam number AND the positions it named
+     * (`perioDrift.driftAuditRef`): identifiers only, never the raw value.
+     *
      * Fail-CLOSED, like every other audit on this path: no trail, no answer.
      */
-    if (drift.status === 'missing' || drift.status === 'changed') {
+    if (perioDrift.driftDiscloses(drift)) {
       await audit(req, {
         action: 'READ',
         resourceType: 'hyg_perio_drift',
         resourceId: aptNum,
         result: 'SUCCESS',
         office,
-        sourceRef: `perio_exam:${drift.examNum}`,
-        priorState: drift.status,
+        sourceRef: perioDrift.driftAuditRef(drift),
+        priorState: drift.status === 'unknown' ? `unknown:${drift.reason}` : drift.status,
       });
     }
     /*
@@ -1111,7 +1119,9 @@ router.get(
 
     // Counts and milliseconds only — never a PatNum, never a reading.
     console.log(
-      `[hygperio] office=${office} apt=${aptNum} prior=${prior.status} drift=${drift.status} ` +
+      `[hygperio] office=${office} apt=${aptNum} prior=${prior.status} drift=${drift.status}` +
+        (drift.status === 'unknown' ? `:${drift.reason}` : '') +
+        ' ' +
         `preskip=${preSkip.status}` +
         (initials
           ? `/${initials.missing} rows=${initials.rows} foreign=${initials.foreign} ` +

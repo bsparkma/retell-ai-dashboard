@@ -14889,6 +14889,7 @@ __export(contract_entry_exports, {
   PERIO_STAGE_LABELS: () => PERIO_STAGE_LABELS,
   PERIO_STRING_MAX_DEPTH: () => PERIO_STRING_MAX_DEPTH,
   PERIO_TOOTH_COUNT: () => PERIO_TOOTH_COUNT,
+  PERIO_UNREADABLE_NAMED: () => PERIO_UNREADABLE_NAMED,
   PERIO_UPPER_TEETH: () => PERIO_UPPER_TEETH,
   PerioArchPathSchema: () => PerioArchPathSchema,
   PerioArchPlanSchema: () => PerioArchPlanSchema,
@@ -14900,6 +14901,7 @@ __export(contract_entry_exports, {
   PerioDeleteExamRequestSchema: () => PerioDeleteExamRequestSchema,
   PerioDirectionSchema: () => PerioDirectionSchema,
   PerioDriftSchema: () => PerioDriftSchema,
+  PerioDriftUnknownReasonSchema: () => PerioDriftUnknownReasonSchema,
   PerioGradeSchema: () => PerioGradeSchema,
   PerioMismatchKindSchema: () => PerioMismatchKindSchema,
   PerioMismatchSchema: () => PerioMismatchSchema,
@@ -14919,6 +14921,7 @@ __export(contract_entry_exports, {
   PerioSweepSchema: () => PerioSweepSchema,
   PerioToothKeySchema: () => PerioToothKeySchema,
   PerioToothSchema: () => PerioToothSchema,
+  PerioUnreadablePositionSchema: () => PerioUnreadablePositionSchema,
   RECORDS_MATRIX: () => RECORDS_MATRIX,
   RECORD_STATUS_LABELS: () => RECORD_STATUS_LABELS,
   RecordStatusSchema: () => RecordStatusSchema,
@@ -14990,6 +14993,8 @@ __export(contract_entry_exports, {
   perioSite: () => perioSite,
   perioTooth: () => perioTooth,
   perioToothHasFurcation: () => perioToothHasFurcation,
+  perioUnreadableList: () => perioUnreadableList,
+  perioUnreadableRef: () => perioUnreadableRef,
   planPerioSend: () => planPerioSend,
   recordsNeededFor: () => recordsNeededFor,
   renderVisitNote: () => renderVisitNote,
@@ -16056,6 +16061,8 @@ var HYG_VISIT_ERROR_CODES = [
   "NOT_AMENDING",
   "AMEND_BASE_CHANGED",
   "AMEND_BASE_MISSING",
+  // Item 32: the exam holds a v2 value CareIN cannot interpret. Never superseded.
+  "AMEND_BASE_UNREADABLE",
   "NOT_REPLACED"
 ];
 
@@ -16619,6 +16626,12 @@ var PerioSameDateExamSchema = import_zod3.z.object({
   provNum: import_zod3.z.number().int().nullable(),
   careinWrote: import_zod3.z.boolean()
 });
+var PerioUnreadablePositionSchema = import_zod3.z.object({
+  tooth: import_zod3.z.number().int().nullable(),
+  surface: ToothSurfaceSchema.nullable(),
+  kind: import_zod3.z.enum(["gm", "furcation", "mobility"])
+});
+var PerioDriftUnknownReasonSchema = import_zod3.z.enum(["unreadable_od", "uninterpretable"]);
 var PerioDriftSchema = import_zod3.z.discriminatedUnion("status", [
   import_zod3.z.object({ status: import_zod3.z.literal("not_applicable") }),
   import_zod3.z.object({ status: import_zod3.z.literal("matches"), examNum: import_zod3.z.number().int() }),
@@ -16637,7 +16650,27 @@ var PerioDriftSchema = import_zod3.z.discriminatedUnion("status", [
     /** What Open Dental holds now, against what CareIN wrote. Never empty here. */
     changes: import_zod3.z.array(PerioSiteChangeSchema)
   }),
-  import_zod3.z.object({ status: import_zod3.z.literal("unknown"), examNum: import_zod3.z.number().int() })
+  import_zod3.z.object({
+    status: import_zod3.z.literal("unknown"),
+    examNum: import_zod3.z.number().int(),
+    /**
+     * ITEM 32: WHY CareIN cannot say. Two causes that need different treatment:
+     *
+     *   `unreadable_od`   — Open Dental could not be read (or there is no baseline
+     *                       to compare with). TRANSIENT. Item 14's ruling stands:
+     *                       NOTHING is said.
+     *   `uninterpretable` — Open Dental WAS read, and holds a v2 value CareIN
+     *                       cannot interpret. DURABLE: somebody's hand put it
+     *                       there. A quiet neutral line names where — never the
+     *                       amber notice, never a button.
+     *
+     * Defaults to `unreadable_od` so an answer that does not carry a reason is
+     * read as the silent one it always was.
+     */
+    reason: PerioDriftUnknownReasonSchema.default("unreadable_od"),
+    /** Where the uninterpretable values are. Empty for `unreadable_od`. Never the value. */
+    positions: import_zod3.z.array(PerioUnreadablePositionSchema).default([])
+  })
 ]);
 var PerioPreSkipSchema = import_zod3.z.discriminatedUnion("status", [
   import_zod3.z.object({
@@ -17235,6 +17268,17 @@ function perioChangeLine(c) {
   const label = PERIO_CHANGE_KIND_LABEL[c.kind];
   return `${label === null ? where : `${where} ${label}`}: ${c.from} \u2192 ${c.to}`;
 }
+function perioUnreadableRef(p) {
+  const label = PERIO_CHANGE_KIND_LABEL[p.kind];
+  if (p.tooth === null || p.tooth < 1 || p.tooth > 32) return `${label} on a tooth CareIN cannot place`;
+  return `${p.surface === null ? `#${p.tooth}` : `#${p.tooth} ${p.surface}`} ${label}`;
+}
+var PERIO_UNREADABLE_NAMED = 3;
+function perioUnreadableList(positions) {
+  const named = positions.slice(0, PERIO_UNREADABLE_NAMED).map(perioUnreadableRef).join(", ");
+  const rest = positions.length - PERIO_UNREADABLE_NAMED;
+  return rest > 0 ? `${named} and ${rest} more` : named;
+}
 function perioChangeSiteRef(c) {
   return c.surface === null ? `#${c.tooth}` : `#${c.tooth} ${c.surface}`;
 }
@@ -17374,6 +17418,7 @@ var import_zod5 = __toESM(require_zod());
   PERIO_STAGE_LABELS,
   PERIO_STRING_MAX_DEPTH,
   PERIO_TOOTH_COUNT,
+  PERIO_UNREADABLE_NAMED,
   PERIO_UPPER_TEETH,
   PerioArchPathSchema,
   PerioArchPlanSchema,
@@ -17385,6 +17430,7 @@ var import_zod5 = __toESM(require_zod());
   PerioDeleteExamRequestSchema,
   PerioDirectionSchema,
   PerioDriftSchema,
+  PerioDriftUnknownReasonSchema,
   PerioGradeSchema,
   PerioMismatchKindSchema,
   PerioMismatchSchema,
@@ -17404,6 +17450,7 @@ var import_zod5 = __toESM(require_zod());
   PerioSweepSchema,
   PerioToothKeySchema,
   PerioToothSchema,
+  PerioUnreadablePositionSchema,
   RECORDS_MATRIX,
   RECORD_STATUS_LABELS,
   RecordStatusSchema,
@@ -17475,6 +17522,8 @@ var import_zod5 = __toESM(require_zod());
   perioSite,
   perioTooth,
   perioToothHasFurcation,
+  perioUnreadableList,
+  perioUnreadableRef,
   planPerioSend,
   recordsNeededFor,
   renderVisitNote,

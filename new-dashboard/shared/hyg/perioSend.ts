@@ -70,6 +70,7 @@ import {
   emptyPerioSite,
   perioGmIsRecession,
   type PerioSiteChange,
+  type PerioUnreadablePosition,
 } from "./perio";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -795,6 +796,31 @@ export function perioChangeLine(c: PerioSiteChange): string {
   const where = c.surface === null ? `#${c.tooth}` : `#${c.tooth} ${c.surface}`;
   const label = PERIO_CHANGE_KIND_LABEL[c.kind];
   return `${label === null ? where : `${where} ${label}`}: ${c.from} → ${c.to}`;
+}
+
+/**
+ * ITEM 32: "#3 B gingival margin", "#30 mobility" — WHERE Open Dental holds a
+ * value CareIN cannot interpret. Position and family only, never the value.
+ * A row filed on a tooth CareIN cannot place says so instead of a number.
+ */
+export function perioUnreadableRef(p: PerioUnreadablePosition): string {
+  const label = PERIO_CHANGE_KIND_LABEL[p.kind];
+  if (p.tooth === null || p.tooth < 1 || p.tooth > 32) return `${label} on a tooth CareIN cannot place`;
+  return `${p.surface === null ? `#${p.tooth}` : `#${p.tooth} ${p.surface}`} ${label}`;
+}
+
+/** How many positions a sentence names before it counts the rest. */
+export const PERIO_UNREADABLE_NAMED = 3;
+
+/**
+ * "#3 B gingival margin" / "#3 B gingival margin, #30 mobility and 2 more" — the
+ * one list both the drift line and the amend refusal print, so the screen and
+ * the refusal can never name the same positions two different ways.
+ */
+export function perioUnreadableList(positions: readonly PerioUnreadablePosition[]): string {
+  const named = positions.slice(0, PERIO_UNREADABLE_NAMED).map(perioUnreadableRef).join(", ");
+  const rest = positions.length - PERIO_UNREADABLE_NAMED;
+  return rest > 0 ? `${named} and ${rest} more` : named;
 }
 
 /** "#14 B" — the sites an amendment touches, for the audit trail and the grid. */

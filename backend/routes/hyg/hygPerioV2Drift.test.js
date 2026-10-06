@@ -417,19 +417,19 @@ test('ACCEPTANCE 7: a margin Open Dental holds in the OTHER family (101–119) i
 test('ACCEPTANCE 8: a v2 value the comparison cannot interpret is `unknown`, never `matches`', async () => {
   const cases = [
     // CareIN wrote class 2 at #3 ML; Open Dental holds a 5 (it accepted one, §7).
-    ['furcation out of range over a CareIN value', (od, n) => editInOpenDental(od, n, 3, 'Furcation', 'MLvalue', 5)],
+    ['furcation out of range over a CareIN value', (od, n) => editInOpenDental(od, n, 3, 'Furcation', 'MLvalue', 5), '3-ML:furcation'],
     // A margin row CareIN never wrote, carrying a number in neither family.
-    ['margin in neither family', (od, n) => addInOpenDental(od, n, 14, 'GingMargin', { Bvalue: 50 })],
+    ['margin in neither family', (od, n) => addInOpenDental(od, n, 14, 'GingMargin', { Bvalue: 50 }), '14-B:gm'],
     // A mobility grade past 3.
-    ['mobility out of range', (od, n) => editInOpenDental(od, n, 3, 'Mobility', 'ToothValue', 9)],
+    ['mobility out of range', (od, n) => editInOpenDental(od, n, 3, 'Mobility', 'ToothValue', 9), '3:mobility'],
     // A value that is not a number at all.
-    ['unparseable margin', (od, n) => editInOpenDental(od, n, 3, 'GingMargin', 'MBvalue', 'x')],
+    ['unparseable margin', (od, n) => editInOpenDental(od, n, 3, 'GingMargin', 'MBvalue', 'x'), '3-MB:gm'],
     // A v2 row with a value on a tooth CareIN cannot place.
-    ['v2 row on an unplaceable tooth', (od, n) => addInOpenDental(od, n, 0, 'Mobility', { ToothValue: 2 })],
+    ['v2 row on an unplaceable tooth', (od, n) => addInOpenDental(od, n, 0, 'Mobility', { ToothValue: 2 }), '0:mobility'],
     // …including tooth -1, which must not be mistaken for Open Dental's -1 "nothing here".
-    ['v2 row on tooth -1', (od, n) => addInOpenDental(od, n, -1, 'Mobility', { ToothValue: 2 })],
+    ['v2 row on tooth -1', (od, n) => addInOpenDental(od, n, -1, 'Mobility', { ToothValue: 2 }), '-1:mobility'],
   ];
-  for (const [label, edit] of cases) {
+  for (const [label, edit, where] of cases) {
     const od = perioFake();
     const app = await bootHygApp({ od: od.client });
     try {
@@ -440,8 +440,37 @@ test('ACCEPTANCE 8: a v2 value the comparison cannot interpret is `unknown`, nev
       assert.equal(answer.body.drift.status, 'unknown', `${label}: never matches, never a made-up line`);
       assert.equal(answer.body.drift.examNum, examNum);
       assert.equal(contract.PerioDriftSchema.safeParse(answer.body.drift).success, true);
-      // `unknown` says nothing, so it discloses nothing.
-      assert.deepEqual(driftAudits(app), [], label);
+      /*
+       * ITEM 32 — A PREMISE UPDATE, NOT A WEAKENING. This line used to read
+       * "`unknown` says nothing, so it discloses nothing" and assert no row.
+       * Since item 32 an `uninterpretable` answer NAMES the position on screen,
+       * and naming teeth is the disclosure, so it writes exactly one row:
+       * identifiers only — the exam number and the position, never the value.
+       * `unreadable_od` still names nothing and still writes none (below).
+       */
+      const rows = driftAudits(app);
+      assert.equal(rows.length, 1, label);
+      assert.equal(rows[0].resource_type, 'hyg_perio_drift', label);
+      assert.equal(rows[0].prior_state, 'unknown:uninterpretable', label);
+      assert.equal(rows[0].source_ref, `perio_exam:${examNum};${where}`, `${label}: identifiers only, never the value`);
+    } finally {
+      await app.close();
+    }
+  }
+
+  // ITEM 32: an Open Dental that cannot be READ is `unknown` for `unreadable_od`,
+  // names nothing, and still writes no drift row.
+  {
+    const od = perioFake();
+    const app = await bootHygApp({ od: od.client });
+    try {
+      await writeChart(app, v2Chart());
+      od.client.routes['/perioexams'] = { ok: false, status: 503, data: null, error: 'Service Unavailable' };
+      const answer = await prior(app);
+      assert.equal(answer.status, 200, JSON.stringify(answer.body));
+      assert.equal(answer.body.drift.status, 'unknown');
+      assert.equal(answer.body.drift.reason, 'unreadable_od');
+      assert.deepEqual(driftAudits(app), [], 'unreadable_od discloses nothing, so it records nothing');
     } finally {
       await app.close();
     }
