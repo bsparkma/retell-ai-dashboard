@@ -1031,7 +1031,7 @@ router.get(
       // `unknown` row of the table.
       drift =
         context.live && context.live.exam_num !== null
-          ? { status: 'unknown', examNum: context.live.exam_num }
+          ? perioDrift.unreadableOd(context.live.exam_num)
           : perioDrift.NOT_APPLICABLE;
       console.error(`[hygperio] drift check failed: ${String((err && err.message) || err)}`);
     }
@@ -1077,7 +1077,16 @@ router.get(
      * disclosure, and it carries which of the answers it was and the exam number.
      * Fail-CLOSED, like every other audit on this path: no trail, no answer.
      */
-    if (drift.status === 'missing' || drift.status === 'changed') {
+    /*
+     * ITEM 32: an `uninterpretable` answer NAMES positions in the chart of record,
+     * so it is a disclosure and audits like `changed`. `unreadable_od` names
+     * nothing and stays unaudited, exactly as before.
+     */
+    const driftDiscloses =
+      drift.status === 'missing' ||
+      drift.status === 'changed' ||
+      (drift.status === 'unknown' && drift.reason === 'uninterpretable');
+    if (driftDiscloses) {
       await audit(req, {
         action: 'READ',
         resourceType: 'hyg_perio_drift',
@@ -1085,7 +1094,7 @@ router.get(
         result: 'SUCCESS',
         office,
         sourceRef: `perio_exam:${drift.examNum}`,
-        priorState: drift.status,
+        priorState: drift.status === 'unknown' ? `unknown:${drift.reason}` : drift.status,
       });
     }
     /*
@@ -1111,7 +1120,9 @@ router.get(
 
     // Counts and milliseconds only — never a PatNum, never a reading.
     console.log(
-      `[hygperio] office=${office} apt=${aptNum} prior=${prior.status} drift=${drift.status} ` +
+      `[hygperio] office=${office} apt=${aptNum} prior=${prior.status} drift=${drift.status}` +
+        (drift.status === 'unknown' ? `:${drift.reason}` : '') +
+        ' ' +
         `preskip=${preSkip.status}` +
         (initials
           ? `/${initials.missing} rows=${initials.rows} foreign=${initials.foreign} ` +

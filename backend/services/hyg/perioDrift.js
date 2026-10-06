@@ -72,6 +72,26 @@ const NOT_APPLICABLE = Object.freeze({ status: 'not_applicable' });
 /** How many changed sites the screen is handed. A whole chart can differ at 192. */
 const MAX_REPORTED_CHANGES = 24;
 
+/**
+ * ITEM 32: `unknown` because CareIN could not SEE — a failed or partial read, or
+ * no baseline to compare against. Transient, and silent on screen (item 14).
+ * Distinct from `uninterpretable`, where Open Dental was read and holds a value
+ * somebody put there that CareIN cannot interpret.
+ */
+function unreadableOd(examNum) {
+  return { status: 'unknown', reason: 'unreadable_od', examNum, positions: [] };
+}
+
+/**
+ * Where, never what: `raw` is dropped here so the value CareIN cannot interpret
+ * never reaches the screen as though it meant something. Capped like `changes`.
+ */
+function unreadablePositions(unreadable) {
+  return unreadable
+    .slice(0, MAX_REPORTED_CHANGES)
+    .map((u) => ({ tooth: u.tooth, surface: u.surface, kind: u.kind }));
+}
+
 function refuse(status, code, error) {
   return { ok: false, status, code, error };
 }
@@ -151,7 +171,7 @@ async function checkDrift({ staged, live, exams, latest, odGet, careinExamNums =
 
   // A LIST THAT DID NOT COME BACK WHOLE PROVES NOTHING ABOUT PRESENCE. An exam
   // missing from half a list is not missing from the chart.
-  if (!exams.ok) return { drift: { status: 'unknown', examNum }, odReads: 0 };
+  if (!exams.ok) return { drift: unreadableOd(examNum), odReads: 0 };
 
   if (!exams.list.some((e) => e.examNum === examNum)) {
     return {
@@ -173,7 +193,7 @@ async function checkDrift({ staged, live, exams, latest, odGet, careinExamNums =
    * construction — a claim CareIN has not checked. `unknown` is the honest answer.
    */
   const baseline = perioSend.sendChart(live);
-  if (!baseline) return { drift: { status: 'unknown', examNum }, odReads: 0 };
+  if (!baseline) return { drift: unreadableOd(examNum), odReads: 0 };
 
   let odChart = latest && latest.examNum === examNum ? latest.chart : null;
   let unreadable = odChart ? latest.uninterpretable || [] : [];
@@ -183,7 +203,7 @@ async function checkDrift({ staged, live, exams, latest, odGet, careinExamNums =
     // Dental. One extra read, and only here.
     const read = await odPerio.readExamMeasures(odGet, { examNum });
     odReads = read.odReads;
-    if (!read.ok || read.truncated) return { drift: { status: 'unknown', examNum }, odReads };
+    if (!read.ok || read.truncated) return { drift: unreadableOd(examNum), odReads };
     ({ chart: odChart, uninterpretable: unreadable } = odPerio.chartFromMeasures(read.rows));
   }
 
@@ -207,6 +227,8 @@ async function checkDrift({ staged, live, exams, latest, odGet, careinExamNums =
  *     unreadable site does not hide a recession somebody plainly edited.
  *   - No reportable change, but something unreadable: `unknown`. NEVER `matches`
  *     — CareIN did not see that position agree, so it does not say it did.
+ *     ITEM 32: with `reason: 'uninterpretable'` and the positions, so the screen
+ *     can name them — unlike a failed read, this is durable and somebody's hand.
  *
  * Pure, so the three outcomes are tested without Open Dental.
  *
@@ -221,7 +243,9 @@ function driftAnswer({ examNum, baseline, odChart, unreadable = [] }) {
   if (changes.length > 0) {
     return { status: 'changed', examNum, changes: changes.slice(0, MAX_REPORTED_CHANGES) };
   }
-  if (unreadable.length > 0) return { status: 'unknown', examNum };
+  if (unreadable.length > 0) {
+    return { status: 'unknown', reason: 'uninterpretable', examNum, positions: unreadablePositions(unreadable) };
+  }
   return { status: 'matches', examNum };
 }
 
@@ -318,6 +342,7 @@ module.exports = {
   driftAnswer,
   resendVanishedChart,
   sameDateExams,
+  unreadableOd,
   NOT_APPLICABLE,
   MAX_REPORTED_CHANGES,
 };

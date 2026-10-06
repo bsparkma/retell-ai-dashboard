@@ -1194,6 +1194,8 @@ export const HYG_VISIT_ERROR_CODES = [
   "NOT_AMENDING",
   "AMEND_BASE_CHANGED",
   "AMEND_BASE_MISSING",
+  // Item 32: the exam holds a v2 value CareIN cannot interpret. Never superseded.
+  "AMEND_BASE_UNREADABLE",
   "NOT_REPLACED",
 ] as const;
 export type HygVisitErrorCode = (typeof HYG_VISIT_ERROR_CODES)[number];
