@@ -65,7 +65,10 @@ function createHygVoiceRouter({ budget = new HygVoiceBudget(), fetchImpl, env = 
   const router = express.Router();
 
   router.post('/token', async (req, res) => {
-    if (hasPayload(req.body)) {
+    // The parsed body AND the raw framing: a text/plain or octet body is left
+    // unparsed (req.body stays {}), and is refused all the same.
+    const declaredLength = Number(req.headers['content-length'] || 0);
+    if (hasPayload(req.body) || declaredLength > 0 || req.headers['transfer-encoding'] !== undefined) {
       return res.status(400).json({
         success: false,
         code: 'HYG_VOICE_NO_PAYLOAD',

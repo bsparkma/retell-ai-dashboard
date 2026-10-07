@@ -11,7 +11,8 @@
  * is the entry reducer's job (features/hyg/perio/entry.ts, action `voice`), so
  * voice and the keyboard walk the same charting order by construction.
  *
- *   depths     0–12, as words ("seven") or numerals ("7"); each one lands on the
+ *   depths     0–12 as words ("seven"), or 0–9 as numerals ("7") — a two-digit
+ *              numeral is ambiguous, see `numeralDepth`; each one lands on the
  *              current site and the cursor steps to the next in charting order
  *   flags      bleeding / suppuration / plaque / calculus — on the site just
  *              charted (the same target the B S P C keys use)
@@ -242,7 +243,9 @@ export function rejectionMessage(reason: VoiceRejectReason, heard: string): stri
     case "over_max":
       return `Heard “${heard}”. Voice charts depths 0–12, so nothing was charted. Key a deeper reading by hand.`;
     case "concatenated":
-      return `Heard “${heard}” as one number, so it could be more than one depth. Nothing was charted — say them again, one at a time.`;
+      return `Heard “${heard}” as one number, so it could be more than one depth. Nothing was charted — say them again, one at a time${
+        /^1[0-2]$/.test(heard) ? ` (for ${heard} mm, key it, or say “${DEPTH_WORDS[Number(heard)]}” clearly)` : ""
+      }.`;
     case "out_of_vocabulary":
       return `Heard “${heard}”, which is not a depth, a flag or a command. Nothing was charted.`;
     case "bad_tooth":
@@ -261,6 +264,15 @@ function startsWith(tokens: readonly string[], at: number, phrase: readonly stri
 function numeralDepth(token: string): { value: number } | { reason: "over_max" | "concatenated" } {
   // "05" is "zero five" run together, not five.
   if (token.length > 1 && token.startsWith("0")) return { reason: "concatenated" };
+  // A TWO-DIGIT numeral is never trusted, even 10–12. Azure's display text
+  // writes "one one" as "11" exactly as it writes "eleven", so "11" cannot be
+  // told from a 1 then a 1 — and reading it as eleven would chart a wrong depth
+  // SILENTLY, the worst thing this grammar can do. 10–12 are charted from the
+  // WORDS ("ten", "eleven", "twelve") or by hand. Single digits 0–9 are safe.
+  if (token.length > 1) {
+    const n = Number(token);
+    return n >= 13 && n <= 19 ? { reason: "over_max" } : { reason: "concatenated" };
+  }
   const n = Number(token);
   if (n <= VOICE_MAX_DEPTH) return { value: n };
   // 13–19 is one spoken number that is simply too deep. Anything wider ("80",

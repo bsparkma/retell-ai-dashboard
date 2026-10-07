@@ -309,6 +309,19 @@ test('row 2: the route takes no body — anything said cannot ride along', async
           assert.equal(other.status, 404, 'POST /voice' + p);
         }
         assert.equal((await api(app.baseUrl, 'GET', TOKEN_PATH)).status, 404, 'GET /token is not a route');
+        // A body express.json() does not parse (req.body stays {}) is refused all the same.
+        for (const [type, raw] of [
+          ['text/plain', 'three two three bleeding'],
+          ['application/octet-stream', 'RIFF....WAVEfmt '],
+        ]) {
+          const r = await fetch(app.baseUrl + TOKEN_PATH, {
+            method: 'POST',
+            headers: { Authorization: 'Bearer test-token', 'Content-Type': type },
+            body: raw,
+          });
+          assert.equal(r.status, 400, type);
+          assert.equal((await r.json()).code, 'HYG_VOICE_NO_PAYLOAD');
+        }
       } finally {
         await app.close();
       }

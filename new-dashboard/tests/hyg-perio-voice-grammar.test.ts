@@ -43,19 +43,29 @@ function rejection(text: string): Extract<VoiceParse, { kind: "rejected" }> {
 const depths = (...values: number[]): VoiceCommand[] => values.map((value) => ({ type: "depth", value }));
 
 describe("depths 0–12", () => {
-  it("reads every depth word and every numeral 0–12", () => {
+  it("reads every depth word 0–12, and every single-digit numeral 0–9", () => {
     expect(VOICE_MAX_DEPTH).toBe(12);
     DEPTH_WORDS.forEach((word, value) => {
       expect(commands(word)).toEqual(depths(value));
-      expect(commands(String(value))).toEqual(depths(value));
+      if (value <= 9) expect(commands(String(value))).toEqual(depths(value));
     });
+  });
+
+  it("REFUSES the numerals 10, 11, 12: Azure writes 'one one' as '11' too, and a silent 11 mm would be a wrong depth", () => {
+    for (const heard of ["10", "11", "12"]) {
+      const r = rejection(heard);
+      expect(r.reason, heard).toBe("concatenated");
+      expect(r.message).toMatch(/one number/);
+      expect(r.message, "says how to chart it instead").toMatch(/key it, or say/);
+    }
+    expect(rejection("three 11 four").heard).toBe("11");
   });
 
   it("reads a run of depths in the order said, in either form, through Azure's punctuation", () => {
     expect(commands("three two three")).toEqual(depths(3, 2, 3));
     expect(commands("3 2 3")).toEqual(depths(3, 2, 3));
     expect(commands("3, 2, 3.")).toEqual(depths(3, 2, 3));
-    expect(commands("Four, five, 12!")).toEqual(depths(4, 5, 12));
+    expect(commands("Four, five, twelve!")).toEqual(depths(4, 5, 12));
     expect(commands("ten eleven twelve")).toEqual(depths(10, 11, 12));
   });
 });
@@ -299,6 +309,35 @@ describe("a spoken final on the sheet (the entry reducer's `voice` action)", () 
     let s = say(fresh(), "three three three");
     s = say(s, "go back to tooth 1 mesiobuccal six");
     expect(perioSite(s.chart, 1, "MB").depth).toBe(6);
+  });
+
+  it("END OF THE CHART: a depth past the last site is refused, never written over the last reading", () => {
+    const order = chartingOrder(emptyPerioChart().sweep);
+    const last = order[order.length - 1];
+    const start = { ...fresh(), cursor: last };
+    const one = say(start, "four");
+    expect(perioSite(one.chart, last.tooth, last.surface).depth).toBe(4);
+    // Within one final: all or nothing, so the four is not kept either.
+    const run = say(start, "four five");
+    expect(run.chart).toEqual(start.chart);
+    expect(run.refusal).toMatch(/end of the chart/);
+    // Across finals: the next one cannot overwrite it.
+    const next = say(one, "five");
+    expect(perioSite(next.chart, last.tooth, last.surface).depth).toBe(4);
+    expect(next.refusal).toMatch(/end of the chart/);
+    // Moving there deliberately still lets her correct it.
+    const corrected = say(one, `go back to tooth ${last.tooth} ${last.surface} five`);
+    expect(perioSite(corrected.chart, last.tooth, last.surface).depth).toBe(5);
+  });
+
+  it("undo with nothing to undo is refused, and clears nothing", () => {
+    const chart = withPerioSite(emptyPerioChart(), 1, "DB", { depth: 4 });
+    const start = initialPerioEntry(chart);
+    const order = chartingOrder(chart.sweep);
+    const atFirst = { ...start, cursor: order[0], lastEntered: null };
+    const after = say(atFirst, "undo");
+    expect(after.chart).toEqual(atFirst.chart);
+    expect(after.refusal).toMatch(/nothing to undo/);
   });
 
   it("undo is Backspace: the last reading is taken back and the cursor returns to it", () => {

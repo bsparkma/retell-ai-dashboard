@@ -440,6 +440,15 @@ function applyVoice(state: PerioEntryState, commands: readonly VoiceCommand[]): 
         if (perioTooth(s.chart, s.cursor.tooth).skipped) {
           return refuse(`#${s.cursor.tooth} is skipped, so “${command.value}” was not charted. Nothing from that phrase was.`);
         }
+        // END OF THE CHART. At the last site the cursor stays put, so a reading
+        // just landed HERE and the cursor did not move: another depth would
+        // silently overwrite it. The keyboard lets a hand do that on purpose; a
+        // run of spoken depths running off the end is never on purpose.
+        if (s.lastEntered !== null && sameCursor(s.lastEntered, s.cursor)) {
+          return refuse(
+            `That is the end of the chart: #${s.cursor.tooth} ${s.cursor.surface} already has its reading, so “${command.value}” was not charted. Nothing from that phrase was.`,
+          );
+        }
         s = reducePerioEntry(s, { type: "number", value: command.value });
         break;
       }
@@ -473,9 +482,15 @@ function applyVoice(state: PerioEntryState, commands: readonly VoiceCommand[]): 
         s = reducePerioEntry(s, { type: "select", cursor });
         break;
       }
-      case "undo":
+      case "undo": {
+        // Backspace's target, and only if there IS one: with nothing entered
+        // and nothing before the cursor, Backspace would clear the cursor's own
+        // site — a reading she never asked to lose.
+        const target = s.lastEntered ?? stepPerioCursor(s.chart, s.cursor, -1);
+        if (target === null) return refuse("There is nothing to undo yet. Nothing was changed.");
         s = reducePerioEntry(s, { type: "erase" });
         break;
+      }
     }
   }
   return { ...s, refusal: null };

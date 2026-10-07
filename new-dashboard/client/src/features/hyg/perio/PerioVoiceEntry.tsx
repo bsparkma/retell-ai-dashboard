@@ -125,10 +125,21 @@ export function PerioVoiceEntry({ office, locked, onCommands, onReturnFocus }: P
       // Loaded on demand: the Speech SDK stays out of the bundle until someone arms.
       const { startSpeechSession } = await import("@/lib/speech/speechSession");
       if (generation !== generationRef.current) return;
+      // Every event is tied to THIS arm. After a disarm (or before a late
+      // session is closed) the generation has moved on, and a final arriving
+      // then — mid-stop, or from a session that opened after she left — is
+      // dropped: once the banner says VOICE OFF, nothing more is charted.
+      const live = () => generation === generationRef.current;
       const session = await startSpeechSession(token, region, PERIO_VOICE_PHRASES, {
-        onPartial: (r) => setPartial(r.text),
-        onFinal: (r) => onFinal(r.text),
-        onError: (message) => void disarm(`Voice stopped: ${message}`),
+        onPartial: (r) => {
+          if (live()) setPartial(r.text);
+        },
+        onFinal: (r) => {
+          if (live()) onFinal(r.text);
+        },
+        onError: (message) => {
+          if (live()) void disarm(`Voice stopped: ${message}`);
+        },
       });
       if (generation !== generationRef.current) {
         await session.stop();

@@ -387,6 +387,18 @@ describe("with HYG_VOICE on", () => {
     expect(screen.getByText("VOICE OFF")).toBeTruthy();
   });
 
+  it("a final arriving AFTER disarm (mid-stop, or from a stale session) charts nothing", async () => {
+    renderPerio();
+    await armVoice();
+    const handlers = speech.handlers;
+    fireEvent.click(screen.getByTestId("hyg-perio-voice-toggle"));
+    await waitFor(() => expect(armedState()).toBe("false"));
+    act(() => handlers?.onFinal({ text: "four four four", atMs: 1, offsetTicks: 0, durationTicks: 0, sdkLatencyMs: null }));
+    expect(screen.queryByTestId("hyg-perio-voice-applied")).toBeNull();
+    await new Promise((r) => setTimeout(r, 900));
+    expect(server.saves).toEqual([]);
+  });
+
   it("disarms when the tab is hidden", async () => {
     renderPerio();
     await armVoice();
