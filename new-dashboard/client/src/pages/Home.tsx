@@ -12,7 +12,7 @@
  */
 import { useState } from "react";
 import { Link } from "wouter";
-import { ArrowRight, Building2, ChevronDown, LogOut, Moon, Sun } from "lucide-react";
+import { ArrowRight, Building2, ChevronDown, LogOut, Mic, Moon, Sun } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useModule } from "@/contexts/ModuleContext";
 import { useTheme } from "@/contexts/ThemeContext";
@@ -28,6 +28,9 @@ export default function Home() {
   const practiceName = auth.status === "authenticated" ? auth.user.tenant?.displayName : undefined;
   const firstName = auth.status === "authenticated" ? auth.user.name.split(" ")[0] : undefined;
   const userEmail = auth.status === "authenticated" ? auth.user.email : undefined;
+  // Staging-only voice lab (queue item 34). The server decides; production
+  // always says false, so this link never renders there.
+  const showVoiceLab = auth.status === "authenticated" && auth.user.voiceLab === true;
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
@@ -130,6 +133,16 @@ export default function Home() {
                 );
               })}
             </div>
+          )}
+
+          {showVoiceLab && (
+            <Link href="/voicelab" data-testid="voicelab-link">
+              <div className="mt-6 flex cursor-pointer items-center gap-3 rounded-xl border border-dashed border-border bg-card p-4 text-sm transition-colors hover:border-primary/40">
+                <Mic size={18} className="text-primary" />
+                <span className="font-medium text-foreground">Voice lab</span>
+                <span className="text-muted-foreground">Staging only — measure streaming dictation of digit words.</span>
+              </div>
+            </Link>
           )}
         </div>
       </main>
