@@ -146,6 +146,13 @@ describe("item 37: the navigation backstop", () => {
     expect(commands("jump to tooth two three")).toEqual([{ type: "jump", tooth: 2 }, ...depths(3)]);
     expect(commands("jump to tooth two")).toEqual([{ type: "jump", tooth: 2 }]);
     expect(commands("jump to two")).toEqual([{ type: "jump", tooth: 2 }]);
+    // DELIBERATE: when only ONE reading parses the whole final, it is taken. The
+    // other reading here would chart a refused depth (14, "thirty"), so it fails.
+    expect(commands("jump to 2 14")).toEqual([{ type: "jump", tooth: 14 }]);
+    expect(commands("jump to two thirty two")).toEqual([{ type: "jump", tooth: 32 }]);
+    // DELIBERATE: after a literal "tooth" the slot is used, so a following two is
+    // the tooth (item 35's reading); a doubled one is refused, never guessed.
+    expect(rejection("go back to tooth 2 2 mesial").reason).toBe("incomplete");
     // A go back needs a site straight after the tooth, which settles it.
     expect(commands("go back to two three mesial")).toEqual([{ type: "goBack", tooth: 3, surface: "mesial" }]);
   });
