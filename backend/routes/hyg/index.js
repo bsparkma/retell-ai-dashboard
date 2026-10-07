@@ -14,6 +14,8 @@
  *   GET /day?office=&date=       one office's whole schedule for one day
  *   GET /day/identities?…       the next batch of names for that day
  *   /visit/:aptNum ...           the visit workspace (H1 slice 2)
+ *   POST /voice/token            perio voice's Speech token (item 35; 404
+ *                                unless HYG_VOICE=1)
  *
  * Slice 3 adds the send: the slip as a PDF into the patient's images, the
  * unsigned visit note, and the handoff into TC.
@@ -64,5 +66,9 @@ router.use(requireOffice);
 
 router.use('/day', require('./day'));
 router.use('/visit', require('./visit'));
+// Perio voice entry (item 35): one bodyless token route, answered only while
+// HYG_VOICE === '1' and a 404 otherwise. Below requireOffice like everything
+// else here — see routes/hyg/voice.js.
+router.use('/voice', require('./voice').hygVoiceGate());
 
 module.exports = router;

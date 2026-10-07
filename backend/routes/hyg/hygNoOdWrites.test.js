@@ -182,6 +182,9 @@ test('the module owns source files, so the scan below is scanning something', ()
   assert.ok(files.some((f) => f.endsWith('stagedWriteComposer.js')));
   // H4 slice 10's reader, named for the same reason.
   assert.ok(files.some((f) => f.endsWith('odPerio.js')));
+  // Item 35's perio voice route and its budget, so every scan below covers them.
+  assert.ok(files.some((f) => f.endsWith(path.join('hyg', 'voice.js'))));
+  assert.ok(files.some((f) => f.endsWith('voiceBudget.js')));
 });
 
 /**
@@ -351,7 +354,16 @@ test('exactly ONE file registers non-GET hyg routes, and it is the named one', (
   //
   // A second file learning to mutate is a red build. That is the whole value:
   // the second writer is always the one nobody reviewed.
-  const ALLOWED = ['visit.js'];
+  //
+  // ITEM 35 adds ONE more name, and it is the deliberate act this comment asks
+  // for: routes/hyg/voice.js registers `POST /token`, the perio voice Speech
+  // token. It is a POST because it SPENDS something (ten minutes of the voice
+  // budget) and must not be fetchable by a prefetch or a link — but it mutates
+  // nothing in the visit store and nothing in Open Dental. It is not a second
+  // writer, and the test BELOW this one holds it to that: exactly one route,
+  // `POST /token`, and a file that names no store, no writer and no OD client.
+  // visit.js's line in this list is unchanged.
+  const ALLOWED = ['visit.js', 'voice.js'];
   const offenders = [];
   for (const file of hygSources()) {
     if (file.endsWith('.test.js') || file.endsWith('hygTestUtils.js')) continue;
@@ -359,12 +371,37 @@ test('exactly ONE file registers non-GET hyg routes, and it is the named one', (
     const hits = [...fs.readFileSync(file, 'utf8').matchAll(/router\.(post|put|patch|delete)\s*\(/g)];
     for (const hit of hits) offenders.push(path.basename(file) + ' -> router.' + hit[1]);
   }
-  assert.deepEqual(offenders, [], 'only routes/hyg/visit.js may register a mutation');
+  assert.deepEqual(offenders, [], 'only routes/hyg/visit.js (and voice.js\'s token) may register a mutation');
 
   // And the allow-list is not vacuous: the named file really does mutate, so a
   // rename that emptied it would not pass this quietly.
   const visitSrc = fs.readFileSync(path.join(__dirname, 'visit.js'), 'utf8');
   assert.match(visitSrc, /router\.post\s*\(/, 'routes/hyg/visit.js should own the mutations');
+});
+
+test('item 35: voice.js registers exactly ONE non-GET route, POST /token, and can reach no store or writer', () => {
+  // The price of voice.js's line in the allow-list above. If the token route
+  // ever grows a sibling ("save what I said", "apply this phrase"), this fails.
+  const src = fs.readFileSync(path.join(__dirname, 'voice.js'), 'utf8');
+  const code = stripComments(src);
+  const verbs = [...code.matchAll(/router\.(get|post|put|patch|delete|all|use)\s*\(\s*(['"`][^'"`]*['"`])?/g)].map(
+    (m) => m[1] + ' ' + (m[2] || '(no path)')
+  );
+  assert.deepEqual(verbs, ["post '/token'"]);
+  for (const forbidden of [
+    /visitStore/,
+    /perioSendStore/,
+    /odWriter/,
+    /odPerioWriter/,
+    /stagedWriteComposer/,
+    /sendVisit/,
+    /getOdOffice/,
+    /resolveHygOd/,
+    /withTenantDb/,
+    /apiGetRaw|apiWriteRaw|apiDeleteRaw/,
+  ]) {
+    assert.ok(!forbidden.test(code), 'routes/hyg/voice.js names ' + forbidden);
+  }
 });
 
 // ── 3. the perio chart (H4 slice 10): read, display, stage — ZERO writes ─────
