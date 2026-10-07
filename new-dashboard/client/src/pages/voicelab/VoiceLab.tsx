@@ -40,7 +40,10 @@ const FREE_LOG_LIMIT = 30;
 
 interface FreeEntry {
   id: number;
+  /** Azure's display text. */
   text: string;
+  /** ITEM 37: the lexical text (spoken words, before normalization), or null when the result had none. */
+  lexical: string | null;
   finalMs: number;
   firstPartialMs: number | null;
 }
@@ -144,7 +147,9 @@ export default function VoiceLab() {
         return;
       }
       const id = nextIdRef.current++;
-      setFreeLog((log) => [{ id, text: r.text, finalMs, firstPartialMs }, ...log].slice(0, FREE_LOG_LIMIT));
+      setFreeLog((log) =>
+        [{ id, text: r.text, lexical: r.lexical ?? null, finalMs, firstPartialMs }, ...log].slice(0, FREE_LOG_LIMIT),
+      );
     },
     [recordTrial],
   );
@@ -333,15 +338,25 @@ export default function VoiceLab() {
         <section className="space-y-3 rounded-xl border border-border bg-card p-6">
           <h2 className="text-lg font-semibold text-foreground">Free mode</h2>
           <p className="text-sm text-muted-foreground">
-            While armed, say anything (“three four five”). Partials and finals appear here with their timings.
+            While armed, say anything (“three four five”). Partials and finals appear here with their timings. Each
+            final shows Azure’s display text and, under it, the lexical text — the spoken words before Azure
+            reformats them (“2:30” is the display of “two thirty”).
           </p>
           <div className="min-h-6 text-base italic text-muted-foreground" data-testid="voicelab-partial">
             {armed ? partial || "…listening" : ""}
           </div>
           <ul className="divide-y divide-border" data-testid="voicelab-free-log">
             {freeLog.map((e) => (
-              <li key={e.id} className="flex items-baseline justify-between gap-3 py-2 text-sm">
-                <span className="font-medium text-foreground">{e.text}</span>
+              <li key={e.id} className="flex items-baseline justify-between gap-3 py-2 text-sm" data-testid="voicelab-free-entry">
+                <span className="min-w-0">
+                  <span className="block font-medium text-foreground" data-testid="voicelab-free-display">
+                    <span className="text-xs font-normal text-muted-foreground">display </span>
+                    {e.text}
+                  </span>
+                  <span className="block font-mono text-xs text-muted-foreground" data-testid="voicelab-free-lexical">
+                    lexical {e.lexical === null ? "— (not provided)" : e.lexical}
+                  </span>
+                </span>
                 <span className="whitespace-nowrap text-xs text-muted-foreground">
                   final {fmtMs(e.finalMs)} · first partial {fmtMs(e.firstPartialMs)}
                 </span>

@@ -66,9 +66,18 @@ vi.mock("@/features/tc/api", async (importOriginal) => {
 });
 
 /** The fake speech session: records its handlers so a test can speak. */
+interface FakeRecognized {
+  text: string;
+  /** Item 37: the lexical form; null when the result carried none. */
+  lexical: string | null;
+  atMs: number;
+  offsetTicks: number;
+  durationTicks: number;
+  sdkLatencyMs: number | null;
+}
 interface FakeHandlers {
-  onPartial: (r: { text: string; atMs: number; offsetTicks: number; durationTicks: number; sdkLatencyMs: number | null }) => void;
-  onFinal: (r: { text: string; atMs: number; offsetTicks: number; durationTicks: number; sdkLatencyMs: number | null }) => void;
+  onPartial: (r: FakeRecognized) => void;
+  onFinal: (r: FakeRecognized) => void;
   onError: (message: string) => void;
 }
 const speech = vi.hoisted(() => ({
@@ -118,10 +127,10 @@ function renderAt(ui: React.ReactElement, path: string) {
   return { memory, view };
 }
 
-function speak(text: string, at = 1_000) {
+function speak(text: string, at = 1_000, lexical: string | null = null) {
   act(() => {
-    speech.handlers?.onPartial({ text, atMs: at - 200, offsetTicks: 0, durationTicks: 0, sdkLatencyMs: null });
-    speech.handlers?.onFinal({ text, atMs: at, offsetTicks: 5_000_000, durationTicks: 3_000_000, sdkLatencyMs: 300 });
+    speech.handlers?.onPartial({ text, lexical: null, atMs: at - 200, offsetTicks: 0, durationTicks: 0, sdkLatencyMs: null });
+    speech.handlers?.onFinal({ text, lexical, atMs: at, offsetTicks: 5_000_000, durationTicks: 3_000_000, sdkLatencyMs: 300 });
   });
 }
 
@@ -311,5 +320,24 @@ describe("the scripted run and free mode", () => {
     renderAt(<AppRouter />, "/voicelab");
     await screen.findByTestId("voicelab-arm-state");
     expect(screen.getByTestId("voicelab-free-log").textContent).toBe("");
+  });
+
+  it("item 37: free mode shows BOTH forms of each final — display, and lexical (or that there was none)", async () => {
+    renderAt(<AppRouter />, "/voicelab");
+    fireEvent.click(await screen.findByTestId("voicelab-arm"));
+    await waitFor(() => expect(screen.getByTestId("voicelab-arm-state").getAttribute("data-armed")).toBe("true"));
+    speak("Jump to 2:30.", 1_000, "jump to two thirty");
+    speak("three four five", 2_000, null);
+
+    // Newest first.
+    const [noLexical, withLexical] = screen.getAllByTestId("voicelab-free-entry");
+    expect(withLexical.querySelector('[data-testid="voicelab-free-display"]')?.textContent).toBe("display Jump to 2:30.");
+    expect(withLexical.querySelector('[data-testid="voicelab-free-lexical"]')?.textContent).toBe("lexical jump to two thirty");
+    expect(noLexical.querySelector('[data-testid="voicelab-free-display"]')?.textContent).toBe("display three four five");
+    expect(noLexical.querySelector('[data-testid="voicelab-free-lexical"]')?.textContent).toBe("lexical — (not provided)");
+
+    // Page display only: neither form reached CareIN or storage.
+    expect(voiceLabToken).toHaveBeenCalledTimes(1);
+    assertNothingSaidLeftThePage(["2:30", "two thirty", "three four five"]);
   });
 });
