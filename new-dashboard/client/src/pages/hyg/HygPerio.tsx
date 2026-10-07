@@ -1187,6 +1187,7 @@ export default function HygPerio() {
           key={`${office}:${aptNum}`}
           office={office}
           locked={locked}
+          entry={entry}
           onCommands={onVoice}
           onReturnFocus={() => gridRef.current?.focus()}
         />

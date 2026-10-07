@@ -22,6 +22,11 @@
  * It disarms on: leaving the page, the tab going hidden, the page being
  * unloaded, 9.5 minutes after the token was minted (the token lives 10), the
  * chart locking for a send, and any recognition error.
+ *
+ * ITEM 36: while ARMED, the HUD (PerioVoiceHud) covers the sheet. It is rendered
+ * from here and only while `armed`, so every disarm above closes it too. It is
+ * fed what this component already knows — the sheet's entry state, the last
+ * parse, the mint time — and adds no request, no route and no stored value.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, Mic, MicOff, Square } from "lucide-react";
@@ -30,6 +35,9 @@ import type { OfficeId } from "@shared/hyg/contract";
 import { HygApiError, mintHygVoiceToken } from "@/features/hyg/api";
 import type { SpeechSession } from "@/lib/speech/speechSession";
 import { cn } from "@/lib/utils";
+import { reducePerioEntry, type PerioEntryState } from "./entry";
+import { PerioVoiceHud } from "./PerioVoiceHud";
+import { voiceOutcome, type HudHeard } from "./voiceHud";
 import {
   PERIO_VOICE_PHRASES,
   describeVoiceCommands,
@@ -55,13 +63,15 @@ export interface PerioVoiceEntryProps {
   office: OfficeId;
   /** A chart that is sending, stopped or written takes no readings — and voice disarms. */
   locked: boolean;
+  /** ITEM 36: the sheet's entry state, for the HUD to show. Read only. */
+  entry: PerioEntryState;
   /** Apply one parsed final to the sheet. The sheet owns WHERE it lands. */
   onCommands: (commands: VoiceCommand[]) => void;
   /** Hand the keyboard back to the grid after a tap here. */
   onReturnFocus?: () => void;
 }
 
-export function PerioVoiceEntry({ office, locked, onCommands, onReturnFocus }: PerioVoiceEntryProps) {
+export function PerioVoiceEntry({ office, locked, entry, onCommands, onReturnFocus }: PerioVoiceEntryProps) {
   const [armed, setArmed] = useState(false);
   const [arming, setArming] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -70,6 +80,17 @@ export function PerioVoiceEntry({ office, locked, onCommands, onReturnFocus }: P
   const [rejection, setRejection] = useState<string | null>(null);
   /** The last final that was parsed and handed to the sheet, echoed as commands — never as the transcript. */
   const [applied, setApplied] = useState<string | null>(null);
+  /** ITEM 36: what the last final did, for the HUD's ribbon. Memory only. */
+  const [heard, setHeard] = useState<HudHeard | null>(null);
+  /** ITEM 36: when the auto-disarm fires (mint + 9.5 min), for the HUD's countdown. */
+  const [endsAt, setEndsAt] = useState<number | null>(null);
+  /**
+   * The sheet's state as of the last render — the state a final is applied to.
+   * Advanced locally after each final so two finals in one tick are each judged
+   * against the state the one before left; the next render replaces it anyway.
+   */
+  const entryRef = useRef(entry);
+  entryRef.current = entry;
 
   const sessionRef = useRef<SpeechSession | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -104,10 +125,14 @@ export function PerioVoiceEntry({ office, locked, onCommands, onReturnFocus }: P
     if (parsed.kind === "rejected") {
       setRejection(parsed.message);
       setApplied(null);
+      setHeard({ kind: "rejected", reason: parsed.reason, heard: parsed.heard, message: parsed.message });
       return;
     }
     setRejection(null);
     setApplied(describeVoiceCommands(parsed.commands));
+    // The ribbon's account of it comes from the sheet's own reducer, run on a copy.
+    setHeard(voiceOutcome(entryRef.current, parsed.commands));
+    entryRef.current = reducePerioEntry(entryRef.current, { type: "voice", commands: parsed.commands });
     onCommandsRef.current(parsed.commands);
   }, []);
 
@@ -116,6 +141,7 @@ export function PerioVoiceEntry({ office, locked, onCommands, onReturnFocus }: P
     setArming(true);
     setNotice(null);
     setRejection(null);
+    setHeard(null);
     const generation = generationRef.current;
     try {
       const { token, region } = await mintHygVoiceToken(office);
@@ -147,6 +173,7 @@ export function PerioVoiceEntry({ office, locked, onCommands, onReturnFocus }: P
       }
       sessionRef.current = session;
       setArmed(true);
+      setEndsAt(mintedAt + VOICE_AUTO_DISARM_MS);
       timerRef.current = setTimeout(
         () => void disarm("Voice disarmed itself: its 10-minute token is about to run out. Arm again to carry on."),
         Math.max(0, VOICE_AUTO_DISARM_MS - (Date.now() - mintedAt)),
@@ -261,6 +288,18 @@ export function PerioVoiceEntry({ office, locked, onCommands, onReturnFocus }: P
         <p className="mt-2 text-sm text-muted-foreground" data-testid="hyg-perio-voice-notice">
           {notice}
         </p>
+      ) : null}
+
+      {armed && endsAt !== null ? (
+        <PerioVoiceHud
+          entry={entry}
+          heard={heard}
+          endsAt={endsAt}
+          onDisarm={() => {
+            void disarm();
+            onReturnFocus?.();
+          }}
+        />
       ) : null}
     </section>
   );
