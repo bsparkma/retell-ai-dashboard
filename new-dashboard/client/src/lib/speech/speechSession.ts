@@ -19,9 +19,21 @@
  *
  * Load it LAZILY (`await import(...)`) from a page: the SDK is large, and a
  * dynamic import keeps it out of every bundle that never arms a microphone.
+ *
+ * ITEM 37: DETAILED OUTPUT, FOR THE LEXICAL FORM. The display text is Azure's
+ * inverse-text-normalized rendering ("Jump to 2:30", "Jump back to tooth 3,
+ * mesial, buccal") — right for a human to read, wrong for a parser. With the
+ * output format set to Detailed, the SDK (1.52.0) parses each FINAL's service
+ * JSON into an NBest list, sets `result.text` to `NBest[0].Display`, and leaves
+ * the whole JSON on `result.json`, where `NBest[0].Lexical` holds the spoken
+ * words before normalization ("jump to tooth thirty"). PARTIALS carry no NBest
+ * in either format (the SDK builds them from a hypothesis that has only `Text`),
+ * so a partial's `lexical` is always null. Detailed output changes what comes
+ * BACK; it asks Azure to keep nothing.
  */
 import {
   AudioConfig,
+  OutputFormat,
   PhraseListGrammar,
   PropertyId,
   Recognizer,
@@ -31,8 +43,14 @@ import {
 } from "microsoft-cognitiveservices-speech-sdk";
 
 export interface RecognizedSpeech {
-  /** Raw text as Azure returned it. Lives in page memory only. */
+  /** The DISPLAY text as Azure returned it — what a person is shown. Lives in page memory only. */
   text: string;
+  /**
+   * ITEM 37: the LEXICAL text (the spoken words, before inverse text
+   * normalization) — what a parser should read. Null when the result carries
+   * none: every partial, and any final whose JSON has no NBest lexical form.
+   */
+  lexical: string | null;
   /** performance.now() when the event reached the page. */
   atMs: number;
   /** Audio position of the utterance, 100 ns ticks from stream start. */
@@ -56,6 +74,27 @@ export interface SpeechSession {
 }
 
 /**
+ * ITEM 37: `NBest[0].Lexical` out of a result's JSON, or null. NBest[0] is the
+ * entry `result.text` is the Display of, so the two forms are one hypothesis.
+ */
+export function lexicalFromResultJson(json: string | undefined): string | null {
+  if (!json) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const nbest: unknown = (parsed as { NBest?: unknown }).NBest;
+  if (!Array.isArray(nbest) || nbest.length === 0) return null;
+  const first: unknown = nbest[0];
+  if (typeof first !== "object" || first === null) return null;
+  const lexical: unknown = (first as { Lexical?: unknown }).Lexical;
+  return typeof lexical === "string" ? lexical : null;
+}
+
+/**
  * Start continuous recognition from the default microphone.
  *
  * @param phrases the phrase list — the vocabulary the calling page listens for
@@ -70,6 +109,8 @@ export function startSpeechSession(
 
   const speechConfig = SpeechConfig.fromAuthorizationToken(token, region);
   speechConfig.speechRecognitionLanguage = "en-US";
+  // ITEM 37: NBest with the Lexical form on every final (see the header).
+  speechConfig.outputFormat = OutputFormat.Detailed;
   const audioConfig = AudioConfig.fromDefaultMicrophoneInput();
   const recognizer = new SpeechRecognizer(speechConfig, audioConfig);
 
@@ -79,6 +120,8 @@ export function startSpeechSession(
   recognizer.recognizing = (_sender, e) => {
     handlers.onPartial({
       text: e.result.text ?? "",
+      // A hypothesis has no NBest; read it anyway, so a future SDK that adds one is used.
+      lexical: lexicalFromResultJson(e.result.json),
       atMs: performance.now(),
       offsetTicks: e.result.offset,
       durationTicks: e.result.duration,
@@ -91,8 +134,10 @@ export function startSpeechSession(
     if (e.result.reason !== ResultReason.RecognizedSpeech && e.result.reason !== ResultReason.NoMatch) return;
     const rawLatency = e.result.properties?.getProperty(PropertyId.SpeechServiceResponse_RecognitionLatencyMs);
     const latency = rawLatency === undefined || rawLatency === "" ? NaN : Number(rawLatency);
+    const recognized = e.result.reason === ResultReason.RecognizedSpeech;
     handlers.onFinal({
-      text: e.result.reason === ResultReason.RecognizedSpeech ? (e.result.text ?? "") : "",
+      text: recognized ? (e.result.text ?? "") : "",
+      lexical: recognized ? lexicalFromResultJson(e.result.json) : null,
       atMs,
       offsetTicks: e.result.offset,
       durationTicks: e.result.duration,
