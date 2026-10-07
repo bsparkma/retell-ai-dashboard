@@ -21,8 +21,15 @@
  * So the rail is: none of those names appears in backend/ or the dashboard;
  * no code writes audio to disk or /data; the browser never records audio
  * locally (MediaRecorder); and the Speech SDK is imported in exactly ONE
- * dashboard file, the voice lab's session. Perio voice inherits this file —
- * when it needs the SDK, it changes SDK_ALLOWED below on purpose, in review.
+ * dashboard file.
+ *
+ * ITEM 35 (perio voice) is the inheritance this header promised. The lab's
+ * session moved to lib/speech/speechSession.ts and became the ONE shared
+ * session that both the lab page and the perio sheet load; SDK_ALLOWED moved
+ * with it and is STILL one entry. Neither page may import the SDK itself, and
+ * the old path may not come back — both are planted below and both fail. The
+ * perio voice files are named in VOICE_FILES and held to the same
+ * no-persistence rule as the lab's.
  *
  * The scan is a function over two roots, so the "it bites" tests below can run
  * it over a planted copy and watch it fail — the same proof item 32's audit
@@ -42,7 +49,7 @@ const SOURCE_EXT = /\.(c|m)?(j|t)sx?$/;
 const SDK = 'microsoft-cognitiveservices-speech-sdk';
 
 /** The only dashboard file allowed to import the Speech SDK (posix, relative to new-dashboard/). */
-const SDK_ALLOWED = Object.freeze(['client/src/pages/voicelab/speechSession.ts']);
+const SDK_ALLOWED = Object.freeze(['client/src/lib/speech/speechSession.ts']);
 
 /** Names that turn on Azure-side retention. Case-insensitive. */
 const RETENTION_NAMES = Object.freeze([
@@ -63,6 +70,22 @@ const AUDIO_WORD = /audio|recording|\.(wav|mp3|pcm|webm|ogg|m4a|opus|flac)\b/i;
 
 /** The lab's own files may not touch persistence of any kind. */
 const LAB_FILE = /(^|\/)(voiceLab|voicelab)(\/|\.|$)/;
+
+/**
+ * Item 35: perio voice's files, by NAME (tree-prefixed posix paths), held to the
+ * same rule. Named rather than matched by a pattern so a test can assert each
+ * one exists — a list that silently stopped matching would guard nothing.
+ * HygPerio.tsx is deliberately NOT here: it keeps a legend preference in
+ * localStorage, which is why the voice UI is its own file.
+ */
+const VOICE_FILES = Object.freeze([
+  'backend/config/hygVoice.js',
+  'backend/routes/hyg/voice.js',
+  'backend/services/hyg/voiceBudget.js',
+  'new-dashboard/client/src/lib/speech/speechSession.ts',
+  'new-dashboard/client/src/features/hyg/perio/voiceGrammar.ts',
+  'new-dashboard/client/src/features/hyg/perio/PerioVoiceEntry.tsx',
+]);
 const LAB_PERSISTENCE = Object.freeze([
   ['fs module', /require\(\s*['"](node:)?fs(\/promises)?['"]\s*\)|from\s+['"](node:)?fs/],
   ['localStorage', /\blocalStorage\b/],
@@ -154,12 +177,16 @@ function scan({ backendRoot, dashboardRoot, self = __filename }) {
       for (const [rule, re] of LAB_PERSISTENCE) {
         if (re.test(code)) offenders.push({ file: label, rule: `lab file names ${rule}` });
       }
+    } else if (VOICE_FILES.includes(label)) {
+      for (const [rule, re] of LAB_PERSISTENCE) {
+        if (re.test(code)) offenders.push({ file: label, rule: `voice file names ${rule}` });
+      }
     }
   }
 
   for (const rel of sdkImporters) {
     if (!SDK_ALLOWED.includes(rel)) {
-      offenders.push({ file: `new-dashboard/${rel}`, rule: 'speech SDK imported outside the voice lab session' });
+      offenders.push({ file: `new-dashboard/${rel}`, rule: 'speech SDK imported outside the shared speech session' });
     }
   }
 
@@ -176,6 +203,17 @@ test('the scan is scanning something: both trees, and the one SDK file really im
     'the dashboard tree is present, so its half of the scan is not vacuous'
   );
   assert.deepEqual(sdkImporters, [...SDK_ALLOWED], 'the allow-listed file is the SDK importer, and the only one');
+});
+
+test('item 35: every named voice file exists, so the no-persistence rule over them is not vacuous', () => {
+  const root = path.join(BACKEND_ROOT, '..');
+  for (const label of VOICE_FILES) {
+    assert.ok(fs.existsSync(path.join(root, ...label.split('/'))), label + ' is missing — rename it here too');
+  }
+  assert.ok(
+    !fs.existsSync(path.join(DASHBOARD_ROOT, 'client', 'src', 'pages', 'voicelab', 'speechSession.ts')),
+    'the lab session moved to lib/speech; the old copy must not linger'
+  );
 });
 
 test('RED LIST: nothing in backend/ or the dashboard can turn on Azure-side audio or text retention', () => {
@@ -201,7 +239,15 @@ test('the dashboard pins the Speech SDK to an exact version', () => {
  * A planted copy: the real voice lab session file and a real backend route,
  * copied into a temp tree, with one line added. The scan must name it.
  */
-function plantedTree({ sessionAppend = '', homeAppend = '', backendAppend = '', labBackendAppend = '' }) {
+function plantedTree({
+  sessionAppend = '',
+  homeAppend = '',
+  backendAppend = '',
+  labBackendAppend = '',
+  perioVoiceAppend = '',
+  hygVoiceBackendAppend = '',
+  oldSessionContent = null,
+}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'voice-guard-'));
   const backendRoot = path.join(root, 'backend');
   const dashboardRoot = path.join(root, 'new-dashboard');
@@ -210,10 +256,26 @@ function plantedTree({ sessionAppend = '', homeAppend = '', backendAppend = '', 
     fs.writeFileSync(to, fs.readFileSync(from, 'utf8') + (append ? '\n' + append + '\n' : ''));
   };
   copy(
-    path.join(DASHBOARD_ROOT, 'client', 'src', 'pages', 'voicelab', 'speechSession.ts'),
-    path.join(dashboardRoot, 'client', 'src', 'pages', 'voicelab', 'speechSession.ts'),
+    path.join(DASHBOARD_ROOT, 'client', 'src', 'lib', 'speech', 'speechSession.ts'),
+    path.join(dashboardRoot, 'client', 'src', 'lib', 'speech', 'speechSession.ts'),
     sessionAppend
   );
+  copy(
+    path.join(DASHBOARD_ROOT, 'client', 'src', 'features', 'hyg', 'perio', 'PerioVoiceEntry.tsx'),
+    path.join(dashboardRoot, 'client', 'src', 'features', 'hyg', 'perio', 'PerioVoiceEntry.tsx'),
+    perioVoiceAppend
+  );
+  copy(
+    path.join(BACKEND_ROOT, 'routes', 'hyg', 'voice.js'),
+    path.join(backendRoot, 'routes', 'hyg', 'voice.js'),
+    hygVoiceBackendAppend
+  );
+  if (oldSessionContent !== null) {
+    // The lab session's OLD home, recreated — the allow-list must have MOVED, not grown.
+    const old = path.join(dashboardRoot, 'client', 'src', 'pages', 'voicelab', 'speechSession.ts');
+    fs.mkdirSync(path.dirname(old), { recursive: true });
+    fs.writeFileSync(old, oldSessionContent);
+  }
   copy(
     path.join(DASHBOARD_ROOT, 'client', 'src', 'pages', 'Home.tsx'),
     path.join(dashboardRoot, 'client', 'src', 'pages', 'Home.tsx'),
@@ -237,7 +299,7 @@ test('it bites: the unplanted copy is clean, so any failure below comes from the
 test('it bites: enableAudioLogging planted in a copy of the lab session FAILS the guard', () => {
   const { offenders } = scan(plantedTree({ sessionAppend: 'speechConfig.enableAudioLogging();' }));
   assert.deepEqual(offenders, [
-    { file: 'new-dashboard/client/src/pages/voicelab/speechSession.ts', rule: 'enableAudioLogging' },
+    { file: 'new-dashboard/client/src/lib/speech/speechSession.ts', rule: 'enableAudioLogging' },
   ]);
 });
 
@@ -263,7 +325,7 @@ test('it bites: every red-list name is caught, in either tree', () => {
 test('it bites: importing the Speech SDK outside the lab session, or in the backend', () => {
   const dash = scan(plantedTree({ homeAppend: `import { SpeechConfig } from "${SDK}";` }));
   assert.deepEqual(dash.offenders, [
-    { file: 'new-dashboard/client/src/pages/Home.tsx', rule: 'speech SDK imported outside the voice lab session' },
+    { file: 'new-dashboard/client/src/pages/Home.tsx', rule: 'speech SDK imported outside the shared speech session' },
   ]);
   const back = scan(plantedTree({ backendAppend: `const sdk = require('${SDK}');` }));
   assert.deepEqual(back.offenders, [{ file: 'backend/routes/mango.js', rule: 'speech SDK imported in the backend' }]);
@@ -285,7 +347,7 @@ test('it bites: writing audio to disk or /data, and recording audio in the brows
 test('it bites: a lab file that reaches for any persistence at all', () => {
   const ls = scan(plantedTree({ sessionAppend: 'localStorage.setItem("lastRun", "x");' })).offenders;
   assert.deepEqual(ls, [
-    { file: 'new-dashboard/client/src/pages/voicelab/speechSession.ts', rule: 'lab file names localStorage' },
+    { file: 'new-dashboard/client/src/lib/speech/speechSession.ts', rule: 'voice file names localStorage' },
   ]);
   const fsReq = scan(plantedTree({ labBackendAppend: "const fs = require('fs');" })).offenders;
   assert.deepEqual(fsReq, [{ file: 'backend/routes/voiceLab.js', rule: 'lab file names fs module' }]);
@@ -299,7 +361,7 @@ test('it bites: a red-list name cannot be hidden behind comment-looking strings 
     plantedTree({ sessionAppend: 'const g = "src/*";\nspeechConfig.enableAudioLogging();\n/* ok */' })
   ).offenders;
   assert.deepEqual(hidden, [
-    { file: 'new-dashboard/client/src/pages/voicelab/speechSession.ts', rule: 'enableAudioLogging' },
+    { file: 'new-dashboard/client/src/lib/speech/speechSession.ts', rule: 'enableAudioLogging' },
   ]);
   // Raw matching: even prose naming the call is refused, so nothing can be "commented" past it.
   const commented = scan(plantedTree({ sessionAppend: '// speechConfig.enableAudioLogging();' })).offenders;
@@ -309,4 +371,55 @@ test('it bites: a red-list name cannot be hidden behind comment-looking strings 
 test('the heuristic rules still ignore prose: a comment about not saving recordings is not a disk write', () => {
   const prose = scan(plantedTree({ backendAppend: '// never writeFile( the recording to disk' })).offenders;
   assert.deepEqual(prose, []);
+});
+
+// ── item 35: the widened tree still bites ───────────────────────────────────
+
+test('item 35 bites: the PERIO voice UI importing the SDK itself FAILS — it must go through the shared session', () => {
+  const { offenders } = scan(plantedTree({ perioVoiceAppend: `import { SpeechConfig } from "${SDK}";` }));
+  assert.deepEqual(offenders, [
+    {
+      file: 'new-dashboard/client/src/features/hyg/perio/PerioVoiceEntry.tsx',
+      rule: 'speech SDK imported outside the shared speech session',
+    },
+  ]);
+});
+
+test("item 35 bites: the lab session's OLD path coming back with the SDK FAILS — the allow-list moved, it did not grow", () => {
+  const { offenders, sdkImporters } = scan(
+    plantedTree({ oldSessionContent: `import { SpeechConfig } from "${SDK}";\nexport const x = SpeechConfig;\n` })
+  );
+  assert.deepEqual(offenders, [
+    {
+      file: 'new-dashboard/client/src/pages/voicelab/speechSession.ts',
+      rule: 'speech SDK imported outside the shared speech session',
+    },
+  ]);
+  assert.equal(sdkImporters.length, 2, 'both importers were seen; only the shared one is allowed');
+});
+
+test('item 35 bites: a red-list name planted in the perio voice UI or its backend route FAILS', () => {
+  const ui = scan(plantedTree({ perioVoiceAppend: 'speechConfig.enableAudioLogging();' })).offenders;
+  assert.deepEqual(ui, [
+    { file: 'new-dashboard/client/src/features/hyg/perio/PerioVoiceEntry.tsx', rule: 'enableAudioLogging' },
+  ]);
+  const route = scan(plantedTree({ hygVoiceBackendAppend: 'const body = { storeAudio: true };' })).offenders;
+  assert.deepEqual(route, [{ file: 'backend/routes/hyg/voice.js', rule: 'storeAudio' }]);
+});
+
+test('item 35 bites: a perio voice file reaching for persistence or recording FAILS', () => {
+  const ls = scan(plantedTree({ perioVoiceAppend: 'localStorage.setItem("voiceArmed", "1");' })).offenders;
+  assert.deepEqual(ls, [
+    { file: 'new-dashboard/client/src/features/hyg/perio/PerioVoiceEntry.tsx', rule: 'voice file names localStorage' },
+  ]);
+  const ss = scan(plantedTree({ perioVoiceAppend: 'sessionStorage.setItem("heard", text);' })).offenders;
+  assert.deepEqual(ss, [
+    { file: 'new-dashboard/client/src/features/hyg/perio/PerioVoiceEntry.tsx', rule: 'voice file names sessionStorage' },
+  ]);
+  const fsReq = scan(plantedTree({ hygVoiceBackendAppend: "const fs = require('fs');" })).offenders;
+  assert.deepEqual(fsReq, [{ file: 'backend/routes/hyg/voice.js', rule: 'voice file names fs module' }]);
+  const rec = scan(plantedTree({ perioVoiceAppend: 'const r = new MediaRecorder(stream);' })).offenders;
+  assert.deepEqual(rec, [
+    { file: 'new-dashboard/client/src/features/hyg/perio/PerioVoiceEntry.tsx', rule: 'MediaRecorder (local audio recording)' },
+  ]);
 });

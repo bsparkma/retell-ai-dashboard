@@ -103,6 +103,9 @@ import { PerioDriftNotice, PerioResendConfirm } from "@/features/hyg/perio/Perio
 import { PerioGrid } from "@/features/hyg/perio/PerioGrid";
 import { PerioKeyLegend, PerioKeyLegendShow } from "@/features/hyg/perio/PerioKeyLegend";
 import { PerioSendConfirm, perioProvNumOf } from "@/features/hyg/perio/PerioSendConfirm";
+import { PerioVoiceEntry } from "@/features/hyg/perio/PerioVoiceEntry";
+import type { VoiceCommand } from "@/features/hyg/perio/voiceGrammar";
+import { useAuth } from "@/contexts/AuthContext";
 import { PerioDeleteExamDialog, PerioSendPanel, perioMismatchTeeth } from "@/features/hyg/perio/PerioSendPanel";
 import { cn } from "@/lib/utils";
 
@@ -268,6 +271,10 @@ export default function HygPerio() {
   const query = useMemo(() => new URLSearchParams(search), [search]);
   const office = query.get("office");
   const date = query.get("date") ?? todayIso();
+
+  // ITEM 35: voice entry renders only when /auth/me says this server answers it.
+  const auth = useAuth();
+  const hygVoice = auth.status === "authenticated" && auth.user.hygVoice === true;
 
   const [entry, dispatch] = useReducer(reducePerioEntry, undefined, () =>
     initialPerioEntry(emptyPerioChart()),
@@ -556,6 +563,17 @@ export default function HygPerio() {
     // A real key got through, so whatever was wrong with the pad is not wrong now.
     setNumLockOff(false);
     dispatch(action);
+  }, []);
+
+  /**
+   * ITEM 35: one spoken final, parsed. It goes through the SAME reducer and the
+   * same lock as a key: what is said becomes readings in this chart and nothing
+   * else, and reaches Open Dental only by the confirm below like every reading.
+   */
+  const onVoice = useCallback((commands: VoiceCommand[]) => {
+    if (lockedRef.current) return;
+    setNumLockOff(false);
+    dispatch({ type: "voice", commands });
   }, []);
 
   /** A tap does what its key does, and gives the keyboard back. */
@@ -1159,6 +1177,20 @@ export default function HygPerio() {
           {PERIO_MODE_SCOPE[entry.mode] === "tooth" ? ", per tooth" : ""}
         </span>
       </div>
+
+      {/*
+        ITEM 35: voice entry. Keyed by visit so it always starts DISARMED (V-6);
+        nothing about it is saved anywhere.
+      */}
+      {hygVoice ? (
+        <PerioVoiceEntry
+          key={`${office}:${aptNum}`}
+          office={office}
+          locked={locked}
+          onCommands={onVoice}
+          onReturnFocus={() => gridRef.current?.focus()}
+        />
+      ) : null}
 
       {/*
         A digit the mode cannot take is refused in the reducer, and this is where it

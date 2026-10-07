@@ -30,7 +30,7 @@ import {
   type RunSummary,
   type Trial,
 } from "./scoring";
-import { startLabSession, type LabRecognition, type LabSession } from "./speechSession";
+import { startSpeechSession, type RecognizedSpeech, type SpeechSession } from "@/lib/speech/speechSession";
 
 /** Disarm before the 10-minute token can expire mid-sentence. */
 export const AUTO_DISARM_MS = 9.5 * 60 * 1000;
@@ -75,7 +75,7 @@ export default function VoiceLab() {
   const [summary, setSummary] = useState<RunSummary | null>(null);
   const [copied, setCopied] = useState(false);
 
-  const sessionRef = useRef<LabSession | null>(null);
+  const sessionRef = useRef<SpeechSession | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const firstPartialAtRef = useRef<number | null>(null);
   const scriptedRef = useRef<ScriptedState | null>(null);
@@ -115,13 +115,13 @@ export default function VoiceLab() {
     if (trials.length === current.prompts.length) setSummary(summarize(trials));
   }, []);
 
-  const onPartial = useCallback((r: LabRecognition) => {
+  const onPartial = useCallback((r: RecognizedSpeech) => {
     if (firstPartialAtRef.current === null) firstPartialAtRef.current = r.atMs;
     setPartial(r.text);
   }, []);
 
   const onFinal = useCallback(
-    (r: LabRecognition) => {
+    (r: RecognizedSpeech) => {
       const firstPartialArrivalMs = firstPartialAtRef.current;
       firstPartialAtRef.current = null;
       setPartial("");
@@ -160,7 +160,7 @@ export default function VoiceLab() {
       // answered — so the auto-disarm counts from here.
       const mintedAt = Date.now();
       if (generation !== generationRef.current) return;
-      const session = await startLabSession(token, region, PHRASE_LIST, {
+      const session = await startSpeechSession(token, region, PHRASE_LIST, {
         onPartial,
         onFinal,
         onError: (message) => void disarm(`Recognition stopped: ${message}`),

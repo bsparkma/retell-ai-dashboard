@@ -1,17 +1,24 @@
 /**
- * The voice lab's streaming session — the ONLY file in the dashboard allowed to
- * import the Azure Speech SDK (pinned by backend/test/voiceMediaGuard.test.js).
+ * The ONE streaming speech session in the dashboard, and the ONLY file allowed
+ * to import the Azure Speech SDK (pinned by backend/test/voiceMediaGuard.test.js).
+ *
+ * Two pages use it: the voice lab (item 34, where it was born) and the perio
+ * sheet's voice entry (item 35). Neither imports the SDK itself, so there is one
+ * place to read to know what the dashboard asks Azure for.
  *
  * Browser → Azure directly, with a 10-minute authorization token the CareIN
  * backend minted. Audio never touches the CareIN backend or any disk: the SDK
  * reads the default microphone and streams it to Azure's real-time endpoint,
- * and the recognised text comes back to this page's memory only.
+ * and the recognised text comes back to the calling page's memory only.
  *
  * NOTHING HERE TURNS ON AZURE-SIDE RETENTION. Real-time recognition retains
  * nothing by default; what would change that is the SDK's audio-logging switch,
  * a custom-model endpoint, or a service property asking for storage. None of
  * those is named in this file, and the guard test fails the build if one ever
  * is. SDK telemetry is switched off as well.
+ *
+ * Load it LAZILY (`await import(...)`) from a page: the SDK is large, and a
+ * dynamic import keeps it out of every bundle that never arms a microphone.
  */
 import {
   AudioConfig,
@@ -23,7 +30,7 @@ import {
   SpeechRecognizer,
 } from "microsoft-cognitiveservices-speech-sdk";
 
-export interface LabRecognition {
+export interface RecognizedSpeech {
   /** Raw text as Azure returned it. Lives in page memory only. */
   text: string;
   /** performance.now() when the event reached the page. */
@@ -35,14 +42,14 @@ export interface LabRecognition {
   sdkLatencyMs: number | null;
 }
 
-export interface LabSessionHandlers {
-  onPartial: (r: LabRecognition) => void;
-  onFinal: (r: LabRecognition) => void;
+export interface SpeechSessionHandlers {
+  onPartial: (r: RecognizedSpeech) => void;
+  onFinal: (r: RecognizedSpeech) => void;
   /** A cancellation or start failure. The message is Azure's, never audio or text. */
   onError: (message: string) => void;
 }
 
-export interface LabSession {
+export interface SpeechSession {
   /** performance.now() when recognition started — the fallback stream anchor. */
   streamStartMs: number;
   stop: () => Promise<void>;
@@ -51,14 +58,14 @@ export interface LabSession {
 /**
  * Start continuous recognition from the default microphone.
  *
- * @param phrases the phrase list (digit words + perio findings)
+ * @param phrases the phrase list — the vocabulary the calling page listens for
  */
-export function startLabSession(
+export function startSpeechSession(
   token: string,
   region: string,
   phrases: readonly string[],
-  handlers: LabSessionHandlers,
-): Promise<LabSession> {
+  handlers: SpeechSessionHandlers,
+): Promise<SpeechSession> {
   Recognizer.enableTelemetry(false);
 
   const speechConfig = SpeechConfig.fromAuthorizationToken(token, region);
@@ -110,7 +117,7 @@ export function startLabSession(
       recognizer.stopContinuousRecognitionAsync(finish, finish);
     });
 
-  return new Promise<LabSession>((resolve, reject) => {
+  return new Promise<SpeechSession>((resolve, reject) => {
     const streamStartMs = performance.now();
     recognizer.startContinuousRecognitionAsync(
       () => resolve({ streamStartMs, stop: close }),

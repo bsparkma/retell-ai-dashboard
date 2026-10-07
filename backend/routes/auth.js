@@ -19,6 +19,7 @@ const { resolveUserContext } = require('../middleware/tenantContext');
 const { permissionsForRole } = require('../config/permissions');
 const registry = require('../platform/registry');
 const { isVoiceLabEnabled } = require('../config/voiceLab');
+const { isHygVoiceEnabled } = require('../config/hygVoice');
 
 const router = express.Router();
 
@@ -179,6 +180,10 @@ router.get('/me', async (req, res) => {
     // 34). The same decision the mount used, so the link can never point at a
     // 404 — and in production it is false whatever VOICE_LAB says.
     voiceLab: isVoiceLabEnabled(),
+    // Whether perio voice entry answers on THIS server (queue item 35): the
+    // same per-request predicate the token route checks, so the perio sheet
+    // never offers an Arm button that would 404. HYG_VOICE must be exactly '1'.
+    hygVoice: isHygVoiceEnabled(),
   });
 });
 
