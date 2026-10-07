@@ -85,6 +85,7 @@ import {
   PERIO_MIN_FURCATION,
   chartingOrder,
   firstOpenPerioCursor,
+  perioSideOf,
   perioSite,
   perioTooth,
   perioToothHasFurcation,
@@ -99,7 +100,8 @@ import {
   type PerioFlag,
   type PerioSegment,
 } from "@shared/hyg/perio";
-import type { VoiceCommand } from "./voiceGrammar";
+import type { ToothSurface } from "@shared/hyg/contract";
+import type { VoiceCommand, VoicePassSite } from "./voiceGrammar";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE MODES (item 26) — one table, and the legend renders FROM it
@@ -407,6 +409,17 @@ export function voiceJumpTarget(chart: PerioChart, tooth: number): PerioCursor |
 }
 
 /**
+ * ITEM 37: the site "go back" lands on. A bare "mesial" / "distal" means that
+ * site on the pass the cursor is on NOW — facial gives MB / DB, lingual ML / DL.
+ */
+export function voiceGoBackSurface(cursor: PerioCursor, surface: ToothSurface | VoicePassSite): ToothSurface {
+  if (surface !== "mesial" && surface !== "distal") return surface;
+  const facial = perioSideOf(cursor.surface) === "facial";
+  if (surface === "mesial") return facial ? "MB" : "ML";
+  return facial ? "DB" : "DL";
+}
+
+/**
  * Apply one spoken final. ALL OR NOTHING: if any command in it cannot be
  * applied, the chart, cursor and last-entered site are exactly what they were,
  * and `refusal` says which command and why — the same banner a refused key
@@ -477,7 +490,7 @@ function applyVoice(state: PerioEntryState, commands: readonly VoiceCommand[]): 
         const cursor =
           command.type === "jump"
             ? voiceJumpTarget(s.chart, command.tooth)
-            : { tooth: command.tooth, surface: command.surface };
+            : { tooth: command.tooth, surface: voiceGoBackSurface(s.cursor, command.surface) };
         if (cursor === null) return refuse(`#${command.tooth} is not on this chart. Nothing was charted.`);
         s = reducePerioEntry(s, { type: "select", cursor });
         break;

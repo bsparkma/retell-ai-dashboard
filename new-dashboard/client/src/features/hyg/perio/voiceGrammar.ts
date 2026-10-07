@@ -46,6 +46,32 @@
  *
  * "Anything else is ignored": an EMPTY final — Azure hearing breath or a
  * cough, punctuation only — is no utterance at all and does nothing, silently.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * ITEM 37: WHAT TEXT THIS READS, AND THE NAVIGATION BACKSTOP
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The sheet hands this the recognizer's LEXICAL text (the spoken words, before
+ * Azure's inverse text normalization) and falls back to the display text only
+ * when a result carries no lexical form (`textForParser`). The staging field
+ * test showed why: ITN turned "jump to tooth thirty" into "Jump to 2:30".
+ *
+ * Because the display text can still arrive, the two NAVIGATION commands are
+ * tolerant of what ITN and the recognizer did to them. Nothing else is:
+ *   - the head is "jump", "go back", or "jump back" (read as "go back")
+ *   - then ONE "to" slot, said as to / two / too / 2 (required)
+ *   - then at most ONE "tooth" slot, said as tooth / two / 2 (or dropped)
+ *   - then the tooth, as a word or a numeral 1–32 — or a clock token "2:YY",
+ *     which is ITN gluing "to tooth <YY>" into a time ("2:30" is tooth 30,
+ *     "2:05" is tooth 5). Only a "2:" is that misheard "to/tooth".
+ *   - go back then needs a site; "missile" is read as "mesial" (the one
+ *     sound-alike observed), and "mesial" / "distal" said ALONE mean that site
+ *     on the pass the cursor is on (facial → MB / DB, lingual → ML / DL).
+ * A two / 2 in the tooth slot could also BE the tooth ("jump to two three":
+ * tooth 3, or tooth 2 then a depth of 3?). Both readings are tried against the
+ * whole final; if both parse, the final is refused rather than guessed.
+ *
+ * DEPTHS ARE UNTOUCHED. A clock token is never a depth (it is refused as one
+ * number), and none of the tolerance above applies outside the two commands.
  */
 import type { ToothSurface } from "@shared/hyg/contract";
 import { PERIO_FLAGS, PERIO_TOOTH_COUNT, type PerioFlag } from "@shared/hyg/perio";
@@ -53,13 +79,20 @@ import { PERIO_FLAGS, PERIO_TOOTH_COUNT, type PerioFlag } from "@shared/hyg/peri
 /** Voice charts probing depths 0–12. The keyboard still takes 13–19. */
 export const VOICE_MAX_DEPTH = 12;
 
+/**
+ * "mesial" or "distal" said on its own, with no buccal / lingual: that site on
+ * the pass the cursor is on. The parser cannot know the pass (it never looks at
+ * the chart), so the entry reducer resolves it when the command is applied.
+ */
+export type VoicePassSite = "mesial" | "distal";
+
 export type VoiceCommand =
   | { type: "depth"; value: number }
   | { type: "flag"; flag: PerioFlag }
   | { type: "skipTooth" }
   | { type: "missing" }
   | { type: "jump"; tooth: number }
-  | { type: "goBack"; tooth: number; surface: ToothSurface }
+  | { type: "goBack"; tooth: number; surface: ToothSurface | VoicePassSite }
   | { type: "undo" };
 
 export const VOICE_REJECT_REASONS = [
@@ -155,11 +188,36 @@ const SITE_NAMES: ReadonlyArray<readonly [readonly string[], ToothSurface]> = [
   [["b"], "B"],
   [["lingual"], "L"],
   [["l"], "L"],
+  // ITEM 37: the LEXICAL text spells a said abbreviation as separate letters
+  // ("MB" comes back "m b"), so the letter pairs are read the same way.
+  [["d", "b"], "DB"],
+  [["m", "b"], "MB"],
+  [["d", "l"], "DL"],
+  [["m", "l"], "ML"],
 ];
+
+/** ITEM 37: "mesial" / "distal" alone — the pass-relative site. Only after the longer names fail. */
+const PASS_SITE_NAMES: ReadonlyArray<readonly [string, VoicePassSite]> = [
+  ["mesial", "mesial"],
+  ["distal", "distal"],
+];
+
+/**
+ * ITEM 37: site-name sound-alikes, read only inside "go back". Literal pairs
+ * that were OBSERVED, nothing fuzzy: add one only with a captured final.
+ */
+const SITE_SOUND_ALIKES: Readonly<Record<string, string>> = Object.freeze({ missile: "mesial" });
 
 const SKIP_PHRASE = ["skip", "this", "tooth"] as const;
 const JUMP_PHRASE = ["jump", "to", "tooth"] as const;
 const GO_BACK_PHRASE = ["go", "back", "to", "tooth"] as const;
+
+/** ITEM 37: what may fill the "to" slot of a navigation command, and the "tooth" slot after it. */
+const TO_SLOT: ReadonlySet<string> = new Set(["to", "two", "too", "2"]);
+const TOOTH_SLOT: ReadonlySet<string> = new Set(["tooth", "two", "2"]);
+
+/** ITEM 37: a clock time as ITN writes it — "2:30". Kept whole by the tokenizer. */
+const CLOCK_TOKEN = /^(\d{1,2}):(\d{2})$/;
 
 /** The words that may be said, in any position. Built from the tables above. */
 export const VOICE_VOCABULARY: ReadonlySet<string> = new Set<string>([
@@ -208,7 +266,8 @@ export const PERIO_VOICE_PHRASES: readonly string[] = Object.freeze(
       `${JUMP_PHRASE.join(" ")} number`,
       `${GO_BACK_PHRASE.join(" ")} number`,
       ...toothWords(),
-      ...SITE_NAMES.map(([words]) => words.join(" ")).filter((p) => p.length > 2),
+      // Abbreviations (said as letters) are read when heard, but are not useful hints.
+      ...SITE_NAMES.filter(([words]) => words.some((w) => w.length > 2)).map(([words]) => words.join(" ")),
     ]),
   ),
 );
@@ -223,18 +282,41 @@ const JOINED_NUMBER = /\d[.,]\d+/;
 /**
  * Lower case, with the punctuation Azure's display text adds turned into
  * spaces. Hyphens split ("mesio-buccal", "twenty-one"), and "#14" reads as "14".
+ *
+ * ITEM 37: a clock time ("2:30", "2:30.") stays ONE token. Splitting it would
+ * hand the parser a 2 and a 30 that were never said as two numbers.
  */
 export function tokenizeVoice(text: string): string[] {
   return text
     .toLowerCase()
-    .replace(/[‐-―-]/g, " ")
-    .replace(/[#.,!?;:"'`()‘’“”…]+/g, " ")
     .split(/\s+/)
+    .flatMap((piece) => {
+      const bare = piece.replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "");
+      if (CLOCK_TOKEN.test(bare)) return [bare];
+      return piece
+        .replace(/[‐-―-]/g, " ")
+        .replace(/[#.,!?;:"'`()‘’“”…]+/g, " ")
+        .split(/\s+/);
+    })
     .filter((t) => t !== "");
 }
 
-function rejected(reason: VoiceRejectReason, heard: string): VoiceParse {
-  return { kind: "rejected", reason, heard, message: rejectionMessage(reason, heard) };
+/**
+ * ITEM 37: the text the parser reads from one recognized final — the LEXICAL
+ * form when the recognizer gave one, otherwise the display text. The display
+ * text stays what the human is shown.
+ */
+export function textForParser(final: { text: string; lexical?: string | null }): string {
+  const lexical = final.lexical;
+  return typeof lexical === "string" && lexical.trim() !== "" ? lexical : final.text;
+}
+
+function rejected(
+  reason: VoiceRejectReason,
+  heard: string,
+  message?: string,
+): Extract<VoiceParse, { kind: "rejected" }> {
+  return { kind: "rejected", reason, heard, message: message ?? rejectionMessage(reason, heard) };
 }
 
 /** What the sheet says. Every one ends the same way: nothing was charted. */
@@ -251,7 +333,7 @@ export function rejectionMessage(reason: VoiceRejectReason, heard: string): stri
     case "bad_tooth":
       return `Heard tooth “${heard}”. Teeth are 1–${PERIO_TOOTH_COUNT}, so nothing was charted.`;
     case "incomplete":
-      return `“${heard}” needs a tooth number${heard.startsWith("go back") ? " and a site" : ""}. Nothing was charted.`;
+      return `“${heard}” needs a tooth number${/^(go|jump) back\b/.test(heard) ? " and a site" : ""}. Nothing was charted.`;
   }
 }
 
@@ -292,7 +374,12 @@ function readTooth(tokens: readonly string[], at: number): ToothRead {
 
   let value: number;
   let next = i + 1;
-  if (/^\d+$/.test(t)) {
+  const clock = CLOCK_TOKEN.exec(t);
+  if (clock) {
+    // ITEM 37: "2:30" is "to tooth 30" glued into a time by ITN; "2:05" is
+    // tooth 5. Only "2:" is the misheard "to/tooth" — any other hour is refused.
+    value = clock[1] === "2" ? Number(clock[2]) : NaN;
+  } else if (/^\d+$/.test(t)) {
     value = t.length > 1 && t.startsWith("0") ? NaN : Number(t);
   } else if (t in TENS) {
     value = TENS[t];
@@ -315,15 +402,27 @@ function readTooth(tokens: readonly string[], at: number): ToothRead {
   return { ok: true, tooth: value, next };
 }
 
-/** A site name at `at`, longest match first. */
-function readSite(tokens: readonly string[], at: number): { surface: ToothSurface; next: number } | null {
-  let best: { surface: ToothSurface; next: number } | null = null;
+/**
+ * A site name at `at`, longest match first. ITEM 37: the observed sound-alikes
+ * are read as the word they were heard for, and "mesial" / "distal" on their
+ * own are the pass-relative site — only when no longer name matches.
+ */
+function readSite(
+  tokens: readonly string[],
+  at: number,
+): { surface: ToothSurface | VoicePassSite; next: number } | null {
+  const heard = tokens.slice(at, at + 2).map((t) => SITE_SOUND_ALIKES[t] ?? t);
+  let best: { surface: ToothSurface | VoicePassSite; next: number } | null = null;
   for (const [words, surface] of SITE_NAMES) {
-    if (startsWith(tokens, at, words) && (best === null || at + words.length > best.next)) {
+    if (startsWith(heard, 0, words) && (best === null || at + words.length > best.next)) {
       best = { surface, next: at + words.length };
     }
   }
-  return best;
+  if (best !== null) return best;
+  for (const [word, site] of PASS_SITE_NAMES) {
+    if (heard[0] === word) return { surface: site, next: at + 1 };
+  }
+  return null;
 }
 
 const FLAG_SET: ReadonlySet<string> = new Set(PERIO_FLAGS);
@@ -345,37 +444,77 @@ export function parseVoiceFinal(text: string): VoiceParse {
 
   const tokens = tokenizeVoice(text);
   if (tokens.length === 0) return { kind: "ignored" };
+  return parseFrom(tokens, 0);
+}
 
+type ParseResult = Exclude<VoiceParse, { kind: "ignored" }>;
+
+/** ITEM 37: a navigation command's head at `at` — "go back", "jump back" (= go back), or "jump". */
+function navigationHead(tokens: readonly string[], at: number): { type: "jump" | "goBack"; next: number } | null {
+  if ((tokens[at] === "go" || tokens[at] === "jump") && tokens[at + 1] === "back") return { type: "goBack", next: at + 2 };
+  if (tokens[at] === "jump") return { type: "jump", next: at + 1 };
+  return null;
+}
+
+/**
+ * ITEM 37: one navigation command at `at` (its head already found), then the
+ * rest of the final. See the header for the slots.
+ *
+ * The tooth slot is optional, and a two / 2 there could be the tooth itself,
+ * so up to two readings are tried — WITH the tooth slot, then WITHOUT — each
+ * against the whole remainder. Exactly one that parses is taken; two that both
+ * parse is a refusal (the final could mean either); none returns the first
+ * reading's refusal, the one that read the most of what was said.
+ */
+function parseNavigation(
+  tokens: readonly string[],
+  at: number,
+  head: { type: "jump" | "goBack"; next: number },
+): ParseResult {
+  const isGoBack = head.type === "goBack";
+  const incomplete = (end: number) => rejected("incomplete", tokens.slice(at, end + 1).join(" "));
+  if (!TO_SLOT.has(tokens[head.next] ?? "")) return incomplete(head.next);
+  const afterTo = head.next + 1;
+
+  const readingAt = (toothAt: number): ParseResult => {
+    const tooth = readTooth(tokens, toothAt);
+    if (!tooth.ok) return tooth.reason === "bad_tooth" ? rejected("bad_tooth", tooth.heard) : incomplete(toothAt);
+    if (!isGoBack) return withPrefix([{ type: "jump", tooth: tooth.tooth }], parseFrom(tokens, tooth.next));
+    const site = readSite(tokens, tooth.next);
+    if (!site) return incomplete(tooth.next);
+    return withPrefix([{ type: "goBack", tooth: tooth.tooth, surface: site.surface }], parseFrom(tokens, site.next));
+  };
+
+  const readings: ParseResult[] = [];
+  if (TOOTH_SLOT.has(tokens[afterTo] ?? "")) readings.push(readingAt(afterTo + 1));
+  readings.push(readingAt(afterTo));
+
+  const parsed = readings.filter((r) => r.kind === "commands");
+  if (parsed.length === 1) return parsed[0];
+  if (parsed.length > 1) {
+    const heard = tokens.slice(at, afterTo + 2).join(" ");
+    return rejected(
+      "bad_tooth",
+      heard,
+      `Heard “${heard}”, which could name tooth ${tokens[afterTo]} or the number after it, so nothing was charted. Say it again with “tooth” and the number once.`,
+    );
+  }
+  return readings[0];
+}
+
+function withPrefix(prefix: VoiceCommand[], rest: ParseResult): ParseResult {
+  return rest.kind === "commands" ? { kind: "commands", commands: [...prefix, ...rest.commands] } : rest;
+}
+
+/** The tokens from `start` on → commands, or the first refusal. */
+function parseFrom(tokens: readonly string[], start: number): ParseResult {
   const commands: VoiceCommand[] = [];
-  let i = 0;
+  let i = start;
   while (i < tokens.length) {
     const t = tokens[i];
 
-    if (startsWith(tokens, i, GO_BACK_PHRASE)) {
-      const tooth = readTooth(tokens, i + GO_BACK_PHRASE.length);
-      if (!tooth.ok) {
-        return tooth.reason === "bad_tooth"
-          ? rejected("bad_tooth", tooth.heard)
-          : rejected("incomplete", tokens.slice(i, i + GO_BACK_PHRASE.length + 1).join(" "));
-      }
-      const site = readSite(tokens, tooth.next);
-      if (!site) return rejected("incomplete", tokens.slice(i, tooth.next + 1).join(" "));
-      commands.push({ type: "goBack", tooth: tooth.tooth, surface: site.surface });
-      i = site.next;
-      continue;
-    }
-
-    if (startsWith(tokens, i, JUMP_PHRASE)) {
-      const tooth = readTooth(tokens, i + JUMP_PHRASE.length);
-      if (!tooth.ok) {
-        return tooth.reason === "bad_tooth"
-          ? rejected("bad_tooth", tooth.heard)
-          : rejected("incomplete", tokens.slice(i, i + JUMP_PHRASE.length + 1).join(" "));
-      }
-      commands.push({ type: "jump", tooth: tooth.tooth });
-      i = tooth.next;
-      continue;
-    }
+    const head = navigationHead(tokens, i);
+    if (head) return withPrefix(commands, parseNavigation(tokens, i, head));
 
     if (startsWith(tokens, i, SKIP_PHRASE)) {
       commands.push({ type: "skipTooth" });
@@ -407,6 +546,10 @@ export function parseVoiceFinal(text: string): VoiceParse {
       i += 1;
       continue;
     }
+
+    // ITEM 37: a clock time is NEVER a depth. "2:30" is two or more numbers
+    // glued together, exactly like "1010".
+    if (CLOCK_TOKEN.test(t)) return rejected("concatenated", t);
 
     if (/^\d+$/.test(t)) {
       const read = numeralDepth(t);
