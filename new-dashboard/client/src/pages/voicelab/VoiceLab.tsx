@@ -156,6 +156,9 @@ export default function VoiceLab() {
     const generation = generationRef.current;
     try {
       const { token, region } = await api.voiceLabToken();
+      // The token's 10 minutes start NOW, not when the microphone prompt is
+      // answered — so the auto-disarm counts from here.
+      const mintedAt = Date.now();
       if (generation !== generationRef.current) return;
       const session = await startLabSession(token, region, PHRASE_LIST, {
         onPartial,
@@ -170,7 +173,7 @@ export default function VoiceLab() {
       setArmed(true);
       timerRef.current = setTimeout(
         () => void disarm("Disarmed automatically: the speech token is about to expire. Arm again to continue."),
-        AUTO_DISARM_MS,
+        Math.max(0, AUTO_DISARM_MS - (Date.now() - mintedAt)),
       );
     } catch (err) {
       setError(describeTokenError(err));

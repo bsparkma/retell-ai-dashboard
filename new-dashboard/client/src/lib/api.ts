@@ -1551,6 +1551,16 @@ export const api = {
   },
 
   /**
+   * Voice lab (queue item 34): mint a 10-minute Azure Speech token. Sends NO
+   * body — the backend refuses one — and gets back only the token and region;
+   * the Speech key never leaves the server. 404 when the lab is not mounted,
+   * 429 when today's lab budget is spent.
+   */
+  voiceLabToken(): Promise<VoiceLabToken> {
+    return request<VoiceLabToken>("/voicelab/token", { method: "POST" });
+  },
+
+  /**
    * Pull BOTH call sources on demand.
    *
    * Never throws on a per-source refusal — "Mango ingestion is off here" and "the hourly
@@ -1561,16 +1571,6 @@ export const api = {
    * A full Retell page walk plus a Mango pull can legitimately take a while, so the
    * request gets 90s before the client gives up on it.
    */
-  /**
-   * Voice lab (queue item 34): mint a 10-minute Azure Speech token. Sends NO
-   * body — the backend refuses one — and gets back only the token and region;
-   * the Speech key never leaves the server. 404 when the lab is not mounted,
-   * 429 when today's lab budget is spent.
-   */
-  voiceLabToken(): Promise<VoiceLabToken> {
-    return request<VoiceLabToken>("/voicelab/token", { method: "POST" });
-  },
-
   async syncNow(): Promise<SyncNowResult> {
     let res: Response;
     try {

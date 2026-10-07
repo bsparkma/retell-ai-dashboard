@@ -66,13 +66,13 @@ import FeesImports from "./pages/fees/FeesImports";
 import FeesImportDetail from "./pages/fees/FeesImportDetail";
 import TcReports from "./pages/tc/TcReports";
 import TcFloatingCalc from "./features/tc/cob/FloatingCalc";
+import { WinCelebrationProvider } from "./features/tc/wins/WinCelebrationProvider";
 
 // Voice lab (queue item 34, staging only). LAZY on purpose: it is the one page
 // that imports the Azure Speech SDK, and loading it on demand keeps that SDK
 // out of every other page's bundle. The page renders NotFound itself unless
 // /auth/me says the lab is mounted on this server.
 const VoiceLab = lazy(() => import("./pages/voicelab/VoiceLab"));
-import { WinCelebrationProvider } from "./features/tc/wins/WinCelebrationProvider";
 
 // Exported for the routing tests (tests/module-home.test.tsx).
 export function Router() {

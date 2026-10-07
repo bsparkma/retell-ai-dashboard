@@ -51,8 +51,10 @@ const RETENTION_NAMES = Object.freeze([
   ['contentLoggingEnabled', /contentLoggingEnabled/i],
   ['destinationContainerUrl', /destinationContainerUrl/i],
   ['setServiceProperty', /setServiceProperty/i],
-  ['endpointId (custom model)', /\bendpointId\b/i],
-  ['fromEndpoint (custom model)', /\bfromEndpoint\b/],
+  // No \b: the SDK's property form is `SpeechServiceConnection_EndpointId`,
+  // and `_` is a word character, so a word boundary would let it through.
+  ['endpointId (custom model)', /endpointId/i],
+  ['fromEndpoint (custom model)', /fromEndpoint/i],
 ]);
 
 /** A disk write on a line that names audio. */
@@ -70,7 +72,15 @@ const LAB_PERSISTENCE = Object.freeze([
   ['createObjectURL', /createObjectURL/],
 ]);
 
-/** Strip comments so prose explaining a rule never trips it. */
+/**
+ * Strip comments — used ONLY for the two heuristic rules (audio disk writes,
+ * lab persistence), where prose like "never write the recording to disk" would
+ * otherwise trip them. The red-list names, the SDK import and MediaRecorder are
+ * matched against the RAW source: a regex comment-stripper cannot know about
+ * strings, so `"src/*"` followed by code would hide that code. Matching raw
+ * means a red-list name cannot be hidden, and the price is that no comment may
+ * name one either — explain the rule without spelling the call.
+ */
 function stripComments(src) {
   return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`\\])\/\/.*$/gm, '$1');
 }
@@ -114,19 +124,20 @@ function scan({ backendRoot, dashboardRoot, self = __filename }) {
     if (path.resolve(f) === path.resolve(self)) continue; // this file names the red list to define it
     const rel = path.relative(root, f).split(path.sep).join('/');
     const label = `${tree}/${rel}`;
-    const code = stripComments(fs.readFileSync(f, 'utf8'));
+    const raw = fs.readFileSync(f, 'utf8');
+    const code = stripComments(raw);
     const isTest = /\.test\.(c|m)?(j|t)sx?$/.test(rel) || rel.startsWith('test/') || rel.startsWith('tests/');
 
     for (const [rule, re] of RETENTION_NAMES) {
-      if (re.test(code)) offenders.push({ file: label, rule });
+      if (re.test(raw)) offenders.push({ file: label, rule });
     }
 
-    if (code.includes(SDK)) {
+    if (raw.includes(SDK)) {
       if (tree === 'backend') offenders.push({ file: label, rule: 'speech SDK imported in the backend' });
       else sdkImporters.push(rel);
     }
 
-    if (tree === 'new-dashboard' && /\bMediaRecorder\b/.test(code)) {
+    if (tree === 'new-dashboard' && /\bMediaRecorder\b/.test(raw)) {
       offenders.push({ file: label, rule: 'MediaRecorder (local audio recording)' });
     }
 
@@ -238,6 +249,7 @@ test('it bites: every red-list name is caught, in either tree', () => {
     ['const job = { destinationContainerUrl: "https://x" };', 'destinationContainerUrl'],
     ['speechConfig.setServiceProperty("x", "y", 0);', 'setServiceProperty'],
     ['speechConfig.endpointId = "custom";', 'endpointId (custom model)'],
+    ['speechConfig.setProperty(PropertyId.SpeechServiceConnection_EndpointId, "custom");', 'endpointId (custom model)'],
     ['SpeechConfig.fromEndpoint(new URL("https://x"));', 'fromEndpoint (custom model)'],
   ];
   for (const [line, rule] of plants) {
@@ -281,9 +293,20 @@ test('it bites: a lab file that reaches for any persistence at all', () => {
   assert.deepEqual(data, [{ file: 'backend/routes/voiceLab.js', rule: 'lab file names a /data path' }]);
 });
 
-test('it bites: a comment explaining a rule does not trip it, but the same name in code does', () => {
-  const commented = scan(plantedTree({ sessionAppend: '// never call enableAudioLogging here' })).offenders;
-  assert.deepEqual(commented, []);
-  const coded = scan(plantedTree({ sessionAppend: 'const off = "enableAudioLogging";' })).offenders;
-  assert.equal(coded.length, 1);
+test('it bites: a red-list name cannot be hidden behind comment-looking strings or in a comment', () => {
+  // A string holding "/*" used to swallow the code after it in a comment strip.
+  const hidden = scan(
+    plantedTree({ sessionAppend: 'const g = "src/*";\nspeechConfig.enableAudioLogging();\n/* ok */' })
+  ).offenders;
+  assert.deepEqual(hidden, [
+    { file: 'new-dashboard/client/src/pages/voicelab/speechSession.ts', rule: 'enableAudioLogging' },
+  ]);
+  // Raw matching: even prose naming the call is refused, so nothing can be "commented" past it.
+  const commented = scan(plantedTree({ sessionAppend: '// speechConfig.enableAudioLogging();' })).offenders;
+  assert.equal(commented.length, 1);
+});
+
+test('the heuristic rules still ignore prose: a comment about not saving recordings is not a disk write', () => {
+  const prose = scan(plantedTree({ backendAppend: '// never writeFile( the recording to disk' })).offenders;
+  assert.deepEqual(prose, []);
 });
