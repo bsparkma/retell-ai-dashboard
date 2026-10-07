@@ -136,6 +136,9 @@ describe("the cards", () => {
     expect(hudCard(chart, 2, cursor).tag).toBe("SKIPPED");
     expect(hudCard(chart, 3, cursor).tag).toBe("NOW");
     expect(hudCard(chart, 4, cursor).tag).toBe("NEXT");
+    // A cursor left ON a skipped tooth still marks where she is, with nothing ringed.
+    const onSkipped = hudCard(chart, 2, { tooth: 2, surface: "B" });
+    expect(onSkipped).toMatchObject({ tag: "NOW", skipped: true, ringed: null });
     expect(hudCard(chart, 4, cursor).flags).toEqual([]);
     expect(hudPassProgress(chart, hudPass(cursor))).toEqual({ charted: 1, skipped: 1, total: 16 });
 
@@ -171,6 +174,7 @@ describe("the heard ribbon", () => {
   it("names a jump, a skip and an undo", () => {
     expect(voiceOutcome(start, commands("jump to tooth fourteen"))).toMatchObject({ happened: "moved to tooth 14 MB" });
     expect(voiceOutcome(start, commands("skip this tooth"))).toMatchObject({ happened: "skipped tooth 1 · moved to tooth 2" });
+    expect(voiceOutcome(start, commands("missing"))).toMatchObject({ happened: "tooth 1 marked missing · moved to tooth 2" });
     const one = reducePerioEntry(start, { type: "voice", commands: commands("four") });
     expect(voiceOutcome(one, commands("undo"))).toMatchObject({ happened: "took back 1 DB" });
   });

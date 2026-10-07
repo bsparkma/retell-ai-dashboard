@@ -98,8 +98,9 @@ export interface HudCard {
   active: HudSiteValue[];
   /** The other surface's three, for the small gray row. */
   other: HudSiteValue[];
-  /** The site the next depth lands on — on the NOW card only. */
+  /** The site the next depth lands on — on the NOW card only, and never on a skipped tooth. */
   ringed: ToothSurface | null;
+  skipped: boolean;
   /** Any flag set on any of the tooth's six sites. */
   flags: PerioFlag[];
 }
@@ -110,10 +111,12 @@ export function hudCard(chart: PerioChart, tooth: number, cursor: PerioCursor): 
   const values = (s: PerioSide): HudSiteValue[] =>
     screenSites(tooth, s).map((surface) => ({ surface, depth: perioSite(chart, tooth, surface).depth }));
   const skipped = perioTooth(chart, tooth).skipped;
-  const tag: HudTag = skipped
-    ? "SKIPPED"
-    : tooth === cursor.tooth
-      ? "NOW"
+  // NOW wins over SKIPPED: a jump or a tap can leave the cursor on a skipped
+  // tooth, and the strip must still say where she is (the card says skipped).
+  const tag: HudTag = tooth === cursor.tooth
+    ? "NOW"
+    : skipped
+      ? "SKIPPED"
       : sideCharted(chart, tooth, side)
         ? "DONE"
         : "NEXT";
@@ -124,7 +127,8 @@ export function hudCard(chart: PerioChart, tooth: number, cursor: PerioCursor): 
     tag,
     active: values(side),
     other: values(otherSide),
-    ringed: tag === "NOW" ? cursor.surface : null,
+    ringed: tag === "NOW" && !skipped ? cursor.surface : null,
+    skipped,
     flags,
   };
 }
@@ -180,9 +184,12 @@ export function voiceOutcome(before: PerioEntryState, commands: readonly VoiceCo
         break;
       }
       case "skipTooth":
-      case "missing":
         flushCharted();
         parts.push(`skipped tooth ${prev.cursor.tooth}`);
+        break;
+      case "missing":
+        flushCharted();
+        parts.push(`tooth ${prev.cursor.tooth} marked missing`);
         break;
       case "jump":
       case "goBack":

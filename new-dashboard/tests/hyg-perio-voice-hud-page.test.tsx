@@ -428,6 +428,34 @@ describe("item 36: the HUD", () => {
     expect(screen.getByTestId("hyg-perio-voice-notice").textContent).toMatch(/locked while it is sent/);
   });
 
+  it("a final that lands while the chart is locked is never painted as charted", async () => {
+    const entry = initialPerioEntry(emptyPerioChart());
+    // The real race: the lock has COMMITTED (so the sheet's onVoice drops the
+    // final) but the entry's passive disarm effect has not run yet, so the
+    // session is still live. A sibling layout effect lands in exactly that gap.
+    function SpeakOnLock({ locked }: { locked: boolean }) {
+      React.useLayoutEffect(() => {
+        if (locked) {
+          speech.handlers?.onFinal({ text: "three two three", atMs: 1, offsetTicks: 0, durationTicks: 0, sdkLatencyMs: null });
+        }
+      }, [locked]);
+      return null;
+    }
+    const view = (locked: boolean) => (
+      <>
+        <PerioVoiceEntry office="roland" entry={entry} onCommands={() => {}} locked={locked} />
+        <SpeakOnLock locked={locked} />
+      </>
+    );
+    const { rerender } = render(view(false));
+    fireEvent.click(screen.getByTestId("hyg-perio-voice-toggle"));
+    await waitFor(() => expect(hud()).not.toBeNull());
+    rerender(view(true));
+    await waitFor(() => expect(hud()).toBeNull());
+    // What the HUD would have shown: nothing was recorded as heard, let alone accepted.
+    expect(screen.getByTestId("hyg-perio-voice").dataset.heard).toBeUndefined();
+  });
+
   it("undo, skip and jump move the strip", async () => {
     renderPerio();
     await armVoice();

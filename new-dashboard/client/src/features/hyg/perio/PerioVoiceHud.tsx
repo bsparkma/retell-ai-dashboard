@@ -77,7 +77,7 @@ function ToothCard({ card }: { card: HudCard }) {
         </span>
       </div>
 
-      {card.tag === "SKIPPED" ? (
+      {card.skipped ? (
         <div className="py-6 text-lg font-semibold text-muted-foreground">skipped</div>
       ) : (
         <>
@@ -135,6 +135,8 @@ function Ribbon({ heard }: { heard: HudHeard | null }) {
   if (heard.kind === "accepted") {
     return (
       <div
+        role="status"
+        aria-live="polite"
         className="flex items-start gap-3 rounded-2xl border border-emerald-600/40 bg-emerald-500/10 px-5 py-4"
         data-testid="hyg-perio-hud-ribbon"
         data-kind="accepted"

@@ -102,6 +102,13 @@ export function PerioVoiceEntry({ office, locked, entry, onCommands, onReturnFoc
   const generationRef = useRef(0);
   const onCommandsRef = useRef(onCommands);
   onCommandsRef.current = onCommands;
+  /**
+   * ITEM 36: a final that lands while the chart is locked is dropped by the
+   * sheet (HygPerio `onVoice`), so the HUD must not paint it green either —
+   * the disarm effect below runs one render later.
+   */
+  const lockedRef = useRef(locked);
+  lockedRef.current = locked;
 
   const disarm = useCallback(async (reason?: string) => {
     generationRef.current += 1;
@@ -131,8 +138,10 @@ export function PerioVoiceEntry({ office, locked, entry, onCommands, onReturnFoc
     setRejection(null);
     setApplied(describeVoiceCommands(parsed.commands));
     // The ribbon's account of it comes from the sheet's own reducer, run on a copy.
-    setHeard(voiceOutcome(entryRef.current, parsed.commands));
-    entryRef.current = reducePerioEntry(entryRef.current, { type: "voice", commands: parsed.commands });
+    if (!lockedRef.current) {
+      setHeard(voiceOutcome(entryRef.current, parsed.commands));
+      entryRef.current = reducePerioEntry(entryRef.current, { type: "voice", commands: parsed.commands });
+    }
     onCommandsRef.current(parsed.commands);
   }, []);
 
@@ -214,7 +223,7 @@ export function PerioVoiceEntry({ office, locked, entry, onCommands, onReturnFoc
   };
 
   return (
-    <section className="mt-3" data-testid="hyg-perio-voice">
+    <section className="mt-3" data-testid="hyg-perio-voice" data-heard={heard?.kind}>
       <div
         className={cn(
           "flex flex-wrap items-center justify-between gap-3 rounded-xl border-2 px-4 py-3",
