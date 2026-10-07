@@ -79,8 +79,8 @@ const speech = vi.hoisted(() => ({
   gate: null as Promise<void> | null,
 }));
 
-vi.mock("@/pages/voicelab/speechSession", () => ({
-  startLabSession: vi.fn(async (token: string, region: string, phrases: readonly string[], handlers: FakeHandlers) => {
+vi.mock("@/lib/speech/speechSession", () => ({
+  startSpeechSession: vi.fn(async (token: string, region: string, phrases: readonly string[], handlers: FakeHandlers) => {
     speech.starts.push({ token, region, phrases });
     speech.handlers = handlers;
     if (speech.gate) await speech.gate;

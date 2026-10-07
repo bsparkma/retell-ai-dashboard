@@ -581,6 +581,34 @@ export async function fetchPerio(
 }
 
 /**
+ * Perio voice (item 35): the answer to a token mint, and NOTHING else. Strict,
+ * so a response that grew a field (anything beyond the token and its region)
+ * is refused here rather than carried into the page.
+ */
+const HygVoiceTokenSchema = z
+  .object({ success: z.literal(true), token: z.string().min(1), region: z.string().min(1) })
+  .strict();
+export type HygVoiceToken = z.infer<typeof HygVoiceTokenSchema>;
+
+/**
+ * Mint a 10-minute Azure Speech token for perio voice entry. Sends NO body —
+ * the server refuses one, and nothing that was said is ever sent to CareIN.
+ * The office is only the hyg router's usual scope; the token is not per-office.
+ *
+ * 404 when HYG_VOICE is off on this server; 429 (HYG_VOICE_BUDGET_EXHAUSTED)
+ * when today's voice minutes are spent; 503 when Azure Speech is not set up.
+ */
+export async function mintHygVoiceToken(office: OfficeId): Promise<HygVoiceToken> {
+  return mutate("POST", "/voice/token", { office }, (raw) => {
+    const parsed = HygVoiceTokenSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new HygApiError("CareIN answered the voice token request in a shape this page cannot use", 0, "CONTRACT_MISMATCH");
+    }
+    return parsed.data;
+  });
+}
+
+/**
  * Store the chart, whole, as a Draft.
  *
  * A chart that was staged goes back to Draft if a READING changed — the staged

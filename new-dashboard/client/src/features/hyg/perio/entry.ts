@@ -99,6 +99,7 @@ import {
   type PerioFlag,
   type PerioSegment,
 } from "@shared/hyg/perio";
+import type { VoiceCommand } from "./voiceGrammar";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE MODES (item 26) — one table, and the legend renders FROM it
@@ -181,7 +182,12 @@ export type PerioEntryAction =
   | { type: "skipTeeth"; teeth: number[] }
   | { type: "sweep"; segment: PerioSegment; direction: PerioDirection }
   /** A chart from the server, replacing everything. The cursor starts over. */
-  | { type: "load"; chart: PerioChart };
+  | { type: "load"; chart: PerioChart }
+  /**
+   * ITEM 35: one spoken final, already parsed (features/hyg/perio/voiceGrammar.ts).
+   * Applied ALL OR NOTHING — see `applyVoice`.
+   */
+  | { type: "voice"; commands: readonly VoiceCommand[] };
 
 export function initialPerioEntry(chart: PerioChart): PerioEntryState {
   return {
@@ -380,7 +386,99 @@ export function reducePerioEntry(state: PerioEntryState, action: PerioEntryActio
       // A reload keeps the mode she is working in; it is a property of HER, not
       // of the chart that came back.
       return { ...initialPerioEntry(action.chart), mode: state.mode };
+    case "voice":
+      return applyVoice(state, action.commands);
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VOICE (item 35) — the same moves as the keys, in the same charting order
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Where "jump to tooth N" lands: the tooth's first site in charting order that
+ * has no depth yet — so "jump to tooth 14" resumes it — or its first site if
+ * every one is charted. Null when the tooth is not in the order at all.
+ */
+export function voiceJumpTarget(chart: PerioChart, tooth: number): PerioCursor | null {
+  const sites = chartingOrder(chart.sweep).filter((c) => c.tooth === tooth);
+  if (sites.length === 0) return null;
+  return sites.find((c) => perioSite(chart, c.tooth, c.surface).depth === null) ?? sites[0];
+}
+
+/**
+ * Apply one spoken final. ALL OR NOTHING: if any command in it cannot be
+ * applied, the chart, cursor and last-entered site are exactly what they were,
+ * and `refusal` says which command and why — the same banner a refused key
+ * uses. Half a final is worse than none, because depths auto-advance: a dropped
+ * word shifts every depth after it onto the wrong site.
+ *
+ * Every move is the reducer's own (`number`, `select`, `toggleSkip`, `erase`),
+ * so a spoken depth walks the charting order exactly as a typed one does. Two
+ * deliberate differences from the keys, both towards the safe side:
+ *   - a spoken FLAG sets, it does not toggle. Saying "bleeding" twice must not
+ *     quietly take the bleeding off again.
+ *   - "skip this tooth" / "missing" only ever skip. They never un-skip.
+ * "undo" is Backspace: it takes back the last reading and goes back to it.
+ *
+ * VOICE IS DEPTH ONLY. In Gingival margin, Mobility or Furcation mode the
+ * whole final is refused rather than read as a recession or a grade.
+ */
+function applyVoice(state: PerioEntryState, commands: readonly VoiceCommand[]): PerioEntryState {
+  const refuse = (refusal: string): PerioEntryState => ({ ...state, refusal, lastEntered: null });
+  if (commands.length === 0) return state;
+  if (state.mode !== "depth") {
+    return refuse(
+      `Voice charts probing depths only. Switch to ${PERIO_MODE_LABELS.depth} (${PERIO_MODE_KEYS.depth}) to dictate — nothing was charted.`,
+    );
+  }
+
+  let s: PerioEntryState = state;
+  for (const command of commands) {
+    switch (command.type) {
+      case "depth": {
+        if (perioTooth(s.chart, s.cursor.tooth).skipped) {
+          return refuse(`#${s.cursor.tooth} is skipped, so “${command.value}” was not charted. Nothing from that phrase was.`);
+        }
+        s = reducePerioEntry(s, { type: "number", value: command.value });
+        break;
+      }
+      case "flag": {
+        const target = flagTarget(s);
+        if (perioTooth(s.chart, target.tooth).skipped) {
+          return refuse(`#${target.tooth} is skipped, so ${command.flag} was not charted. Nothing from that phrase was.`);
+        }
+        s = {
+          ...s,
+          chart: withPerioSite(s.chart, target.tooth, target.surface, { [command.flag]: true }),
+          refusal: null,
+        };
+        break;
+      }
+      case "skipTooth":
+      case "missing": {
+        if (!perioTooth(s.chart, s.cursor.tooth).skipped) s = reducePerioEntry(s, { type: "toggleSkip" });
+        break;
+      }
+      case "jump":
+      case "goBack": {
+        if (perioTooth(s.chart, command.tooth).skipped) {
+          return refuse(`#${command.tooth} is skipped. Press X on it to chart it — nothing from that phrase was charted.`);
+        }
+        const cursor =
+          command.type === "jump"
+            ? voiceJumpTarget(s.chart, command.tooth)
+            : { tooth: command.tooth, surface: command.surface };
+        if (cursor === null) return refuse(`#${command.tooth} is not on this chart. Nothing was charted.`);
+        s = reducePerioEntry(s, { type: "select", cursor });
+        break;
+      }
+      case "undo":
+        s = reducePerioEntry(s, { type: "erase" });
+        break;
+    }
+  }
+  return { ...s, refusal: null };
 }
 
 /** The parts of a key event entry cares about — no DOM type, so tests need none. */

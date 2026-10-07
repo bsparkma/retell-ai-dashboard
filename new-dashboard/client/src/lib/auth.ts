@@ -80,6 +80,13 @@ export interface AuthUser {
    * (older backend) reads as false: the link never points at a 404.
    */
   voiceLab: boolean;
+  /**
+   * Whether perio voice entry (queue item 35) answers on this server: the same
+   * predicate the token route checks (HYG_VOICE exactly '1'). Absent (older
+   * backend) reads as false, so the perio sheet never offers an Arm button that
+   * would 404.
+   */
+  hygVoice: boolean;
 }
 
 /** Narrow an unknown `tenant` object into TenantInfo (or null). No `any`. */
@@ -122,6 +129,7 @@ export function parseAuthUser(value: unknown): AuthUser | null {
       // "all offices", the widest default. Nothing is denied either way.
       homeOffice: typeof body.homeOffice === "string" && body.homeOffice !== "" ? body.homeOffice : null,
       voiceLab: body.voiceLab === true,
+      hygVoice: body.hygVoice === true,
     };
   }
   return null;
