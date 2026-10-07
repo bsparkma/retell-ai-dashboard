@@ -8,6 +8,8 @@
  *     10-minute token the hyg backend mints (lib/speech/speechSession.ts). Never
  *     to CareIN, never to disk.
  *   - Text: Azure → this component's memory → `parseVoiceFinal` → commands.
+ *     ITEM 37: the parser reads each final's LEXICAL text (the spoken words);
+ *     the HUD ribbon shows its DISPLAY text, so she sees what Azure wrote.
  *     The commands go to the sheet's OWN entry reducer (`onCommands`), so what
  *     was said becomes readings in the chart she is already editing — and from
  *     there only through the chart's existing save, stage, and confirm-to-send.
@@ -42,6 +44,7 @@ import {
   PERIO_VOICE_PHRASES,
   describeVoiceCommands,
   parseVoiceFinal,
+  textForParser,
   type VoiceCommand,
 } from "./voiceGrammar";
 
@@ -125,21 +128,23 @@ export function PerioVoiceEntry({ office, locked, entry, onCommands, onReturnFoc
     if (session) await session.stop();
   }, []);
 
-  const onFinal = useCallback((text: string) => {
+  const onFinal = useCallback((final: { text: string; lexical?: string | null }) => {
     setPartial("");
-    const parsed = parseVoiceFinal(text);
+    // ITEM 37: the parser reads the LEXICAL words; the ribbon shows the display text.
+    const parsed = parseVoiceFinal(textForParser(final));
+    const said = final.text.trim();
     if (parsed.kind === "ignored") return;
     if (parsed.kind === "rejected") {
       setRejection(parsed.message);
       setApplied(null);
-      setHeard({ kind: "rejected", reason: parsed.reason, heard: parsed.heard, message: parsed.message });
+      setHeard({ kind: "rejected", reason: parsed.reason, heard: parsed.heard, message: parsed.message, said });
       return;
     }
     setRejection(null);
     setApplied(describeVoiceCommands(parsed.commands));
     // The ribbon's account of it comes from the sheet's own reducer, run on a copy.
     if (!lockedRef.current) {
-      setHeard(voiceOutcome(entryRef.current, parsed.commands));
+      setHeard({ ...voiceOutcome(entryRef.current, parsed.commands), said });
       entryRef.current = reducePerioEntry(entryRef.current, { type: "voice", commands: parsed.commands });
     }
     onCommandsRef.current(parsed.commands);
@@ -170,7 +175,7 @@ export function PerioVoiceEntry({ office, locked, entry, onCommands, onReturnFoc
           if (live()) setPartial(r.text);
         },
         onFinal: (r) => {
-          if (live()) onFinal(r.text);
+          if (live()) onFinal(r);
         },
         onError: (message) => {
           if (live()) void disarm(`Voice stopped: ${message}`);

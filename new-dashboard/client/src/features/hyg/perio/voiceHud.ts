@@ -137,13 +137,18 @@ export function hudCard(chart: PerioChart, tooth: number, cursor: PerioCursor): 
 // THE HEARD RIBBON
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * ITEM 37: every kind may carry `said` — Azure's DISPLAY text for the final,
+ * shown under the headline so she can see what was recognized. The parser read
+ * the lexical form; this is the human-readable one. Page memory only.
+ */
 export type HudHeard =
-  /** Parsed and charted. `heard` is the commands echoed back, never the raw transcript. */
-  | { kind: "accepted"; heard: string; happened: string }
+  /** Parsed and charted. `heard` is the commands echoed back. */
+  | { kind: "accepted"; heard: string; happened: string; said?: string }
   /** The grammar refused the final (item 35's five classes). */
-  | { kind: "rejected"; reason: VoiceRejectReason; heard: string; message: string }
+  | { kind: "rejected"; reason: VoiceRejectReason; heard: string; message: string; said?: string }
   /** Parsed, but the sheet refused it (skipped tooth, end of chart, not Depth mode…). */
-  | { kind: "refused"; heard: string; message: string };
+  | { kind: "refused"; heard: string; message: string; said?: string };
 
 function joinTeeth(teeth: number[]): string {
   return teeth.length === 1 ? `tooth ${teeth[0]}` : `teeth ${teeth.join(", ")}`;
