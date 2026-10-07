@@ -306,6 +306,14 @@ async function bootstrap() {
   app.use('/api/notifications-config', voiceModule, voiceSurface, notificationsConfigRouter);
   app.use('/api/slot-markers', voiceModule, voiceSurface, slotMarkersRouter);
 
+  // Voice lab (queue item 34) — a STAGING-ONLY measurement page's one token
+  // route. Mounted only when VOICE_LAB=1 AND the process is not production
+  // (config/voiceLab.js); otherwise /api/voicelab/* falls through to the 404.
+  // No module guard and no entitlement row by design: it is not a product, it
+  // touches no tenant data, and it sits below the auth gate + tenant context
+  // like every other /api route. Audio never reaches this backend.
+  require('./routes/voiceLab').mountVoiceLab(app);
+
   // TC (Treatment Coordinator) module — Slice 3 backend port. ONE mount for
   // the whole /api/tc/* surface, behind its own module guard. Ships DARK: no
   // tenant is entitled to 'tc' yet, so everything under it 403s until the

@@ -227,3 +227,46 @@ test('/auth/me: a control-plane failure hides everything rather than guessing', 
     await close();
   }
 });
+
+// ── Voice lab (queue item 34) ──────────────────────────────────────────────
+// The SPA renders the lab link from `voiceLab`. It must be the SAME decision
+// the mount makes, so production reports false even with VOICE_LAB=1.
+
+const VOICE_LAB_ENV_KEYS = ['VOICE_LAB', 'NODE_ENV', 'AZURE_KEY_VAULT_NAME'];
+
+async function meWithEnv(env) {
+  const saved = Object.fromEntries(VOICE_LAB_ENV_KEYS.map((k) => [k, process.env[k]]));
+  for (const k of VOICE_LAB_ENV_KEYS) {
+    if (env[k] === undefined) delete process.env[k];
+    else process.env[k] = env[k];
+  }
+  stubSession();
+  stubTenant({ modules: async () => ['voice'] });
+  const { me, close } = await boot();
+  try {
+    const res = await me('good-token');
+    assert.equal(res.status, 200);
+    return await res.json();
+  } finally {
+    await close();
+    for (const k of VOICE_LAB_ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+}
+
+test('/auth/me: voiceLab is false when the flag is off', async () => {
+  const body = await meWithEnv({ NODE_ENV: 'production', AZURE_KEY_VAULT_NAME: 'kv-carein-staging' });
+  assert.equal(body.voiceLab, false);
+});
+
+test('/auth/me: voiceLab is true on staging with the flag on', async () => {
+  const body = await meWithEnv({ VOICE_LAB: '1', NODE_ENV: 'production', AZURE_KEY_VAULT_NAME: 'kv-carein-staging' });
+  assert.equal(body.voiceLab, true);
+});
+
+test('/auth/me: voiceLab is false on PRODUCTION even with the flag on', async () => {
+  const body = await meWithEnv({ VOICE_LAB: '1', NODE_ENV: 'production', AZURE_KEY_VAULT_NAME: 'kv-carein-prod' });
+  assert.equal(body.voiceLab, false);
+});
