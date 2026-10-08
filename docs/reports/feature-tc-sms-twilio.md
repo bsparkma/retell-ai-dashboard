@@ -1,7 +1,7 @@
 # Item 39: SMS adapter, two-way Twilio behind the item 38 approval queue
 
 **Branch:** `feature/tc-sms-twilio`, STACKED on `feature/tc-messaging-foundation` (item 38, PR #229, not merged)
-**PR:** DRAFT, base `feature/tc-messaging-foundation` (number recorded at the bottom)
+**PR:** #230 (DRAFT, base `feature/tc-messaging-foundation`)
 **Lane:** RED (new vendor on a PHI path, new secrets/config, new unauthenticated webhook surface, one tenant migration). **NOT MERGED. NEEDS REVIEW.**
 
 ## Sequencing (orchestrator decision)
