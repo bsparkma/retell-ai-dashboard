@@ -124,6 +124,16 @@ function ToothCard({ card }: { card: HudCard }) {
   );
 }
 
+/** ITEM 37: Azure's display text for the final, when the page passed it. */
+function Said({ said }: { said?: string }) {
+  if (!said) return null;
+  return (
+    <div className="text-base text-muted-foreground" data-testid="hyg-perio-hud-said">
+      Recognized “{said}”
+    </div>
+  );
+}
+
 function Ribbon({ heard }: { heard: HudHeard | null }) {
   if (heard === null) {
     return (
@@ -145,6 +155,7 @@ function Ribbon({ heard }: { heard: HudHeard | null }) {
         <div className="min-w-0">
           <div className="font-['Sora',sans-serif] text-2xl font-bold">{heard.heard}</div>
           <div className="text-lg text-muted-foreground">{heard.happened}</div>
+          <Said said={heard.said} />
         </div>
       </div>
     );
@@ -163,6 +174,7 @@ function Ribbon({ heard }: { heard: HudHeard | null }) {
           Heard “{heard.heard}” — nothing charted
         </div>
         <div className="text-lg">{heard.message}</div>
+        <Said said={heard.said} />
       </div>
     </div>
   );
