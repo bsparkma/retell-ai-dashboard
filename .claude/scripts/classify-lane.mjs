@@ -152,14 +152,16 @@ function removedTextWindows(removed) {
   const texts = [];
   for (const raw of removed) {
     const l = raw.trim();
-    for (const m of l.matchAll(/(["'`])((?:(?!\1).){8,})\1/g)) texts.push(m[2]);
-    if (l.length >= 12 && !/[<>{}=;()]/.test(l)) texts.push(l); // bare JSX text
+    // Split template literals at `${...}` / `{...}` so a window never straddles one.
+    for (const m of l.matchAll(/(["'`])((?:(?!\1).){6,})\1/g)) texts.push(...m[2].split(/\$?\{[^}]*\}/));
+    if (l.length >= 6 && !/[<>{}=;()]/.test(l)) texts.push(l); // bare JSX text (short headings too)
   }
   const out = new Set();
-  for (const t of texts) {
+  for (const t0 of texts) {
+    const t = t0.trim();
     const words = t.split(/\s+/).filter(Boolean);
     if (words.length < 4) {
-      if (t.length >= 12) out.add(t);
+      if (t.length >= 6) out.add(t); // a short heading / button label: match it whole
       continue;
     }
     for (let i = 0; i + 4 <= words.length; i += 1) out.add(words.slice(i, i + 4).join(' '));
