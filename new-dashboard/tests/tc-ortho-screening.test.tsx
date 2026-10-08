@@ -151,7 +151,9 @@ function renderCaseView(tcCase: TcCase) {
   );
 }
 
-const TABS = ["Treatment", "Financing", "Objections", "Follow-Ups", "Notes", "Activity"];
+// Item 38 added "Messages" (between Follow-Ups and Notes) — the one intended
+// change to this list; the screening must still add no tab of its own.
+const TABS = ["Treatment", "Financing", "Objections", "Follow-Ups", "Messages", "Notes", "Activity"];
 
 describe("8: the TC case detail", () => {
   it("renders the screening: summary, answered rows only, and the hygienist's note", async () => {
