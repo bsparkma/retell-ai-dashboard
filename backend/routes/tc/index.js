@@ -19,6 +19,8 @@
  *   /smile-sim        smile-sim metadata (generate FEATURE_DISABLED until Slice 7)
  *   /media            entitlement-checked blob proxy (managed identity)
  *   /library          per-office library config (server-owned settings)
+ *   /reports          server-side reporting — the conversion funnel over
+ *                     tc_case_events transition history (read-only)
  *   /od/patient-search the ONE Open Dental read hygiene holds: attach a patient
  *                     to an intake (PatNum + name + DOB, per-office client)
  *   /od               Open Dental READS (Slice 5) — patient search, treatment
@@ -68,6 +70,7 @@ router.use('/gallery', tcFull, require('./gallery'));
 router.use('/smile-sim', tcFull, require('./smileSim'));
 router.use('/media', tcFull, require('./media'));
 router.use('/library', tcFull, require('./library'));
+router.use('/reports', tcFull, require('./reports'));
 // MUST precede the /od mount, for the same registration-order reason as
 // /cases/from-call above: registering it first is what keeps the attach search
 // on tc.hygiene while the rest of the Open Dental family stays tc.full. Doing
