@@ -8,7 +8,12 @@
  *      write transport.
  *   2. NO SEND WITHOUT A CLICK. Nothing under services/messaging/ schedules
  *      work (no timers, no cron) — so nothing can send on its own — and the
- *      only caller of sendMessage is the POST /:id/send route.
+ *      only callers of sendMessage are the POST /:id/send route and (item 40)
+ *      the legacy POST /api/tc/communications/send wrapper, ONE call each.
+ *      Item 40's ONE exception to "no timers": acs/client.js may AWAIT a
+ *      pause (node:timers/promises) between two status reads inside the
+ *      human's own Send request. That cannot start a send and never outlives
+ *      the request; it is pinned to exactly that file and that form.
  *   3. NO PHI TO THE CALL STORE. The messaging layer never touches the JSON
  *      call store.
  */
@@ -45,9 +50,21 @@ test('no Open Dental write transport anywhere in the messaging layer', () => {
   }
 });
 
+/** The one file allowed an awaited pause (item 40), and the one form it may take. */
+const AWAITED_PAUSE_FILE = path.join('services', 'messaging', 'acs', 'client.js');
+
 test('nothing schedules work (no auto-send, no scheduled send)', () => {
   for (const { p, src } of SOURCES) {
-    assert.doesNotMatch(src, /setInterval|setTimeout|node-cron|cron\.schedule/, path.relative(BACKEND, p));
+    const rel = path.relative(BACKEND, p);
+    assert.doesNotMatch(src, /setInterval|setImmediate|node-cron|cron\.schedule/, rel);
+    if (rel === AWAITED_PAUSE_FILE) {
+      // Exactly one pause, awaited, from the promise API, and no callback timer.
+      assert.equal((src.match(/setTimeout/g) || []).length, 1, rel);
+      assert.match(src, /await timers\.setTimeout\(ms\);/, rel);
+      assert.match(src, /require\('node:timers\/promises'\)/, rel);
+    } else {
+      assert.doesNotMatch(src, /setTimeout|timers\/promises/, rel);
+    }
   }
 });
 
@@ -57,7 +74,7 @@ test('nothing writes to the JSON call store', () => {
   }
 });
 
-test('the only caller of sendMessage in the backend is POST /:id/send', () => {
+test('the only callers of sendMessage are POST /:id/send and the communications/send wrapper', () => {
   const callers = [];
   const walk = (dir) => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -70,8 +87,18 @@ test('the only caller of sendMessage in the backend is POST /:id/send', () => {
     }
   };
   walk(BACKEND);
-  assert.deepEqual(callers.sort(), ['routes/tc/messages.js', 'services/messaging/index.js']);
+  assert.deepEqual(callers.sort(), [
+    'routes/tc/communications.js',
+    'routes/tc/messages.js',
+    'services/messaging/index.js',
+  ]);
   const route = fs.readFileSync(path.join(BACKEND, 'routes', 'tc', 'messages.js'), 'utf8');
   assert.equal((route.match(/messaging\.sendMessage\(/g) || []).length, 1);
   assert.match(route, /router\.post\(\s*'\/:id\/send'/);
+  // item 40: the wrapper calls it once, inside POST /send, on a draft it just wrote.
+  const comms = fs.readFileSync(path.join(BACKEND, 'routes', 'tc', 'communications.js'), 'utf8');
+  assert.equal((comms.match(/messaging\.sendMessage\(/g) || []).length, 1);
+  const sendRoute = comms.indexOf("'/send'");
+  assert.ok(sendRoute !== -1 && comms.indexOf('messaging.sendMessage(') > sendRoute, 'only inside POST /send');
+  assert.ok(comms.indexOf('messaging.draftMessage(') > sendRoute, 'and only on the draft it wrote');
 });

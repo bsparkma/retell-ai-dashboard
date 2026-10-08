@@ -24,7 +24,7 @@ const userContext = require('../../platform/userContext');
 const { tenantContext, requireModule } = require('../../middleware/tenantContext');
 
 /** Columns stored as jsonb — real pg returns objects, so the fake must too. */
-const JSONB_COLS = new Set(['blocks', 'value', 'detail', 'legacy_snapshot']);
+const JSONB_COLS = new Set(['blocks', 'value', 'detail', 'legacy_snapshot', 'email_blocks']);
 
 /** Comparable scalar for a cell (Date → epoch ms, null → sorts last like pg's default). */
 function sortKey(v) {
