@@ -110,14 +110,21 @@ test('both down() migrations remove exactly what their up() added', () => {
   );
 });
 
-test('both sit above 1790000000000 (develop’s newest when written) and are the newest tenant migrations', () => {
+test('both sit above 1790000000000 (develop’s newest when written) and nothing is numbered inside their range', () => {
   const numbers = fs
     .readdirSync(MIGRATIONS_DIR)
     .filter((f) => /^\d+_/.test(f))
     .map((f) => Number(f.split('_')[0]));
   assert.ok(1790100000000 > 1790000000000 && 1790200000000 > 1790100000000);
   const others = numbers.filter((n) => n !== 1790100000000 && n !== 1790200000000);
-  assert.ok(Math.max(...others) < 1790100000000, 'a newer migration landed — re-number above it');
+  // Item 38 (1790300000000_tc_messaging) was the first migration to land after
+  // these, which made the original "and are the newest" clause permanently
+  // false for every later slice. What it protected at push time is that nothing
+  // was numbered INTO item 33's range; that is what stays pinned.
+  assert.ok(
+    others.every((n) => n <= 1790000000000 || n > 1790200000000),
+    'a migration was numbered inside item 33’s range — re-number it'
+  );
   assert.equal(new Set(numbers).size, numbers.length, 'two migrations share a timestamp');
 });
 
