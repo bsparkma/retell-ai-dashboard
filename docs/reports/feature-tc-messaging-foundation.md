@@ -1,6 +1,6 @@
 # Item 38: TC messaging foundation (drafts, approval queue, consent)
 
-**Branch:** `feature/tc-messaging-foundation` (off `origin/develop` `e551c65`) · **PR:** see the bottom of this file
+**Branch:** `feature/tc-messaging-foundation` (off `origin/develop` `e551c65`) · **PR:** #229 (base develop)
 **Lane:** RED (two tenant migrations' worth of tables, new routes, new shared vocabulary) · **NOT MERGED**. Needs review.
 Items 39 (Twilio SMS) and 40 (ACS email) stack on this branch.
 
