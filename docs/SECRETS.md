@@ -76,6 +76,7 @@ kebab-case; the app reads the env keys.
 | `twilio-messaging-service-sid`| `TWILIO_MESSAGING_SERVICE_SID` | TC texting — the Messaging Service (A2P 10DLC campaign) |
 | `twilio-from-roland`          | `TWILIO_FROM_ROLAND`        | TC texting — Roland's sender, E.164. Absent ⇒ Roland only is FEATURE_DISABLED |
 | `twilio-from-valley`          | `TWILIO_FROM_VALLEY`        | TC texting — Valley's sender, E.164. Never falls back to Roland's |
+| `acs-email-connection`        | `ACS_EMAIL_CONNECTION`      | TC email (item 40), Azure Communication Services. **Optional**; only USED when `ACS_EMAIL_AUTH_MODE=connection_string` (`endpoint=https://…;accesskey=…`). The default is managed identity, which needs no secret |
 
 ### Non-secret TC texting config (app settings, NOT Key Vault)
 
@@ -84,6 +85,21 @@ kebab-case; the app reads the env keys.
 | `TWILIO_WEBHOOK_BASE_URL` | Public `https://` origin Twilio calls. Webhook signatures are validated against this + the request path (never the Host header, which behind ACA ingress + Caddy is not the URL Twilio signed), and it is the base of every `StatusCallback`. Absent ⇒ texting disabled and webhooks refused. |
 | `TWILIO_TENANT_SLUG` | The tenant whose database the webhooks write to (webhooks carry no SSO user). Resolved through the registry; must be active and entitled to `tc`. Absent ⇒ webhooks refused (503). |
 | `TC_SMS_ENABLED` | Kill-switch fallback. `false` always forces texting OFF; `true` turns it on only when no `platform_setting['tc_sms_enabled']` row exists. See `backend/config/tcSms.js`. |
+
+### Non-secret TC email config (app settings, NOT Key Vault) — item 40
+
+| env var | Meaning |
+|---------|---------|
+| `ACS_EMAIL_AUTH_MODE` | `managed_identity` (default) or `connection_string`. Exactly one; never a silent fallback. Any other value ⇒ email not configured. |
+| `ACS_EMAIL_ENDPOINT` | `https://<resource>.communication.azure.com` (managed-identity mode). The identity is `AZURE_MANAGED_IDENTITY_CLIENT_ID`; token scope `https://communication.azure.com/.default`. |
+| `ACS_EMAIL_FROM_ROLAND`, `ACS_EMAIL_FROM_VALLEY` | That office's verified ACS sender (MailFrom). |
+| `ACS_EMAIL_FROM` | A shared verified sender, used by an office with no sender of its own. Neither set ⇒ that office is FEATURE_DISABLED. |
+| `ACS_EMAIL_REPLY_TO_ROLAND`, `ACS_EMAIL_REPLY_TO_VALLEY` | Optional Reply-To. An ACS-managed `DoNotReply@` sender cannot receive replies. Also fills `{{sender.email}}`. |
+| `TC_EMAIL_PRACTICE_ADDRESS_<OFFICE>`, `TC_EMAIL_PRACTICE_PHONE_<OFFICE>` | Optional plain text for the email footer and the `{{practice.address}}` / `{{practice.phone}}` tokens. |
+| `TC_EMAIL_PUBLIC_BASE_URL` | Public `https://` origin for the unsubscribe link (`/api/webhooks/email/unsubscribe`). Absent ⇒ email disabled: no email goes out without a working unsubscribe link. |
+| `TC_EMAIL_TENANT_SLUG` | The tenant the public unsubscribe endpoint records into (it carries no SSO user). Must be active and entitled to `tc`. Absent ⇒ email disabled and the endpoint answers 503. |
+| `TC_EMAIL_ENABLED` | Kill-switch fallback. `false` always forces email OFF; `true` turns it on only when no `platform_setting['tc_email_enabled']` row exists. See `backend/config/tcEmail.js`. |
+| `TC_EMAIL_REFRESH_MINUTES` | How often the kill switch is re-read (default 5). The adapter also re-reads it before every send. |
 
 ### Non-secret Open Dental config (NOT in Key Vault)
 
