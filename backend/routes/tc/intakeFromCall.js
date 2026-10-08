@@ -309,3 +309,6 @@ router.post(
 );
 
 module.exports = router;
+// The attach-or-create lookup, shared with the Opportunities claim (item 41) so
+// both handoffs pick the SAME open case by the SAME partition and ordering.
+module.exports.findOpenCase = findOpenCase;
