@@ -1,7 +1,7 @@
 # Item 41 — Opportunities inbox: diagnosed-but-unscheduled treatment surfaces itself
 
 Branch `feature/tc-od-opportunities` (off `origin/develop` e551c65) · PR to `develop` — **RED LANE, NEEDS REVIEW, not merged**.
-PR: see the PR line at the bottom of this file.
+PR: **#232** https://github.com/bsparkma/retell-ai-dashboard/pull/232
 
 ## 0. TL;DR
 
@@ -161,7 +161,7 @@ so the two PRs merge without conflict.
 
 ## 6. CI
 
-See the PR checks (build-test runs on PRs). Recorded at the bottom.
+PR #232 `build-test` **pass** (3m24s) on head 15a1d0e (run 37845744919) — migrations against ephemeral Postgres + smoke-spine included.
 
 ## 7. Vocabulary readers (grep of the whole repo)
 
