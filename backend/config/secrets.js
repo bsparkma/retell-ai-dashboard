@@ -73,6 +73,18 @@ const SECRET_MAP = Object.freeze([
   // server-side session/JWT signing key. Both live ONLY in Key Vault.
   { secretName: 'dashboard-sso-client-secret', envKey: 'DASHBOARD_SSO_CLIENT_SECRET' },
   { secretName: 'dashboard-session-secret', envKey: 'DASHBOARD_SESSION_SECRET' },
+  // Twilio, TC text messaging (queue item 39). ALL optional: absent in the
+  // vault -> skipped, and texting stays FEATURE_DISABLED (config/twilio.js).
+  // The from-numbers are per office and never borrowed across offices; a
+  // missing one disables that office only. The AUTH TOKEN is what validates
+  // X-Twilio-Signature on the webhooks — without it every webhook is refused.
+  { secretName: 'twilio-account-sid', envKey: 'TWILIO_ACCOUNT_SID' },
+  { secretName: 'twilio-api-key-sid', envKey: 'TWILIO_API_KEY_SID' },
+  { secretName: 'twilio-api-key-secret', envKey: 'TWILIO_API_KEY_SECRET' },
+  { secretName: 'twilio-auth-token', envKey: 'TWILIO_AUTH_TOKEN' },
+  { secretName: 'twilio-messaging-service-sid', envKey: 'TWILIO_MESSAGING_SERVICE_SID' },
+  { secretName: 'twilio-from-roland', envKey: 'TWILIO_FROM_ROLAND' },
+  { secretName: 'twilio-from-valley', envKey: 'TWILIO_FROM_VALLEY' },
   // Optional / not yet wired into this backend. Absent in the vault -> skipped.
   { secretName: 'stedi-api-key', envKey: 'STEDI_API_KEY' },
 ]);

@@ -69,6 +69,21 @@ kebab-case; the app reads the env keys.
 | `od-connector-api-key`        | `OD_CONNECTOR_API_KEY`      | On-prem connector callback |
 | `control-db-url`              | `CONTROL_DB_URL`            | `carein_control` Postgres connection string (control plane + migrations). **Optional** until provisioned; skipped if absent |
 | `stedi-api-key`               | `STEDI_API_KEY`             | **Optional** — not yet wired; skipped if absent |
+| `twilio-account-sid`          | `TWILIO_ACCOUNT_SID`        | TC texting (item 39). **Optional**; absent ⇒ texting FEATURE_DISABLED |
+| `twilio-api-key-sid`          | `TWILIO_API_KEY_SID`        | TC texting — REST auth user (API key SID) |
+| `twilio-api-key-secret`       | `TWILIO_API_KEY_SECRET`     | TC texting — REST auth password (API key secret) |
+| `twilio-auth-token`           | `TWILIO_AUTH_TOKEN`         | TC texting — validates `X-Twilio-Signature` on webhooks. Absent ⇒ every Twilio webhook is refused (403) |
+| `twilio-messaging-service-sid`| `TWILIO_MESSAGING_SERVICE_SID` | TC texting — the Messaging Service (A2P 10DLC campaign) |
+| `twilio-from-roland`          | `TWILIO_FROM_ROLAND`        | TC texting — Roland's sender, E.164. Absent ⇒ Roland only is FEATURE_DISABLED |
+| `twilio-from-valley`          | `TWILIO_FROM_VALLEY`        | TC texting — Valley's sender, E.164. Never falls back to Roland's |
+
+### Non-secret TC texting config (app settings, NOT Key Vault)
+
+| env var | Meaning |
+|---------|---------|
+| `TWILIO_WEBHOOK_BASE_URL` | Public `https://` origin Twilio calls. Webhook signatures are validated against this + the request path (never the Host header, which behind ACA ingress + Caddy is not the URL Twilio signed), and it is the base of every `StatusCallback`. Absent ⇒ texting disabled and webhooks refused. |
+| `TWILIO_TENANT_SLUG` | The tenant whose database the webhooks write to (webhooks carry no SSO user). Resolved through the registry; must be active and entitled to `tc`. Absent ⇒ webhooks refused (503). |
+| `TC_SMS_ENABLED` | Kill-switch fallback. `false` always forces texting OFF; `true` turns it on only when no `platform_setting['tc_sms_enabled']` row exists. See `backend/config/tcSms.js`. |
 
 ### Non-secret Open Dental config (NOT in Key Vault)
 
