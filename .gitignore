@@ -77,7 +77,16 @@ data/
 calls_data.json
 
 # Claude Code / agent worktree artifacts
-.claude/
+# `.claude/` stays ignored at every depth (worktrees, settings.local.json, session
+# state) EXCEPT the build-loop scaffolding at the repo root, which is committed on
+# purpose (queue item 29). Git cannot re-include a file inside an ignored DIRECTORY,
+# so the directory's CONTENTS are ignored (`**/.claude/*`) and the four committed
+# paths are negated back in. Anything else added under `.claude/` stays ignored.
+**/.claude/*
+!/.claude/settings.json
+!/.claude/commands/
+!/.claude/agents/
+!/.claude/scripts/
 .clone/
 new-dashboard/.claude/
 new-dashboard/.claire/
