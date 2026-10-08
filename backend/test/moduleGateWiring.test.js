@@ -54,6 +54,28 @@ test('server.js: tenant-exempt mounts carry NO module guard', () => {
   }
 });
 
+test('server.js: the Twilio webhook mount (item 39) is unguarded, inside the /webhooks exemption, and ahead of /api/webhooks', () => {
+  const line = mountLine('/api/webhooks/twilio');
+  // Same reasoning as /api/webhooks: a vendor callback carrying no user, so a
+  // module or permission guard would refuse every delivery report and STOP.
+  // It authenticates itself (X-Twilio-Signature) and resolves its own tenant.
+  assert.ok(
+    !/requireModule|voiceModule|requirePermission|requireReadWrite|requireSuperAdmin/.test(line),
+    `/api/webhooks/twilio must carry no module or permission guard: ${line}`
+  );
+  // It rides the EXISTING exemptions (auth gate, tenant gate, rate limiter all
+  // exempt /webhooks/*), so no exempt list had to widen for it.
+  assert.ok(
+    serverSrc.split('/^\\/webhooks(\\/|$)/').length - 1 >= 2,
+    'the /webhooks exemption is still on both the auth gate and the tenant gate'
+  );
+  // Registered before the general /api/webhooks router so it answers its own paths.
+  assert.ok(
+    serverSrc.indexOf("app.use('/api/webhooks/twilio'") < serverSrc.indexOf("app.use('/api/webhooks', webhooksRouter)"),
+    '/api/webhooks/twilio must be mounted before /api/webhooks'
+  );
+});
+
 test('server.js: every tenant-scoped voice mount carries the voice module guard', () => {
   const guarded = [
     '/api/calls',

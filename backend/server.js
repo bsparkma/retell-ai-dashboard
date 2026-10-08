@@ -37,6 +37,7 @@ async function bootstrap() {
   const openDentalRouter = require('./routes/openDental');
   const openDentalSyncRouter = require('./routes/openDentalSync');
   const webhooksRouter = require('./routes/webhooks');
+  const twilioWebhooksRouter = require('./routes/twilioWebhooks');
   const liveCallsRouter = require('./routes/liveCalls');
   const adminRouter = require('./routes/admin');
   const mangoRouter = require('./routes/mango');
@@ -57,6 +58,7 @@ async function bootstrap() {
   const odHealthCheck = require('./services/odHealthCheck');
   const hygDayWarm = require('./services/hygDayWarm');
   const hygPilot = require('./config/hygPilot');
+  const tcSms = require('./config/tcSms');
   const { requireDashboardAuth, socketAuth } = require('./middleware/auth');
   const { tenantContext, requireModule } = require('./middleware/tenantContext');
   const { requirePermission, requireReadWrite, requireSuperAdmin } = require('./config/permissions');
@@ -160,7 +162,16 @@ async function bootstrap() {
       if (buf && buf.length) req.rawBody = buf.toString('utf8');
     },
   }));
-  app.use(express.urlencoded({ extended: true }));
+  // Same raw-body capture for form posts: Twilio's webhooks are
+  // application/x-www-form-urlencoded and X-Twilio-Signature is computed over
+  // the exact parameters sent (routes/twilioWebhooks.js validates against the
+  // RAW body, not the extended parser's reshaping of it).
+  app.use(express.urlencoded({
+    extended: true,
+    verify: (req, _res, buf) => {
+      if (buf && buf.length) req.rawBody = buf.toString('utf8');
+    },
+  }));
   // Parse cookies so the Entra SSO session cookie is available to /auth and the gate.
   app.use(cookieParser());
 
@@ -254,6 +265,12 @@ async function bootstrap() {
     requireReadWrite('voice.read', 'voice.sync'),
     openDentalSyncRouter
   );
+  // Twilio (TC text messaging, item 39). Registered BEFORE /api/webhooks so it
+  // answers its own paths, and inside the /api/webhooks exemption from the SSO
+  // gate, tenant gate and rate limiter: no user identity, no module guard.
+  // It authenticates every request itself (X-Twilio-Signature) and resolves its
+  // tenant from TWILIO_TENANT_SLUG through the registry — see the router header.
+  app.use('/api/webhooks/twilio', twilioWebhooksRouter);
   app.use('/api/webhooks', webhooksRouter);
   app.use('/api/live-calls', voiceModule, voiceSurface, liveCallsRouter);
   // The Admin page: scheduler start/stop, cost ceilings, queues, config. Tenant
@@ -572,6 +589,14 @@ async function bootstrap() {
     //    next request.
     hygPilot.startRefreshTimer();
 
+    //    TC text messaging kill switch (item 39). Same pattern: read the stored
+    //    value before anything could send, then keep it fresh. It never throws;
+    //    an unreachable control plane leaves texting OFF unless the env
+    //    fallback says otherwise. The adapter also re-reads it before every send.
+    await tcSms.refreshFromDb();
+    tcSms.startRefreshTimer();
+    console.log(`[tcSms] text messaging ${tcSms.smsEnabled() ? 'ON' : 'OFF'} (source=${tcSms.source()})`);
+
     hygDayWarm.start();
 
     // (M3) The startup `transcribeUntranscribedMango` backfill was removed: it keyed on
@@ -591,6 +616,7 @@ async function bootstrap() {
     odHealthCheck.stop();
     hygDayWarm.stop();
     hygPilot.stopRefreshTimer();
+    tcSms.stopRefreshTimer();
     await unifiedCallStore.shutdown();
     process.exit(0);
   });
@@ -601,6 +627,7 @@ async function bootstrap() {
     odHealthCheck.stop();
     hygDayWarm.stop();
     hygPilot.stopRefreshTimer();
+    tcSms.stopRefreshTimer();
     await unifiedCallStore.shutdown();
     process.exit(0);
   });
