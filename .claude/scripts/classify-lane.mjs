@@ -11,7 +11,8 @@
 // When it cannot tell, it says RED. Misclassifying red-as-green is the one
 // unforgivable error; a false red costs one human click.
 //
-// Usage (from the repo root of the worktree):
+// Usage — run from the REPO ROOT of the worktree (the removed-text check greps the
+// test tree relative to the current directory):
 //   node .claude/scripts/classify-lane.mjs                       # diff origin/develop...HEAD
 //   node .claude/scripts/classify-lane.mjs --base <ref>          # diff <ref>...HEAD
 //   node .claude/scripts/classify-lane.mjs --diff-file <path>    # a saved unified git diff
@@ -86,7 +87,7 @@ const PATH_RULES = [
 ];
 
 const TEST_FILE = /(\.test\.[cm]?[jt]sx?$)|(^|\/)tests?\//;
-const CODE_FILE = /\.(c?js|mjs|tsx?|jsx|sql|json)$/;
+const CODE_FILE = /\.(c?js|mjs|tsx?|jsx|sql|json|ya?ml)$/;
 
 // ---------------------------------------------------------------- content rules
 // Applied to ADDED and REMOVED lines of code files. Any hit is RED, with the reason.
@@ -143,6 +144,43 @@ function readDiff(opts) {
   });
 }
 
+// ---------------------------------------------------------------- removed text vs tests
+// Every run of 4 consecutive words from removed prose / string literals. Tests usually
+// match a FRAGMENT of copy (`getByText(/Choose where you want to work/)`), so the whole
+// line is too strict a needle; four words is distinctive and still catches fragments.
+function removedTextWindows(removed) {
+  const texts = [];
+  for (const raw of removed) {
+    const l = raw.trim();
+    for (const m of l.matchAll(/(["'`])((?:(?!\1).){8,})\1/g)) texts.push(m[2]);
+    if (l.length >= 12 && !/[<>{}=;()]/.test(l)) texts.push(l); // bare JSX text
+  }
+  const out = new Set();
+  for (const t of texts) {
+    const words = t.split(/\s+/).filter(Boolean);
+    if (words.length < 4) {
+      if (t.length >= 12) out.add(t);
+      continue;
+    }
+    for (let i = 0; i + 4 <= words.length; i += 1) out.add(words.slice(i, i + 4).join(' '));
+  }
+  return [...out].slice(0, 200);
+}
+
+// Returns matching `path:line` hits, [] for none, or null if the search itself failed.
+function grepTests(needles) {
+  const args = ['grep', '-n', '-I', '-F'];
+  for (const n of needles) args.push('-e', n);
+  args.push('--', 'new-dashboard/tests', 'backend/test', '*.test.js', '*.test.ts', '*.test.tsx', '*.test.mjs');
+  try {
+    const outText = execFileSync('git', args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    return outText.split(/\r?\n/).filter(Boolean).map((l) => l.split(':').slice(0, 2).join(':'));
+  } catch (err) {
+    if (err && err.status === 1) return []; // git grep: no match
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------- classify
 function classify(files, queueText) {
   const reasons = [];
@@ -180,6 +218,22 @@ function classify(files, queueText) {
         hit(f.path, 'possible phone number in an added line — reviewer must confirm it is synthetic');
         break;
       }
+    }
+  }
+
+  // A non-test change can still break an EXISTING test's assertion — the test file is
+  // then not in the diff at all (found by the reviewer's independent run on the item-29
+  // demo: a "pure copy change" whose old wording a test asserts on). So: for text a
+  // non-test file REMOVES, look for it in the test tree. A hit means the slice either
+  // ships a red test or must edit an existing assertion — RED either way.
+  for (const f of files) {
+    if (TEST_FILE.test(f.path) || !CODE_FILE.test(f.path)) continue;
+    const windows = removedTextWindows(f.removed);
+    if (windows.length === 0) continue;
+    const found = grepTests(windows);
+    if (found === null) hit(f.path, 'could not search the test tree for removed text (unsure ⇒ red)');
+    else if (found.length > 0) {
+      hit(f.path, `removed text is asserted on by an existing test: ${found.slice(0, 3).join('; ')}`);
     }
   }
 
