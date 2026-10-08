@@ -14829,6 +14829,7 @@ __export(contract_entry_exports, {
   CaseStatus: () => CaseStatus,
   Cents: () => Cents,
   ChannelReadiness: () => ChannelReadiness,
+  ChannelUnavailableReason: () => ChannelUnavailableReason,
   CommunicationStatus: () => CommunicationStatus,
   ConsentSource: () => ConsentSource,
   ConsentState: () => ConsentState,
@@ -16084,13 +16085,16 @@ var TcContactConsent = import_zod4.z.object({
   updatedBy: import_zod4.z.string().max(320).nullable(),
   updatedAt: IsoTimestamp2
 });
+var ChannelUnavailableReason = import_zod4.z.enum(["switched_off", "not_configured", "office_not_configured"]);
 var ChannelReadiness = import_zod4.z.object({
   channel: MessageChannel,
   /** The case has a usable address for this channel (server-normalized). */
   address: import_zod4.z.string().max(320).nullable(),
   // PHI
-  /** Is a provider adapter connected for this channel? False in item 38. */
+  /** Is a provider adapter connected for this channel IN THIS OFFICE? (per office since item 39) */
   adapterEnabled: import_zod4.z.boolean(),
+  /** Why not, when adapterEnabled is false; null when connected. (item 39) */
+  adapterReason: ChannelUnavailableReason.nullable().default(null),
   consentState: ConsentState,
   odTextConsent: OdTextConsent,
   /** SMS only: inside 21:00–08:00 America/Chicago right now. */
@@ -16125,6 +16129,7 @@ var import_zod5 = __toESM(require_zod());
   CaseStatus,
   Cents,
   ChannelReadiness,
+  ChannelUnavailableReason,
   CommunicationStatus,
   ConsentSource,
   ConsentState,

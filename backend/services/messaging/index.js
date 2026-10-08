@@ -28,6 +28,11 @@
  *                        or `failed` with the error preserved. NEVER retried.
  *                      → audit the terminal status
  *   recordInbound  → a `received` row; STOP-family keywords record an opt-out.
+ *                    (item 39) linked to the ONE open case in that office whose
+ *                    phone matches, else unlinked; START/HELP are recorded, never
+ *                    acted on; a re-delivered provider id is not stored twice.
+ *   applyStatusCallback → (item 39) a provider delivery report, monotonic.
+ *   countUnseen / markSeen / listUnseenOnCases → (item 39) the "new text" badge.
  *
  * Honest states: a message is `sent` only after the adapter confirms hand-off.
  * If the adapter confirms and the follow-up write fails, the row stays
@@ -54,6 +59,7 @@ const consent = require('./consent');
 const { isQuietHours } = require('./quietHours');
 const adapters = require('./adapters');
 const templates = require('./templates');
+const twilioStatus = require('./twilio/status');
 
 const MESSAGE_COLS = [
   'message_id',
@@ -110,6 +116,19 @@ function resetClock() {
  * ignoring case and surrounding whitespace/punctuation, records an opt-out.
  */
 const STOP_KEYWORDS = Object.freeze(['STOP', 'STOPALL', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT']);
+
+/**
+ * Re-opt-in and help keywords (item 39). RECORDED, NEVER ACTED ON:
+ *   START family: whether an inbound START may lift an opt-out is UNRULED, so
+ *     it does not. The message lands in the thread like any other, an audit row
+ *     names the keyword, and the opt-out stands until somebody rules. Twilio
+ *     Advanced Opt-Out still handles the carrier side (it re-subscribes the
+ *     number at Twilio), so after a START our own gate is the STRICTER one.
+ *   HELP family: Twilio Advanced Opt-Out sends the help reply; we send
+ *     nothing automatically, ever.
+ */
+const START_KEYWORDS = Object.freeze(['START', 'UNSTOP', 'YES']);
+const HELP_KEYWORDS = Object.freeze(['HELP', 'INFO']);
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -209,6 +228,18 @@ async function loadFollowup(q, office, followupId) {
   return res.rows.length ? res.rows[0] : null;
 }
 
+/** The FEATURE_DISABLED sentence for a channel and adapter reason. Never PHI. */
+function disabledSentence(channel, reason) {
+  const what = channel === 'sms' ? 'Text messaging' : 'Email sending';
+  if (reason === 'switched_off') return `${what} is switched off.`;
+  if (reason === 'office_not_configured') {
+    return channel === 'sms'
+      ? 'This office has no texting number set up yet.'
+      : 'This office has no sending address set up yet.';
+  }
+  return `${what} is not connected yet.`;
+}
+
 function noAddressError(channel) {
   return new MessagingError(
     'NO_ADDRESS',
@@ -263,13 +294,17 @@ async function getChannelReadiness(req, office, caseId) {
     const channels = [];
     for (const channel of CHANNELS) {
       const address = addressFromCase(channel, tcCase);
-      const adapterEnabled = adapters.isChannelEnabled(channel);
+      // Per OFFICE (item 39): one office with no sender is off while the
+      // other is live. Computed here, never on the client.
+      const adapterEnabled = adapters.isChannelEnabled(channel, office);
+      const adapterReason = adapters.channelUnavailableReason(channel, office);
       const quietHours = channel === 'sms' ? isQuietHours(now) : false;
       if (!address) {
         channels.push({
           channel,
           address: null,
           adapterEnabled,
+          adapterReason,
           consentState: 'unknown',
           odTextConsent: 'not_checked',
           quietHours,
@@ -288,6 +323,7 @@ async function getChannelReadiness(req, office, caseId) {
         channel,
         address,
         adapterEnabled,
+        adapterReason,
         consentState: d.consentState,
         odTextConsent: d.odTextConsent,
         quietHours: d.quietHours,
@@ -454,12 +490,14 @@ async function sendMessage(req, office, messageId) {
   }
 
   const adapter = adapters.getAdapter(channel);
-  if (!adapters.isChannelEnabled(channel)) {
-    throw new MessagingError(
-      'FEATURE_DISABLED',
-      channel === 'sms' ? 'Text messaging is not connected yet.' : 'Email sending is not connected yet.',
-      { feature: channel === 'sms' ? 'tc_sms_send' : 'tc_email_send' }
-    );
+  // Per OFFICE (item 39): Valley with no sender is refused here while Roland
+  // sends. The row stays a draft; nothing was attempted.
+  if (!adapters.isChannelEnabled(channel, office)) {
+    const reason = adapters.channelUnavailableReason(channel, office);
+    throw new MessagingError('FEATURE_DISABLED', disabledSentence(channel, reason), {
+      feature: channel === 'sms' ? 'tc_sms_send' : 'tc_email_send',
+      reason,
+    });
   }
 
   // draft → sending. Conditional on still being a draft, so two clicks (or two
@@ -577,34 +615,97 @@ async function recordOptOut(req, office, { caseId, channel, note }) {
   return toConsent(row);
 }
 
+/** The single word an inbound body reduces to, upper-cased, or ''. */
+function keywordOf(body) {
+  if (typeof body !== 'string') return '';
+  return body.trim().replace(/[.!\s]+$/g, '').toUpperCase();
+}
+
 /** Is this inbound body a STOP-family keyword? */
 function isStopKeyword(body) {
-  if (typeof body !== 'string') return false;
-  const word = body.trim().replace(/[.!\s]+$/g, '').toUpperCase();
-  return STOP_KEYWORDS.includes(word);
+  return STOP_KEYWORDS.includes(keywordOf(body));
+}
+
+/**
+ * Which keyword family an inbound body is, if any.
+ * @param {unknown} body
+ * @returns {'stop'|'start'|'help'|null}
+ */
+function keywordFamily(body) {
+  const w = keywordOf(body);
+  if (STOP_KEYWORDS.includes(w)) return 'stop';
+  if (START_KEYWORDS.includes(w)) return 'start';
+  if (HELP_KEYWORDS.includes(w)) return 'help';
+  return null;
+}
+
+/**
+ * The ONE open case in this office whose phone normalizes to `from`, or null.
+ * Two or more matches is ambiguity, and ambiguity is a refusal: the message
+ * lands unlinked for a human, never on a coin-flip case. Only this office's
+ * cases are considered; a phone means nothing across offices.
+ * @returns {Promise<string|null>}
+ */
+async function findOpenCaseByPhone(q, office, from) {
+  const res = await q.query(
+    `SELECT case_id, phone FROM tc_cases
+      WHERE office_id = $1 AND status = ANY($2) AND phone IS NOT NULL`,
+    [office, [...contract.OPEN_CASE_STATUSES]]
+  );
+  const matches = res.rows.filter((r) => normalizeAddress('sms', r.phone) === from);
+  return matches.length === 1 ? matches[0].case_id : null;
 }
 
 /**
  * Record an inbound message (item 39's webhook calls this). `office` must be
- * derived by the CALLER from which practice number/address received it —
- * never from the sender. The row lands unlinked (case_id NULL) in the inbox;
- * linking to a case is a human decision, not a phone-number guess.
- * A STOP-family body also records an opt-out for that sender.
+ * derived by the CALLER from which practice number/address received it,
+ * never from the sender.
+ *
+ * Linking: item 38 always stored it unlinked. With `linkOpenCase` (the Twilio
+ * webhook passes it), an SMS is linked to the open case whose phone matches,
+ * exactly one, in this office, and otherwise lands unlinked in the inbox.
+ *
+ * A STOP-family body also records an opt-out for that sender. A START- or
+ * HELP-family body is recorded and audited, and changes nothing.
+ *
+ * A provider id we already stored (a re-delivered webhook) is not stored again.
  */
-async function recordInbound(req, { office, channel, fromAddress, toAddress = null, body, provider = null, providerMessageId = null }) {
+async function recordInbound(
+  req,
+  {
+    office,
+    channel,
+    fromAddress,
+    toAddress = null,
+    body,
+    provider = null,
+    providerMessageId = null,
+    linkOpenCase = false,
+  }
+) {
   if (!['roland', 'valley'].includes(office)) throw new Error('[messaging] recordInbound needs a frozen office key');
   const from = normalizeAddress(channel, fromAddress);
   if (!from) throw new MessagingError('NO_ADDRESS', 'Inbound message has no usable sender address.');
+  const family = channel === 'sms' ? keywordFamily(body) : null;
   const messageId = crypto.randomUUID();
   const out = await db(req, async (q) => {
+    if (provider && providerMessageId) {
+      const dup = await q.query(
+        `SELECT ${MESSAGE_COLS.join(', ')} FROM tc_messages
+          WHERE office_id = $1 AND provider = $2 AND provider_message_id = $3`,
+        [office, provider, providerMessageId]
+      );
+      if (dup.rows.length) return { row: dup.rows[0], optOut: null, duplicate: true };
+    }
+    const caseId = linkOpenCase && channel === 'sms' ? await findOpenCaseByPhone(q, office, from) : null;
     await q.query(
       `INSERT INTO tc_messages (message_id, office_id, case_id, direction, channel, to_address, from_address,
          body, status, provider, provider_message_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-      [messageId, office, null, 'inbound', channel, toAddress, from, String(body ?? ''), 'received', provider, providerMessageId]
+      [messageId, office, caseId, 'inbound', channel, toAddress, from, String(body ?? ''), 'received', provider, providerMessageId]
     );
     let optOut = null;
-    if (channel === 'sms' && isStopKeyword(body)) {
+    if (family === 'stop') {
       optOut = await upsertConsent(q, {
         office,
         channel,
@@ -615,11 +716,129 @@ async function recordInbound(req, { office, channel, fromAddress, toAddress = nu
         updatedBy: 'system:inbound',
       });
     }
-    return { row: await loadMessage(q, office, messageId), optOut };
+    return { row: await loadMessage(q, office, messageId), optOut, duplicate: false };
   });
+  if (out.duplicate) {
+    return { message: toMessage(out.row), optedOut: false, duplicate: true, keyword: family };
+  }
   await auditMessage(req, 'CREATE', 'tc_message', messageId, office);
   if (out.optOut) await auditMessage(req, 'UPDATE', 'tc_contact_consent', out.optOut.consent_id, office);
-  return { message: toMessage(out.row), optedOut: Boolean(out.optOut) };
+  if (family === 'start' || family === 'help') {
+    // On the record, so "the patient texted START and we still would not text
+    // them" is answerable from the trail. Nothing else happens.
+    await auditMessage(req, 'CREATE', `tc_message.inbound_keyword.${family}`, messageId, office);
+  }
+  return { message: toMessage(out.row), optedOut: Boolean(out.optOut), duplicate: false, keyword: family };
+}
+
+// ── delivery reports (item 39) ──────────────────────────────────────────────
+
+/**
+ * Apply ONE provider status report to the outbound message it names.
+ *
+ * Idempotent and out-of-order safe: the UPDATE only matches a row whose stored
+ * status ranks strictly BELOW the incoming one (twilio/status.js), so a
+ * re-delivered or stale report changes nothing, and `delivered` is never
+ * regressed. A row still `sending` (its own Send request has not finished) or
+ * a draft is never touched. Office-scoped: the office comes from the callback
+ * URL we signed, and another office's message id matches nothing.
+ *
+ * @param {import('express').Request} req a request carrying the resolved tenant
+ * @param {'roland'|'valley'} office
+ * @param {{ provider: string, providerMessageId: string, providerStatus: string, errorCode?: unknown }} report
+ * @returns {Promise<{ outcome: 'applied'|'ignored_status'|'not_found_or_stale', status: string|null }>}
+ */
+async function applyStatusCallback(req, office, { provider, providerMessageId, providerStatus, errorCode = null }) {
+  const ours = twilioStatus.mapStatus(providerStatus);
+  if (!ours) return { outcome: 'ignored_status', status: null };
+  const error = ours === 'failed' ? twilioStatus.errorText(errorCode, providerStatus) : null;
+  const res = await db(req, (q) =>
+    q.query(
+      `UPDATE tc_messages SET status = $1, error = $2
+        WHERE office_id = $3 AND provider = $4 AND provider_message_id = $5 AND direction = 'outbound'
+          AND status = ANY($6)
+        RETURNING message_id, status`,
+      [ours, error, office, provider, providerMessageId, twilioStatus.replaceableBy(ours)]
+    )
+  );
+  if (!res.rows.length) return { outcome: 'not_found_or_stale', status: ours };
+  await auditMessage(
+    req,
+    'UPDATE',
+    `tc_message.status.${ours}`,
+    res.rows[0].message_id,
+    office,
+    ours === 'failed' ? 'ERROR' : 'SUCCESS'
+  );
+  return { outcome: 'applied', status: ours };
+}
+
+// ── the "new text" badge (item 39) ──────────────────────────────────────────
+
+/** Cap on the badge count; the nav shows "99+" past it. */
+const UNSEEN_CAP = 100;
+
+/**
+ * How many received texts nobody has looked at yet, in this office. A COUNT,
+ * not content: no address or body leaves, so it is not audited per poll (it
+ * rides the nav's existing refresh, and auditing every tick would bury the
+ * trail).
+ * @returns {Promise<number>}
+ */
+async function countUnseen(req, office) {
+  const res = await db(req, (q) =>
+    q.query(
+      `SELECT message_id FROM tc_messages
+        WHERE office_id = $1 AND direction = 'inbound' AND status = 'received' AND seen_at IS NULL
+        LIMIT ${UNSEEN_CAP}`,
+      [office]
+    )
+  );
+  return res.rows.length;
+}
+
+/** Unseen received texts that DID link to a case, newest first (the Texts page). */
+async function listUnseenOnCases(req, office) {
+  const rows = await db(req, (q) =>
+    q.query(
+      `SELECT ${MESSAGE_COLS.join(', ')} FROM tc_messages
+        WHERE office_id = $1 AND direction = 'inbound' AND status = 'received' AND seen_at IS NULL
+          AND case_id IS NOT NULL
+        ORDER BY created_at DESC LIMIT 200`,
+      [office]
+    )
+  );
+  await auditMessage(req, 'READ', 'tc_message_inbox', null, office);
+  return rows.rows.map(toMessage);
+}
+
+/**
+ * Mark received texts as seen: one case's thread (`caseId`), or every
+ * unlinked inbox text (`caseId` null). Returns how many changed.
+ * @param {import('express').Request} req
+ * @param {'roland'|'valley'} office
+ * @param {string|null} caseId
+ * @returns {Promise<number>}
+ */
+async function markSeen(req, office, caseId) {
+  const actor = actorOf(req);
+  const res = await db(req, (q) =>
+    caseId
+      ? q.query(
+          `UPDATE tc_messages SET seen_at = now(), seen_by = $1
+            WHERE office_id = $2 AND case_id = $3 AND direction = 'inbound' AND seen_at IS NULL
+            RETURNING message_id`,
+          [actor, office, caseId]
+        )
+      : q.query(
+          `UPDATE tc_messages SET seen_at = now(), seen_by = $1
+            WHERE office_id = $2 AND case_id IS NULL AND direction = 'inbound' AND seen_at IS NULL
+            RETURNING message_id`,
+          [actor, office]
+        )
+  );
+  if (res.rows.length) await auditMessage(req, 'UPDATE', 'tc_message.seen', caseId, office);
+  return res.rows.length;
 }
 
 module.exports = {
@@ -635,7 +854,15 @@ module.exports = {
   sendMessage,
   recordOptOut,
   recordInbound,
+  applyStatusCallback,
+  countUnseen,
+  listUnseenOnCases,
+  markSeen,
+  UNSEEN_CAP,
   isStopKeyword,
+  keywordFamily,
+  START_KEYWORDS,
+  HELP_KEYWORDS,
   setClockForTests,
   resetClock,
 };
