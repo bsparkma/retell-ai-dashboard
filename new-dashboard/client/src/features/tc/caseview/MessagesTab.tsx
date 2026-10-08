@@ -19,12 +19,36 @@
  * `seed` arrives from the follow-up queue's "Draft message" action: the server
  * fills the follow-up template into a NEW draft (no AI), which then sits here
  * like any other draft until a human sends or discards it.
+ *
+ * Item 40 (email over Azure Communication Services): email is live when the
+ * server says so for this office, exactly like texting. The compose box can
+ * start an email from the office's template LIBRARY (the same templates the
+ * Templates page edits); the server snapshots it into a draft, filled with the
+ * patient's first name and the practice's details only. Every email draft has
+ * a Preview, which is the server's rendering of exactly what Send would send,
+ * shown in EmailPreview's sandboxed frame. An email's "Sent" honestly says
+ * delivery is not tracked (the tooltip explains). A seed with `pickTemplate`
+ * (the follow-up card's "Email template" action) opens the picker instead of
+ * writing a draft, so the TC chooses the template.
  */
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
-import { AlertTriangle, Ban, Clock, Loader2, Mail, MessageSquare, Pencil, Send, ShieldCheck, Trash2 } from "lucide-react";
-import type { OfficeId, TcCase } from "@shared/tc/contract";
-import type { ChannelReadiness, MessageChannel, TcMessage } from "@shared/tc/messaging";
+import {
+  AlertTriangle,
+  Ban,
+  Clock,
+  Eye,
+  FileText,
+  Loader2,
+  Mail,
+  MessageSquare,
+  Pencil,
+  Send,
+  ShieldCheck,
+  Trash2,
+} from "lucide-react";
+import type { OfficeId, TcCase, TcEmailTemplate } from "@shared/tc/contract";
+import type { ChannelReadiness, MessageChannel, RenderedEmailResult, TcMessage } from "@shared/tc/messaging";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,7 +62,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { TcApiError, tcErrorMessage } from "../api";
+import { TcApiError, listTemplates, tcErrorMessage } from "../api";
+import { EmailPreview } from "../email/EmailPreview";
 import { DisabledFeatureNote } from "../components/TcShell";
 import {
   createDraft,
@@ -48,23 +73,27 @@ import {
   listCaseMessages,
   markSeen,
   recordOptOut,
+  renderEmail,
   sendMessage,
 } from "../messaging/messagingApi";
 import {
-  ADAPTER_REASON_COPY,
-  ADAPTER_REASON_SHORT,
   BLOCK_COPY,
   CHANNEL_LABEL,
   SEND_ERROR_COPY,
   STATUS_TONE,
+  adapterReasonCopy,
+  adapterReasonShort,
   consentBadge,
   statusLabel,
+  statusTooltip,
 } from "../messaging/copy";
 import { MessageBlockCode } from "@shared/tc/messaging";
 
 export interface MessagesTabSeed {
   followupId: string;
   channel: MessageChannel;
+  /** (item 40) Open the email template picker for this follow-up instead of writing a draft. */
+  pickTemplate?: boolean;
 }
 
 export interface MessagesTabProps {
@@ -98,7 +127,7 @@ function ProviderOffNote({ r }: { r: ChannelReadiness }) {
   if (r.adapterReason) {
     return (
       <p className="text-xs text-muted-foreground italic" data-testid="adapter-reason">
-        {ADAPTER_REASON_COPY[r.adapterReason]}
+        {adapterReasonCopy(r.channel, r.adapterReason)}
       </p>
     );
   }
@@ -129,6 +158,18 @@ export function MessagesTab({ office, tcCase, seed = null, onSeedConsumed }: Mes
   const [busyId, setBusyId] = useState<string | null>(null);
   const [optOutOpen, setOptOutOpen] = useState(false);
 
+  // item 40: the email template library + previews.
+  const templateSelectId = useId();
+  const [templates, setTemplates] = useState<TcEmailTemplate[] | null>(null);
+  const [templatesError, setTemplatesError] = useState<string | null>(null);
+  const [templateId, setTemplateId] = useState("");
+  /** The follow-up a template draft is for (from the follow-up card), if any. */
+  const [templateFollowupId, setTemplateFollowupId] = useState<string | null>(null);
+  const [preview, setPreview] = useState<
+    { title: string; loading: boolean; email: RenderedEmailResult | null; error: string | null } | null
+  >(null);
+  const [editingTemplated, setEditingTemplated] = useState(false);
+
   const caseId = tcCase.caseId;
 
   const load = useCallback(async () => {
@@ -157,12 +198,34 @@ export function MessagesTab({ office, tcCase, seed = null, onSeedConsumed }: Mes
     void load();
   }, [load]);
 
+  // The office's template library, once. A failure only hides the picker.
+  useEffect(() => {
+    let live = true;
+    listTemplates(office)
+      .then((t) => {
+        if (live) setTemplates(t);
+      })
+      .catch((e: unknown) => {
+        if (live) setTemplatesError(tcErrorMessage(e));
+      });
+    return () => {
+      live = false;
+    };
+  }, [office]);
+
   // Seed once per mount — a ref, not state, so a re-render cannot seed twice.
   const seeded = useRef(false);
   useEffect(() => {
     if (!seed || seeded.current) return;
     seeded.current = true;
     setChannel(seed.channel);
+    if (seed.pickTemplate) {
+      // The TC picks the template; nothing is written until they click.
+      setChannel("email");
+      setTemplateFollowupId(seed.followupId);
+      onSeedConsumed?.();
+      return;
+    }
     createDraft(office, { caseId, channel: seed.channel, followupId: seed.followupId })
       .then(() => {
         toast.success("Draft ready from the follow-up. Review it, then click Send.");
@@ -179,6 +242,40 @@ export function MessagesTab({ office, tcCase, seed = null, onSeedConsumed }: Mes
     setBody("");
     setSubject("");
     setEditingId(null);
+    setEditingTemplated(false);
+  };
+
+  const openPreview = async (title: string, request: Parameters<typeof renderEmail>[1]) => {
+    setPreview({ title, loading: true, email: null, error: null });
+    try {
+      const email = await renderEmail(office, request);
+      setPreview({ title, loading: false, email, error: null });
+    } catch (e) {
+      setPreview({ title, loading: false, email: null, error: tcErrorMessage(e) });
+    }
+  };
+
+  const handleDraftFromTemplate = async () => {
+    if (!templateId) return;
+    setSaving(true);
+    try {
+      await createDraft(office, {
+        caseId,
+        channel: "email",
+        emailTemplateId: templateId,
+        ...(templateFollowupId ? { followupId: templateFollowupId } : {}),
+        ...(subject.trim() ? { subject: subject.trim() } : {}),
+      });
+      toast.success("Email draft ready from the template. Preview it, then click Send.");
+      setTemplateId("");
+      setTemplateFollowupId(null);
+      resetCompose();
+      await load();
+    } catch (e) {
+      toast.error(sendErrorMessage(e));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleSave = async () => {
@@ -219,7 +316,7 @@ export function MessagesTab({ office, tcCase, seed = null, onSeedConsumed }: Mes
       toast.success(
         sent.channel === "sms"
           ? `Text handed to Twilio (${statusLabel(sent).toLowerCase()}).`
-          : `${CHANNEL_LABEL[sent.channel]}: ${statusLabel(sent).toLowerCase()}.`,
+          : `Email handed to the email service (${statusLabel(sent).toLowerCase()}).`,
       );
       await load();
     } catch (e) {
@@ -319,11 +416,17 @@ export function MessagesTab({ office, tcCase, seed = null, onSeedConsumed }: Mes
                       <span
                         className={`rounded-full px-2 py-0.5 font-medium ${TONE_CLASS[STATUS_TONE[m.status]]}`}
                         data-testid="message-status"
+                        title={statusTooltip(m)}
                       >
                         {statusLabel(m)}
                       </span>
                     </div>
                     {m.subject && <p className="text-xs font-semibold text-foreground">{m.subject}</p>}
+                    {m.emailTemplated && (
+                      <p className="mb-1 flex items-center gap-1 text-xs text-muted-foreground" data-testid="templated-note">
+                        <FileText className="h-3 w-3" /> From the template library — Preview shows the layout
+                      </p>
+                    )}
                     <p className="whitespace-pre-wrap text-sm text-foreground">{m.body}</p>
                     {m.status === "failed" && m.error && (
                       <p className="mt-2 flex items-start gap-1 text-xs text-red-700 dark:text-red-300">
@@ -333,6 +436,20 @@ export function MessagesTab({ office, tcCase, seed = null, onSeedConsumed }: Mes
                     {isDraft && (
                       <div className="mt-3 space-y-2 border-t border-border pt-2">
                         <div className="flex flex-wrap items-center justify-end gap-1.5">
+                          {m.channel === "email" && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="gap-1"
+                              data-testid="preview-draft"
+                              disabled={busyId === m.messageId}
+                              onClick={() =>
+                                void openPreview(m.subject || "Email draft", { messageId: m.messageId })
+                              }
+                            >
+                              <Eye className="h-3.5 w-3.5" /> Preview
+                            </Button>
+                          )}
                           <Button
                             size="sm"
                             variant="ghost"
@@ -343,6 +460,7 @@ export function MessagesTab({ office, tcCase, seed = null, onSeedConsumed }: Mes
                               setBody(m.body);
                               setSubject(m.subject ?? "");
                               setEditingId(m.messageId);
+                              setEditingTemplated(m.emailTemplated);
                             }}
                           >
                             <Pencil className="h-3.5 w-3.5" /> Edit
@@ -423,7 +541,7 @@ export function MessagesTab({ office, tcCase, seed = null, onSeedConsumed }: Mes
                   {r && r.adapterEnabled
                     ? "Connected"
                     : r && r.adapterReason
-                      ? ADAPTER_REASON_SHORT[r.adapterReason]
+                      ? adapterReasonShort(ch, r.adapterReason)
                       : "Not connected yet"}
                 </span>
               </button>
@@ -474,6 +592,67 @@ export function MessagesTab({ office, tcCase, seed = null, onSeedConsumed }: Mes
           </div>
         )}
 
+        {channel === "email" && !editingId && (
+          <div className="space-y-1.5 rounded-lg border border-dashed border-border p-2.5" data-testid="template-picker">
+            <Label htmlFor={templateSelectId} className="flex items-center gap-1.5">
+              <FileText className="h-3.5 w-3.5" /> Start from a template
+            </Label>
+            {templateFollowupId && (
+              <p className="text-xs text-muted-foreground" data-testid="template-for-followup">
+                For the follow-up you opened. Pick a template, preview it, then draft.
+              </p>
+            )}
+            {templatesError ? (
+              <p className="text-xs text-muted-foreground italic">Couldn't load the template library: {templatesError}</p>
+            ) : templates === null ? (
+              <p className="text-xs text-muted-foreground">Loading templates…</p>
+            ) : templates.length === 0 ? (
+              <p className="text-xs text-muted-foreground italic">No templates in this office's library yet.</p>
+            ) : (
+              <>
+                <select
+                  id={templateSelectId}
+                  value={templateId}
+                  onChange={(e) => setTemplateId(e.target.value)}
+                  className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+                >
+                  <option value="">Choose a template…</option>
+                  {templates.map((t) => (
+                    <option key={t.templateId} value={t.templateId}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+                <div className="flex items-center justify-end gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="gap-1"
+                    disabled={!templateId}
+                    data-testid="preview-template"
+                    onClick={() =>
+                      void openPreview(templates.find((t) => t.templateId === templateId)?.name ?? "Template", {
+                        caseId,
+                        templateId,
+                      })
+                    }
+                  >
+                    <Eye className="h-3.5 w-3.5" /> Preview
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!templateId || saving || !current?.address}
+                    data-testid="draft-from-template"
+                    onClick={() => void handleDraftFromTemplate()}
+                  >
+                    Draft from template
+                  </Button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
         {channel === "email" && (
           <div className="space-y-1.5">
             <Label htmlFor={subjectId}>Subject</Label>
@@ -486,10 +665,16 @@ export function MessagesTab({ office, tcCase, seed = null, onSeedConsumed }: Mes
             id={bodyId}
             value={body}
             onChange={(e) => setBody(e.target.value)}
+            readOnly={editingTemplated}
             className="h-32 resize-none"
             maxLength={channel === "sms" ? 1600 : 8000}
             placeholder={channel === "sms" ? "Write a text…" : "Write an email…"}
           />
+          {editingTemplated && (
+            <p className="text-xs text-muted-foreground" data-testid="templated-edit-note">
+              Built from a template, so only the subject can change here. Discard and draft again to change the text.
+            </p>
+          )}
           {channel === "sms" && <p className="text-right text-xs text-muted-foreground">{body.length} characters</p>}
         </div>
 
@@ -509,6 +694,28 @@ export function MessagesTab({ office, tcCase, seed = null, onSeedConsumed }: Mes
           </Button>
         </div>
       </section>
+
+      <Dialog open={preview !== null} onOpenChange={(open) => !open && setPreview(null)}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Email preview</DialogTitle>
+            <DialogDescription>
+              Exactly what Send would send, from the server. The unsubscribe link works once the email is sent.
+            </DialogDescription>
+          </DialogHeader>
+          {preview?.loading && (
+            <p className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" /> Rendering…
+            </p>
+          )}
+          {preview?.error && <p className="text-sm text-red-600 dark:text-red-400">{preview.error}</p>}
+          {preview?.email && (
+            <div className="h-[34rem]" data-testid="email-preview">
+              <EmailPreview subject={preview.email.subject} html={preview.email.html} />
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={optOutOpen} onOpenChange={(open) => !saving && setOptOutOpen(open)}>
         <DialogContent>
