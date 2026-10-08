@@ -696,7 +696,7 @@ export function MessagesTab({ office, tcCase, seed = null, onSeedConsumed }: Mes
       </section>
 
       <Dialog open={preview !== null} onOpenChange={(open) => !open && setPreview(null)}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle>Email preview</DialogTitle>
             <DialogDescription>
