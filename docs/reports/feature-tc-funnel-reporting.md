@@ -157,7 +157,7 @@ Recommended follow-up: one step after `fees-verify-queries.js`
 
 ## 7. CI
 
-PR CI (`build-test` on the merge ref): see PR. Recorded in the final hand-back.
+PR **#233**. `build-test` on the merge ref: **pass** (3m8s, run 37849768680) at `ff96788`. This report commit re-triggers it; doc-only.
 
 ## 8. Lane classification
 
