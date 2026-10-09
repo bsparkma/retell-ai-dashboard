@@ -14813,10 +14813,10 @@ var require_zod = __commonJS({
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.z = void 0;
-    var z5 = __importStar(require_external());
-    exports2.z = z5;
+    var z6 = __importStar(require_external());
+    exports2.z = z6;
     __exportStar(require_external(), exports2);
-    exports2.default = z5;
+    exports2.default = z6;
   }
 });
 
@@ -14828,10 +14828,15 @@ __export(contract_entry_exports, {
   CaseEventType: () => CaseEventType,
   CaseStatus: () => CaseStatus,
   Cents: () => Cents,
+  ChannelReadiness: () => ChannelReadiness,
   CommunicationStatus: () => CommunicationStatus,
+  ConsentSource: () => ConsentSource,
+  ConsentState: () => ConsentState,
   ContactAttemptDetail: () => ContactAttemptDetail,
   ContactPreference: () => ContactPreference,
   DividerBlock: () => DividerBlock,
+  DraftMessageBody: () => DraftMessageBody,
+  EditDraftBody: () => EditDraftBody,
   EmailBlock: () => EmailBlock,
   EmailBlocks: () => EmailBlocks,
   EmailTemplateCategory: () => EmailTemplateCategory,
@@ -14855,9 +14860,14 @@ __export(contract_entry_exports, {
   LibraryTag: () => LibraryTag,
   LibraryTreatmentCategory: () => LibraryTreatmentCategory,
   LostReason: () => LostReason,
+  MessageBlockCode: () => MessageBlockCode,
+  MessageChannel: () => MessageChannel,
+  MessageDirection: () => MessageDirection,
+  MessageStatus: () => MessageStatus,
   NurtureCadence: () => NurtureCadence,
   NurtureType: () => NurtureType,
   OPEN_CASE_STATUSES: () => OPEN_CASE_STATUSES,
+  OdTextConsent: () => OdTextConsent,
   OfficeId: () => OfficeId,
   PatientInterestLevel: () => PatientInterestLevel,
   PerioStatus: () => PerioStatus,
@@ -14865,7 +14875,9 @@ __export(contract_entry_exports, {
   PreauthType: () => PreauthType,
   Radiograph: () => Radiograph,
   RecallType: () => RecallType,
+  RecordOptOutBody: () => RecordOptOutBody,
   ReferralSource: () => ReferralSource,
+  SENDABLE_MESSAGE_STATUSES: () => SENDABLE_MESSAGE_STATUSES,
   SignatureBlock: () => SignatureBlock,
   TERMINAL_CASE_STATUSES: () => TERMINAL_CASE_STATUSES,
   TcCase: () => TcCase,
@@ -14874,11 +14886,13 @@ __export(contract_entry_exports, {
   TcCaseItem: () => TcCaseItem,
   TcCasePhase: () => TcCasePhase,
   TcCommunication: () => TcCommunication,
+  TcContactConsent: () => TcContactConsent,
   TcEmailTemplate: () => TcEmailTemplate,
   TcFollowup: () => TcFollowup,
   TcGalleryCase: () => TcGalleryCase,
   TcHygieneIntake: () => TcHygieneIntake,
   TcLegacyUserMapEntry: () => TcLegacyUserMapEntry,
+  TcMessage: () => TcMessage,
   TcObjection: () => TcObjection,
   TcPreauthCase: () => TcPreauthCase,
   TcSmileSimulation: () => TcSmileSimulation,
@@ -14886,7 +14900,7 @@ __export(contract_entry_exports, {
   Urgency: () => Urgency,
   Uuid: () => Uuid,
   VoiceHandoffDetail: () => VoiceHandoffDetail,
-  ZodError: () => import_zod4.ZodError,
+  ZodError: () => import_zod5.ZodError,
   caseFromRows: () => caseFromRows,
   caseToRows: () => caseToRows,
   communicationToRow: () => communicationToRow,
@@ -14897,7 +14911,7 @@ __export(contract_entry_exports, {
   simulationToRow: () => simulationToRow,
   templateToRow: () => templateToRow,
   userMapEntryToRow: () => userMapEntryToRow,
-  z: () => import_zod4.z
+  z: () => import_zod5.z
 });
 module.exports = __toCommonJS(contract_entry_exports);
 
@@ -16002,8 +16016,107 @@ function userMapEntryToRow(u) {
   };
 }
 
+// shared/tc/messaging.ts
+var import_zod4 = __toESM(require_zod(), 1);
+var IsoTimestamp2 = import_zod4.z.string().datetime({ offset: true });
+var MessageDirection = import_zod4.z.enum(["outbound", "inbound"]);
+var MessageChannel = import_zod4.z.enum(["sms", "email"]);
+var MessageStatus = import_zod4.z.enum([
+  "draft",
+  "queued",
+  "sending",
+  "sent",
+  "delivered",
+  "failed",
+  "received"
+]);
+var SENDABLE_MESSAGE_STATUSES = ["draft"];
+var ConsentState = import_zod4.z.enum(["opted_in", "opted_out", "unknown"]);
+var ConsentSource = import_zod4.z.enum(["od", "stop_keyword", "manual", "unsubscribe_link"]);
+var OdTextConsent = import_zod4.z.enum([
+  "yes",
+  "no",
+  "unknown",
+  "unavailable",
+  "not_linked",
+  "not_checked"
+]);
+var MessageBlockCode = import_zod4.z.enum([
+  // consent gate (server-side, fail closed; every one is audited)
+  "CONSENT_OPTED_OUT",
+  "OD_TEXT_CONSENT_NO",
+  "OD_CONSENT_UNAVAILABLE",
+  "QUIET_HOURS"
+]);
+var TcMessage = import_zod4.z.object({
+  messageId: Uuid,
+  officeId: OfficeId,
+  caseId: Uuid.nullable(),
+  direction: MessageDirection,
+  channel: MessageChannel,
+  toAddress: import_zod4.z.string().max(320).nullable(),
+  // PHI
+  fromAddress: import_zod4.z.string().max(320).nullable(),
+  // PHI on inbound
+  body: import_zod4.z.string().max(8e3),
+  // PHI
+  subject: import_zod4.z.string().max(300).nullable(),
+  // email only
+  templateId: import_zod4.z.string().max(120).nullable(),
+  status: MessageStatus,
+  provider: import_zod4.z.string().max(60).nullable(),
+  providerMessageId: import_zod4.z.string().max(200).nullable(),
+  error: import_zod4.z.string().max(2e3).nullable(),
+  createdBy: import_zod4.z.string().max(320).nullable(),
+  sentBy: import_zod4.z.string().max(320).nullable(),
+  createdAt: IsoTimestamp2,
+  sentAt: IsoTimestamp2.nullable()
+});
+var TcContactConsent = import_zod4.z.object({
+  consentId: Uuid,
+  officeId: OfficeId,
+  channel: MessageChannel,
+  address: import_zod4.z.string().max(320),
+  // PHI
+  state: ConsentState,
+  source: ConsentSource,
+  note: import_zod4.z.string().max(2e3).nullable(),
+  updatedBy: import_zod4.z.string().max(320).nullable(),
+  updatedAt: IsoTimestamp2
+});
+var ChannelReadiness = import_zod4.z.object({
+  channel: MessageChannel,
+  /** The case has a usable address for this channel (server-normalized). */
+  address: import_zod4.z.string().max(320).nullable(),
+  // PHI
+  /** Is a provider adapter connected for this channel? False in item 38. */
+  adapterEnabled: import_zod4.z.boolean(),
+  consentState: ConsentState,
+  odTextConsent: OdTextConsent,
+  /** SMS only: inside 21:00–08:00 America/Chicago right now. */
+  quietHours: import_zod4.z.boolean(),
+  /** The block a Send would hit right now, or null if the gate would pass. */
+  blockCode: MessageBlockCode.nullable()
+});
+var DraftMessageBody = import_zod4.z.object({
+  caseId: Uuid,
+  channel: MessageChannel,
+  body: import_zod4.z.string().trim().min(1).max(8e3).optional(),
+  subject: import_zod4.z.string().trim().min(1).max(300).optional(),
+  followupId: Uuid.optional()
+}).strict();
+var EditDraftBody = import_zod4.z.object({
+  body: import_zod4.z.string().trim().min(1).max(8e3),
+  subject: import_zod4.z.string().trim().min(1).max(300).nullable().optional()
+}).strict();
+var RecordOptOutBody = import_zod4.z.object({
+  caseId: Uuid,
+  channel: MessageChannel,
+  note: import_zod4.z.string().trim().max(2e3).optional()
+}).strict();
+
 // ../backend/tc/contract.entry.ts
-var import_zod4 = __toESM(require_zod());
+var import_zod5 = __toESM(require_zod());
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   ButtonBlock,
@@ -16011,10 +16124,15 @@ var import_zod4 = __toESM(require_zod());
   CaseEventType,
   CaseStatus,
   Cents,
+  ChannelReadiness,
   CommunicationStatus,
+  ConsentSource,
+  ConsentState,
   ContactAttemptDetail,
   ContactPreference,
   DividerBlock,
+  DraftMessageBody,
+  EditDraftBody,
   EmailBlock,
   EmailBlocks,
   EmailTemplateCategory,
@@ -16038,9 +16156,14 @@ var import_zod4 = __toESM(require_zod());
   LibraryTag,
   LibraryTreatmentCategory,
   LostReason,
+  MessageBlockCode,
+  MessageChannel,
+  MessageDirection,
+  MessageStatus,
   NurtureCadence,
   NurtureType,
   OPEN_CASE_STATUSES,
+  OdTextConsent,
   OfficeId,
   PatientInterestLevel,
   PerioStatus,
@@ -16048,7 +16171,9 @@ var import_zod4 = __toESM(require_zod());
   PreauthType,
   Radiograph,
   RecallType,
+  RecordOptOutBody,
   ReferralSource,
+  SENDABLE_MESSAGE_STATUSES,
   SignatureBlock,
   TERMINAL_CASE_STATUSES,
   TcCase,
@@ -16057,11 +16182,13 @@ var import_zod4 = __toESM(require_zod());
   TcCaseItem,
   TcCasePhase,
   TcCommunication,
+  TcContactConsent,
   TcEmailTemplate,
   TcFollowup,
   TcGalleryCase,
   TcHygieneIntake,
   TcLegacyUserMapEntry,
+  TcMessage,
   TcObjection,
   TcPreauthCase,
   TcSmileSimulation,

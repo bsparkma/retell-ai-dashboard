@@ -185,11 +185,14 @@ export function UrgencyBadge({ urgency }: { urgency: UrgencyId }) {
 // "coming later" affordance would now be a lie. An office without an OD
 // connection gets the honest OdNotConnected state (features/tc/od/OdShell)
 // instead — a real answer about that office, not a promise about the roadmap.
-export type DisabledReason = "platform_email" | "slice7_ai";
+export type DisabledReason = "platform_email" | "slice7_ai" | "messaging_provider";
 
 const DISABLED_COPY: Record<DisabledReason, string> = {
   platform_email: "Coming with platform email",
   slice7_ai: "AI generation coming in Slice 7",
+  // Item 38: drafts work, but no text/email provider is connected yet, so the
+  // Send click has nowhere to go. Items 39 (SMS) and 40 (email) connect them.
+  messaging_provider: "Sending isn't connected yet — drafts are saved, nothing goes out",
 };
 
 /**
