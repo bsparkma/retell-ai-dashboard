@@ -3,7 +3,7 @@
  * Fixed deep-navy sidebar + top header bar + main content area
  * Sidebar: 240px fixed, navy background, teal active indicators
  */
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Link, useLocation, useSearchParams } from "wouter";
 import { useTheme } from "@/contexts/ThemeContext";
 import { Button } from "@/components/ui/button";
@@ -49,6 +49,7 @@ import {
   Banknote,
   Archive,
   EyeOff,
+  MessageSquare,
 } from "lucide-react";
 import { api, isRateLimited } from "@/lib/api";
 import { usePolling } from "@/hooks/usePolling";
@@ -56,7 +57,9 @@ import { logout } from "@/lib/auth";
 import { useAuth } from "@/contexts/AuthContext";
 import { useModule } from "@/contexts/ModuleContext";
 import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
-import { isTcSharedRoute } from "@/features/tc/officeScope";
+import { isTcSharedRoute, resolveTcOfficeScope } from "@/features/tc/officeScope";
+import { getUnseenTotal } from "@/features/tc/messaging/messagingApi";
+import type { OfficeId } from "@shared/tc/contract";
 import { TcGlobalSearch } from "@/features/tc/search/TcGlobalSearch";
 import { can, canVisit } from "@/lib/permissions";
 import { officeHealthDisplay } from "@/lib/odHealth";
@@ -186,6 +189,7 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
         { path: "/tc", label: "Pipeline", icon: KanbanSquare },
         { path: "/tc/nurture", label: "Nurture", icon: Heart },
         { path: "/tc/followups", label: "Follow-Ups", icon: BellRing },
+        { path: "/tc/texts", label: "Texts", icon: MessageSquare },
         { path: "/tc/opportunities", label: "Opportunities", icon: Telescope },
         { path: "/tc/preauth", label: "Pre-Auth", icon: ShieldCheck },
       ],
@@ -347,6 +351,38 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const userName =
     auth.status === "authenticated" && auth.user.name.trim() !== "" ? auth.user.name : undefined;
 
+  /**
+   * Received texts nobody has opened (item 39), for the TC nav's "Texts" badge.
+   * NOT a new polling loop: it rides the connectivity probe's existing 60s,
+   * visible-tab-only tick below, and only while the TC nav is showing for
+   * someone who can open TC. null = unknown (never fetched, or the fetch
+   * failed) — an unknown count shows no badge rather than a made-up zero.
+   */
+  const [unseenTexts, setUnseenTexts] = useState<{ count: number; capped: boolean } | null>(null);
+  const permissionsForTexts = auth.status === "authenticated" ? auth.user.permissions : undefined;
+  const tcTextsInScope =
+    isTcRoute && can(permissionsForTexts, "tc.full")
+      ? resolveTcOfficeScope({ selection: office, roster: offices }).offices
+      : [];
+  const tcTextsKey = tcTextsInScope.join("+");
+  /** When the count was last asked for, per scope — so the tick and the on-enter fetch never double up. */
+  const textsAskedAt = useRef<{ key: string; at: number }>({ key: "", at: 0 });
+  const refreshUnseenTexts = useCallback(
+    (key: string, scope: readonly OfficeId[]) => {
+      const now = Date.now();
+      if (textsAskedAt.current.key === key && now - textsAskedAt.current.at < 10_000) return;
+      textsAskedAt.current = { key, at: now };
+      getUnseenTotal(scope)
+        .then((r) => {
+          if (textsAskedAt.current.key === key) setUnseenTexts(r);
+        })
+        .catch(() => {
+          if (textsAskedAt.current.key === key) setUnseenTexts(null);
+        });
+    },
+    [],
+  );
+
   // Connectivity probe.
   //
   // Three things were wrong with the old version and all three showed the same false
@@ -359,6 +395,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   // Now: an unprivileged, rate-limit-exempt endpoint, at a calmer cadence, only while
   // the tab is visible, and throttling is reported as "busy" rather than "down".
   const check = useCallback(() => {
+    if (tcTextsKey) refreshUnseenTexts(tcTextsKey, tcTextsInScope);
     api.getHealth()
       .then(() => { setIsConnected(true); setIsBusy(false); })
       .catch((err) => {
@@ -372,7 +409,21 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
         setIsBusy(false);
         setIsConnected(false);
       });
-  }, []);
+    // tcTextsInScope is derived from tcTextsKey; the key is the dependency.
+  }, [tcTextsKey]);
+
+  // Entering the TC nav (or switching office) asks once straight away rather
+  // than waiting out the tick; leaving it drops a stale count. One request per
+  // change of scope; the cadence is still the probe's.
+  useEffect(() => {
+    if (!tcTextsKey) {
+      textsAskedAt.current = { key: "", at: 0 };
+      setUnseenTexts(null);
+      return;
+    }
+    refreshUnseenTexts(tcTextsKey, tcTextsInScope);
+    // tcTextsInScope is derived from tcTextsKey; the key is the dependency.
+  }, [tcTextsKey, refreshUnseenTexts]);
 
   usePolling(check, 60_000);
 
@@ -619,6 +670,16 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                     >
                       <Icon size={16} className="flex-shrink-0" />
                       <span className="flex-1">{label}</span>
+                      {path === "/tc/texts" && unseenTexts && unseenTexts.count > 0 && (
+                        <span
+                          className="rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none"
+                          style={{ backgroundColor: "oklch(0.62 0.15 186)", color: "oklch(0.15 0.02 250)" }}
+                          data-testid="tc-texts-unseen"
+                          aria-label={`${unseenTexts.capped ? "99 or more" : unseenTexts.count} unread texts`}
+                        >
+                          {unseenTexts.capped ? "99+" : unseenTexts.count}
+                        </span>
+                      )}
                     </div>
                   </Link>
                 );

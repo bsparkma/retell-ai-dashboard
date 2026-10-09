@@ -129,13 +129,24 @@ export const TcContactConsent = z.object({
 });
 export type TcContactConsent = z.infer<typeof TcContactConsent>;
 
+/**
+ * Why a channel's provider is not connected for this office (item 39).
+ *   switched_off           the kill switch (platform_setting tc_sms_enabled) is off
+ *   not_configured         the provider account is not configured on this deployment
+ *   office_not_configured  the account is, but THIS office has no sender of its own
+ */
+export const ChannelUnavailableReason = z.enum(["switched_off", "not_configured", "office_not_configured"]);
+export type ChannelUnavailableReason = z.infer<typeof ChannelUnavailableReason>;
+
 /** One channel's answer for the compose box (GET /api/tc/messages/consent). */
 export const ChannelReadiness = z.object({
   channel: MessageChannel,
   /** The case has a usable address for this channel (server-normalized). */
   address: z.string().max(320).nullable(), // PHI
-  /** Is a provider adapter connected for this channel? False in item 38. */
+  /** Is a provider adapter connected for this channel IN THIS OFFICE? (per office since item 39) */
   adapterEnabled: z.boolean(),
+  /** Why not, when adapterEnabled is false; null when connected. (item 39) */
+  adapterReason: ChannelUnavailableReason.nullable().default(null),
   consentState: ConsentState,
   odTextConsent: OdTextConsent,
   /** SMS only: inside 21:00–08:00 America/Chicago right now. */

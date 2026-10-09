@@ -13,6 +13,9 @@
  *   POST   /:id/send          THE APPROVAL CLICK — one message, one human
  *   POST   /:id/discard       delete a draft
  *   POST   /consent           record a MANUAL opt-out (never an opt-in)
+ *   GET    /unseen-count      (item 39) how many received texts nobody has opened
+ *   GET    /unseen            (item 39) unseen received texts linked to a case
+ *   POST   /seen              (item 39) mark a case's (or the inbox's) texts seen
  *
  * OFFICE comes from the validated `?office=` (helpers.requireOffice) and every
  * statement is office_id-scoped, so another practice's message is a 404. No
@@ -54,6 +57,8 @@ function m(fn) {
 
 const CaseQuery = z.object({ office: z.string(), caseId: Uuid }).strict();
 const OfficeOnly = z.object({ office: z.string() }).strict();
+/** POST /seen — a case id, or null for "the unlinked inbox". */
+const MarkSeenBody = z.object({ caseId: Uuid.nullable() }).strict();
 
 router.get(
   '/',
@@ -71,6 +76,34 @@ router.get(
     if (!parseBody(res, OfficeOnly, req.query)) return;
     const messages = await messaging.listInbox(req, req.tcOffice);
     res.json({ success: true, messages });
+  })
+);
+
+router.get(
+  '/unseen-count',
+  m(async (req, res) => {
+    if (!parseBody(res, OfficeOnly, req.query)) return;
+    const count = await messaging.countUnseen(req, req.tcOffice);
+    res.json({ success: true, count, capped: count >= messaging.UNSEEN_CAP });
+  })
+);
+
+router.get(
+  '/unseen',
+  m(async (req, res) => {
+    if (!parseBody(res, OfficeOnly, req.query)) return;
+    const messages = await messaging.listUnseenOnCases(req, req.tcOffice);
+    res.json({ success: true, messages });
+  })
+);
+
+router.post(
+  '/seen',
+  m(async (req, res) => {
+    const body = parseBody(res, MarkSeenBody, req.body);
+    if (!body) return;
+    const marked = await messaging.markSeen(req, req.tcOffice, body.caseId);
+    res.json({ success: true, marked });
   })
 );
 

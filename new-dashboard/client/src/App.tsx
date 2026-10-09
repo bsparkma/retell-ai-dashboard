@@ -49,6 +49,7 @@ import TcPreauth from "./pages/tc/TcPreauth";
 import TcTemplates from "./pages/tc/TcTemplates";
 import TcTemplateEditor from "./pages/tc/TcTemplateEditor";
 import TcCommunications from "./pages/tc/TcCommunications";
+import TcTexts from "./pages/tc/TcTexts";
 import TcGallery from "./pages/tc/TcGallery";
 import TcPresentation from "./pages/tc/TcPresentation";
 import TcLibrary from "./pages/tc/TcLibrary";
@@ -230,6 +231,7 @@ export function Router() {
         <Route path="/tc/templates" component={TcTemplates} />
         <Route path="/tc/templates/:id" component={TcTemplateEditor} />
         <Route path="/tc/communications" component={TcCommunications} />
+        <Route path="/tc/texts" component={TcTexts} />
         <Route path="/tc/gallery" component={TcGallery} />
         <Route path="/tc/present/:caseId" component={TcPresentation} />
         <Route path="/tc/library" component={TcLibrary} />

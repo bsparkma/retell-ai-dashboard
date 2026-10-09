@@ -398,7 +398,9 @@ test('adapter FEATURE_DISABLED thrown after claiming enabled → failed (the thr
   const { baseUrl, db, close } = await boot();
   try {
     const real = adapters.getAdapter('sms');
-    adapters.setAdapterForTests('sms', { ...real, enabled: () => true });
+    // Item 39: the real SMS adapter is now per-office (enabledFor), so "claims
+    // enabled" has to claim it for the office too. The assertion is unchanged.
+    adapters.setAdapterForTests('sms', { ...real, enabled: () => true, enabledFor: () => true });
     const c = seedCase(db);
     const d = (await draft(baseUrl, 'roland', { caseId: c.case_id, channel: 'sms', body: 'Hi' })).body.message;
     const res = await api(baseUrl, 'POST', `/api/tc/messages/${d.messageId}/send?office=roland`, {});

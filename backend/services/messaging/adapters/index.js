@@ -12,8 +12,18 @@
  *   provider  string | null              — e.g. 'twilio', 'acs'; null while a stub
  *   enabled() → boolean                  — is the provider configured AND switched
  *                                          on for this deployment? Synchronous,
- *                                          no I/O. The UI's "channel connected"
- *                                          answer comes from this.
+ *                                          no I/O.
+ *   enabledFor(officeKey) → boolean      — OPTIONAL (added in item 39). Is it
+ *                                          connected for THIS office — e.g. does
+ *                                          the office have its own sender? When
+ *                                          present it is what readiness and the
+ *                                          send path ask, so one office with no
+ *                                          from-number is FEATURE_DISABLED while
+ *                                          the other sends. Must imply enabled().
+ *                                          Synchronous, no I/O.
+ *   unavailableReason(officeKey) → ChannelUnavailableReason | null
+ *                                        — OPTIONAL (item 39). WHY it is off, for
+ *                                          an honest sentence in the compose box.
  *   send(message, office) → Promise<AdapterResult>
  *
  * INPUT
@@ -58,7 +68,7 @@
 const smsAdapter = require('./smsAdapter');
 const emailAdapter = require('./emailAdapter');
 
-/** @type {Record<'sms'|'email', { channel: string, provider: string|null, enabled: () => boolean, send: Function }>} */
+/** @type {Record<'sms'|'email', { channel: string, provider: string|null, enabled: () => boolean, enabledFor?: (office: string) => boolean, unavailableReason?: (office: string) => string|null, send: Function }>} */
 const DEFAULT_ADAPTERS = Object.freeze({ sms: smsAdapter, email: emailAdapter });
 
 let adapters = { ...DEFAULT_ADAPTERS };
@@ -72,12 +82,43 @@ function getAdapter(channel) {
   return a;
 }
 
-/** Is this channel's provider connected? Never throws — a broken adapter reads as off. */
-function isChannelEnabled(channel) {
+/**
+ * Is this channel's provider connected — for `office` when given? Never
+ * throws — a broken adapter reads as off. An adapter with `enabledFor` is asked
+ * per office (and must also say enabled()); one without it answers for every
+ * office alike.
+ * @param {'sms'|'email'} channel
+ * @param {string} [office]
+ */
+function isChannelEnabled(channel, office) {
   try {
-    return Boolean(getAdapter(channel).enabled());
+    const a = getAdapter(channel);
+    if (!a.enabled()) return false;
+    if (office !== undefined && typeof a.enabledFor === 'function') return Boolean(a.enabledFor(office));
+    return true;
   } catch {
     return false;
+  }
+}
+
+/** The closed set an adapter may give as its reason (shared/tc/messaging.ts ChannelUnavailableReason). */
+const UNAVAILABLE_REASONS = Object.freeze(['switched_off', 'not_configured', 'office_not_configured']);
+
+/**
+ * Why a channel is off for an office, or null when it is connected. An adapter
+ * that gives no reason (or an unknown one) reads as 'not_configured'.
+ * @param {'sms'|'email'} channel
+ * @param {string} office
+ * @returns {'switched_off'|'not_configured'|'office_not_configured'|null}
+ */
+function channelUnavailableReason(channel, office) {
+  if (isChannelEnabled(channel, office)) return null;
+  try {
+    const a = getAdapter(channel);
+    const r = typeof a.unavailableReason === 'function' ? a.unavailableReason(office) : null;
+    return UNAVAILABLE_REASONS.includes(r) ? r : 'not_configured';
+  } catch {
+    return 'not_configured';
   }
 }
 
@@ -105,4 +146,12 @@ function resetAdapters() {
   adapters = { ...DEFAULT_ADAPTERS };
 }
 
-module.exports = { getAdapter, isChannelEnabled, checkResult, setAdapterForTests, resetAdapters };
+module.exports = {
+  getAdapter,
+  isChannelEnabled,
+  channelUnavailableReason,
+  UNAVAILABLE_REASONS,
+  checkResult,
+  setAdapterForTests,
+  resetAdapters,
+};

@@ -70,3 +70,38 @@ export async function recordOptOut(
   });
   return ConsentResponse.parse(res).consent;
 }
+
+// ── Item 39: the "new texts" count and the seen marker ─────────────────────
+
+const UnseenCountResponse = z.object({ count: z.number().int().nonnegative(), capped: z.boolean() });
+const MarkedResponse = z.object({ marked: z.number().int().nonnegative() });
+
+/** How many received texts nobody has opened yet in this office (a count, no content). */
+export async function getUnseenCount(office: OfficeId): Promise<{ count: number; capped: boolean }> {
+  const res = await tcRequest<unknown>("/tc/messages/unseen-count", { office });
+  return UnseenCountResponse.parse(res);
+}
+
+/** Unseen received texts that matched a case, newest first. */
+export async function listUnseenOnCases(office: OfficeId): Promise<TcMessage[]> {
+  const res = await tcRequest<unknown>("/tc/messages/unseen", { office });
+  return MessagesResponse.parse(res).messages;
+}
+
+/** Mark a case's received texts seen — or, with null, every unlinked inbox text. */
+export async function markSeen(office: OfficeId, caseId: string | null): Promise<number> {
+  const res = await tcRequest<unknown>("/tc/messages/seen", { office, method: "POST", body: { caseId } });
+  return MarkedResponse.parse(res).marked;
+}
+
+/**
+ * The nav badge's number across every office in scope. Any office failing
+ * makes the whole answer unknown (a throw) rather than a silently low count.
+ */
+export async function getUnseenTotal(offices: readonly OfficeId[]): Promise<{ count: number; capped: boolean }> {
+  const parts = await Promise.all(offices.map((o) => getUnseenCount(o)));
+  return {
+    count: parts.reduce((n, p) => n + p.count, 0),
+    capped: parts.some((p) => p.capped),
+  };
+}

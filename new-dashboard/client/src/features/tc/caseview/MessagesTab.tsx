@@ -10,6 +10,12 @@
  *     channels in this slice) or the consent gate would refuse. The server
  *     re-checks everything on the click; this screen only previews it.
  *
+ * Item 39 (Twilio): a channel is live when the SERVER says so for this office
+ * (readiness.adapterEnabled — the kill switch AND this office's own number);
+ * when it is not, `adapterReason` says why. Delivery is shown honestly: "Sent"
+ * is not "Delivered", and only a carrier receipt turns the chip green. Opening
+ * the tab marks this case's received texts as seen (the TC nav count).
+ *
  * `seed` arrives from the follow-up queue's "Draft message" action: the server
  * fills the follow-up template into a NEW draft (no AI), which then sits here
  * like any other draft until a human sends or discards it.
@@ -40,16 +46,19 @@ import {
   editDraft,
   getChannelReadiness,
   listCaseMessages,
+  markSeen,
   recordOptOut,
   sendMessage,
 } from "../messaging/messagingApi";
 import {
+  ADAPTER_REASON_COPY,
+  ADAPTER_REASON_SHORT,
   BLOCK_COPY,
   CHANNEL_LABEL,
   SEND_ERROR_COPY,
-  STATUS_LABEL,
   STATUS_TONE,
   consentBadge,
+  statusLabel,
 } from "../messaging/copy";
 import { MessageBlockCode } from "@shared/tc/messaging";
 
@@ -84,6 +93,18 @@ function sendErrorMessage(e: unknown): string {
   return tcErrorMessage(e);
 }
 
+/** Why this channel can't send: the server's reason when it gave one, else the generic note. */
+function ProviderOffNote({ r }: { r: ChannelReadiness }) {
+  if (r.adapterReason) {
+    return (
+      <p className="text-xs text-muted-foreground italic" data-testid="adapter-reason">
+        {ADAPTER_REASON_COPY[r.adapterReason]}
+      </p>
+    );
+  }
+  return <DisabledFeatureNote reason="messaging_provider" />;
+}
+
 function formatWhen(iso: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime())
@@ -116,6 +137,15 @@ export function MessagesTab({ office, tcCase, seed = null, onSeedConsumed }: Mes
       const [m, r] = await Promise.all([listCaseMessages(office, caseId), getChannelReadiness(office, caseId)]);
       setMessages(m);
       setReadiness(r);
+      // Looking at the thread IS seeing its texts. Fire-and-forget: a failed
+      // mark only leaves the nav count high, it never blocks the thread.
+      if (m.some((x) => x.direction === "inbound")) {
+        try {
+          void markSeen(office, caseId).catch(() => undefined);
+        } catch {
+          // never let the seen marker take the thread down with it
+        }
+      }
     } catch (e) {
       setLoadError(tcErrorMessage(e));
     } finally {
@@ -186,7 +216,11 @@ export function MessagesTab({ office, tcCase, seed = null, onSeedConsumed }: Mes
     setBusyId(m.messageId);
     try {
       const sent = await sendMessage(office, m.messageId);
-      toast.success(`${CHANNEL_LABEL[sent.channel]} ${STATUS_LABEL[sent.status].toLowerCase()}.`);
+      toast.success(
+        sent.channel === "sms"
+          ? `Text handed to Twilio (${statusLabel(sent).toLowerCase()}).`
+          : `${CHANNEL_LABEL[sent.channel]}: ${statusLabel(sent).toLowerCase()}.`,
+      );
       await load();
     } catch (e) {
       toast.error(sendErrorMessage(e));
@@ -282,8 +316,11 @@ export function MessagesTab({ office, tcCase, seed = null, onSeedConsumed }: Mes
                       <ChannelIcon className="h-3 w-3" />
                       <span>{inbound ? "From patient" : "To patient"}</span>
                       <span>· {formatWhen(m.sentAt ?? m.createdAt)}</span>
-                      <span className={`rounded-full px-2 py-0.5 font-medium ${TONE_CLASS[STATUS_TONE[m.status]]}`}>
-                        {STATUS_LABEL[m.status]}
+                      <span
+                        className={`rounded-full px-2 py-0.5 font-medium ${TONE_CLASS[STATUS_TONE[m.status]]}`}
+                        data-testid="message-status"
+                      >
+                        {statusLabel(m)}
                       </span>
                     </div>
                     {m.subject && <p className="text-xs font-semibold text-foreground">{m.subject}</p>}
@@ -335,7 +372,7 @@ export function MessagesTab({ office, tcCase, seed = null, onSeedConsumed }: Mes
                             Send
                           </Button>
                         </div>
-                        {r && !r.adapterEnabled && <DisabledFeatureNote reason="messaging_provider" />}
+                        {r && !r.adapterEnabled && <ProviderOffNote r={r} />}
                         {r && r.blockCode && (
                           <p className="text-xs text-amber-700 dark:text-amber-300" data-testid="send-block">
                             {BLOCK_COPY[r.blockCode]}
@@ -383,7 +420,11 @@ export function MessagesTab({ office, tcCase, seed = null, onSeedConsumed }: Mes
                   <Icon className="h-3.5 w-3.5" /> {CHANNEL_LABEL[ch]}
                 </span>
                 <span className="block text-xs text-muted-foreground">
-                  {r && r.adapterEnabled ? "Connected" : "Not connected yet"}
+                  {r && r.adapterEnabled
+                    ? "Connected"
+                    : r && r.adapterReason
+                      ? ADAPTER_REASON_SHORT[r.adapterReason]
+                      : "Not connected yet"}
                 </span>
               </button>
             );
@@ -429,7 +470,7 @@ export function MessagesTab({ office, tcCase, seed = null, onSeedConsumed }: Mes
                 <Clock className="h-3 w-3" /> {BLOCK_COPY.QUIET_HOURS}
               </p>
             )}
-            {!current.adapterEnabled && <DisabledFeatureNote reason="messaging_provider" />}
+            {!current.adapterEnabled && <ProviderOffNote r={current} />}
           </div>
         )}
 
