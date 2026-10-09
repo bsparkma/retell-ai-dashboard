@@ -19,7 +19,7 @@ not merged — Beau merges.
 
 ## 1. Placeholder replaced
 
-`BEAU-TOPIC` → `carein-bx7k2m-q9wp4r` (ratified by Beau 2026-10-08 in the queue file) in:
+The placeholder topic → `carein-bx7k2m-q9wp4r` (ratified by Beau 2026-10-08 in the queue file) in:
 
 | File | Change |
 | --- | --- |
@@ -29,7 +29,8 @@ not merged — Beau merges.
 | `CLAUDE.md` §8.6 | Topic, command, and the "four files change together" note; the "not live until" line no longer lists the topic as outstanding |
 | `docs/reports/feature-build-loop.md` | Three historical mentions reworded to "the placeholder (replaced by queue item 44)", because the spec requires zero remaining occurrences repo-wide |
 
-`grep -rn BEAU-TOPIC` over the repo (excluding `node_modules`): **0 matches**.
+`git grep -n` for the placeholder string over the whole repo at the final HEAD: **0 matches**
+(round 1 of review caught two copies of it in this report itself; reworded, re-grepped).
 
 ## 2. Hardenings
 
@@ -44,6 +45,12 @@ not merged — Beau merges.
     engine): the four alert shapes (`NEEDS REVIEW…`, `BLOCKED…`, `Slice <n> on staging…`,
     `CI RED…`) and the test message all match. `curl.exe https://evil.example/x`, plain
     `http://ntfy.sh/<topic>`, and `https://ntfy.sh/other` do not.
+  - **Still wider than "ntfy host only"** (reviewer's note; the spec's own example has the
+    same shape): the middle `*` admits extra arguments, so
+    `curl.exe -s -d x https://other.host https://ntfy.sh/<topic>` matches and also posts to
+    the other host, and `-d @<file>` makes curl read a local file and post it — the
+    `Read(.env)` denies don't cover curl reading a file. Far narrower than `curl.exe:*`,
+    but tightening further (or dropping the allow and approving each alert) is Beau's call.
 - **JSON parse:** `node -e "JSON.parse(...)"` passes — **12 allow, 32 deny** (unchanged
   counts; one allow entry replaced, the deny list untouched).
 
