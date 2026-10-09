@@ -360,6 +360,7 @@ function incompleteFixtures(chart: PerioChart) {
 afterEach(cleanup);
 
 describe.skipIf(!SHOOT)("perio chart screenshot dumps", () => {
+  it("TMP canary break - DO NOT MERGE", () => { throw new Error("deliberate canary break"); });
   it("01 — a full chart, with the last exam's numbers under it", async () => {
     const chart = exam(192, 7, [1, 16]);
     fixtures.chart = chart;
