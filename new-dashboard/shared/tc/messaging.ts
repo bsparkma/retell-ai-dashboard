@@ -113,6 +113,13 @@ export const TcMessage = z.object({
   sentBy: z.string().max(320).nullable(),
   createdAt: IsoTimestamp,
   sentAt: IsoTimestamp.nullable(),
+  /**
+   * (item 40) Email only: this draft was built from a template in the email
+   * template library, so it is sent with that template's layout (a snapshot
+   * taken when the draft was written). Its body text is then a read-only
+   * plain-text view of that layout; only the subject can be edited.
+   */
+  emailTemplated: z.boolean().default(false),
 });
 export type TcMessage = z.infer<typeof TcMessage>;
 
@@ -170,6 +177,13 @@ export const DraftMessageBody = z
     body: z.string().trim().min(1).max(8000).optional(),
     subject: z.string().trim().min(1).max(300).optional(),
     followupId: Uuid.optional(),
+    /**
+     * (item 40) Email only: build the draft from this email-library template
+     * (tc_email_templates, same office). The server snapshots the template's
+     * blocks and subject, filled with the patient's first name and the
+     * practice's details only. A body sent alongside is refused.
+     */
+    emailTemplateId: Uuid.optional(),
   })
   .strict();
 export type DraftMessageBody = z.infer<typeof DraftMessageBody>;
@@ -196,3 +210,40 @@ export const RecordOptOutBody = z
   })
   .strict();
 export type RecordOptOutBody = z.infer<typeof RecordOptOutBody>;
+
+// ── Email rendering + the legacy send route (item 40) ───────────────────────
+
+/**
+ * POST /api/tc/communications/render. Either an existing email DRAFT (renders
+ * exactly what Send would send, with the unsubscribe link left inert), or a
+ * library template for a case (what a draft from it would look like). Both
+ * are office-scoped by `?office=`, like every TC route.
+ */
+export const RenderEmailBody = z.union([
+  z.object({ messageId: Uuid }).strict(),
+  z.object({ caseId: Uuid, templateId: Uuid }).strict(),
+]);
+export type RenderEmailBody = z.infer<typeof RenderEmailBody>;
+
+/** The rendered email. `html` is a complete document for a sandboxed iframe. */
+export const RenderedEmailResult = z.object({
+  subject: z.string().max(300),
+  html: z.string(),
+  text: z.string(),
+});
+export type RenderedEmailResult = z.infer<typeof RenderedEmailResult>;
+
+/**
+ * POST /api/tc/communications/send, the legacy direct-send route. ONE case,
+ * ONE template, ONE message: the server creates a tc_messages draft from the
+ * template and sends it through the same service function as
+ * POST /api/tc/messages/:id/send. No address field and no list of anything.
+ */
+export const CommunicationSendBody = z
+  .object({
+    caseId: Uuid,
+    templateId: Uuid,
+    subject: z.string().trim().min(1).max(300).optional(),
+  })
+  .strict();
+export type CommunicationSendBody = z.infer<typeof CommunicationSendBody>;

@@ -289,14 +289,14 @@ var require_util = __commonJS({
     }
     function randomString(length = 10) {
       const chars = "abcdefghijklmnopqrstuvwxyz";
-      let str = "";
+      let str2 = "";
       for (let i = 0; i < length; i++) {
-        str += chars[Math.floor(Math.random() * chars.length)];
+        str2 += chars[Math.floor(Math.random() * chars.length)];
       }
-      return str;
+      return str2;
     }
-    function esc(str) {
-      return JSON.stringify(str);
+    function esc(str2) {
+      return JSON.stringify(str2);
     }
     exports2.captureStackTrace = "captureStackTrace" in Error ? Error.captureStackTrace : (..._args) => {
     };
@@ -392,8 +392,8 @@ var require_util = __commonJS({
     exports2.getParsedType = getParsedType;
     exports2.propertyKeyTypes = /* @__PURE__ */ new Set(["string", "number", "symbol"]);
     exports2.primitiveTypes = /* @__PURE__ */ new Set(["string", "number", "bigint", "boolean", "symbol", "undefined"]);
-    function escapeRegex(str) {
-      return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    function escapeRegex(str2) {
+      return str2.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     }
     function clone(inst, def, params) {
       const cl = new inst._zod.constr(def ?? inst._zod.def);
@@ -903,14 +903,14 @@ var require_errors = __commonJS({
       return segs.join("");
     }
     function prettifyError(error) {
-      const lines = [];
+      const lines2 = [];
       const issues = [...error.issues].sort((a, b) => (a.path ?? []).length - (b.path ?? []).length);
       for (const issue of issues) {
-        lines.push(`\u2716 ${issue.message}`);
+        lines2.push(`\u2716 ${issue.message}`);
         if (issue.path?.length)
-          lines.push(`  \u2192 at ${toDotPath(issue.path)}`);
+          lines2.push(`  \u2192 at ${toDotPath(issue.path)}`);
       }
-      return lines.join("\n");
+      return lines2.join("\n");
     }
   }
 });
@@ -1763,9 +1763,9 @@ var require_doc = __commonJS({
           return;
         }
         const content = arg;
-        const lines = content.split("\n").filter((x) => x);
-        const minIndent = Math.min(...lines.map((x) => x.length - x.trimStart().length));
-        const dedented = lines.map((x) => x.slice(minIndent)).map((x) => " ".repeat(this.indent * 2) + x);
+        const lines2 = content.split("\n").filter((x) => x);
+        const minIndent = Math.min(...lines2.map((x) => x.length - x.trimStart().length));
+        const dedented = lines2.map((x) => x.slice(minIndent)).map((x) => " ".repeat(this.indent * 2) + x);
         for (const line of dedented) {
           this.content.push(line);
         }
@@ -1774,8 +1774,8 @@ var require_doc = __commonJS({
         const F = Function;
         const args = this?.args;
         const content = this?.content ?? [``];
-        const lines = [...content.map((x) => `  ${x}`)];
-        return new F(...args, lines.join("\n"));
+        const lines2 = [...content.map((x) => `  ${x}`)];
+        return new F(...args, lines2.join("\n"));
       }
     };
     exports2.Doc = Doc;
@@ -14830,6 +14830,7 @@ __export(contract_entry_exports, {
   Cents: () => Cents,
   ChannelReadiness: () => ChannelReadiness,
   ChannelUnavailableReason: () => ChannelUnavailableReason,
+  CommunicationSendBody: () => CommunicationSendBody,
   CommunicationStatus: () => CommunicationStatus,
   ConsentSource: () => ConsentSource,
   ConsentState: () => ConsentState,
@@ -14837,6 +14838,7 @@ __export(contract_entry_exports, {
   ContactPreference: () => ContactPreference,
   DividerBlock: () => DividerBlock,
   DraftMessageBody: () => DraftMessageBody,
+  EMAIL_MERGE_TOKENS: () => EMAIL_MERGE_TOKENS,
   EditDraftBody: () => EditDraftBody,
   EmailBlock: () => EmailBlock,
   EmailBlocks: () => EmailBlocks,
@@ -14878,7 +14880,10 @@ __export(contract_entry_exports, {
   RecallType: () => RecallType,
   RecordOptOutBody: () => RecordOptOutBody,
   ReferralSource: () => ReferralSource,
+  RenderEmailBody: () => RenderEmailBody,
+  RenderedEmailResult: () => RenderedEmailResult,
   SENDABLE_MESSAGE_STATUSES: () => SENDABLE_MESSAGE_STATUSES,
+  SIGNATURE_SOURCE_TEXT: () => SIGNATURE_SOURCE_TEXT,
   SignatureBlock: () => SignatureBlock,
   TERMINAL_CASE_STATUSES: () => TERMINAL_CASE_STATUSES,
   TcCase: () => TcCase,
@@ -14905,10 +14910,19 @@ __export(contract_entry_exports, {
   caseFromRows: () => caseFromRows,
   caseToRows: () => caseToRows,
   communicationToRow: () => communicationToRow,
+  emailBodyText: () => emailBodyText,
+  escapeHtml: () => escapeHtml,
+  fillBlockTokens: () => fillBlockTokens,
+  fillMergeTokens: () => fillMergeTokens,
   galleryToRow: () => galleryToRow,
+  htmlToPlainText: () => htmlToPlainText,
   isContactAttemptDetail: () => isContactAttemptDetail,
   isVoiceHandoffDetail: () => isVoiceHandoffDetail,
   preauthToRow: () => preauthToRow,
+  readBlock: () => readBlock,
+  readBlocks: () => readBlocks,
+  renderEmail: () => renderEmail,
+  safeUrl: () => safeUrl,
   simulationToRow: () => simulationToRow,
   templateToRow: () => templateToRow,
   userMapEntryToRow: () => userMapEntryToRow,
@@ -16071,7 +16085,14 @@ var TcMessage = import_zod4.z.object({
   createdBy: import_zod4.z.string().max(320).nullable(),
   sentBy: import_zod4.z.string().max(320).nullable(),
   createdAt: IsoTimestamp2,
-  sentAt: IsoTimestamp2.nullable()
+  sentAt: IsoTimestamp2.nullable(),
+  /**
+   * (item 40) Email only: this draft was built from a template in the email
+   * template library, so it is sent with that template's layout (a snapshot
+   * taken when the draft was written). Its body text is then a read-only
+   * plain-text view of that layout; only the subject can be edited.
+   */
+  emailTemplated: import_zod4.z.boolean().default(false)
 });
 var TcContactConsent = import_zod4.z.object({
   consentId: Uuid,
@@ -16107,7 +16128,14 @@ var DraftMessageBody = import_zod4.z.object({
   channel: MessageChannel,
   body: import_zod4.z.string().trim().min(1).max(8e3).optional(),
   subject: import_zod4.z.string().trim().min(1).max(300).optional(),
-  followupId: Uuid.optional()
+  followupId: Uuid.optional(),
+  /**
+   * (item 40) Email only: build the draft from this email-library template
+   * (tc_email_templates, same office). The server snapshots the template's
+   * blocks and subject, filled with the patient's first name and the
+   * practice's details only. A body sent alongside is refused.
+   */
+  emailTemplateId: Uuid.optional()
 }).strict();
 var EditDraftBody = import_zod4.z.object({
   body: import_zod4.z.string().trim().min(1).max(8e3),
@@ -16118,6 +16146,348 @@ var RecordOptOutBody = import_zod4.z.object({
   channel: MessageChannel,
   note: import_zod4.z.string().trim().max(2e3).optional()
 }).strict();
+var RenderEmailBody = import_zod4.z.union([
+  import_zod4.z.object({ messageId: Uuid }).strict(),
+  import_zod4.z.object({ caseId: Uuid, templateId: Uuid }).strict()
+]);
+var RenderedEmailResult = import_zod4.z.object({
+  subject: import_zod4.z.string().max(300),
+  html: import_zod4.z.string(),
+  text: import_zod4.z.string()
+});
+var CommunicationSendBody = import_zod4.z.object({
+  caseId: Uuid,
+  templateId: Uuid,
+  subject: import_zod4.z.string().trim().min(1).max(300).optional()
+}).strict();
+
+// shared/tc/emailRender.ts
+var EMAIL_MERGE_TOKENS = [
+  "patient.firstName",
+  "practice.name",
+  "practice.phone",
+  "practice.address",
+  "sender.name",
+  "sender.email"
+];
+var TOKEN_RE = /\{\{\s*([a-zA-Z_][\w.]*)\s*\}\}/g;
+function isMergeToken(name) {
+  return EMAIL_MERGE_TOKENS.includes(name);
+}
+function fillMergeTokens(text, values) {
+  if (typeof text !== "string" || text === "") return "";
+  return text.replace(TOKEN_RE, (_m, name) => {
+    if (!isMergeToken(name)) return "";
+    const v = values[name];
+    return typeof v === "string" ? v : "";
+  });
+}
+function escapeHtml(text) {
+  return String(text ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+var HEX_RE = /^#[0-9a-fA-F]{6}$/;
+function color(v, fallback) {
+  return typeof v === "string" && HEX_RE.test(v) ? v : fallback;
+}
+function safeUrl(v, allowed = ["https:", "http:"]) {
+  if (typeof v !== "string" || v.trim() === "") return null;
+  let u;
+  try {
+    u = new URL(v.trim());
+  } catch {
+    return null;
+  }
+  if (!allowed.includes(u.protocol)) return null;
+  if (u.username || u.password) return null;
+  return u.toString();
+}
+function num(v, fallback, min, max) {
+  if (typeof v !== "number" || !Number.isFinite(v)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(v)));
+}
+function str(v, fallback = "", maxLen = 2e4) {
+  return typeof v === "string" ? v.slice(0, maxLen) : fallback;
+}
+function bool(v, fallback) {
+  return typeof v === "boolean" ? v : fallback;
+}
+function align(v, fallback) {
+  return v === "left" || v === "center" || v === "right" ? v : fallback;
+}
+function htmlToPlainText(html) {
+  if (typeof html !== "string") return "";
+  return html.replace(/<br\s*\/?>/gi, "\n").replace(/<li[^>]*>/gi, "\u2022 ").replace(/<\/(p|div|h[1-6]|li|blockquote)>/gi, "\n").replace(/<[^>]*>?/g, "").replace(/&nbsp;/gi, " ").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'").replace(/&amp;/gi, "&").replace(/\n{3,}/g, "\n\n").trim();
+}
+var SIGNATURE_SOURCE_TEXT = {
+  practice: "{{practice.name}}",
+  doctor: "{{doctor.name}}",
+  tc: "{{sender.name}}"
+};
+function asRecord(v) {
+  return v !== null && typeof v === "object" && !Array.isArray(v) ? v : null;
+}
+function readBlock(raw, values) {
+  const b = asRecord(raw);
+  if (!b) return null;
+  const fill = (v, max = 2e4) => fillMergeTokens(str(v, "", max), values).trim();
+  switch (b.type) {
+    case "header": {
+      const logoUrl = safeUrl(b.logoUrl);
+      const headline = fill(b.headline, 120);
+      const subhead = fill(b.subhead, 160);
+      if (!logoUrl && !headline && !subhead) return null;
+      return {
+        type: "header",
+        logoUrl,
+        logoWidth: num(b.logoWidth, 140, 40, 320),
+        headline,
+        subhead,
+        bgColor: color(b.bgColor, "#ffffff"),
+        textColor: color(b.textColor, "#0f172a"),
+        align: align(b.align, "center")
+      };
+    }
+    case "text": {
+      const text = fillMergeTokens(htmlToPlainText(b.html), values).trim();
+      if (!text) return null;
+      return {
+        type: "text",
+        text,
+        bgColor: color(b.bgColor, "#ffffff"),
+        textColor: color(b.textColor, "#0f172a"),
+        fontSize: num(b.fontSize, 15, 10, 28)
+      };
+    }
+    case "image": {
+      const src = safeUrl(b.src);
+      if (!src) return null;
+      return {
+        type: "image",
+        src,
+        alt: fill(b.alt, 200),
+        width: num(b.width, 560, 80, 600),
+        align: align(b.align, "center"),
+        href: safeUrl(b.href),
+        bgColor: color(b.bgColor, "#ffffff")
+      };
+    }
+    case "button": {
+      const href = safeUrl(b.href, ["https:", "http:", "mailto:", "tel:"]);
+      const label = fill(b.label, 60) || "Learn more";
+      if (!href) return null;
+      return {
+        type: "button",
+        label,
+        href,
+        bgColor: color(b.bgColor, "#0ea5b8"),
+        textColor: color(b.textColor, "#ffffff"),
+        align: align(b.align, "center"),
+        fullWidth: bool(b.fullWidth, false)
+      };
+    }
+    case "highlight": {
+      const treatment = fill(b.treatment, 240);
+      const totalFee = fill(b.totalFee, 40);
+      const patientOwes = fill(b.patientOwes, 40);
+      const showFinancing = bool(b.showFinancing, true);
+      const monthly = showFinancing ? fill(b.monthly, 40) : "";
+      if (!treatment && !totalFee && !patientOwes && !monthly) return null;
+      return {
+        type: "highlight",
+        title: fill(b.title, 80),
+        treatment,
+        totalFee,
+        patientOwes,
+        monthly,
+        showFinancing,
+        accentColor: color(b.accentColor, "#0ea5b8")
+      };
+    }
+    case "signature": {
+      const source = b.source === "practice" || b.source === "doctor" || b.source === "tc" || b.source === "custom" ? b.source : "doctor";
+      const name = source === "custom" ? fill(b.customText, 400) : fillMergeTokens(SIGNATURE_SOURCE_TEXT[source], values).trim();
+      const phone = bool(b.showPhone, true) ? fillMergeTokens("{{practice.phone}}", values).trim() : "";
+      const email = bool(b.showEmail, true) ? fillMergeTokens("{{sender.email}}", values).trim() : "";
+      if (!name && !phone && !email) return null;
+      return { type: "signature", name, phone, email };
+    }
+    case "divider":
+      return {
+        type: "divider",
+        color: color(b.color, "#e2e8f0"),
+        thickness: num(b.thickness, 1, 1, 8),
+        spacing: num(b.spacing, 16, 0, 48)
+      };
+    case "footer": {
+      const address = bool(b.showAddress, true) ? fillMergeTokens("{{practice.address}}", values).trim() : "";
+      const phone = bool(b.showPhone, true) ? fillMergeTokens("{{practice.phone}}", values).trim() : "";
+      const fineText = fill(b.fineText, 400);
+      if (!address && !phone && !fineText) return null;
+      return {
+        type: "footer",
+        address,
+        phone,
+        fineText,
+        bgColor: color(b.bgColor, "#f8fafc"),
+        textColor: color(b.textColor, "#64748b")
+      };
+    }
+    default:
+      return null;
+  }
+}
+function readBlocks(raw, values) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const item of raw.slice(0, 40)) {
+    try {
+      const b = readBlock(item, values);
+      if (b) out.push(b);
+    } catch {
+    }
+  }
+  return out;
+}
+function fillBlockTokens(raw, values) {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 40).map((item) => {
+    const b = asRecord(item);
+    if (!b) return item;
+    const copy = {};
+    for (const [k, v] of Object.entries(b)) {
+      copy[k] = typeof v === "string" && k !== "type" && k !== "id" ? fillMergeTokens(v, values) : v;
+    }
+    return copy;
+  });
+}
+var FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+function lines(text) {
+  return escapeHtml(text).replace(/\r?\n/g, "<br>");
+}
+function paragraphs(text, style) {
+  return text.split(/\r?\n\s*\r?\n/).map((p) => p.trim()).filter(Boolean).map((p) => `<p style="margin:0 0 12px 0;${style}">${lines(p)}</p>`).join("");
+}
+function row(inner, bg, padding, extra = "") {
+  return `<tr><td style="background-color:${bg};padding:${padding};${extra}">${inner}</td></tr>`;
+}
+function blockHtml(b) {
+  switch (b.type) {
+    case "header": {
+      const logo = b.logoUrl ? `<img src="${escapeHtml(b.logoUrl)}" alt="" width="${b.logoWidth}" style="width:${b.logoWidth}px;max-width:100%;display:inline-block;margin-bottom:12px;border:0">` : "";
+      const headline = b.headline ? `<div style="font-size:22px;font-weight:700;line-height:1.3;color:${b.textColor}">${lines(b.headline)}</div>` : "";
+      const subhead = b.subhead ? `<div style="font-size:14px;margin-top:4px;color:${b.textColor}">${lines(b.subhead)}</div>` : "";
+      return row(logo + headline + subhead, b.bgColor, "24px 32px", `text-align:${b.align}`);
+    }
+    case "text":
+      return row(
+        paragraphs(b.text, `color:${b.textColor};font-size:${b.fontSize}px;line-height:1.6`),
+        b.bgColor,
+        "16px 32px"
+      );
+    case "image": {
+      const img = `<img src="${escapeHtml(b.src)}" alt="${escapeHtml(b.alt)}" width="${b.width}" style="width:${b.width}px;max-width:100%;display:inline-block;border:0;border-radius:4px">`;
+      const inner = b.href ? `<a href="${escapeHtml(b.href)}">${img}</a>` : img;
+      return row(inner, b.bgColor, "12px 32px", `text-align:${b.align}`);
+    }
+    case "button": {
+      const display = b.fullWidth ? "block" : "inline-block";
+      const a = `<a href="${escapeHtml(b.href)}" style="display:${display};background-color:${b.bgColor};color:${b.textColor};padding:12px 28px;border-radius:8px;font-size:15px;font-weight:600;text-align:center;text-decoration:none">${escapeHtml(b.label)}</a>`;
+      return row(a, "#ffffff", "12px 32px", `text-align:${b.align}`);
+    }
+    case "highlight": {
+      const line = (label, value) => value ? `<tr><td style="color:#64748b;font-size:14px;padding:2px 0">${escapeHtml(label)}</td><td style="font-weight:600;font-size:14px;text-align:right;padding:2px 0">${escapeHtml(value)}</td></tr>` : "";
+      const inner = `<div style="border:1px solid #e2e8f0;border-left:4px solid ${b.accentColor};border-radius:8px;padding:16px 20px;color:#0f172a">` + (b.title ? `<div style="font-size:13px;font-weight:700;color:${b.accentColor};text-transform:uppercase;letter-spacing:0.04em">${escapeHtml(b.title)}</div>` : "") + (b.treatment ? `<div style="font-size:15px;margin-top:6px">${lines(b.treatment)}</div>` : "") + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:10px">` + line("Total fee", b.totalFee) + line("Your portion", b.patientOwes) + (b.showFinancing ? line("Est. monthly", b.monthly) : "") + `</table></div>`;
+      return row(inner, "#ffffff", "12px 32px");
+    }
+    case "signature": {
+      const inner = (b.name ? `<div style="font-weight:600">${lines(b.name)}</div>` : "") + (b.phone ? `<div style="color:#64748b">${escapeHtml(b.phone)}</div>` : "") + (b.email ? `<div style="color:#64748b">${escapeHtml(b.email)}</div>` : "");
+      return row(inner, "#ffffff", "16px 32px", "color:#0f172a;font-size:14px;line-height:1.6");
+    }
+    case "divider":
+      return row(
+        `<div style="border-top:${b.thickness}px solid ${b.color};font-size:0;line-height:0">&nbsp;</div>`,
+        "#ffffff",
+        `${b.spacing}px 32px`
+      );
+    case "footer": {
+      const inner = (b.address ? `<div>${lines(b.address)}</div>` : "") + (b.phone ? `<div>${escapeHtml(b.phone)}</div>` : "") + (b.fineText ? `<div style="margin-top:8px">${lines(b.fineText)}</div>` : "");
+      return row(inner, b.bgColor, "20px 32px", `color:${b.textColor};font-size:12px;line-height:1.6;text-align:center`);
+    }
+  }
+}
+function blockText(b) {
+  switch (b.type) {
+    case "header":
+      return [b.headline, b.subhead].filter(Boolean).join("\n");
+    case "text":
+      return b.text;
+    case "image":
+      return b.alt;
+    case "button":
+      return `${b.label}: ${b.href}`;
+    case "highlight":
+      return [
+        b.title,
+        b.treatment,
+        b.totalFee ? `Total fee: ${b.totalFee}` : "",
+        b.patientOwes ? `Your portion: ${b.patientOwes}` : "",
+        b.monthly ? `Est. monthly: ${b.monthly}` : ""
+      ].filter(Boolean).join("\n");
+    case "signature":
+      return [b.name, b.phone, b.email].filter(Boolean).join("\n");
+    case "divider":
+      return "";
+    case "footer":
+      return [b.address, b.phone, b.fineText].filter(Boolean).join("\n");
+  }
+}
+function systemFooterHtml(f) {
+  const name = str(f.practiceName, "", 200).trim();
+  const contact = [str(f.practiceAddress, "", 400).trim(), str(f.practicePhone, "", 60).trim()].filter(Boolean);
+  const link = f.unsubscribeUrl ? safeUrl(f.unsubscribeUrl) : null;
+  const unsub = link ? `<a href="${escapeHtml(link)}" style="color:#475569;text-decoration:underline">Unsubscribe from these emails</a>` : `<span style="color:#475569;text-decoration:underline">Unsubscribe from these emails</span>`;
+  return `<tr><td style="padding:20px 32px;color:#64748b;font-size:12px;line-height:1.6;text-align:center;font-family:${FONT}">` + (name ? `<div>You are receiving this email because you are a patient of ${escapeHtml(name)}.</div>` : "") + contact.map((c) => `<div>${lines(c)}</div>`).join("") + `<div style="margin-top:8px">${unsub}</div></td></tr>`;
+}
+function systemFooterText(f) {
+  const name = str(f.practiceName, "", 200).trim();
+  const parts = [
+    name ? `You are receiving this email because you are a patient of ${name}.` : "",
+    str(f.practiceAddress, "", 400).trim(),
+    str(f.practicePhone, "", 60).trim(),
+    f.unsubscribeUrl ? `Unsubscribe: ${f.unsubscribeUrl}` : "Unsubscribe: (link added when sent)"
+  ];
+  return parts.filter(Boolean).join("\n");
+}
+function emailBodyText(content, values) {
+  const c = asRecord(content);
+  const v = asRecord(values) ?? {};
+  if (c && c.kind === "blocks") {
+    return readBlocks(c.blocks, v).map(blockText).filter(Boolean).join("\n\n");
+  }
+  if (c && c.kind === "text") return fillMergeTokens(str(c.body, "", 8e3), v).trim();
+  return "";
+}
+function renderEmail(input) {
+  const values = asRecord(input && input.values) ?? {};
+  const footer = asRecord(input && input.footer) ? input.footer : { practiceName: "", unsubscribeUrl: null };
+  const subject = fillMergeTokens(str(input && input.subject, "", 300), values).replace(/[\r\n]+/g, " ").trim();
+  const preheader = fillMergeTokens(str(input && input.preheader, "", 300), values).replace(/[\r\n]+/g, " ").trim();
+  let bodyRows = "";
+  let bodyText = "";
+  const content = asRecord(input && input.content);
+  if (content && content.kind === "blocks") {
+    const blocks = readBlocks(content.blocks, values);
+    bodyRows = blocks.map(blockHtml).join("");
+    bodyText = blocks.map(blockText).filter(Boolean).join("\n\n");
+  } else if (content && content.kind === "text") {
+    const text2 = fillMergeTokens(str(content.body, "", 8e3), values).trim();
+    bodyRows = text2 ? row(paragraphs(text2, "color:#0f172a;font-size:15px;line-height:1.6"), "#ffffff", "24px 32px") : "";
+    bodyText = text2;
+  }
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(subject)}</title></head><body style="margin:0;padding:0;background-color:#f1f5f9">` + (preheader ? `<div style="display:none;max-height:0;overflow:hidden;opacity:0">${escapeHtml(preheader)}</div>` : "") + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f1f5f9"><tr><td align="center" style="padding:24px 12px"><table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:100%;background-color:#ffffff;border-radius:6px;font-family:${FONT}">` + bodyRows + systemFooterHtml(footer) + `</table></td></tr></table></body></html>`;
+  const text = [bodyText, systemFooterText(footer)].filter(Boolean).join("\n\n");
+  return { subject, html, text };
+}
 
 // ../backend/tc/contract.entry.ts
 var import_zod5 = __toESM(require_zod());
@@ -16130,6 +16500,7 @@ var import_zod5 = __toESM(require_zod());
   Cents,
   ChannelReadiness,
   ChannelUnavailableReason,
+  CommunicationSendBody,
   CommunicationStatus,
   ConsentSource,
   ConsentState,
@@ -16137,6 +16508,7 @@ var import_zod5 = __toESM(require_zod());
   ContactPreference,
   DividerBlock,
   DraftMessageBody,
+  EMAIL_MERGE_TOKENS,
   EditDraftBody,
   EmailBlock,
   EmailBlocks,
@@ -16178,7 +16550,10 @@ var import_zod5 = __toESM(require_zod());
   RecallType,
   RecordOptOutBody,
   ReferralSource,
+  RenderEmailBody,
+  RenderedEmailResult,
   SENDABLE_MESSAGE_STATUSES,
+  SIGNATURE_SOURCE_TEXT,
   SignatureBlock,
   TERMINAL_CASE_STATUSES,
   TcCase,
@@ -16205,10 +16580,19 @@ var import_zod5 = __toESM(require_zod());
   caseFromRows,
   caseToRows,
   communicationToRow,
+  emailBodyText,
+  escapeHtml,
+  fillBlockTokens,
+  fillMergeTokens,
   galleryToRow,
+  htmlToPlainText,
   isContactAttemptDetail,
   isVoiceHandoffDetail,
   preauthToRow,
+  readBlock,
+  readBlocks,
+  renderEmail,
+  safeUrl,
   simulationToRow,
   templateToRow,
   userMapEntryToRow,

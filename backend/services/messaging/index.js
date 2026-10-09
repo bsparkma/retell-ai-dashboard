@@ -33,6 +33,12 @@
  *                    acted on; a re-delivered provider id is not stored twice.
  *   applyStatusCallback → (item 39) a provider delivery report, monotonic.
  *   countUnseen / markSeen / listUnseenOnCases → (item 39) the "new text" badge.
+ *   (item 40, email) draftMessage may build an email from a LIBRARY template
+ *                    (a snapshot on the row); sendMessage gives every email a
+ *                    one-time unsubscribe token (stored as a hash) and the
+ *                    rendered HTML; recordUnsubscribeLink turns a clicked
+ *                    link into a tc_contact_consent opt-out; renderMessage /
+ *                    renderTemplateForCase are the previews.
  *
  * Honest states: a message is `sent` only after the adapter confirms hand-off.
  * If the adapter confirms and the follow-up write fails, the row stays
@@ -60,6 +66,8 @@ const { isQuietHours } = require('./quietHours');
 const adapters = require('./adapters');
 const templates = require('./templates');
 const twilioStatus = require('./twilio/status');
+const emailContent = require('./emailContent');
+const acsConfig = require('../../config/acsEmail');
 
 const MESSAGE_COLS = [
   'message_id',
@@ -80,6 +88,10 @@ const MESSAGE_COLS = [
   'sent_by',
   'created_at',
   'sent_at',
+  // item 40: the template snapshot of an email draft. The unsubscribe token
+  // hash is deliberately NOT here: it never leaves the database.
+  'email_blocks',
+  'email_preheader',
 ];
 
 const CONSENT_COLS = [
@@ -160,6 +172,7 @@ function toMessage(r) {
     sentBy: r.sent_by ?? null,
     createdAt: iso(r.created_at),
     sentAt: iso(r.sent_at),
+    emailTemplated: r.channel === 'email' && r.email_blocks != null,
   });
 }
 
@@ -212,11 +225,27 @@ async function loadMessage(q, office, messageId) {
 
 async function loadCase(q, office, caseId) {
   const res = await q.query(
-    `SELECT case_id, office_id, patient_name, phone, email, od_patient_id
+    `SELECT case_id, office_id, patient_name, phone, email, od_patient_id, nurture_unsubscribed
        FROM tc_cases WHERE office_id = $1 AND case_id = $2`,
     [office, caseId]
   );
   return res.rows.length ? res.rows[0] : null;
+}
+
+/** A library email template, this office only (item 40). */
+async function loadEmailTemplate(q, office, templateId) {
+  const res = await q.query(
+    `SELECT template_id, office_id, name, subject, preheader, blocks
+       FROM tc_email_templates WHERE office_id = $1 AND template_id = $2`,
+    [office, templateId]
+  );
+  return res.rows.length ? res.rows[0] : null;
+}
+
+/** The SSO display name of the acting user, for {{sender.name}}. Never an address. */
+function actorNameOf(req) {
+  const name = req && req.user && typeof req.user.name === 'string' ? req.user.name.trim() : '';
+  return name && !name.includes('@') ? name : null;
 }
 
 async function loadFollowup(q, office, followupId) {
@@ -318,6 +347,7 @@ async function getChannelReadiness(req, office, caseId) {
         address,
         odPatientId: tcCase.od_patient_id,
         now,
+        caseEmailUnsubscribed: tcCase.nurture_unsubscribed === true,
       });
       channels.push({
         channel,
@@ -356,7 +386,38 @@ async function draftMessage(req, office, input) {
     let body = input.body ?? null;
     let subject = channel === 'email' ? input.subject ?? null : null;
     let templateId = null;
-    if (input.followupId) {
+    /** @type {{ blocks: unknown[], preheader: string } | null} */
+    let snapshot = null;
+    if (input.emailTemplateId) {
+      // (item 40) A library template. Email only, and the text comes from the
+      // template: a typed body alongside would be silently dropped, so it is
+      // refused instead.
+      if (channel !== 'email') {
+        throw new MessagingError('EMAIL_TEMPLATE_INVALID', 'A library template can only start an email.');
+      }
+      if (input.body != null) {
+        throw new MessagingError(
+          'EMAIL_TEMPLATE_INVALID',
+          'A draft from a template takes its text from the template. Leave the message box empty.'
+        );
+      }
+      if (input.followupId) {
+        const f = await loadFollowup(q, office, input.followupId);
+        if (!f || f.case_id !== caseId) {
+          throw new MessagingError('FOLLOWUP_NOT_FOUND', 'Follow-up not found on this case');
+        }
+      }
+      const tpl = await loadEmailTemplate(q, office, input.emailTemplateId);
+      if (!tpl) throw new MessagingError('EMAIL_TEMPLATE_NOT_FOUND', 'Email template not found');
+      const snap = emailContent.snapshotTemplate(tpl, office, {
+        patientName: tcCase.patient_name,
+        senderName: actorNameOf(req),
+      });
+      templateId = String(tpl.template_id);
+      body = snap.body;
+      if (subject == null) subject = snap.subject || null;
+      snapshot = { blocks: snap.blocks, preheader: snap.preheader };
+    } else if (input.followupId) {
       const f = await loadFollowup(q, office, input.followupId);
       if (!f || f.case_id !== caseId) {
         throw new MessagingError('FOLLOWUP_NOT_FOUND', 'Follow-up not found on this case');
@@ -369,14 +430,33 @@ async function draftMessage(req, office, input) {
       if (body == null) body = filled.body;
       if (channel === 'email' && subject == null) subject = filled.subject;
     }
-    if (!body) throw new MessagingError('BODY_REQUIRED', 'A message needs some text.');
+    if (!body) {
+      throw new MessagingError(
+        'BODY_REQUIRED',
+        snapshot ? 'That template has nothing in it that can be sent.' : 'A message needs some text.'
+      );
+    }
 
     const messageId = crypto.randomUUID();
     await q.query(
       `INSERT INTO tc_messages (message_id, office_id, case_id, direction, channel, to_address,
-         body, subject, template_id, status, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-      [messageId, office, caseId, 'outbound', channel, toAddress, body, subject, templateId, 'draft', actor]
+         body, subject, template_id, status, created_by, email_blocks, email_preheader)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+      [
+        messageId,
+        office,
+        caseId,
+        'outbound',
+        channel,
+        toAddress,
+        body,
+        subject,
+        templateId,
+        'draft',
+        actor,
+        snapshot ? JSON.stringify(snapshot.blocks) : null,
+        snapshot ? snapshot.preheader : null,
+      ]
     );
     return loadMessage(q, office, messageId);
   });
@@ -391,6 +471,14 @@ async function editDraft(req, office, messageId, input) {
     if (!existing) throw new MessagingError('MESSAGE_NOT_FOUND', 'Message not found');
     if (existing.status !== 'draft' || existing.direction !== 'outbound') {
       throw new MessagingError('MESSAGE_NOT_EDITABLE', 'Only a draft can be edited.', { status: existing.status });
+    }
+    // (item 40) A template draft's body is a read-only view of its layout:
+    // editing it here would change the thread text but not what is sent.
+    if (existing.channel === 'email' && existing.email_blocks != null && input.body !== existing.body) {
+      throw new MessagingError(
+        'MESSAGE_NOT_EDITABLE',
+        'This email was built from a template, so only its subject can be changed here. Discard it and draft again to change the text.'
+      );
     }
     const subject = existing.channel === 'email' ? input.subject ?? existing.subject ?? null : null;
     const res = await q.query(
@@ -471,6 +559,7 @@ async function sendMessage(req, office, messageId) {
       address: existing.to_address,
       odPatientId: tcCase.od_patient_id,
       now,
+      caseEmailUnsubscribed: tcCase.nurture_unsubscribed === true,
     });
   });
 
@@ -500,14 +589,27 @@ async function sendMessage(req, office, messageId) {
     });
   }
 
+  // (item 40) An email needs a subject before anything is claimed: refusing
+  // here leaves the draft a draft, where a missing subject can be fixed.
+  if (channel === 'email' && !(existing.subject && String(existing.subject).trim())) {
+    throw new MessagingError('SUBJECT_REQUIRED', 'An email needs a subject. Edit the draft and add one.');
+  }
+
+  // (item 40) Every email gets its OWN unsubscribe token. The link carries the
+  // token; the database keeps only its SHA-256, on this row, which is what
+  // binds the link to this office and this address. Written in the same
+  // UPDATE that claims the row, so a sent email always has a live link.
+  const unsubscribeToken = channel === 'email' ? crypto.randomBytes(32).toString('base64url') : null;
+  const unsubscribeHash = unsubscribeToken ? hashUnsubscribeToken(unsubscribeToken) : null;
+
   // draft → sending. Conditional on still being a draft, so two clicks (or two
   // tabs) cannot both proceed: exactly one UPDATE matches.
   const claimed = await db(req, (q) =>
     q.query(
-      `UPDATE tc_messages SET status = 'sending', sent_by = $1
+      `UPDATE tc_messages SET status = 'sending', sent_by = $1, unsubscribe_token_hash = $4
         WHERE office_id = $2 AND message_id = $3 AND status = 'draft'
         RETURNING ${MESSAGE_COLS.join(', ')}`,
-      [actor, office, messageId]
+      [actor, office, messageId, unsubscribeHash]
     )
   );
   if (!claimed.rows.length) {
@@ -521,19 +623,28 @@ async function sendMessage(req, office, messageId) {
   let failure = null;
   let failureCode = null;
   try {
-    const raw = await adapter.send(
-      {
-        messageId: sending.message_id,
-        officeId: office,
-        caseId: sending.case_id,
-        channel,
-        toAddress: sending.to_address,
-        body: sending.body,
-        subject: sending.subject ?? null,
-        templateId: sending.template_id ?? null,
-      },
-      { officeKey: office, officeName: officeNameOf(office) }
-    );
+    /** @type {import('./adapters').AdapterMessage} */
+    const outgoing = {
+      messageId: sending.message_id,
+      officeId: office,
+      caseId: sending.case_id,
+      channel,
+      toAddress: sending.to_address,
+      body: sending.body,
+      subject: sending.subject ?? null,
+      templateId: sending.template_id ?? null,
+    };
+    if (channel === 'email') {
+      // Rendered HERE, from the stored row, by the one shared renderer. The
+      // adapter only transports it.
+      const unsubscribeUrl = acsConfig.unsubscribeUrl(/** @type {string} */ (unsubscribeToken));
+      const rendered = emailContent.renderRow(sending, office, unsubscribeUrl);
+      outgoing.subject = rendered.subject;
+      outgoing.body = rendered.text;
+      outgoing.html = rendered.html;
+      outgoing.unsubscribeUrl = unsubscribeUrl;
+    }
+    const raw = await adapter.send(outgoing, { officeKey: office, officeName: officeNameOf(office) });
     result = adapters.checkResult(raw);
     if (!result) {
       failure = 'The provider returned a response that did not confirm the hand-off.';
@@ -541,7 +652,12 @@ async function sendMessage(req, office, messageId) {
     }
   } catch (err) {
     failure = (err && err.message ? String(err.message) : String(err)).slice(0, 2000);
-    failureCode = (err && err.code) || 'ADAPTER_ERROR';
+    // (item 40) An adapter's own provider code (ACS_<code>, TWILIO_<code>)
+    // wins over the generic SEND_FAILED it is wrapped in; before this, every
+    // provider refusal surfaced as providerCode 'SEND_FAILED'.
+    const extra = err && err.extra && typeof err.extra === 'object' ? err.extra : null;
+    failureCode =
+      (extra && typeof extra.providerCode === 'string' && extra.providerCode) || (err && err.code) || 'ADAPTER_ERROR';
   }
 
   if (!result) {
@@ -572,6 +688,107 @@ async function sendMessage(req, office, messageId) {
   );
   await auditMessage(req, 'UPDATE', 'tc_message.sent', messageId, office);
   return toMessage(done.rows[0]);
+}
+
+// ── email previews (item 40) ────────────────────────────────────────────────
+
+/**
+ * Render a stored email DRAFT exactly as Send would send it, except that the
+ * unsubscribe link is inert (no token exists until the click).
+ * @returns {Promise<{ subject: string, html: string, text: string }>}
+ */
+async function renderMessage(req, office, messageId) {
+  const row = await db(req, (q) => loadMessage(q, office, messageId));
+  if (!row) throw new MessagingError('MESSAGE_NOT_FOUND', 'Message not found');
+  if (row.channel !== 'email' || row.direction !== 'outbound') {
+    throw new MessagingError('MESSAGE_NOT_FOUND', 'Only an outbound email can be previewed.');
+  }
+  await auditMessage(req, 'READ', 'tc_email_render', messageId, office);
+  return emailContent.renderRow(row, office, null);
+}
+
+/**
+ * What a draft from `templateId` would look like for this case. Writes
+ * nothing; the case's first name is the only case fact used.
+ * @returns {Promise<{ subject: string, html: string, text: string }>}
+ */
+async function renderTemplateForCase(req, office, caseId, templateId) {
+  const { tcCase, tpl } = await db(req, async (q) => ({
+    tcCase: await loadCase(q, office, caseId),
+    tpl: await loadEmailTemplate(q, office, templateId),
+  }));
+  if (!tcCase) throw new MessagingError('CASE_NOT_FOUND', 'Case not found');
+  if (!tpl) throw new MessagingError('EMAIL_TEMPLATE_NOT_FOUND', 'Email template not found');
+  const snap = emailContent.snapshotTemplate(tpl, office, {
+    patientName: tcCase.patient_name,
+    senderName: actorNameOf(req),
+  });
+  await auditMessage(req, 'READ', 'tc_email_render', caseId, office);
+  return emailContent.renderRow(
+    { subject: snap.subject, email_blocks: snap.blocks, email_preheader: snap.preheader, body: snap.body },
+    office,
+    null
+  );
+}
+
+// ── the unsubscribe link (item 40) ──────────────────────────────────────────
+
+/** SHA-256 hex of an unsubscribe token. The only form the database holds. */
+function hashUnsubscribeToken(token) {
+  return crypto.createHash('sha256').update(String(token), 'utf8').digest('hex');
+}
+
+/** The shape every token we mint has: 32 random bytes, base64url. */
+const UNSUBSCRIBE_TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
+
+/**
+ * A patient clicked the unsubscribe link in one of our emails. The token is
+ * the whole credential: it names exactly one sent email row, and that row's
+ * office and address are what get opted out. Nothing in the request can name
+ * an office or an address.
+ *
+ * Idempotent: an address already opted out (by any source) is left exactly as
+ * it is, so a manual opt-out's note and attribution are never overwritten.
+ *
+ * Returns a coarse outcome for the caller's LOG line only. The public
+ * endpoint answers every outcome with the same page.
+ * @param {import('express').Request} req a request carrying the resolved tenant
+ * @param {unknown} token
+ * @returns {Promise<'recorded'|'already'|'no_match'|'malformed'>}
+ */
+async function recordUnsubscribeLink(req, token) {
+  if (typeof token !== 'string' || !UNSUBSCRIBE_TOKEN_RE.test(token)) return 'malformed';
+  const hash = hashUnsubscribeToken(token);
+  const out = await db(req, async (q) => {
+    const res = await q.query(
+      `SELECT message_id, office_id, channel, to_address FROM tc_messages
+        WHERE unsubscribe_token_hash = $1 AND channel = 'email' AND direction = 'outbound'`,
+      [hash]
+    );
+    if (res.rows.length !== 1) return { outcome: 'no_match' };
+    const m = res.rows[0];
+    const address = normalizeAddress('email', m.to_address);
+    if (!address || !['roland', 'valley'].includes(m.office_id)) return { outcome: 'no_match' };
+    const existing = await consent.getConsentRow(q, m.office_id, 'email', address);
+    if (existing && existing.state === 'opted_out') {
+      return { outcome: 'already', office: m.office_id, messageId: m.message_id };
+    }
+    const row = await upsertConsent(q, {
+      office: m.office_id,
+      channel: 'email',
+      address,
+      state: 'opted_out',
+      source: 'unsubscribe_link',
+      note: null,
+      updatedBy: 'system:unsubscribe_link',
+    });
+    return { outcome: 'recorded', office: m.office_id, messageId: m.message_id, consentId: row.consent_id };
+  });
+  if (out.outcome === 'recorded') {
+    await auditMessage(req, 'UPDATE', 'tc_contact_consent', out.consentId, out.office);
+    await auditMessage(req, 'UPDATE', 'tc_message.unsubscribe_link', out.messageId, out.office);
+  }
+  return out.outcome;
 }
 
 // ── consent writes ──────────────────────────────────────────────────────────
@@ -852,6 +1069,11 @@ module.exports = {
   editDraft,
   discardMessage,
   sendMessage,
+  renderMessage,
+  renderTemplateForCase,
+  recordUnsubscribeLink,
+  hashUnsubscribeToken,
+  UNSUBSCRIBE_TOKEN_RE,
   recordOptOut,
   recordInbound,
   applyStatusCallback,

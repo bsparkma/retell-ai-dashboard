@@ -76,6 +76,25 @@ test('server.js: the Twilio webhook mount (item 39) is unguarded, inside the /we
   );
 });
 
+test('server.js: the email unsubscribe mount (item 40) is unguarded, inside the /webhooks exemption, and ahead of /api/webhooks', () => {
+  const line = mountLine('/api/webhooks/email');
+  // A patient's browser or mail client carries no user: a module or permission
+  // guard would refuse every unsubscribe. The token authenticates the click,
+  // and the router resolves its own tenant (TC_EMAIL_TENANT_SLUG).
+  assert.ok(
+    !/requireModule|voiceModule|requirePermission|requireReadWrite|requireSuperAdmin/.test(line),
+    `/api/webhooks/email must carry no module or permission guard: ${line}`
+  );
+  assert.ok(
+    serverSrc.split('/^\\/webhooks(\\/|$)/').length - 1 >= 2,
+    'the /webhooks exemption is still on both the auth gate and the tenant gate'
+  );
+  assert.ok(
+    serverSrc.indexOf("app.use('/api/webhooks/email'") < serverSrc.indexOf("app.use('/api/webhooks', webhooksRouter)"),
+    '/api/webhooks/email must be mounted before /api/webhooks'
+  );
+});
+
 test('server.js: every tenant-scoped voice mount carries the voice module guard', () => {
   const guarded = [
     '/api/calls',

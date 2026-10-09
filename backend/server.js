@@ -38,6 +38,7 @@ async function bootstrap() {
   const openDentalSyncRouter = require('./routes/openDentalSync');
   const webhooksRouter = require('./routes/webhooks');
   const twilioWebhooksRouter = require('./routes/twilioWebhooks');
+  const emailWebhooksRouter = require('./routes/emailWebhooks');
   const liveCallsRouter = require('./routes/liveCalls');
   const adminRouter = require('./routes/admin');
   const mangoRouter = require('./routes/mango');
@@ -60,6 +61,7 @@ async function bootstrap() {
   const tcOpportunitiesSync = require('./services/tcOpportunities/scheduler');
   const hygPilot = require('./config/hygPilot');
   const tcSms = require('./config/tcSms');
+  const tcEmail = require('./config/tcEmail');
   const { requireDashboardAuth, socketAuth } = require('./middleware/auth');
   const { tenantContext, requireModule } = require('./middleware/tenantContext');
   const { requirePermission, requireReadWrite, requireSuperAdmin } = require('./config/permissions');
@@ -272,6 +274,13 @@ async function bootstrap() {
   // It authenticates every request itself (X-Twilio-Signature) and resolves its
   // tenant from TWILIO_TENANT_SLUG through the registry — see the router header.
   app.use('/api/webhooks/twilio', twilioWebhooksRouter);
+  // TC email unsubscribe link (item 40). Same placement and the same reasoning
+  // as Twilio: a patient's browser or mail client carries no user identity, so
+  // it rides the /api/webhooks exemptions with no module guard. It needs no
+  // signature because its token IS the credential (32 random bytes per email,
+  // stored hashed); it answers every token outcome with one constant page and
+  // resolves its tenant from TC_EMAIL_TENANT_SLUG — see the router header.
+  app.use('/api/webhooks/email', emailWebhooksRouter);
   app.use('/api/webhooks', webhooksRouter);
   app.use('/api/live-calls', voiceModule, voiceSurface, liveCallsRouter);
   // The Admin page: scheduler start/stop, cost ceilings, queues, config. Tenant
@@ -598,6 +607,11 @@ async function bootstrap() {
     tcSms.startRefreshTimer();
     console.log(`[tcSms] text messaging ${tcSms.smsEnabled() ? 'ON' : 'OFF'} (source=${tcSms.source()})`);
 
+    //    TC email kill switch (item 40). The same pattern as texting.
+    await tcEmail.refreshFromDb();
+    tcEmail.startRefreshTimer();
+    console.log(`[tcEmail] email sending ${tcEmail.emailEnabled() ? 'ON' : 'OFF'} (source=${tcEmail.source()})`);
+
     hygDayWarm.start();
 
     // 7. Arm the nightly TC Opportunities sync (default 02:30 America/Chicago,
@@ -625,6 +639,7 @@ async function bootstrap() {
     tcOpportunitiesSync.stop();
     hygPilot.stopRefreshTimer();
     tcSms.stopRefreshTimer();
+    tcEmail.stopRefreshTimer();
     await unifiedCallStore.shutdown();
     process.exit(0);
   });
@@ -637,6 +652,7 @@ async function bootstrap() {
     tcOpportunitiesSync.stop();
     hygPilot.stopRefreshTimer();
     tcSms.stopRefreshTimer();
+    tcEmail.stopRefreshTimer();
     await unifiedCallStore.shutdown();
     process.exit(0);
   });

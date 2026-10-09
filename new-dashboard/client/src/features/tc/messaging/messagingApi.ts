@@ -9,9 +9,11 @@ import { z } from "zod";
 import type { OfficeId } from "@shared/tc/contract";
 import {
   ChannelReadiness,
+  RenderedEmailResult,
   TcContactConsent,
   TcMessage,
   type DraftMessageBody,
+  type RenderEmailBody,
   type EditDraftBody,
   type MessageChannel,
 } from "@shared/tc/messaging";
@@ -104,4 +106,18 @@ export async function getUnseenTotal(offices: readonly OfficeId[]): Promise<{ co
     count: parts.reduce((n, p) => n + p.count, 0),
     capped: parts.some((p) => p.capped),
   };
+}
+
+// ── Item 40: email preview ──────────────────────────────────────────────────
+
+const RenderResponse = z.object({ email: RenderedEmailResult });
+
+/**
+ * Render an email server-side with the ONE renderer: a stored draft (exactly
+ * what Send would send, unsubscribe link inert) or a library template for a
+ * case. Sends nothing.
+ */
+export async function renderEmail(office: OfficeId, body: RenderEmailBody): Promise<RenderedEmailResult> {
+  const res = await tcRequest<unknown>("/tc/communications/render", { office, method: "POST", body });
+  return RenderResponse.parse(res).email;
 }

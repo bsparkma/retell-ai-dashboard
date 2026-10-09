@@ -85,6 +85,12 @@ const SECRET_MAP = Object.freeze([
   { secretName: 'twilio-messaging-service-sid', envKey: 'TWILIO_MESSAGING_SERVICE_SID' },
   { secretName: 'twilio-from-roland', envKey: 'TWILIO_FROM_ROLAND' },
   { secretName: 'twilio-from-valley', envKey: 'TWILIO_FROM_VALLEY' },
+  // Azure Communication Services Email, TC patient email (queue item 40).
+  // OPTIONAL and only USED when ACS_EMAIL_AUTH_MODE=connection_string; the
+  // default is managed identity (ACS_EMAIL_ENDPOINT, a plain app setting).
+  // Absent in the vault -> skipped, and email stays FEATURE_DISABLED
+  // (config/acsEmail.js).
+  { secretName: 'acs-email-connection', envKey: 'ACS_EMAIL_CONNECTION' },
   // Optional / not yet wired into this backend. Absent in the vault -> skipped.
   { secretName: 'stedi-api-key', envKey: 'STEDI_API_KEY' },
 ]);

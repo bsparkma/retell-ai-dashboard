@@ -6,7 +6,10 @@
  * lib/followups, and the three queue actions (Complete / Skip / Reschedule)
  * wired to the /api/tc followup endpoints, plus "Draft message" (item 38),
  * which opens the case's Messages tab with ONE draft seeded from this
- * follow-up's template — a draft, never a send. Confirmed-save rule: success toasts
+ * follow-up's template — a draft, never a send — and "Email template" (item
+ * 40), which opens the same tab with the email template LIBRARY picker for
+ * this follow-up (nothing is written until the TC picks one and clicks Draft).
+ * Confirmed-save rule: success toasts
  * fire only after the API resolves; failures keep the dialog open with the
  * typed values and toast the server message.
  */
@@ -16,6 +19,7 @@ import { toast } from "sonner";
 import {
   CalendarClock,
   CheckCircle2,
+  FileText,
   Loader2,
   Mail,
   MessageSquare,
@@ -239,6 +243,14 @@ export function FollowupActionCard({
               data-testid="draft-message"
             >
               <MessageSquarePlus className="w-3.5 h-3.5" /> Draft message
+            </Link>
+          </Button>
+          <Button asChild size="sm" variant="outline" className="gap-1.5">
+            <Link
+              href={`/tc/cases/${followup.caseId}?tab=messages&draftFrom=${followup.followupId}&channel=email&pickTemplate=1`}
+              data-testid="email-template"
+            >
+              <FileText className="w-3.5 h-3.5" /> Email template
             </Link>
           </Button>
           <Button size="sm" className="gap-1.5" onClick={() => setCompleteOpen(true)}>
