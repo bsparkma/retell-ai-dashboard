@@ -33,7 +33,7 @@ Nothing about ACS turned out to be impossible to build against. Live behaviour i
 | Consent | `consent.js` rule 1b: a case with `nurture_unsubscribed === true` **blocks email** (`CONSENT_OPTED_OUT`), never SMS. Email stays exempt from quiet hours. |
 | Routes | `routes/tc/communications.js`. **`/render`:** unstubbed. **`/send`:** now the thin wrapper. **`/test-send`:** stays 501. |
 | Public endpoint | `routes/emailWebhooks.js` at **`/api/webhooks/email`** (`GET` and `POST /unsubscribe`). |
-| Migration | `migrations-tenant/1790500000000_tc_messages_email.js` adds `tc_messages.email_blocks` (jsonb), `email_preheader` and `unsubscribe_token_hash`, all nullable, plus the partial UNIQUE index `tc_messages_unsubscribe_token_unique`. There is no new table and no CHECK change: `unsubscribe_link` was already in item 38's source CHECK. It sorts after `1790400000000`. Table-level grants cover the new columns. |
+| Migration | `migrations-tenant/1790800000000_tc_messages_email.js` adds `tc_messages.email_blocks` (jsonb), `email_preheader` and `unsubscribe_token_hash`, all nullable, plus the partial UNIQUE index `tc_messages_unsubscribe_token_unique`. There is no new table and no CHECK change: `unsubscribe_link` was already in item 38's source CHECK. It sorts after `1790700000000`. Table-level grants cover the new columns. |
 | Contract | `shared/tc/messaging.ts`: `TcMessage.emailTemplated` (defaults to false), `DraftMessageBody.emailTemplateId`, `RenderEmailBody`, `RenderedEmailResult`, `CommunicationSendBody`. |
 | UI | **Messages tab:** email goes live when the server says so for this office, and the reason is shown in email's own words. There is a **template picker** over the existing library (`listTemplates`). **Preview** shows the server's rendering in **EmailPreview**, which gained an `html` mode: a `sandbox=""` iframe with no scripts. A template draft's body is read-only. Status chips are honest and carry a tooltip. **Follow-up card** (also used by the Nurture workspace): a new **"Email template"** action deep-links with `pickTemplate=1`, which opens the picker for that follow-up and **writes nothing** until the TC drafts. The existing "Draft message" with `channel=email` still seeds a draft from the code template. |
 
@@ -216,7 +216,7 @@ node scripts/shoot-tc-email.mjs
    - `TC_EMAIL_TENANT_SLUG=carein`
    - optional practice address and phone
    - Use a connection string (`acs-email-connection`, plus `ACS_EMAIL_AUTH_MODE=connection_string`) only if managed identity is not set up.
-5. Run tenant migration `1790500000000` through the normal pipeline (after 38's `1790300000000` and 39's `1790400000000`).
+5. Run tenant migration `1790800000000` through the normal pipeline (after 38's `1790300000000` and 39's `1790700000000`).
 6. Entitle `tc`, then set `platform_setting['tc_email_enabled']=true` **in staging only**.
 
 ### Staging test steps

@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Item 40's tenant migration, 1790500000000_tc_messages_email.js: three
+ * Item 40's tenant migration, 1790800000000_tc_messages_email.js: three
  * columns and one index on tc_messages, nothing else.
  */
 
@@ -10,7 +10,7 @@ const test = require('node:test');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const migration = require('../migrations-tenant/1790500000000_tc_messages_email.js');
+const migration = require('../migrations-tenant/1790800000000_tc_messages_email.js');
 const { buildTenantSchema } = require('../scripts/lib/tenantSchemaReplay');
 
 function capture(direction = 'up') {
@@ -69,7 +69,19 @@ test('it sorts after item 39 and its timestamp is unique', () => {
   const files = fs.readdirSync(dir).filter((f) => /^\d+_.*\.js$/.test(f));
   const stamps = files.map((f) => f.split('_')[0]);
   assert.equal(new Set(stamps).size, stamps.length, 'timestamps are unique');
-  assert.ok(files.indexOf('1790500000000_tc_messages_email.js') > files.indexOf('1790400000000_tc_messages_twilio.js'));
+  // Renumbered from 1790500000000: #232 (1790600000000) and #230 (1790700000000)
+  // merged first and staging has applied them. scripts/migrate-tenant.js runs
+  // node-pg-migrate with its default checkOrder, which refuses a not-yet-run
+  // migration that sorts before an applied one.
+  const sorted = [...files].sort();
+  const at = (f) => {
+    const i = sorted.indexOf(f);
+    assert.ok(i >= 0, `${f} exists`);
+    return i;
+  };
+  const self = at('1790800000000_tc_messages_email.js');
+  assert.ok(self > at('1790700000000_tc_messages_twilio.js'), 'sorts after #230');
+  assert.ok(self > at('1790600000000_tc_opportunities.js'), 'sorts after #232');
 });
 
 test('the consent CHECK item 38 wrote already allows source unsubscribe_link (no CHECK change needed)', () => {
