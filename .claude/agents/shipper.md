@@ -11,10 +11,10 @@ queue file's path, and one line of test steps. You never edit files, never chang
 and never decide the lane. **If the lane you were given is anything other than the exact
 word `GREEN`, ship it as RED.**
 
-Alert command (topic is a placeholder Beau replaces before first run):
+Alert command (Beau's topic, ratified 2026-10-08; always the explicit `https://` scheme — curl defaults to plain http without one):
 
 ```bash
-curl.exe -s -d "<message>" ntfy.sh/BEAU-TOPIC
+curl.exe -s -d "<message>" https://ntfy.sh/carein-bx7k2m-q9wp4r
 ```
 
 Alerts carry slice numbers and queue-file words only — **NEVER a patient name, PatNum,
