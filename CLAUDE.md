@@ -931,3 +931,130 @@ Neither of these breaks anything today. Both are traps for the next person.
   and `actions/setup-node@v4`, which target Node 20; the runners now force them onto
   Node 24 and annotate every run. Currently a warning, not a failure. Bumping both to
   `@v5` clears it — one commit, all three workflows share the definition.
+
+---
+
+## 8. The build loop — two lanes (ratified by Beau, 2026-10-02)
+
+This section governs `/next-slice` and `/fix` (`.claude/commands/`), the `reviewer` and
+`shipper` agents (`.claude/agents/`), and the lane classifier
+(`.claude/scripts/classify-lane.mjs`). It **adds** to sections 1–7; it relaxes none of
+them. Where anything in `.claude/` disagrees with this section, this section wins.
+
+### 8.1 The §0 amendment (2026-10-02) — who may merge
+
+Beau has stated he does not read PRs; his merge click was relay, not review. The real
+gates are: Cowork PM code review, CI on the merge tree, Beau's staging click-testing, and
+Beau's gated develop→main promotion. So, **as a rule in its own right, from 2026-10-02:**
+
+- An agent **may merge its own PR into `develop` only when ALL of these hold**: the slice
+  is **GREEN lane**; the fresh-context `reviewer` agent returned PASS + GREEN; the
+  orchestrator's classification and the reviewer's independent one **agree** on GREEN;
+  and the `build-test` check is green on the PR's merge ref. The only merge command is
+  `gh pr merge --auto --merge <n>`.
+- **Every other merge is Beau's.** RED lane, BLOCKED, CI red, a disagreement, or any
+  doubt: the agent opens the PR, alerts, and stops. Exactly as before 2026-10-02.
+- Cowork PM review still happens on **every** merged PR — after the merge for GREEN
+  (findings become `/fix` slices), before the merge for RED.
+
+(Before this date the practice was that Beau merged every PR. There was no literal
+"no self-merges" line in this file to amend; this subsection is the written rule.)
+
+### 8.2 The two lanes
+
+**GREEN (the default):** build → all gates green on the merge tree → `reviewer` PASS →
+both classifications GREEN → `shipper`: push, PR to develop, CI green, auto-merge →
+staging deploys → ntfy *"Slice <n> on staging. Test: <one line>"*.
+
+**RED (no auto-merge, ever):** push → PR to develop titled/bodied **NEEDS REVIEW** →
+ntfy *"NEEDS REVIEW slice <n>: <reason>"* → stop. PM reviews before merge; Beau merges.
+
+A held PR is a draft. If the PM's review holds a RED PR (a question open, "do not merge
+until X"), it is converted with `gh pr ready --undo <n>` per
+[DEV_PROD_WORKFLOW.md](DEV_PROD_WORKFLOW.md) §2 *"A held PR is a DRAFT"*, and only the
+reviewer who held it marks it ready. A loop PR whose CI went red is also held the same
+way. **The loop never runs `gh pr ready <n>`** (un-drafting is a release, and releases
+are human).
+
+### 8.3 RED-LANE TRIGGERS — any one ⇒ RED; when unsure ⇒ RED
+
+- **Any change that ADDS A VALUE TO A SHARED VOCABULARY** — a status CHECK constraint, an
+  rcmVocabulary review reason, a procedure flag, an office key, a CommType/PayType
+  DefNum, a module name, or any machine slug or route. *(The RCM session's input, 10/2.
+  It is the one that would have caught both staging defects of 10/1: #212 paidCents
+  null→0, and #213 upload status `archived` missing from the client union/chip ⇒ a
+  TypeError that took down Today. Both were "the server's vocabulary grew and a client
+  consumer never learned the word" — and a reviewer judging a slice against its own
+  acceptance table passes both, because the broken file is not in the diff.)*
+- Any Open Dental write path, or `odWriter.js` / `odPerioWriter.js`.
+- Office / PatNum derivation, or CommType DefNums.
+- `backend/migrations-tenant/` or `backend/migrations/`.
+- `normalizeCall` or its preservation whitelist.
+- Secrets, auth, or Key Vault config.
+- `.github/workflows/`.
+- `.claude/` or `CLAUDE.md`.
+- `hygFixtureGate`, or any `*NoOdWrites*` test.
+- The transcription breaker.
+- **An edit that changes an EXISTING test's assertions.**
+- Anything the queue file itself marks RED.
+
+**Reviewer instruction — not merely a list entry:** when a slice adds or changes any
+status, enum, flag, reason code, route or slug, **GREP THE WHOLE REPO for every reader of
+that value** (client unions, chip/label maps, CHECK constraints, tests) and **FAIL** if a
+consumer was not updated. The broken file is usually not in the diff; that is the point.
+
+**The classifier is a path+diff check the ORCHESTRATOR runs and the REVIEWER independently
+re-runs; they must agree or the slice is RED.** `node .claude/scripts/classify-lane.mjs
+[--queue <queue file>]` is the mechanical floor: it can only push toward RED, and its
+GREEN is necessary, not sufficient — both parties still apply the list above by judgment.
+**Misclassifying red-as-green is the one unforgivable error.** A false red costs one
+click.
+
+### 8.4 The gates — the REAL commands (this repo has NO `npm test`)
+
+Run on the **merge tree**: `git fetch origin && git merge --no-edit origin/develop` into
+the slice branch first (CI tests the PR's merge ref, not the branch tip).
+
+```bash
+# backend
+cd backend && npm ci && node --check server.js && node --test
+#   CI runs the same suite as 4 shards: node scripts/shard-runner.mjs (backend/scripts/)
+# new-dashboard
+cd new-dashboard && pnpm install --frozen-lockfile && pnpm run check && pnpm run test
+```
+
+**Known flakes** — RE-RUN IN ISOLATION and STATED in the report, **never "fixed" by
+editing a test**. A flake claim with no isolation run is a FAIL.
+
+| Flake | Isolation re-run |
+| --- | --- |
+| `sendToTc` Node-22 file-level (`Unable to deserialize cloned data`, no assertion, dropped test count) | `cd backend && node --test routes/sendToTc.test.js` (and re-run the shard) |
+| `rcm-ui-s3` "k goes the other way" (full vitest suite only) | `cd new-dashboard && pnpm exec vitest run tests/rcm-ui-s3.test.tsx` |
+| Navigation timeout under load (vitest) | `pnpm exec vitest run <the named file>` |
+| `eobBlobStore` regex (`/EOB.*3-14/i` can match the key's random UUID) | `cd backend && node --test services/rcm/eobBlobStore.test.js` |
+
+### 8.5 The never-list (the loop, on any lane)
+
+The loop NEVER: creates or merges a develop→main PR; pushes to `main` or straight to
+`develop`; approves `prod-cd` or any deploy; flips an entitlement or an env var; runs
+`az`; touches the PROD folder (`c:\Users\beau\carein cursor dashboard`) — it **reads**
+the queue in `pm-prompts\queue\` and never writes there; force-pushes; uses `--admin`;
+runs `git reset --hard` or `rm -rf`; reads `.env*`; or puts a patient name, PatNum,
+phone, or reading in code, tests, reports, branch names, commits, or alerts.
+
+### 8.6 Alerts
+
+ntfy topic: **`BEAU-TOPIC`** — a placeholder. Beau replaces it with his private random
+topic (here and in `.claude/settings.json`, `.claude/agents/shipper.md`,
+`.claude/commands/next-slice.md`) before the first run. Command:
+`curl.exe -s -d "<message>" ntfy.sh/BEAU-TOPIC`. Messages carry slice numbers and
+queue-file words only:
+
+- `Slice <n> on staging. Test: <one line>` — GREEN merged
+- `NEEDS REVIEW slice <n>: <reason>` — RED, PR open, stopped
+- `CI RED slice <n>` — checks failed; never retry the merge
+- `BLOCKED slice <n>: <reason>` — reviewer FAIL after 2 fix rounds, or anything needing a human
+
+**The loop is not live** until Beau's one-time setup is done (develop branch protection
+requiring `build-test` + *Allow auto-merge*; the ntfy topic replacing `BEAU-TOPIC`; this
+scaffolding merged) **and** the canary slice (queue item 30) has run green end-to-end.
