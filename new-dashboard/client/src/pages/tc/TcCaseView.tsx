@@ -8,6 +8,8 @@
  * `?tab=messages` opens the Messages tab; `&draftFrom=<followupId>&channel=sms|email`
  * (the follow-up queue's "Draft message" action) seeds ONE draft from that
  * follow-up and then drops the params, so a reload cannot seed a second one.
+ * `&pickTemplate=1` (item 40, the card's "Email template" action) opens the
+ * email template picker for that follow-up instead of writing a draft.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useParams, useSearch } from "wouter";
@@ -59,8 +61,11 @@ function CaseViewInner({ office }: { office: OfficeId }) {
     const tab = p.get("tab");
     const draftFrom = p.get("draftFrom");
     const channel = p.get("channel");
+    const pickTemplate = p.get("pickTemplate") === "1";
     const seed: MessagesTabSeed | null =
-      draftFrom && (channel === "sms" || channel === "email") ? { followupId: draftFrom, channel } : null;
+      draftFrom && (channel === "sms" || channel === "email")
+        ? { followupId: draftFrom, channel, ...(pickTemplate && channel === "email" ? { pickTemplate: true } : {}) }
+        : null;
     return { tab: tab === "messages" || seed ? "messages" : null, seed };
   }, [search]);
   const [tab, setTab] = useState<string>(linked.tab ?? "treatment");

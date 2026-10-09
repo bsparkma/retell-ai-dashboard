@@ -1,39 +1,25 @@
 /**
- * Pure-React email preview — renders the block array as simple styled HTML.
+ * Email preview, two ways.
  *
- * Deliberately NOT the legacy server-render-in-an-iframe: there is no render
- * endpoint on the platform yet, and dangerouslySetInnerHTML is banned. Text
- * blocks store sanitized HTML strings; we down-convert them to plain
- * paragraphs for preview (bold/italic formatting is dropped, content is not).
- * Merge tokens like {{practice.name}} render literally on purpose.
+ *   blocks  The template editor's live preview: the block array as simple
+ *           styled React, re-rendered on every keystroke. Merge tokens like
+ *           {{practice.name}} show literally on purpose (it is a template).
+ *   html    (item 40) A server-rendered email: the EXACT document Send would
+ *           hand the email service, from shared/tc/emailRender.ts (the one
+ *           renderer). Shown in an iframe with `sandbox=""`, so no script in
+ *           it can run and it cannot touch this page. Used wherever a real
+ *           patient email is previewed (the Messages tab).
+ *
+ * dangerouslySetInnerHTML stays banned: the html mode is an isolated document,
+ * not markup injected into the dashboard. Text blocks are down-converted to
+ * plain paragraphs in BOTH modes by the same shared function, so the editor's
+ * preview and the sent email say the same words.
  */
 import type { CSSProperties } from "react";
 import type { EmailBlock } from "@shared/tc/emailBlocks";
+import { htmlToPlainText, SIGNATURE_SOURCE_TEXT } from "@shared/tc/emailRender";
 import { Monitor, Smartphone } from "lucide-react";
 import { useState } from "react";
-
-/** Strip tags / decode basic entities from a text block's stored HTML. */
-function htmlToPlainText(html: string): string {
-  return html
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<li[^>]*>/gi, "• ")
-    .replace(/<\/(p|div|h[1-6]|li|blockquote)>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-const SIGNATURE_SOURCE_TEXT: Record<string, string> = {
-  practice: "{{practice.name}}",
-  doctor: "{{doctor.name}}",
-  tc: "{{sender.name}}",
-};
 
 function BlockView({ block }: { block: EmailBlock }) {
   switch (block.type) {
@@ -146,7 +132,7 @@ function BlockView({ block }: { block: EmailBlock }) {
       const name =
         block.source === "custom"
           ? block.customText || "Custom signature"
-          : SIGNATURE_SOURCE_TEXT[block.source] ?? block.source;
+          : SIGNATURE_SOURCE_TEXT[block.source];
       return (
         <div style={{ padding: "16px 32px", backgroundColor: "#ffffff", color: "#0f172a", fontSize: 14, lineHeight: 1.6 }}>
           <div style={{ whiteSpace: "pre-wrap", fontWeight: block.source === "custom" ? 400 : 600 }}>{name}</div>
@@ -181,15 +167,13 @@ function BlockView({ block }: { block: EmailBlock }) {
   }
 }
 
-export function EmailPreview({
-  subject,
-  preheader,
-  blocks,
-}: {
-  subject: string;
-  preheader: string;
-  blocks: EmailBlock[];
-}) {
+export type EmailPreviewProps =
+  | { subject: string; preheader: string; blocks: EmailBlock[]; html?: undefined }
+  | { subject: string; preheader?: string; html: string; blocks?: undefined };
+
+export function EmailPreview(props: EmailPreviewProps) {
+  const { subject } = props;
+  const preheader = props.preheader ?? "";
   const [device, setDevice] = useState<"desktop" | "mobile">("desktop");
 
   return (
@@ -239,10 +223,19 @@ export function EmailPreview({
         <div style={{ width: device === "mobile" ? 380 : 640, maxWidth: "100%", transition: "width 200ms" }}>
           {/* Email canvas is always light — that's how it renders in inboxes. */}
           <div className="bg-white rounded-md shadow overflow-hidden">
-            {blocks.length === 0 ? (
+            {props.html !== undefined ? (
+              <iframe
+                title="Email preview"
+                sandbox=""
+                srcDoc={props.html}
+                data-testid="email-preview-frame"
+                className="block w-full border-0"
+                style={{ height: 560 }}
+              />
+            ) : props.blocks.length === 0 ? (
               <div className="py-16 text-center text-sm text-slate-400">No blocks yet</div>
             ) : (
-              blocks.map((b) => <BlockView key={b.id} block={b} />)
+              props.blocks.map((b) => <BlockView key={b.id} block={b} />)
             )}
           </div>
         </div>

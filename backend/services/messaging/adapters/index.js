@@ -30,6 +30,11 @@
  *   message  the tc_messages row being sent, as AdapterMessage below. The
  *            address is the server-assembled, normalized one (E.164 / lower-
  *            cased email). The adapter must not re-derive or alter it.
+ *            EMAIL (item 40) also carries `html` and `unsubscribeUrl`, and its
+ *            `subject` / `body` are the RENDERED subject and plain-text
+ *            alternative. The service renders them (services/messaging/
+ *            emailContent.js, the shared renderer); the adapter transports
+ *            them and must refuse an email that lacks any of them.
  *   office   { officeKey, officeName } — the frozen office key the message
  *            belongs to. A provider with per-office senders (from-numbers,
  *            from-addresses) selects by officeKey and THROWS if it has none for
@@ -60,6 +65,7 @@
  * @typedef {{
  *   messageId: string, officeId: string, caseId: string|null, channel: 'sms'|'email',
  *   toAddress: string, body: string, subject: string|null, templateId: string|null,
+ *   html?: string, unsubscribeUrl?: string|null,
  * }} AdapterMessage
  * @typedef {{ officeKey: string, officeName: string }} AdapterOffice
  * @typedef {{ provider: string, providerMessageId: string, status: 'sent'|'queued', fromAddress?: string|null }} AdapterResult

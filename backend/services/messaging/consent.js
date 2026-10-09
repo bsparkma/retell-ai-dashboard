@@ -27,7 +27,16 @@
  *   3. SMS inside quiet hours (21:00–08:00 America/Chicago) → QUIET_HOURS.
  *      Email is exempt.
  *
- * Email consults rule 1 only.
+ * Email consults rule 1, plus (item 40) rule 1b:
+ *
+ *   1b. EMAIL to a case whose tc_cases.nurture_unsubscribed is true →
+ *       CONSENT_OPTED_OUT. That flag is the legacy TC app's "patient
+ *       unsubscribed from nurture emails" and the Nurture workspace's
+ *       Unsubscribe button. Item 38 left open whether it counts as an email
+ *       opt-out; item 40 takes the STRICTER answer: it blocks every email to
+ *       that case. It is case-level, so it does not follow an address to
+ *       another case, and it does not touch SMS. The unsubscribe LINK records
+ *       a real tc_contact_consent row (rule 1) instead.
  *
  * The OFFICE is always the caller's server-derived office (the case's office),
  * never a request value — and the OD read re-asserts it at the transport
@@ -159,10 +168,13 @@ const BLOCK_MESSAGES = Object.freeze({
  * The gate. See the header for the rule order.
  * @param {{ query: Function }} q tenant DB
  * @param {{ office: string, channel: 'sms'|'email', address: string,
- *           odPatientId?: number|string|null, now?: Date }} input
+ *           odPatientId?: number|string|null, now?: Date, caseEmailUnsubscribed?: boolean }} input
  * @returns {Promise<ConsentDecision>}
  */
-async function canMessage(q, { office, channel, address, odPatientId = null, now = new Date() }) {
+async function canMessage(
+  q,
+  { office, channel, address, odPatientId = null, now = new Date(), caseEmailUnsubscribed = false }
+) {
   const quiet = channel === 'sms' ? isQuietHours(now) : false;
 
   // 1. Opt-out beats everything.
@@ -170,6 +182,11 @@ async function canMessage(q, { office, channel, address, odPatientId = null, now
   const consentState = row ? row.state : 'unknown';
   if (consentState === 'opted_out') {
     return decision('CONSENT_OPTED_OUT', consentState, 'not_checked', quiet);
+  }
+  // 1b. (item 40) The case's legacy nurture unsubscribe blocks email. Strict
+  // `=== true`: only a flag that is really set shrinks what may be sent.
+  if (channel === 'email' && caseEmailUnsubscribed === true) {
+    return decision('CONSENT_OPTED_OUT', 'opted_out', 'not_checked', quiet);
   }
 
   // 2. Open Dental text consent (SMS only).
