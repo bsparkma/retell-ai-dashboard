@@ -12,7 +12,7 @@
       "Bash(npx:*)",
       "Bash(node:*)",
       "Bash(pnpm:*)",
-      "Bash(curl.exe:*)"
+      "Bash(curl.exe -s -d * https://ntfy.sh/carein-bx7k2m-q9wp4r)"
     ],
     "deny": [
       "Bash(git push --force:*)",
@@ -55,7 +55,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "curl.exe -s -d \"Claude needs you\" ntfy.sh/BEAU-TOPIC"
+            "command": "curl.exe -s -d \"Claude needs you\" https://ntfy.sh/carein-bx7k2m-q9wp4r"
           }
         ]
       }

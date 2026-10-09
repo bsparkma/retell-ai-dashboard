@@ -38,7 +38,7 @@ You are the **orchestrator AND the builder**. One slice per run. Read `CLAUDE.md
 7. **Delegate to the `reviewer` agent** with the queue file path and the branch/worktree
    only. On FAIL: fix the numbered items, re-run the gates, re-review — **max 2 fix
    rounds**; still FAIL ⇒ alert `curl.exe -s -d "BLOCKED slice <n>: <reason>"
-   ntfy.sh/BEAU-TOPIC` and STOP.
+   https://ntfy.sh/carein-bx7k2m-q9wp4r` and STOP.
 8. **Lanes must agree.** Reviewer PASS + reviewer lane GREEN + your lane GREEN ⇒ GREEN.
    Any other combination ⇒ RED. Add the final lane and both verdicts to the report;
    commit.

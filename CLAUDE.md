@@ -1044,10 +1044,12 @@ phone, or reading in code, tests, reports, branch names, commits, or alerts.
 
 ### 8.6 Alerts
 
-ntfy topic: **`BEAU-TOPIC`** — a placeholder. Beau replaces it with his private random
-topic (here and in `.claude/settings.json`, `.claude/agents/shipper.md`,
-`.claude/commands/next-slice.md`) before the first run. Command:
-`curl.exe -s -d "<message>" ntfy.sh/BEAU-TOPIC`. Messages carry slice numbers and
+ntfy topic: **`carein-bx7k2m-q9wp4r`** — Beau's private topic, ratified 2026-10-08 (queue item 44). It
+appears here and in `.claude/settings.json`, `.claude/agents/shipper.md` and
+`.claude/commands/next-slice.md`; change all four together. Command, always with the
+explicit `https://` scheme (curl defaults to plain http without one):
+`curl.exe -s -d "<message>" https://ntfy.sh/carein-bx7k2m-q9wp4r`. `.claude/settings.json` allows curl for this exact
+shape only — the loop needs curl for nothing but alerts. Messages carry slice numbers and
 queue-file words only:
 
 - `Slice <n> on staging. Test: <one line>` — GREEN merged
@@ -1056,5 +1058,5 @@ queue-file words only:
 - `BLOCKED slice <n>: <reason>` — reviewer FAIL after 2 fix rounds, or anything needing a human
 
 **The loop is not live** until Beau's one-time setup is done (develop branch protection
-requiring `build-test` + *Allow auto-merge*; the ntfy topic replacing `BEAU-TOPIC`; this
+requiring `build-test` + *Allow auto-merge*; the ntfy topic wired in (item 44); this
 scaffolding merged) **and** the canary slice (queue item 30) has run green end-to-end.
