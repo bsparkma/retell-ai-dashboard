@@ -68,7 +68,14 @@ The live alert was not sent (refused by the permission classifier). Everything e
   (`killMidDrainContract.test.js:155`, `rcmReseedScripts.test.js:72`,
   `rcmS10Scripts.test.js:195`) are comments/messages that use the English word "command".
   No test reads `.claude/settings.json`. Judgment: RED by path, nothing else.
-- **Reviewer:** recorded below.
+- **Reviewer, round 1:** FAIL. The report itself still contained the placeholder literal
+  twice, so the zero-occurrence claim was false. Fixed in `5821321`.
+- **Reviewer, round 2:** PASS, `LANE: RED`. It ran the classifier independently (RED) and
+  agreed the "asserted by an existing test" hit is a false positive. It judged the unsent
+  §3 alert an honestly reported gap for a human to close, not a FAIL. Full gates on the
+  merge tree: backend 3304 tests, 3301 pass, 0 fail, 3 skipped. Dashboard `check` clean;
+  2478 passed, 174 skipped, 0 failed.
+- **Final lane: RED** (orchestrator RED + reviewer RED).
 
 ## Gates
 
