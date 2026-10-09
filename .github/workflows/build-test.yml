@@ -67,6 +67,29 @@ jobs:
       - name: new-dashboard tests (vitest)
         working-directory: new-dashboard
         run: pnpm run test
+      # The perio screenshot suite is `describe.skipIf(!SHOOT)` on HYG_SHOTS=1,
+      # so the step above SKIPS it. Unrun, it sat 16-of-18 red on develop for
+      # two weeks after a response shape grew and only the page suite's mock
+      # learned it. This runs it headless.
+      #
+      # RENDER ASSERTIONS, NOT PIXEL EQUALITY: each shot awaits its testids in
+      # jsdom and dumps markup to tests/.shots/ (gitignored). No browser starts
+      # and no PNG is compared -- the PNGs in docs/screenshots/ stay
+      # regenerate-locally via scripts/shoot-hyg.mjs, because headless Chrome
+      # font rasterisation is not stable across runners.
+      #
+      # The JSON check refuses a run in which the suite SKIPPED (env var
+      # renamed, skipIf condition changed): a skipped suite exits 0, and a
+      # silent skip is the exact failure this step exists to end.
+      - name: new-dashboard perio screenshot suite (HYG_SHOTS=1, render only)
+        working-directory: new-dashboard
+        env:
+          HYG_SHOTS: '1'
+          SHOTS_RESULT: ${{ runner.temp }}/hyg-shots-result.json
+        run: |
+          pnpm exec vitest run tests/hyg-perio-shots.test.tsx \
+            --reporter=default --reporter=json --outputFile.json="$SHOTS_RESULT"
+          node -e "const r=require(process.env.SHOTS_RESULT); const skipped=r.numPendingTests+r.numTodoTests; console.log('perio shots: total', r.numTotalTests, 'passed', r.numPassedTests, 'skipped', skipped); if (r.numTotalTests===0 || skipped>0 || r.numPassedTests!==r.numTotalTests) { console.error('perio shots suite did not fully run'); process.exit(1); }"
 
       # --- backend: install + syntax + unit tests ---
       - name: backend install

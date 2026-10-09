@@ -58,6 +58,7 @@ async function bootstrap() {
   const retentionConfig = require('./config/retention');
   const odHealthCheck = require('./services/odHealthCheck');
   const hygDayWarm = require('./services/hygDayWarm');
+  const tcOpportunitiesSync = require('./services/tcOpportunities/scheduler');
   const hygPilot = require('./config/hygPilot');
   const tcSms = require('./config/tcSms');
   const tcEmail = require('./config/tcEmail');
@@ -613,6 +614,12 @@ async function bootstrap() {
 
     hygDayWarm.start();
 
+    // 7. Arm the nightly TC Opportunities sync (default 02:30 America/Chicago,
+    //    item 41). DARK: each pass reads platform_setting['tc_opportunities_sync']
+    //    first and does nothing until an office is switched on there. No pass at
+    //    boot. See services/tcOpportunities/scheduler.js.
+    tcOpportunitiesSync.start();
+
     // (M3) The startup `transcribeUntranscribedMango` backfill was removed: it keyed on
     // `recording_path`, which the API ingest path never sets, so it found zero candidates
     // on every run (diagnosis H2). Re-transcribing an already-ingested call is M4's
@@ -629,6 +636,7 @@ async function bootstrap() {
     retentionScheduler.stop();
     odHealthCheck.stop();
     hygDayWarm.stop();
+    tcOpportunitiesSync.stop();
     hygPilot.stopRefreshTimer();
     tcSms.stopRefreshTimer();
     tcEmail.stopRefreshTimer();
@@ -641,6 +649,7 @@ async function bootstrap() {
     retentionScheduler.stop();
     odHealthCheck.stop();
     hygDayWarm.stop();
+    tcOpportunitiesSync.stop();
     hygPilot.stopRefreshTimer();
     tcSms.stopRefreshTimer();
     tcEmail.stopRefreshTimer();

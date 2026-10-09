@@ -8,9 +8,15 @@
  * "not enough data yet" card. Layout order matches the legacy page; the mock
  * numbers never return.
  *
- * Data: exactly two requests — listCases(office) + listFollowups(office,
- * { status: "completed" }). No per-case fetches (objections therefore render
- * an honest card, not an aggregation).
+ * Data: listCases(office) + listFollowups(office, { status: "completed" })
+ * for the summary-derived sections. No per-case fetches (objections therefore
+ * render an honest card, not an aggregation).
+ *
+ * The "Conversion" section (item 42) is the exception, by design: it makes its
+ * OWN request, GET /api/tc/reports/funnel, and shows only what the server
+ * computed from recorded status transitions — acceptance rate, stage
+ * conversion, time in stage, accepted value by week. See
+ * features/tc/reports/ConversionSection.tsx.
  */
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -42,6 +48,7 @@ import {
 } from "@/features/tc/reports/derive";
 import type { PersonRow } from "@/features/tc/reports/derive";
 import { TcOfficeGate, TcPageHeader, useTcOffice } from "@/features/tc/components/TcShell";
+import { ConversionSection } from "@/features/tc/reports/ConversionSection";
 
 const CHART_COLORS = [
   "var(--chart-1)",
@@ -163,6 +170,11 @@ function ReportsInner({ office }: { office: OfficeId }) {
           sub="Mean of all recorded cases"
         />
       </div>
+
+      {/* 2b. Conversion — server-computed from transition history (item 42).
+          The only section on this page with rates over a WINDOW; it carries
+          its own coverage caption. */}
+      <ConversionSection office={office} />
 
       {/* 3. Charts row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

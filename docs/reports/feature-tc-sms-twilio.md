@@ -31,7 +31,7 @@ The 38 approval click, consent gate and quiet-hours block are unchanged and stil
 | Service | `services/messaging/index.js`: readiness and send are now **per office**. `recordInbound` gains `linkOpenCase`, START/HELP recording and provider-id dedupe. New `applyStatusCallback`, `countUnseen`, `listUnseenOnCases`, `markSeen`. |
 | Webhooks | `backend/routes/twilioWebhooks.js` mounted at **`/api/webhooks/twilio`** (`POST /inbound`, `POST /status/:office`). Order: signature → tenant → office → record. |
 | Routes | `/api/tc/messages`: `GET /unseen-count`, `GET /unseen`, `POST /seen` (strict body `{caseId: uuid\|null}`). |
-| Migration | `migrations-tenant/1790400000000_tc_messages_twilio.js`: `tc_messages.seen_at`, `seen_by`, partial UNIQUE `(provider, provider_message_id) WHERE id IS NOT NULL`, partial index for the unseen count. No new table and no CHECK change. |
+| Migration | `migrations-tenant/1790700000000_tc_messages_twilio.js`: `tc_messages.seen_at`, `seen_by`, partial UNIQUE `(provider, provider_message_id) WHERE id IS NOT NULL`, partial index for the unseen count. No new table and no CHECK change. |
 | Contract | `shared/tc/messaging.ts`: `ChannelUnavailableReason` enum. `ChannelReadiness.adapterReason` (nullable, defaults to null). `contract.gen.cjs` was regenerated with the pinned esbuild and `--alias:zod`. |
 | UI | **Messages tab:** SMS is live when the server says so for that office; the server's reason is shown in words; delivery is honest (only `delivered` is green; "Sent — delivery not confirmed"; a failed text Twilio had accepted reads "Not delivered"); opening a thread marks its texts seen. **New `/tc/texts` page:** replies matched to a case (with an Open case link) and the unmatched inbox (Mark as seen). **TC nav "Texts" item** carries the unseen count. |
 
@@ -153,7 +153,7 @@ Item 38's `tcmsg-*` PNGs are now slightly stale: they show "Sent" as green, and 
    - `TWILIO_WEBHOOK_BASE_URL=https://<that environment's public host>`
    - `TWILIO_TENANT_SLUG=carein`
 6. In the Twilio console, set the Messaging Service (or each number) **incoming message webhook** to `POST https://<host>/api/webhooks/twilio/inbound`. Status callbacks need no console setting: every send passes `https://<host>/api/webhooks/twilio/status/<office>` itself.
-7. Run the tenant migration (`1790400000000`) through the normal pipeline.
+7. Run the tenant migration (`1790700000000`) through the normal pipeline.
 8. Entitle `tc` for the tenant, and set `platform_setting['tc_sms_enabled']=true` in **staging only** to test.
 
 ### Staging test steps
@@ -166,7 +166,7 @@ Item 38's `tcmsg-*` PNGs are now slightly stale: they show "Sent" as green, and 
 
 ## Notes for item 40 (ACS email, stacked here)
 - **Adapter contract:** implement `enabledFor(officeKey)` and `unavailableReason(officeKey)`. The reasons are the closed `ChannelUnavailableReason` set; add a value there and to `ADAPTER_REASON_COPY` / `ADAPTER_REASON_SHORT` if email needs one. Readiness and send already ask per office.
-- **Migrations:** the next tenant migration timestamp must be after `1790400000000`.
+- **Migrations:** the next tenant migration timestamp must be after `1790700000000`.
 - **Shared plumbing:** `server.js` urlencoded now captures `req.rawBody`. The webhook tenant pattern is in `routes/twilioWebhooks.js` `attachTenant`.
 - **Copy:** `SEND_ERROR_COPY.FEATURE_DISABLED` is now office-neutral copy.
 

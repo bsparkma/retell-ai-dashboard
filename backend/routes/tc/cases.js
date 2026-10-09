@@ -767,3 +767,6 @@ router.post(
 );
 
 module.exports = router;
+// The phase-tree input schema, shared with the Opportunities claim (item 41) so
+// a claimed plan is validated exactly as a hand-built one is.
+module.exports.PhaseCreate = PhaseCreate;

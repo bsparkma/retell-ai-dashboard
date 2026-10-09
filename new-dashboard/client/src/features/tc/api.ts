@@ -48,6 +48,8 @@ import type {
   TcSmileSimulation,
   Urgency,
 } from "@shared/tc/contract";
+import { parseServedFunnel } from "./reports/funnel";
+import type { ServedFunnel } from "./reports/funnel";
 
 type CaseStatusId = z.infer<typeof CaseStatus>;
 type PreauthStatusId = z.infer<typeof PreauthStatus>;
@@ -1422,4 +1424,25 @@ export function putLibrarySection<K extends LibrarySection>(
     `/tc/library/${section}`,
     { method: "PUT", office, body: value },
   ).then((r) => r.value);
+}
+
+// ── Reports (server-computed) ───────────────────────────────────────────────
+
+export interface FunnelWindow {
+  /** YYYY-MM-DD, local. Omitted = the server's default (365 days ending `to`). */
+  from?: string;
+  /** YYYY-MM-DD, local. Omitted = today in the office's time zone. */
+  to?: string;
+}
+
+/**
+ * GET /reports/funnel — the conversion funnel, computed by the server from
+ * recorded status transitions. Parsed and branded on arrival (see
+ * reports/funnel.ts): the only route by which a ServedFunnel exists.
+ */
+export function getConversionFunnel(office: OfficeId, window: FunnelWindow = {}): Promise<ServedFunnel> {
+  return tcRequest<{ funnel: unknown }>("/tc/reports/funnel", {
+    office,
+    params: { from: window.from, to: window.to },
+  }).then((r) => parseServedFunnel(r.funnel));
 }
