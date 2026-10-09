@@ -15,6 +15,9 @@
  *   /preauth          pre-authorization CRUD + status flow
  *   /templates        email template CRUD (seed-protected)
  *   /communications   email log (send pipeline FEATURE_DISABLED until Slice 7)
+ *   /messages         patient messaging (item 38): drafts, the Send click, the
+ *                     consent gate. Both channel adapters are stubs that refuse
+ *                     (FEATURE_DISABLED) until items 39 (SMS) and 40 (email).
  *   /gallery          before/after metadata (blob keys only)
  *   /smile-sim        smile-sim metadata (generate FEATURE_DISABLED until Slice 7)
  *   /media            entitlement-checked blob proxy (managed identity)
@@ -67,6 +70,7 @@ router.use('/hygiene-intakes', requirePermission('tc.hygiene'), require('./hygie
 router.use('/preauth', tcFull, require('./preauth'));
 router.use('/templates', tcFull, require('./templates'));
 router.use('/communications', tcFull, require('./communications'));
+router.use('/messages', tcFull, require('./messages'));
 router.use('/gallery', tcFull, require('./gallery'));
 router.use('/smile-sim', tcFull, require('./smileSim'));
 router.use('/media', tcFull, require('./media'));

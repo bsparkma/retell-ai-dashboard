@@ -31,6 +31,8 @@
 export * from "../../new-dashboard/shared/tc/contract";
 export * from "../../new-dashboard/shared/tc/rows";
 export * from "../../new-dashboard/shared/tc/emailBlocks";
+// Patient messaging (item 38): drafts, the consent gate vocabulary, bodies.
+export * from "../../new-dashboard/shared/tc/messaging";
 // The routes compose small request shapes (status-transition bodies, complete/
 // reschedule payloads) from contract pieces; export the SAME zod instance so
 // those shapes and the contract schemas share one library version.
