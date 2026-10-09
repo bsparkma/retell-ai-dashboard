@@ -1,0 +1,64 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr merge --auto:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr ready --undo:*)",
+      "Bash(npm:*)",
+      "Bash(npx:*)",
+      "Bash(node:*)",
+      "Bash(pnpm:*)",
+      "Bash(curl.exe:*)"
+    ],
+    "deny": [
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git push --force-with-lease:*)",
+      "Bash(git push * --force*)",
+      "Bash(git push * -f*)",
+      "Bash(git push * +*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git * reset --hard*)",
+      "Bash(rm -rf:*)",
+      "Bash(rm -fr:*)",
+      "Bash(* rm -rf*)",
+      "Bash(* rm -fr*)",
+      "Bash(az:*)",
+      "Bash(* az *)",
+      "Bash(gh pr merge --admin:*)",
+      "Bash(gh pr merge * --admin*)",
+      "Bash(gh pr create --base main:*)",
+      "Bash(gh pr create * --base main*)",
+      "Bash(gh pr create * --base=main*)",
+      "Bash(gh pr create * -B main*)",
+      "Bash(* --base main*)",
+      "Bash(* --base=main*)",
+      "Bash(git push origin main:*)",
+      "Bash(* origin main*)",
+      "Bash(git push * HEAD:main*)",
+      "Bash(git push * :main*)",
+      "Bash(git push origin develop:*)",
+      "Bash(git push * HEAD:develop*)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(**/.env)",
+      "Read(**/.env.*)"
+    ]
+  },
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl.exe -s -d \"Claude needs you\" ntfy.sh/BEAU-TOPIC"
+          }
+        ]
+      }
+    ]
+  }
+}
