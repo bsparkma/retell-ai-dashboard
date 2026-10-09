@@ -15,12 +15,18 @@
  *   /preauth          pre-authorization CRUD + status flow
  *   /templates        email template CRUD (seed-protected)
  *   /communications   email log (send pipeline FEATURE_DISABLED until Slice 7)
+ *   /messages         patient messaging (item 38): drafts, the Send click, the
+ *                     consent gate. Both channel adapters are stubs that refuse
+ *                     (FEATURE_DISABLED) until items 39 (SMS) and 40 (email).
  *   /gallery          before/after metadata (blob keys only)
  *   /smile-sim        smile-sim metadata (generate FEATURE_DISABLED until Slice 7)
  *   /media            entitlement-checked blob proxy (managed identity)
  *   /library          per-office library config (server-owned settings)
  *   /reports          server-side reporting — the conversion funnel over
  *                     tc_case_events transition history (read-only)
+ *   /opportunities    Open Dental treatment planned + unscheduled, surfaced by
+ *                     the nightly sync as candidates a TC claims or dismisses
+ *                     (item 41). Postgres-only: no route here reaches OD.
  *   /od/patient-search the ONE Open Dental read hygiene holds: attach a patient
  *                     to an intake (PatNum + name + DOB, per-office client)
  *   /od               Open Dental READS (Slice 5) — patient search, treatment
@@ -66,11 +72,13 @@ router.use('/hygiene-intakes', requirePermission('tc.hygiene'), require('./hygie
 router.use('/preauth', tcFull, require('./preauth'));
 router.use('/templates', tcFull, require('./templates'));
 router.use('/communications', tcFull, require('./communications'));
+router.use('/messages', tcFull, require('./messages'));
 router.use('/gallery', tcFull, require('./gallery'));
 router.use('/smile-sim', tcFull, require('./smileSim'));
 router.use('/media', tcFull, require('./media'));
 router.use('/library', tcFull, require('./library'));
 router.use('/reports', tcFull, require('./reports'));
+router.use('/opportunities', tcFull, require('./opportunities'));
 // MUST precede the /od mount, for the same registration-order reason as
 // /cases/from-call above: registering it first is what keeps the attach search
 // on tc.hygiene while the rest of the Open Dental family stays tc.full. Doing

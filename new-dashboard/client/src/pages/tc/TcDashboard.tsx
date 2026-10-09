@@ -57,6 +57,7 @@ import {
   topActiveCases,
 } from "@/features/tc/dashboard/derive";
 import { CareInHandoffsStrip } from "@/features/tc/handoffs/CareInHandoffsStrip";
+import { OpportunitiesCard } from "@/features/tc/opportunities/OpportunitiesCard";
 import {
   ActiveCasesCard,
   AllCaughtUpCard,
@@ -237,6 +238,8 @@ export default function TcDashboard() {
       />
 
       <CareInHandoffsStrip />
+
+      <OpportunitiesCard offices={offices} />
 
       {notice && <TcPartialDataNotice message={notice} />}
 

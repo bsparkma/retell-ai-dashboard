@@ -44,6 +44,7 @@ import TcFollowups from "./pages/tc/TcFollowups";
 import TcHygieneIntake from "./pages/tc/TcHygieneIntake";
 import TcHygieneSubmissions from "./pages/tc/TcHygieneSubmissions";
 import TcHygieneInbox from "./pages/tc/TcHygieneInbox";
+import TcOpportunities from "./pages/tc/TcOpportunities";
 import TcPreauth from "./pages/tc/TcPreauth";
 import TcTemplates from "./pages/tc/TcTemplates";
 import TcTemplateEditor from "./pages/tc/TcTemplateEditor";
@@ -221,6 +222,7 @@ export function Router() {
         <Route path="/tc/cases/:id/prep" component={TcPrepConsult} />
         <Route path="/tc/cases/:id/post-consult" component={TcPostConsult} />
         <Route path="/tc/followups" component={TcFollowups} />
+        <Route path="/tc/opportunities" component={TcOpportunities} />
         <Route path="/tc/hygiene" component={TcHygieneIntake} />
         <Route path="/tc/hygiene/submissions" component={TcHygieneSubmissions} />
         <Route path="/tc/hygiene/inbox" component={TcHygieneInbox} />

@@ -1,12 +1,16 @@
 /**
  * TC case detail — /tc/cases/:id. Loads the full TcCase aggregate, shows the
  * command bar (identity + money + status) and the working tabs: Treatment,
- * Financing, Objections, Follow-Ups, Notes, Activity. All mutations live in
+ * Financing, Objections, Follow-Ups, Messages, Notes, Activity. All mutations live in
  * the tabs/dialogs; this page owns the single case state they update.
  * (Smile Sim lives in the Gallery area in this port, not here.)
+ *
+ * `?tab=messages` opens the Messages tab; `&draftFrom=<followupId>&channel=sms|email`
+ * (the follow-up queue's "Draft message" action) seeds ONE draft from that
+ * follow-up and then drops the params, so a reload cannot seed a second one.
  */
-import { useCallback, useEffect, useState } from "react";
-import { Link, useParams } from "wouter";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useLocation, useParams, useSearch } from "wouter";
 import type { OfficeId, TcCase } from "@shared/tc/contract";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -18,6 +22,7 @@ import { ActivityTimeline } from "@/features/tc/caseview/ActivityTimeline";
 import { CaseCommandBar } from "@/features/tc/caseview/CaseCommandBar";
 import { FinancingTab } from "@/features/tc/caseview/FinancingTab";
 import { FollowupsTab } from "@/features/tc/caseview/FollowupsTab";
+import { MessagesTab, type MessagesTabSeed } from "@/features/tc/caseview/MessagesTab";
 import { NotesTab } from "@/features/tc/caseview/NotesTab";
 import { OrthoScreeningSection } from "@/features/tc/caseview/OrthoScreeningSection";
 import { ObjectionsTab } from "@/features/tc/caseview/ObjectionsTab";
@@ -45,6 +50,25 @@ function CaseViewInner({ office }: { office: OfficeId }) {
   const [notFound, setNotFound] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [statusDialogOpen, setStatusDialogOpen] = useState(false);
+
+  // Deep link from the follow-up queue: ?tab=messages&draftFrom=<id>&channel=sms
+  const search = useSearch();
+  const [location, navigate] = useLocation();
+  const linked = useMemo(() => {
+    const p = new URLSearchParams(search);
+    const tab = p.get("tab");
+    const draftFrom = p.get("draftFrom");
+    const channel = p.get("channel");
+    const seed: MessagesTabSeed | null =
+      draftFrom && (channel === "sms" || channel === "email") ? { followupId: draftFrom, channel } : null;
+    return { tab: tab === "messages" || seed ? "messages" : null, seed };
+  }, [search]);
+  const [tab, setTab] = useState<string>(linked.tab ?? "treatment");
+  const [seed, setSeed] = useState<MessagesTabSeed | null>(linked.seed);
+  const consumeSeed = useCallback(() => {
+    setSeed(null);
+    navigate(location, { replace: true });
+  }, [location, navigate]);
 
   const load = useCallback(() => {
     if (!caseId) {
@@ -161,12 +185,13 @@ function CaseViewInner({ office }: { office: OfficeId }) {
           a screening. Item 22's hygiene treatment list belongs in this slot too. */}
       <OrthoScreeningSection tcCase={tcCase} />
 
-      <Tabs defaultValue="treatment">
+      <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
           <TabsTrigger value="treatment">Treatment</TabsTrigger>
           <TabsTrigger value="financing">Financing</TabsTrigger>
           <TabsTrigger value="objections">Objections</TabsTrigger>
           <TabsTrigger value="followups">Follow-Ups</TabsTrigger>
+          <TabsTrigger value="messages">Messages</TabsTrigger>
           <TabsTrigger value="notes">Notes</TabsTrigger>
           <TabsTrigger value="activity">Activity</TabsTrigger>
         </TabsList>
@@ -182,6 +207,9 @@ function CaseViewInner({ office }: { office: OfficeId }) {
         </TabsContent>
         <TabsContent value="followups" className="pt-2">
           <FollowupsTab office={office} tcCase={tcCase} refreshCase={refreshCase} />
+        </TabsContent>
+        <TabsContent value="messages" className="pt-2">
+          <MessagesTab office={office} tcCase={tcCase} seed={seed} onSeedConsumed={consumeSeed} />
         </TabsContent>
         <TabsContent value="notes" className="pt-2">
           <NotesTab office={office} tcCase={tcCase} onCaseUpdate={setTcCase} />

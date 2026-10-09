@@ -119,14 +119,15 @@ export function tcErrorMessage(err: unknown): string {
 
 // ── Core request ────────────────────────────────────────────────────────────
 
-interface TcRequestOptions {
+export interface TcRequestOptions {
   method?: "GET" | "POST" | "PUT" | "DELETE";
   office: OfficeId;
   params?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
 }
 
-async function tcRequest<T>(path: string, options: TcRequestOptions): Promise<T> {
+/** Exported for feature modules with their own api file (features/tc/messaging). */
+export async function tcRequest<T>(path: string, options: TcRequestOptions): Promise<T> {
   const { method = "GET", office, params, body } = options;
   const url = new URL(
     `${BASE}${path.startsWith("/") ? "" : "/"}${path}`,
