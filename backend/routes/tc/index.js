@@ -22,6 +22,8 @@
  *   /smile-sim        smile-sim metadata (generate FEATURE_DISABLED until Slice 7)
  *   /media            entitlement-checked blob proxy (managed identity)
  *   /library          per-office library config (server-owned settings)
+ *   /reports          server-side reporting — the conversion funnel over
+ *                     tc_case_events transition history (read-only)
  *   /opportunities    Open Dental treatment planned + unscheduled, surfaced by
  *                     the nightly sync as candidates a TC claims or dismisses
  *                     (item 41). Postgres-only: no route here reaches OD.
@@ -75,6 +77,7 @@ router.use('/gallery', tcFull, require('./gallery'));
 router.use('/smile-sim', tcFull, require('./smileSim'));
 router.use('/media', tcFull, require('./media'));
 router.use('/library', tcFull, require('./library'));
+router.use('/reports', tcFull, require('./reports'));
 router.use('/opportunities', tcFull, require('./opportunities'));
 // MUST precede the /od mount, for the same registration-order reason as
 // /cases/from-call above: registering it first is what keeps the attach search

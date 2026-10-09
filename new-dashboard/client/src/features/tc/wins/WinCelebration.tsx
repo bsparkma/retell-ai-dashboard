@@ -5,7 +5,10 @@
  * Shows: the congratulatory line, the patient's first name, and the accepted
  * case's own value (real, server-confirmed). Plus, when a case snapshot was
  * available, a labeled accepted-family total for the office right now.
- * Never shows: a weekly/MTD figure or an acceptance rate.
+ * And, when the server served one (item 42), the office's windowed
+ * presented→accepted rate WITH its count and window — "50% of 4 presented,
+ * last 90 days" — straight from GET /api/tc/reports/funnel.
+ * Never shows: a weekly/MTD figure, or any rate computed in the browser.
  *
  * Presentation-only: it takes derived stats and an onDone callback. The
  * trigger lives in WinCelebrationProvider so pages fire it with one call.
@@ -13,6 +16,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Sparkles, TrendingUp } from "lucide-react";
 import { formatCents } from "../money";
+import { formatCoverageDate, formatPercent } from "../reports/funnel";
 import type { WinStats } from "./derive";
 
 /** Matches the legacy overlay's dwell time before auto-dismiss. */
@@ -105,6 +109,25 @@ export function WinCelebration({
             <span>
               Accepted in this office right now: {stats.acceptedNow.count} ·{" "}
               {formatCents(stats.acceptedNow.valueCents)}
+            </span>
+          </div>
+        )}
+
+        {stats.acceptedRatePercent && (
+          <div
+            className="mt-2 flex items-center justify-center gap-1.5 text-xs text-muted-foreground"
+            data-testid="win-served-rate"
+          >
+            <span>
+              Acceptance rate {formatPercent(stats.acceptedRatePercent.percent)} ·{" "}
+              {stats.acceptedRatePercent.acceptedCases} of{" "}
+              {stats.acceptedRatePercent.presentedCases} presented,{" "}
+              {stats.acceptedRatePercent.clampedToCoverage
+                ? `since ${formatCoverageDate(
+                    stats.acceptedRatePercent.windowFromTs,
+                    stats.acceptedRatePercent.timeZone,
+                  )}`
+                : "last 90 days"}
             </span>
           </div>
         )}

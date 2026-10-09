@@ -13,13 +13,25 @@
  *
  * What IS real and available: the accepted case's own value, and a count of
  * the office's cases sitting in the accepted family right now. So the overlay
- * shows exactly that, labeled as a current-pipeline count — never "this week",
- * never a rate. `acceptedRatePercent` is typed `null` so the compiler itself
- * refuses any future attempt to slip an approximated rate in here.
+ * shows exactly that, labeled as a current-pipeline count — never "this week".
+ *
+ * THE RATE (item 42). An acceptance rate needs presented→accepted HISTORY, and
+ * case summaries still do not carry it — so this module still never computes
+ * one. The server now does: GET /api/tc/reports/funnel derives a windowed
+ * presented→accepted rate from recorded status transitions. `acceptedRatePercent`
+ * was typed `null` so the compiler itself refused any approximated rate; it is
+ * now typed `ServedAcceptanceRate | null`, a BRANDED type that only
+ * reports/funnel.ts can mint, and only from a server response that passed the
+ * funnel schema. The guard's intent is unchanged — a number computed here from
+ * TcCaseSummary rows still cannot be assigned — it just has one legitimate
+ * source now. deriveWinStats leaves it null; the provider attaches the served
+ * rate (withServedRate) when the funnel request for the case's office answers.
  *
  * Every function is pure: the case snapshot is passed in, never fetched.
  */
+import type { OfficeId } from "@shared/tc/contract";
 import type { TcCaseSummary } from "../api";
+import type { ServedAcceptanceRate } from "../reports/funnel";
 import type { CaseStatusId } from "../status";
 
 /**
@@ -42,6 +54,11 @@ export interface WinTrigger {
   patientName: string;
   /** Integer cents, straight off the persisted case the server returned. */
   caseValueCents: number;
+  /**
+   * The persisted case's office. When present, the provider asks that office's
+   * funnel for its SERVED acceptance rate; when absent, no rate is shown.
+   */
+  office?: OfficeId;
 }
 
 /** Real accepted-family total for the office, at the moment of the win. */
@@ -63,11 +80,31 @@ export interface WinStats {
    */
   acceptedNow: AcceptedNow | null;
   /**
-   * Always null, by type. An acceptance rate needs presented→accepted history
-   * that case summaries do not carry; approximating it was the legacy bug.
+   * The office's windowed presented→accepted rate AS SERVED by
+   * GET /api/tc/reports/funnel, with its numerator, denominator and window —
+   * or null (no served rate yet, the request failed, or nothing was presented
+   * in the window). Only reports/funnel.ts can mint a ServedAcceptanceRate;
+   * nothing in this file can produce one from case summaries, which carry
+   * current status, not history.
    */
-  acceptedRatePercent: null;
+  acceptedRatePercent: ServedAcceptanceRate | null;
 }
+
+/**
+ * COMPILER GUARD (kept from the null-typed era, re-aimed): a bare number — the
+ * shape any client-side approximation would take — must NOT be assignable to
+ * the overlay's rate. If someone widens the field to `number | ...`, this line
+ * stops compiling. (Tests are excluded from tsc, so the guard lives here.)
+ */
+type AssertTrue<T extends true> = T;
+type _RateIsNotABareNumber = AssertTrue<
+  number extends WinStats["acceptedRatePercent"] ? false : true
+>;
+type _RateIsNotAPlainObject = AssertTrue<
+  { percent: number; acceptedCases: number; presentedCases: number } extends WinStats["acceptedRatePercent"]
+    ? false
+    : true
+>;
 
 /** First word of a display name; falls back to the whole (trimmed) string. */
 export function firstNameOf(fullName: string): string {
@@ -110,4 +147,13 @@ export function deriveWinStats(
     valueCents += c.caseValueCents;
   }
   return { ...base, acceptedNow: { count, valueCents } };
+}
+
+/**
+ * Attach a SERVED acceptance rate to already-derived stats. The rate is passed
+ * through untouched — the only way in is a ServedAcceptanceRate, which only a
+ * parsed funnel response can produce.
+ */
+export function withServedRate(stats: WinStats, served: ServedAcceptanceRate | null): WinStats {
+  return { ...stats, acceptedRatePercent: served };
 }
