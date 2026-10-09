@@ -43,6 +43,7 @@
       "Bash(git push * :main*)",
       "Bash(git push origin develop:*)",
       "Bash(git push * HEAD:develop*)",
+      "Bash(* -d @*)",
       "Read(./.env)",
       "Read(./.env.*)",
       "Read(**/.env)",
