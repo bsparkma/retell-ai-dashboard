@@ -404,8 +404,13 @@ export const POSTING_RUNNING_COPY =
  * disagreement down the "nothing was measured" path. (PM ruling, 2026-09-10.)
  *
  * The step can: the ONLY way a check is left `partially_posted` with its step at
- * `confirm_patient` is that branch — a crash at `confirm_patient` is not in the
- * drain's touched-chart list and finalises `failed`, not `partially_posted`.
+ * `confirm_patient` is that branch. A run that stops DURING `confirm_patient`
+ * — after the check exists, before the measurement completes — is also
+ * `partially_posted` (W-21: there is proof money landed), but the drain records
+ * its step as `confirm_patient_interrupted`, never `confirm_patient`, so this
+ * key reads it as `stopped`. That slug exists to keep the proxy STRUCTURAL:
+ * `confirm_patient` means "the measurement completed" because nothing else may
+ * write it, not because a flag says so (PM ruling, 2026-10-12).
  * Every other `partially_posted` step, including `null`, is `stopped`, which is
  * the safe direction: the worst it can do is under-instruct.
  */
