@@ -701,8 +701,9 @@ test('the stored vocabulary and the screen vocabulary map one to one', () => {
    * `rcm-labels.test.ts` fell into once for the line vocabulary, and it is worth
    * saying twice: when you re-key a CHECK, the tests that read it move with it.
    */
-  const stored = require('../../migrations-tenant/1787300000000_rcm_posting_withdraw').QUEUE_STATUSES;
+  const stored = require('../../migrations-tenant/1790900000000_rcm_posting_intent').QUEUE_STATUSES;
   assert.ok(stored.includes('withdrawn'));
+  assert.ok(stored.includes('outcome_unknown'));
   for (const status of stored) {
     assert.ok(
       postingDrain.QUEUE_STATUS_LABEL[status],
@@ -951,16 +952,18 @@ test('two concurrent drains cannot both run', async () => {
  */
 for (const { name, dieAfter, expectMidState } of [
   /*
-   * `partially_posted` even here, and that is deliberate. A request that threw
-   * MAY have reached Open Dental — a dead socket does not say whether the
-   * server acted — so from inside the drain "the first PUT was attempted" and
-   * "the first PUT landed" are indistinguishable. Claiming `failed` would be
-   * claiming nothing moved, which is exactly the sort of thing this module is
-   * not allowed to guess about.
+   * `outcome_unknown` in every window (W-21), and that is deliberate. Each run
+   * dies ON a write: a request that threw MAY have reached Open Dental — a dead
+   * socket does not say whether the server acted — so the intent committed
+   * before it is still `pending`, and a pending intent is its own state. It is
+   * not `failed` (that would claim nothing moved) and it is no longer
+   * `partially_posted` either (that claims PROOF something landed, which a
+   * dead socket is not). The resume below re-reads the chart, settles it, and
+   * must still finish with one check and no duplicate write.
    */
-  { name: 'before the claimproc PUT lands', dieAfter: 0, expectMidState: 'partially_posted' },
-  { name: 'after the claimproc PUT, before the claim PUT', dieAfter: 1, expectMidState: 'partially_posted' },
-  { name: 'after the claim PUT, before the check (the worst window)', dieAfter: 2, expectMidState: 'partially_posted' },
+  { name: 'before the claimproc PUT lands', dieAfter: 0, expectMidState: 'outcome_unknown' },
+  { name: 'after the claimproc PUT, before the claim PUT', dieAfter: 1, expectMidState: 'outcome_unknown' },
+  { name: 'after the claim PUT, before the check (the worst window)', dieAfter: 2, expectMidState: 'outcome_unknown' },
 ]) {
   test(`killed ${name} → resume completes with ONE check and no duplicate write`, async () => {
     const db = seedPlan(new FakeRcmDb());
@@ -1043,7 +1046,8 @@ test('W-9: a resume that SKIPS an already-posted line ends `posted`, keeps the s
   // Die immediately after the claimproc PUT lands — the exact live window.
   const dying = odFixture({ dieAfterWrites: 1 });
   const first = await postingDrain.drainOffice(ctxFor(db, dying));
-  assert.equal(first.outcomes[0].status, 'partially_posted');
+  // W-21: it died ON the claim PUT, so that write's outcome is unknown.
+  assert.equal(first.outcomes[0].status, 'outcome_unknown');
 
   // A restarted container: same chart, fresh client.
   const revived = odFixture();
@@ -1109,7 +1113,8 @@ test('a check that LANDED but whose response was lost is adopted, never re-creat
   const db = seedPlan(new FakeRcmDb());
   const dying = odFixture({ dieOnLandedWrite: 3 }); // claimproc PUT, claim PUT, then the check
   const first = await postingDrain.drainOffice(ctxFor(db, dying));
-  assert.equal(first.outcomes[0].status, 'partially_posted', JSON.stringify(first.outcomes[0]));
+  // W-21: the check's intent is pending — the plan cannot know it landed yet.
+  assert.equal(first.outcomes[0].status, 'outcome_unknown', JSON.stringify(first.outcomes[0]));
   assert.equal(db.table('rcm_posting_queue')[0].od_claim_payment_num, null, 'the number was lost');
   assert.ok(dying.rows.claimProcs[0].ClaimPaymentNum > 0, 'but the check is really there');
 
@@ -2826,7 +2831,7 @@ test('a claim 404 on a FRESH plan withdraws, with zero Open Dental writes', asyn
   assert.equal(db.table('rcm_posting_queue')[0].withdrawn_reason, 'target_removed');
 });
 
-test('a claim 404 on a plan that ALREADY wrote is FAILED, never withdrawn', async () => {
+test('a claim 404 on a plan that ALREADY wrote is PARTIALLY POSTED, never withdrawn', async () => {
   /*
    * THE RESUME CASE, and the one the constraint would not have caught.
    *
@@ -2848,11 +2853,15 @@ test('a claim 404 on a plan that ALREADY wrote is FAILED, never withdrawn', asyn
     ctxFor(db, od, { loadRemittancePdf: async () => null })
   );
 
-  assert.equal(result.outcomes[0].status, 'failed', JSON.stringify(result.outcomes[0]));
+  /*
+   * W-21: `partially_posted`, not `failed`. The line carries proof that money
+   * reached the chart, and `failed` reads as "nothing was written".
+   */
+  assert.equal(result.outcomes[0].status, 'partially_posted', JSON.stringify(result.outcomes[0]));
   assert.match(result.outcomes[0].detail, /already written to a chart/);
 
   const row = db.table('rcm_posting_queue')[0];
-  assert.equal(row.status, 'failed');
+  assert.equal(row.status, 'partially_posted');
   assert.equal(row.withdrawn_reason, null, 'NOT withdrawn');
   assert.equal(row.withdrawn_at, null);
   assert.match(row.last_error, /already written to a chart/);
@@ -2865,7 +2874,8 @@ test('the withdrawal CHECK is never asked to catch this — the code refuses fir
    * the database is never the thing that says no.
    */
   const src = fs.readFileSync(path.join(__dirname, 'postingDrain.js'), 'utf8');
-  const guard = src.indexOf('if (chartTouchedBy(plan.lines))');
+  // W-21: the guard reads the evidence (stored proof AND every prior intent).
+  const guard = src.indexOf("if (classifyPlanEvidence(plan, priorIntents).status !== 'failed')");
   const withdraw = src.indexOf('reason: WITHDRAW_REASONS.TARGET_REMOVED');
   assert.ok(guard > 0 && withdraw > 0);
   assert.ok(guard < withdraw, 'the refusal comes before the withdrawal, not after it');
@@ -3277,7 +3287,8 @@ for (const { name, dieAfter, stallAfter } of [
     const stalling = odFixture({ dieAfterWrites: stallAfter });
     stalling.rows = dying.rows;
     const second = await postingDrain.drainOffice(ctxFor(db, stalling));
-    assert.equal(second.outcomes[0].status, 'partially_posted', JSON.stringify(second.outcomes[0]));
+    // W-21: run 2 dies ON the check POST, so its outcome is unknown.
+    assert.equal(second.outcomes[0].status, 'outcome_unknown', JSON.stringify(second.outcomes[0]));
 
     const lines = db.table('rcm_posting_queue_line');
     assert.ok(lines.length > 0, 'the fixture must have lines');
@@ -3361,7 +3372,8 @@ test('W-15: a skipped line the chart later shows ATTACHED keeps its skip and ado
   const stalling = odFixture({ dieAfterWrites: 1 });
   stalling.rows = dying.rows;
   const second = await postingDrain.drainOffice(ctxFor(db, stalling));
-  assert.equal(second.outcomes[0].status, 'partially_posted', JSON.stringify(second.outcomes[0]));
+  // W-21: run 2 dies ON the check POST, so its outcome is unknown.
+  assert.equal(second.outcomes[0].status, 'outcome_unknown', JSON.stringify(second.outcomes[0]));
 
   const afterSkip = db.table('rcm_posting_queue_line')[0];
   assert.equal(afterSkip.status, 'skipped_already_posted');
@@ -3443,4 +3455,533 @@ test('W-15: a skipped line that later CONFLICTS moves off the skip family with i
     null,
     'and persistLine takes the reason with it — otherwise the constraint refuses the row'
   );
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// W-21 — write-ahead intent, evidence-classified endings, kill-tests
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The defect: a crash after the check existed but before `office_writeoffs` or
+// `confirm_patient` finished was recorded `failed`, which reads as "nothing was
+// written" — and a biller who believed it double-posted the patient by hand.
+//
+// Every test below drives the REAL drain against the recorded-shape fakes. The
+// plan is the B2 `adjustment_by_name` shape, because it is the only one whose
+// sequence reaches every boundary: four writes and seven step cursors.
+
+const postingIntent = require('./postingIntent');
+
+/** The one plan shape that reaches every write and every step. */
+function fullSequencePlan() {
+  return seedOfficeSettings(
+    seedDecidedPlan(new FakeRcmDb()),
+    { roland: true },
+    { writeoff_mode: 'adjustment_by_name', writeoff_adjtype_name: 'Insurance Write-off' }
+  );
+}
+
+/** The writes that plan issues, in order, and the intent kind each one owes. */
+const FULL_SEQUENCE = [
+  { path: 'PUT /claimprocs/533930', kind: 'claimproc_received' },
+  { path: 'PUT /claims/53648', kind: 'claim_received' },
+  { path: 'POST /claimpayments', kind: 'claim_payment' },
+  { path: 'POST /adjustments', kind: 'writeoff_adjustment' },
+];
+
+/** `persistStep`'s statement, exactly as FakeRcmDb sees it. */
+const PERSIST_STEP_SQL =
+  'UPDATE rcm_posting_queue SET drain_step = $2, updated_at = now() WHERE queue_id = $1';
+
+/** The seven step cursors the full sequence persists, in order. */
+const FULL_STEPS = [
+  'read_od_truth',
+  'claimproc_writes',
+  'claim_receipts',
+  'check',
+  'reconcile',
+  'office_writeoffs',
+  'confirm_patient',
+];
+
+/** Fail the n-th `persistStep` only — a crash exactly AT that step boundary. */
+function failAtStep(db, n) {
+  let seen = 0;
+  db.failWhen = (text) => text === PERSIST_STEP_SQL && ++seen === n;
+}
+
+/** A restarted container: the same chart, a fresh client that keeps minting ids. */
+function revive(dying) {
+  const revived = odFixture();
+  revived.rows = dying.rows;
+  revived.nextAdjNum = dying.nextAdjNum;
+  revived.nextClaimPaymentNum = dying.nextClaimPaymentNum;
+  return revived;
+}
+
+/** Writes that actually changed the chart, across every client a test used. */
+function landedWrites(clients, p) {
+  return clients.reduce(
+    (n, c) => n + c.calls.filter((x) => x.method === 'apiWriteRaw' && x.path === p && x.landed).length,
+    0
+  );
+}
+
+/**
+ * The property every resume must hold, whatever killed the run before it: the
+ * plan ends `posted`, the chart carries ONE check and ONE concession, no write
+ * landed twice, and no intent is left pending.
+ */
+async function assertResumesClean(db, clients) {
+  const revived = revive(clients[clients.length - 1]);
+  const result = await postingDrain.drainOffice(ctxFor(db, revived));
+  assert.equal(result.outcomes[0].status, 'posted', JSON.stringify(result.outcomes[0]));
+  const all = [...clients, revived];
+  assert.equal(new Set(odCheckNums(revived).filter((n) => n > 0)).size, 1, 'exactly one check');
+  assert.equal(revived.rows.adjustments.length, 1, 'exactly one office write-off in the ledger');
+  assert.equal(landedWrites(all, '/claimprocs/533930'), 1, 'the claimproc landed once');
+  assert.equal(landedWrites(all, '/claimpayments'), 1, 'the check landed once');
+  assert.equal(landedWrites(all, '/adjustments'), 1, 'the concession landed once');
+  const pending = db.table('rcm_posting_intent').filter((i) => i.outcome === 'pending');
+  assert.deepEqual(pending, [], 'a posted plan has no write left unaccounted for');
+}
+
+/** An Open Dental double that counts writes and answers every read empty. */
+function countingOd(answer) {
+  const od = {
+    writes: 0,
+    get: async () => ({ ok: true, status: 200, data: [] }),
+    write: async () => {
+      od.writes += 1;
+      return answer || { ok: true, status: 200, data: {} };
+    },
+  };
+  return od;
+}
+
+// ── 1. No Open Dental write without a committed intent ─────────────────────
+
+test('W-21: every write function REFUSES without a receipt, and Open Dental hears nothing', async () => {
+  const od = countingOd();
+  const forged = Object.freeze({
+    intentId: 'x',
+    office: 'roland',
+    queueId: QUEUE_ID,
+    writeKind: 'claimproc_received',
+  });
+  const calls = [
+    (i) =>
+      odPostingWrites.writeClaimProcReceived(
+        od,
+        { claimNum: 1, claimProcNum: 2, insPayAmtCents: 1, writeOffCents: 0, dedAppliedCents: 0 },
+        i
+      ),
+    (i) => odPostingWrites.writeClaimReceived(od, { claimNum: 1, dateReceived: '2026-03-01', note: null }, i),
+    (i) =>
+      odPostingWrites.writeClaimPayment(
+        od,
+        { endpoint: 'single', claimNums: [1], checkAmtCents: 1, payTypeDefNum: 1, note: 'n' },
+        i
+      ),
+    (i) =>
+      odPostingWrites.writeRecoupmentAdjustment(
+        od,
+        { odPatientId: 1, adjTypeDefNum: 1, amountCents: -1, adjDate: '2026-03-01', note: 'n', odProcNum: null },
+        i
+      ),
+    (i) =>
+      odPostingWrites.writeRecoupmentSupplemental(
+        od,
+        { claimNum: 1, odProcNum: null, insPayAmtCents: -1, note: 'n' },
+        i
+      ),
+    (i) =>
+      odPostingWrites.writeDocumentUpload(
+        od,
+        { odPatientId: 1, docCategoryDefNum: 1, description: 'd', base64: 'AA==', extension: '.pdf' },
+        i
+      ),
+  ];
+  for (const call of calls) {
+    for (const bad of [undefined, null, {}, forged]) {
+      await assert.rejects(() => call(bad), (err) => err.code === 'OD_WRITE_WITHOUT_INTENT');
+    }
+  }
+  assert.equal(od.writes, 0, 'a refused write must never reach the transport');
+});
+
+test('W-21: a receipt for one kind of write cannot authorise another', async () => {
+  const db = seedPlan(new FakeRcmDb());
+  const receipt = await postingIntent.recordIntent(db, {
+    office: 'roland',
+    queueId: QUEUE_ID,
+    attempt: 1,
+    writeKind: 'claim_received',
+    target: {},
+  });
+  const od = countingOd({ ok: false, status: 400 });
+  await assert.rejects(
+    () =>
+      odPostingWrites.writeClaimPayment(
+        od,
+        { endpoint: 'single', claimNums: [1], checkAmtCents: 1, payTypeDefNum: 1, note: 'n' },
+        receipt
+      ),
+    (err) => err.code === 'OD_WRITE_WITHOUT_INTENT'
+  );
+  assert.equal(od.writes, 0);
+});
+
+test('W-21: the intent is COMMITTED before each write leaves the process — all four of them', async () => {
+  const db = fullSequencePlan();
+  const od = odFixture();
+  const ctx = ctxFor(db, od);
+  const seenAtWrite = [];
+  const inner = ctx.transport.write;
+  ctx.transport.write = (method, p, body, opts) => {
+    // What Postgres already holds at the instant the request is sent.
+    const pending = db.table('rcm_posting_intent').filter((i) => i.outcome === 'pending');
+    seenAtWrite.push({ path: `${method} ${p}`, kinds: pending.map((i) => i.write_kind) });
+    return inner(method, p, body, opts);
+  };
+  const result = await postingDrain.drainOffice(ctx);
+  assert.equal(result.outcomes[0].status, 'posted');
+  assert.deepEqual(
+    seenAtWrite.map((s) => s.path),
+    FULL_SEQUENCE.map((s) => s.path)
+  );
+  FULL_SEQUENCE.forEach((expected, i) => {
+    assert.deepEqual(seenAtWrite[i].kinds, [expected.kind], `${expected.path} went out without its intent`);
+  });
+  // And every one was settled from its read-back once it came back.
+  assert.deepEqual(
+    db.table('rcm_posting_intent').map((i) => i.outcome),
+    ['landed', 'landed', 'landed', 'landed']
+  );
+});
+
+test('W-21: an intent carries identifiers and cents — never a name or free text', async () => {
+  const db = fullSequencePlan();
+  await postingDrain.drainOffice(ctxFor(db, odFixture()));
+  const blob = JSON.stringify(db.table('rcm_posting_intent').map((i) => [i.target, i.evidence]));
+  assert.doesNotMatch(blob, /Stedi|Test|Fixture Biller|biller@/);
+  assert.doesNotMatch(blob, /posted by/);
+});
+
+// ── 2. The classifier, branch by branch ────────────────────────────────────
+
+test('W-21 classifier: zero intents and no stored proof is the ONLY clean claim', () => {
+  assert.equal(postingIntent.classifyClaim({ storedProof: false, intents: [] }), 'clean');
+  assert.notEqual(postingIntent.classifyClaim({ storedProof: true, intents: [] }), 'clean');
+  assert.notEqual(postingIntent.classifyClaim({ storedProof: false, intents: [{ outcome: 'absent' }] }), 'clean');
+});
+
+test('W-21 classifier: ANY pending intent is unknown — even beside proof that money landed', () => {
+  assert.equal(postingIntent.classifyClaim({ storedProof: false, intents: [{ outcome: 'pending' }] }), 'unknown');
+  assert.equal(
+    postingIntent.classifyClaim({ storedProof: true, intents: [{ outcome: 'landed' }, { outcome: 'pending' }] }),
+    'unknown'
+  );
+});
+
+test('W-21 classifier: a landed or disagreed intent, or stored proof, is proven', () => {
+  for (const outcome of ['landed', 'disagreed']) {
+    assert.equal(postingIntent.classifyClaim({ storedProof: false, intents: [{ outcome }] }), 'proven');
+  }
+  assert.equal(postingIntent.classifyClaim({ storedProof: true, intents: [] }), 'proven');
+  assert.equal(
+    postingIntent.classifyClaim({ storedProof: false, intents: [{ outcome: 'refused' }, { outcome: 'landed' }] }),
+    'proven'
+  );
+});
+
+test('W-21 classifier: intents all proven NOT to have landed are not_landed, not clean', () => {
+  assert.equal(postingIntent.classifyClaim({ storedProof: false, intents: [{ outcome: 'absent' }] }), 'not_landed');
+  assert.equal(postingIntent.classifyClaim({ storedProof: false, intents: [{ outcome: 'refused' }] }), 'not_landed');
+});
+
+test('W-21 classifier: a plan is unknown over proven over failed, and nothingWritten means ALL clean', () => {
+  const plan = (lines, intents) => postingIntent.classifyPlan({ lines, intents });
+  const c1 = { odClaimNum: 1, storedProof: false };
+  const c2 = { odClaimNum: 2, storedProof: false };
+  const clean = plan([c1, c2], []);
+  assert.deepEqual([clean.status, clean.nothingWritten], ['failed', true]);
+  const proven = plan([c1, c2], [{ odClaimNum: 1, outcome: 'landed' }]);
+  assert.deepEqual([proven.status, proven.nothingWritten], ['partially_posted', false]);
+  const unknown = plan(
+    [c1, c2],
+    [
+      { odClaimNum: 1, outcome: 'landed' },
+      { odClaimNum: 2, outcome: 'pending' },
+    ]
+  );
+  assert.deepEqual([unknown.status, unknown.nothingWritten], ['outcome_unknown', false]);
+  const notLanded = plan([c1], [{ odClaimNum: 1, outcome: 'refused' }]);
+  assert.deepEqual([notLanded.status, notLanded.nothingWritten], ['failed', false]);
+  // An intent with no claim (a batch check, an EOB) still counts.
+  assert.equal(plan([c1], [{ odClaimNum: null, outcome: 'pending' }]).status, 'outcome_unknown');
+});
+
+// ── 3. Kill-tests: a crash ON each write ────────────────────────────────────
+//
+// `dieAfterWrites: k-1` — the process dies sending write k: it may or may not
+// have reached Open Dental. `dieOnLandedWrite: k` — write k lands and the answer
+// is lost. Either way the intent committed before it is `pending`, so the plan
+// is `outcome_unknown`: never `failed`, never `partially_posted`.
+
+for (const [index, write] of FULL_SEQUENCE.entries()) {
+  for (const mode of ['dies sending it', 'it lands and the response is lost']) {
+    test(`W-21 kill: ${write.path} — ${mode} → outcome_unknown, then the resume settles it and posts once`, async () => {
+      const db = fullSequencePlan();
+      const dying = odFixture(
+        mode === 'dies sending it' ? { dieAfterWrites: index } : { dieOnLandedWrite: index + 1 }
+      );
+      const first = await postingDrain.drainOffice(ctxFor(db, dying));
+      assert.equal(first.outcomes[0].status, 'outcome_unknown', JSON.stringify(first.outcomes[0]));
+      assert.equal(db.table('rcm_posting_queue')[0].status, 'outcome_unknown');
+
+      const pending = db.table('rcm_posting_intent').filter((i) => i.outcome === 'pending');
+      assert.deepEqual(
+        pending.map((i) => i.write_kind),
+        [write.kind],
+        'exactly the write it died on is unknown'
+      );
+
+      await assertResumesClean(db, [dying]);
+    });
+  }
+}
+
+// ── 4. Kill-tests: a crash AT each step boundary ────────────────────────────
+//
+// The process dies at the instant it records the next step — every write
+// before it settled, nothing of the next step attempted. The ending is
+// whatever the evidence proves, and the two rows marked W-21 are the defect:
+// the old step list wrote `failed` there over a check already in the chart.
+
+const BOUNDARY_ENDINGS = [
+  { step: 'read_od_truth', status: 'failed', nothingWritten: true },
+  { step: 'claimproc_writes', status: 'failed', nothingWritten: true },
+  { step: 'claim_receipts', status: 'partially_posted' },
+  { step: 'check', status: 'partially_posted' },
+  { step: 'reconcile', status: 'partially_posted', hasCheck: true },
+  { step: 'office_writeoffs', status: 'partially_posted', hasCheck: true, w21: true },
+  {
+    step: 'confirm_patient',
+    status: 'partially_posted',
+    hasCheck: true,
+    w21: true,
+    recordedStep: 'confirm_patient_interrupted',
+  },
+];
+
+for (const [index, b] of BOUNDARY_ENDINGS.entries()) {
+  test(`W-21 boundary: dies at ${b.step}${b.w21 ? ' (was failed: the defect)' : ''} → ${b.status}`, async () => {
+    assert.equal(FULL_STEPS[index], b.step, 'the boundary table and the drain agree on the order');
+    const db = fullSequencePlan();
+    const od = odFixture();
+    failAtStep(db, index + 1);
+
+    const first = await postingDrain.drainOffice(ctxFor(db, od));
+    db.failWhen = null;
+    assert.equal(first.outcomes[0].status, b.status, JSON.stringify(first.outcomes[0]));
+
+    const row = db.table('rcm_posting_queue')[0];
+    assert.equal(row.status, b.status);
+    assert.equal(row.drain_step, b.recordedStep || b.step);
+    if (b.hasCheck) assert.ok(row.od_claim_payment_num != null, 'the check number is on the row');
+    if (b.status === 'failed') assert.equal(od.writesIssued().length, 0, 'failed here means no write');
+    assert.equal(
+      db.table('rcm_posting_intent').some((i) => i.outcome === 'pending'),
+      false,
+      'a step boundary is between writes — nothing is unknown'
+    );
+
+    const ending = postingIntent.classifyPlan({
+      lines: [{ odClaimNum: 53648, storedProof: false }],
+      intents: await postingIntent.listIntents(db, 'roland', QUEUE_ID),
+    });
+    assert.equal(ending.nothingWritten, b.nothingWritten === true);
+
+    await assertResumesClean(db, [od]);
+  });
+}
+
+test('W-21: a crash INSIDE confirm_patient (after its reads) records the interrupted step, never confirm_patient', async () => {
+  const db = fullSequencePlan();
+  const od = odFixture();
+  db.failWhen = (text) => text.startsWith('UPDATE rcm_claims SET confirmed_verdict');
+  const first = await postingDrain.drainOffice(ctxFor(db, od));
+  db.failWhen = null;
+  assert.equal(first.outcomes[0].status, 'partially_posted', JSON.stringify(first.outcomes[0]));
+  const row = db.table('rcm_posting_queue')[0];
+  assert.equal(row.drain_step, 'confirm_patient_interrupted');
+  assert.ok(row.od_claim_payment_num != null);
+  await assertResumesClean(db, [od]);
+});
+
+test('W-21: the measured branch — and only it — still ends at confirm_patient', async () => {
+  // The B2 "chart does not say what was promised" case: a real measurement
+  // that disagreed. Its step must stay `confirm_patient`, or the W-16 key would
+  // stop showing the measured screen it exists for.
+  const db = seedOfficeSettings(
+    seedDecidedPlan(new FakeRcmDb(), { line: { intended_patient_cents: 999 } }),
+    { roland: true }
+  );
+  const result = await postingDrain.drainOffice(ctxFor(db, odFixture()));
+  assert.equal(result.outcomes[0].status, 'partially_posted', JSON.stringify(result.outcomes[0]));
+  assert.equal(result.outcomes[0].reason, 'patient_total_unconfirmed');
+  assert.equal(db.table('rcm_posting_queue')[0].drain_step, 'confirm_patient');
+});
+
+// ── 5. Kill -9: the process dies, the database with it, and the SWEEP classifies
+
+const sweepDeps = (db) => ({
+  registry: { listTenants: async () => [{ tenant_id: 'T1', slug: 'carein', status: 'active' }] },
+  tenantDb: { getTenantPool: async () => db },
+});
+
+for (const k of [
+  { name: 'before any write (claimproc_writes)', killAtStep: 2, expect: 'approved' },
+  { name: 'at office_writeoffs', killAtStep: 6, expect: 'partially_posted', step: 'office_writeoffs' },
+  {
+    name: 'at confirm_patient',
+    killAtStep: 7,
+    expect: 'partially_posted',
+    step: 'confirm_patient_interrupted',
+  },
+]) {
+  test(`W-21 kill -9 just after recording ${k.name}: the startup sweep settles it to ${k.expect}`, async () => {
+    const db = fullSequencePlan();
+    const od = odFixture();
+    let seen = 0;
+    let dead = false;
+    // The step cursor IS recorded — then the process is gone, and nothing
+    // after it reaches Postgres. (Failing the cursor write itself would leave
+    // the previous step on the row, which is the honest state for that case.)
+    db.failWhen = (text) => {
+      if (dead) return true;
+      if (text === PERSIST_STEP_SQL && ++seen === k.killAtStep) dead = true;
+      return false;
+    };
+    await assert.rejects(() => postingDrain.drainOffice(ctxFor(db, od)));
+    db.failWhen = null;
+    assert.equal(db.table('rcm_posting_queue')[0].status, 'posting', 'a dead process leaves posting');
+
+    await postingDrain.sweepInterruptedPostings(sweepDeps(db));
+    const row = db.table('rcm_posting_queue')[0];
+    assert.equal(row.status, k.expect);
+    if (k.step) assert.equal(row.drain_step, k.step);
+    if (k.expect === 'approved') assert.ok(row.attempt_count > 0, 'and it does not read as never-tried');
+
+    await assertResumesClean(db, [od]);
+  });
+}
+
+test('W-21 kill -9 mid-write: the check lands, the process dies, the sweep says outcome_unknown', async () => {
+  const db = fullSequencePlan();
+  const od = odFixture();
+  const ctx = ctxFor(db, od);
+  const inner = ctx.transport.write;
+  ctx.transport.write = async (method, p, body, opts) => {
+    const res = await inner(method, p, body, opts);
+    if (p === '/claimpayments') {
+      db.failWhen = () => true; // the process is gone with the 201 in flight
+      const err = new Error('killed');
+      err.code = 'ECONNRESET';
+      throw err;
+    }
+    return res;
+  };
+  await assert.rejects(() => postingDrain.drainOffice(ctx));
+  db.failWhen = null;
+
+  await postingDrain.sweepInterruptedPostings(sweepDeps(db));
+  const row = db.table('rcm_posting_queue')[0];
+  assert.equal(row.status, 'outcome_unknown');
+  assert.equal(row.od_claim_payment_num, null, 'the plan never heard the check number');
+  assert.ok(od.rows.claimProcs[0].ClaimPaymentNum > 0, 'but the check is in the chart');
+
+  await assertResumesClean(db, [od]);
+});
+
+// ── 6. Settle before retry ─────────────────────────────────────────────────
+
+test('W-21: a concession that landed with its answer lost is ADOPTED on resume, never booked twice', async () => {
+  const db = fullSequencePlan();
+  const dying = odFixture({ dieOnLandedWrite: 4 });
+  await postingDrain.drainOffice(ctxFor(db, dying));
+  assert.equal(dying.rows.adjustments.length, 1);
+  assert.equal(db.table('rcm_posting_queue_line')[0].od_writeoff_adjustment_num, null, 'the id was lost');
+
+  const revived = revive(dying);
+  const result = await postingDrain.drainOffice(ctxFor(db, revived));
+  assert.equal(result.outcomes[0].status, 'posted', JSON.stringify(result.outcomes[0]));
+  assert.deepEqual(revived.writesIssued(), [], 'the resume wrote NOTHING — it read the ledger and adopted');
+  assert.equal(
+    Number(db.table('rcm_posting_queue_line')[0].od_writeoff_adjustment_num),
+    Number(dying.rows.adjustments[0].AdjNum)
+  );
+  const settled = db.table('rcm_posting_intent').find((i) => i.write_kind === 'writeoff_adjustment');
+  assert.equal(settled.outcome, 'landed');
+  assert.equal(settled.evidence.via, 're_read');
+});
+
+test('W-21: when the re-read cannot decide, the plan stays outcome_unknown and NOTHING is retried', async () => {
+  const db = fullSequencePlan();
+  const dying = odFixture({ dieOnLandedWrite: 4 });
+  await postingDrain.drainOffice(ctxFor(db, dying));
+  // A second concession, identical in every field the re-read matches on. Two
+  // candidates is ambiguity, and ambiguity is a refusal, not a coin flip.
+  dying.rows.adjustments.push({ ...dying.rows.adjustments[0], AdjNum: 19999 });
+
+  const revived = revive(dying);
+  const result = await postingDrain.drainOffice(ctxFor(db, revived));
+  assert.equal(result.outcomes[0].status, 'outcome_unknown', JSON.stringify(result.outcomes[0]));
+  assert.deepEqual(revived.writesIssued(), [], 'no write may happen past an unsettled intent');
+  assert.match(db.table('rcm_posting_queue')[0].last_error, /Do not enter this payment by hand/);
+});
+
+test('W-21: a 4xx from the write itself settles its intent `refused` — attempted, proven not landed', async () => {
+  const db = fullSequencePlan();
+  const od = odFixture();
+  const ctx = ctxFor(db, od);
+  ctx.transport.write = async () => ({ ok: false, status: 400, data: null, error: 'refused for the test' });
+  const result = await postingDrain.drainOffice(ctx);
+  assert.equal(result.outcomes[0].status, 'failed', JSON.stringify(result.outcomes[0]));
+  const intents = db.table('rcm_posting_intent');
+  assert.deepEqual(
+    intents.map((i) => [i.write_kind, i.outcome]),
+    [['claimproc_received', 'refused']]
+  );
+  assert.equal(intents[0].evidence.status, 400);
+});
+
+test('W-21: a 5xx from the write is NOT a refusal — the outcome stays unknown', async () => {
+  const db = fullSequencePlan();
+  const od = odFixture();
+  const ctx = ctxFor(db, od);
+  ctx.transport.write = async () => ({ ok: false, status: 503, data: null, error: 'gateway' });
+  const result = await postingDrain.drainOffice(ctx);
+  assert.equal(result.outcomes[0].status, 'outcome_unknown', JSON.stringify(result.outcomes[0]));
+});
+
+// ── 7. The new state's place in the vocabulary ─────────────────────────────
+
+test('W-21: outcome_unknown is DRAINABLE (a row with no exit is a trap) and never withdrawable', () => {
+  assert.ok(postingDrain.DRAINABLE_STATUSES.includes('outcome_unknown'));
+  assert.ok(!postingDrain.WITHDRAWABLE_STATUSES.includes('outcome_unknown'));
+  assert.equal(postingDrain.QUEUE_STATUS_LABEL.outcome_unknown, 'outcome_unknown');
+});
+
+test('W-21: an outcome_unknown plan cannot be withdrawn through withdrawRow', async () => {
+  const db = seedPlan(new FakeRcmDb(), { queue: { status: 'outcome_unknown' } });
+  const res = await postingDrain.withdrawRow(db, 'roland', QUEUE_ID, { reason: 'manual', by: null });
+  assert.deepEqual(res, { withdrawn: false, status: 'outcome_unknown' });
+});
+
+test('W-21: settledStep records the interrupted slug for confirm_patient ONLY', () => {
+  assert.equal(postingDrain.settledStep('confirm_patient'), 'confirm_patient_interrupted');
+  for (const s of [...FULL_STEPS.filter((x) => x !== 'confirm_patient'), 'recoupment', null]) {
+    assert.equal(postingDrain.settledStep(s), s);
+  }
 });

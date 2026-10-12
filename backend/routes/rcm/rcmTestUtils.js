@@ -66,6 +66,8 @@ const PRIMARY_KEYS = Object.freeze({
   rcm_activity_events: 'activity_id',
   rcm_eob_added_lines: 'added_line_id',
   rcm_eob_line_strikes: 'strike_id',
+  // W-21: the drain's write-ahead log.
+  rcm_posting_intent: 'intent_id',
 });
 
 /**
@@ -99,6 +101,10 @@ const JSONB_COLUMNS = new Set([
   // `verdict.sentence` and `verdict.state` off it, so a fake that kept the
   // string would render "undefined" where a patient's balance goes.
   'confirmed_verdict',
+  // W-21: an intent's target and the evidence that settled it. Both are read as
+  // objects by recovery, which matches a chart row against `target`.
+  'target',
+  'evidence',
 ]);
 
 /**
@@ -202,6 +208,20 @@ function assertUniqueIndexes(table, row, existing) {
  * @type {Record<string, Array<{ name: string, ok: (row: any) => boolean }>>}
  */
 const CHECK_CONSTRAINTS = Object.freeze({
+  rcm_posting_intent: [
+    {
+      /*
+       * 1790900000000 — pending carries no evidence, and evidence means settled.
+       * Reachable from every recovery path that settles an intent, which is
+       * what earns it a place here.
+       */
+      name: 'rcm_posting_intent_settled_check',
+      ok: (row) =>
+        String(row.outcome) === 'pending'
+          ? row.resolved_at == null && row.evidence == null
+          : row.resolved_at != null && row.evidence != null,
+    },
+  ],
   rcm_posting_queue_line: [
     {
       name: 'rcm_posting_queue_line_skip_reason_check',
@@ -263,6 +283,25 @@ const CHECK_CONSTRAINTS = Object.freeze({
     },
   ],
   rcm_posting_queue: [
+    {
+      /*
+       * 1790900000000's vocabulary. Reachable the moment the drain can write a
+       * new word: a status the fake accepted and Postgres refused would make
+       * every W-21 test a test of a fiction.
+       */
+      name: 'rcm_posting_queue_status_check',
+      ok: (row) =>
+        [
+          'approved',
+          'posting',
+          'posted',
+          'failed',
+          'partially_posted',
+          'blocked',
+          'withdrawn',
+          'outcome_unknown',
+        ].includes(String(row.status)),
+    },
     {
       /*
        * 1787120000000 — the queue's OWN pairing, and the one the line table
