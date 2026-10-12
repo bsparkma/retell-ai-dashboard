@@ -211,7 +211,7 @@ const CHECK_CONSTRAINTS = Object.freeze({
   rcm_posting_intent: [
     {
       /*
-       * 1790900000000 — pending carries no evidence, and evidence means settled.
+       * 1791000000000 — pending carries no evidence, and evidence means settled.
        * Reachable from every recovery path that settles an intent, which is
        * what earns it a place here.
        */
@@ -285,7 +285,7 @@ const CHECK_CONSTRAINTS = Object.freeze({
   rcm_posting_queue: [
     {
       /*
-       * 1790900000000's vocabulary. Reachable the moment the drain can write a
+       * 1791000000000's vocabulary. Reachable the moment the drain can write a
        * new word: a status the fake accepted and Postgres refused would make
        * every W-21 test a test of a fiction.
        */

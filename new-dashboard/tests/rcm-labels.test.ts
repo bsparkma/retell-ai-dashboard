@@ -322,7 +322,7 @@ describe("the drain's vocabularies", () => {
         "backend",
         "migrations-tenant",
         // W-21 re-keyed it again, adding `outcome_unknown`.
-        "1790900000000_rcm_posting_intent.js",
+        "1791000000000_rcm_posting_intent.js",
       ),
       "utf8",
     );

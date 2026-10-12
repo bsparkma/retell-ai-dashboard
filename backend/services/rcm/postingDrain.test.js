@@ -701,7 +701,7 @@ test('the stored vocabulary and the screen vocabulary map one to one', () => {
    * `rcm-labels.test.ts` fell into once for the line vocabulary, and it is worth
    * saying twice: when you re-key a CHECK, the tests that read it move with it.
    */
-  const stored = require('../../migrations-tenant/1790900000000_rcm_posting_intent').QUEUE_STATUSES;
+  const stored = require('../../migrations-tenant/1791000000000_rcm_posting_intent').QUEUE_STATUSES;
   assert.ok(stored.includes('withdrawn'));
   assert.ok(stored.includes('outcome_unknown'));
   for (const status of stored) {
