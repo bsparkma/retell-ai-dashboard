@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -44,10 +44,12 @@ import TcFollowups from "./pages/tc/TcFollowups";
 import TcHygieneIntake from "./pages/tc/TcHygieneIntake";
 import TcHygieneSubmissions from "./pages/tc/TcHygieneSubmissions";
 import TcHygieneInbox from "./pages/tc/TcHygieneInbox";
+import TcOpportunities from "./pages/tc/TcOpportunities";
 import TcPreauth from "./pages/tc/TcPreauth";
 import TcTemplates from "./pages/tc/TcTemplates";
 import TcTemplateEditor from "./pages/tc/TcTemplateEditor";
 import TcCommunications from "./pages/tc/TcCommunications";
+import TcTexts from "./pages/tc/TcTexts";
 import TcGallery from "./pages/tc/TcGallery";
 import TcPresentation from "./pages/tc/TcPresentation";
 import TcLibrary from "./pages/tc/TcLibrary";
@@ -67,6 +69,12 @@ import FeesImportDetail from "./pages/fees/FeesImportDetail";
 import TcReports from "./pages/tc/TcReports";
 import TcFloatingCalc from "./features/tc/cob/FloatingCalc";
 import { WinCelebrationProvider } from "./features/tc/wins/WinCelebrationProvider";
+
+// Voice lab (queue item 34, staging only). LAZY on purpose: it is the one page
+// that imports the Azure Speech SDK, and loading it on demand keeps that SDK
+// out of every other page's bundle. The page renders NotFound itself unless
+// /auth/me says the lab is mounted on this server.
+const VoiceLab = lazy(() => import("./pages/voicelab/VoiceLab"));
 
 // Exported for the routing tests (tests/module-home.test.tsx).
 export function Router() {
@@ -215,6 +223,7 @@ export function Router() {
         <Route path="/tc/cases/:id/prep" component={TcPrepConsult} />
         <Route path="/tc/cases/:id/post-consult" component={TcPostConsult} />
         <Route path="/tc/followups" component={TcFollowups} />
+        <Route path="/tc/opportunities" component={TcOpportunities} />
         <Route path="/tc/hygiene" component={TcHygieneIntake} />
         <Route path="/tc/hygiene/submissions" component={TcHygieneSubmissions} />
         <Route path="/tc/hygiene/inbox" component={TcHygieneInbox} />
@@ -222,12 +231,18 @@ export function Router() {
         <Route path="/tc/templates" component={TcTemplates} />
         <Route path="/tc/templates/:id" component={TcTemplateEditor} />
         <Route path="/tc/communications" component={TcCommunications} />
+        <Route path="/tc/texts" component={TcTexts} />
         <Route path="/tc/gallery" component={TcGallery} />
         <Route path="/tc/present/:caseId" component={TcPresentation} />
         <Route path="/tc/library" component={TcLibrary} />
         <Route path="/tc/cob" component={TcCobCalculator} />
         <Route path="/tc/financing" component={TcFinancing} />
         <Route path="/tc/settings" component={TcSettings} />
+        <Route path="/voicelab">
+          <Suspense fallback={null}>
+            <VoiceLab />
+          </Suspense>
+        </Route>
         <Route path="/404" component={NotFound} />
         <Route component={NotFound} />
       </Switch>

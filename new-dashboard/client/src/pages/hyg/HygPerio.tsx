@@ -46,6 +46,10 @@ import { isOfficeId, type StagedWrite } from "@shared/hyg/contract";
 import {
   PERIO_FLAGS,
   PERIO_FLAG_KEYS,
+  PERIO_GM_FAMILIES,
+  PERIO_MAX_MOBILITY,
+  PERIO_MAX_FURCATION,
+  PERIO_MIN_FURCATION,
   PERIO_FLAG_LABELS,
   PERIO_SEGMENTS,
   countPerioChart,
@@ -83,6 +87,11 @@ import {
 } from "@/features/hyg/api";
 import { todayIso } from "@/features/hyg/day";
 import {
+  PERIO_MODES,
+  PERIO_MODE_KEYS,
+  PERIO_MODE_LABELS,
+  PERIO_MODE_RANGES,
+  PERIO_MODE_SCOPE,
   flagTarget,
   initialPerioEntry,
   keyToPerioAction,
@@ -94,6 +103,9 @@ import { PerioDriftNotice, PerioResendConfirm } from "@/features/hyg/perio/Perio
 import { PerioGrid } from "@/features/hyg/perio/PerioGrid";
 import { PerioKeyLegend, PerioKeyLegendShow } from "@/features/hyg/perio/PerioKeyLegend";
 import { PerioSendConfirm, perioProvNumOf } from "@/features/hyg/perio/PerioSendConfirm";
+import { PerioVoiceEntry } from "@/features/hyg/perio/PerioVoiceEntry";
+import type { VoiceCommand } from "@/features/hyg/perio/voiceGrammar";
+import { useAuth } from "@/contexts/AuthContext";
 import { PerioDeleteExamDialog, PerioSendPanel, perioMismatchTeeth } from "@/features/hyg/perio/PerioSendPanel";
 import { cn } from "@/lib/utils";
 
@@ -259,6 +271,10 @@ export default function HygPerio() {
   const query = useMemo(() => new URLSearchParams(search), [search]);
   const office = query.get("office");
   const date = query.get("date") ?? todayIso();
+
+  // ITEM 35: voice entry renders only when /auth/me says this server answers it.
+  const auth = useAuth();
+  const hygVoice = auth.status === "authenticated" && auth.user.hygVoice === true;
 
   const [entry, dispatch] = useReducer(reducePerioEntry, undefined, () =>
     initialPerioEntry(emptyPerioChart()),
@@ -549,6 +565,17 @@ export default function HygPerio() {
     dispatch(action);
   }, []);
 
+  /**
+   * ITEM 35: one spoken final, parsed. It goes through the SAME reducer and the
+   * same lock as a key: what is said becomes readings in this chart and nothing
+   * else, and reaches Open Dental only by the confirm below like every reading.
+   */
+  const onVoice = useCallback((commands: VoiceCommand[]) => {
+    if (lockedRef.current) return;
+    setNumLockOff(false);
+    dispatch({ type: "voice", commands });
+  }, []);
+
   /** A tap does what its key does, and gives the keyboard back. */
   const act = useCallback((action: PerioEntryAction) => {
     if (lockedRef.current && action.type !== "select") return;
@@ -784,6 +811,17 @@ export default function HygPerio() {
   const target = flagTarget(entry);
   const targetSite = perioSite(entry.chart, target.tooth, target.surface);
   const cursorSkipped = perioTooth(entry.chart, cursor.tooth).skipped;
+  /** Would the active mode accept this number? The same limits the reducer keeps. */
+  const modeTakes = (value: number): boolean => {
+    if (entry.mode === "mobility") return value <= PERIO_MAX_MOBILITY;
+    if (entry.mode === "furcation") {
+      return value >= PERIO_MIN_FURCATION && value <= PERIO_MAX_FURCATION;
+    }
+    if (entry.mode === "gm") {
+      return value >= PERIO_GM_FAMILIES.recessionMin && value <= PERIO_GM_FAMILIES.recessionMax;
+    }
+    return true;
+  };
   const found = prior.phase === "loaded" && prior.res.prior.status === "found" ? prior.res.prior : null;
   const priorChart = found ? found.chart : null;
   const priorAtCursor = priorChart ? perioSite(priorChart, cursor.tooth, cursor.surface).depth : null;
@@ -1039,7 +1077,8 @@ export default function HygPerio() {
       {/*
         ITEM 14: above the prior panel, because it is about THIS chart's claim and
         not about the patient's history. It draws nothing at all for three of the
-        five answers — `matches` and `unknown` included, on purpose.
+        five answers — `matches` and `unknown` included, on purpose. ITEM 32: the
+        exception is `unknown` for `uninterpretable`, which draws one quiet line.
       */}
       <div className="mt-3">
         <PerioDriftNotice
@@ -1087,6 +1126,89 @@ export default function HygPerio() {
         </p>
       ) : null}
 
+      {/*
+        ═══════════════════════════════════════════════════════════════════════════
+        ITEM 26: THE MODE IS LOUD, BECAUSE A DIGIT MEANS WHATEVER IT SAYS
+        ═══════════════════════════════════════════════════════════════════════════
+        A hygienist mid-sweep must never wonder which row a number lands in. The
+        active mode is a filled chip with its range spelled out beside it, the
+        others are plain, and every one is clickable as well as keyable — one hand
+        is on a probe and the other may be on a screen rather than a pad.
+
+        Rendered from `PERIO_MODES` so this bar cannot offer a mode the reducer
+        does not have, or miss one it does.
+      */}
+      <div
+        className="mt-3 flex flex-wrap items-center gap-2"
+        role="group"
+        aria-label="What a number you type is recorded as"
+        data-testid="hyg-perio-modes"
+      >
+        {PERIO_MODES.map((mode) => {
+          const on = entry.mode === mode;
+          return (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => act({ type: "mode", mode })}
+              aria-pressed={on}
+              data-testid={`hyg-perio-mode-${mode}`}
+              data-active={on ? "true" : undefined}
+              className={cn(
+                TAP,
+                "inline-flex items-center gap-1.5 text-sm",
+                on
+                  ? "border-primary bg-primary font-semibold text-primary-foreground"
+                  : "border-border text-muted-foreground",
+              )}
+            >
+              <span className="rounded border border-current px-1 text-[10px] font-bold leading-4">
+                {PERIO_MODE_KEYS[mode]}
+              </span>
+              {PERIO_MODE_LABELS[mode]}
+            </button>
+          );
+        })}
+        <span className="text-xs text-muted-foreground" data-testid="hyg-perio-mode-range">
+          Numbers go in as{" "}
+          <span className="font-medium text-foreground">
+            {PERIO_MODE_LABELS[entry.mode]} {PERIO_MODE_RANGES[entry.mode]}
+          </span>
+          {PERIO_MODE_SCOPE[entry.mode] === "tooth" ? ", per tooth" : ""}
+        </span>
+      </div>
+
+      {/*
+        ITEM 35: voice entry. Keyed by visit so it always starts DISARMED (V-6);
+        nothing about it is saved anywhere.
+      */}
+      {hygVoice ? (
+        <PerioVoiceEntry
+          key={`${office}:${aptNum}`}
+          office={office}
+          locked={locked}
+          entry={entry}
+          onCommands={onVoice}
+          onReturnFocus={() => gridRef.current?.focus()}
+        />
+      ) : null}
+
+      {/*
+        A digit the mode cannot take is refused in the reducer, and this is where it
+        says so. `role="alert"` because she has just pressed a key and nothing
+        happened, which is the one case worth interrupting her for.
+      */}
+      {entry.refusal !== null ? (
+        <p
+          role="alert"
+          className="mt-3 flex items-start gap-1.5 rounded-xl border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-900 dark:text-amber-300"
+          data-testid="hyg-perio-refusal"
+        >
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          {entry.refusal}
+        </p>
+      ) : null}
+
       {numLockOff ? (
         <p
           role="alert"
@@ -1127,13 +1249,20 @@ export default function HygPerio() {
                   : null}
             </p>
           </div>
+          {/*
+            ITEM 26: the on-screen pad SHOWS the active mode's range rather than
+            offering twenty numbers and refusing most of them. The keyboard still
+            refuses out-of-range digits with a sentence — a hygienist on a pad
+            cannot be stopped from pressing 7 in Mobility mode — but a button she
+            can see has no excuse for being a trap.
+          */}
           <div className="mt-2 grid grid-cols-10 gap-1">
             {Array.from({ length: 20 }, (_, depth) => (
               <button
                 key={depth}
                 type="button"
-                onClick={() => act({ type: "depth", depth })}
-                disabled={cursorSkipped || locked}
+                onClick={() => act({ type: "number", value: depth })}
+                disabled={cursorSkipped || locked || !modeTakes(depth)}
                 data-testid={`hyg-perio-key-${depth}`}
                 className={cn(
                   "h-11 rounded-md border border-border text-sm font-semibold tabular-nums hover:bg-accent/50 disabled:opacity-40",
@@ -1195,8 +1324,9 @@ export default function HygPerio() {
             ))}
           </div>
           <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
-            Every key, including the number pad&apos;s, is in the legend below. Recession, mobility,
-            furcation and CAL are not charted here.
+            Every key, including the number pad&apos;s, is in the legend below. Flags belong to a
+            probing depth, so they only apply in Depth mode. CAL is worked out from the depth and the
+            recession and is never typed — or written to Open Dental, which derives its own.
           </p>
         </section>
 

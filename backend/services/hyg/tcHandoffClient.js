@@ -36,6 +36,8 @@
  * caller) and it is worth knowing before somebody adds a retry loop above it.
  */
 
+const contract = require('../../hyg/contract.gen.cjs');
+
 const DEFAULT_TIMEOUT_MS = 10000;
 
 /** Same derivation as services/tcCaseClient.js — one process, one port. */
@@ -209,6 +211,141 @@ function buildIntake({ visit, appointment, handoffCategory, date }) {
 }
 
 /**
+ * The screening's "Interested?" → TC's interest level (item 33).
+ *
+ * Yes is `hot`, Maybe is `warm`, Not now is `cold`. LOSSY in one direction:
+ * TC's scale has four steps and the screening three, and nothing here claims
+ * more certainty than the hygienist tapped. Unanswered cannot reach this map —
+ * an unanswered screening is not sendable.
+ */
+const INTEREST_MAP = Object.freeze({
+  yes: 'hot',
+  maybe: 'warm',
+  not_now: 'cold',
+});
+
+/**
+ * Whole years between a `YYYY-MM-DD` birthdate and a `YYYY-MM-DD` date, or null.
+ *
+ * Calendar arithmetic on the two strings, never Date objects: a birthdate is a
+ * local calendar fact, and a UTC parse would make a patient a year younger for
+ * part of their birthday. `0001-01-01` is Open Dental's "no date" and is null.
+ *
+ * @param {string|null|undefined} birthdate
+ * @param {string} onDate
+ * @returns {number|null}
+ */
+function ageOn(birthdate, onDate) {
+  const b = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(birthdate || ''));
+  const d = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(onDate || ''));
+  if (!b || !d) return null;
+  const [by, bm, bd] = [Number(b[1]), Number(b[2]), Number(b[3])];
+  const [dy, dm, dd] = [Number(d[1]), Number(d[2]), Number(d[3])];
+  if (by <= 1) return null;
+  let age = dy - by;
+  if (dm < bm || (dm === bm && dd < bd)) age -= 1;
+  return age >= 0 && age <= 130 ? age : null;
+}
+
+/**
+ * Build TC's intake body from a visit's ortho screening (item 33).
+ *
+ * PURE, like `buildIntake`. Everything about WHO comes from `snapshot` — what
+ * this server recorded the last time it read the appointment from Open Dental
+ * — and the visit row (office, PatNum). Nothing comes from a request.
+ *
+ * The case it opens: category `ortho`, caseType `Ortho screening`, urgency
+ * `elective`, diagnosed by the appointment's provider. `chiefConcern` is the
+ * concerns, `suspectedTreatment` is the shared summary line (so TC's text-only
+ * surfaces show something useful today), and the structured screening rides in
+ * `orthoScreening`.
+ *
+ * @param {{ visit: object, snapshot: object|null, date: string }} ctx
+ * @returns {{ ok: true, body: Record<string, unknown> }
+ *          | { ok: false, code: string, error: string }}
+ */
+function buildOrthoIntake({ visit, snapshot, date }) {
+  const parsed = contract.OrthoScreeningSchema.nullable().safeParse(
+    visit.slip ? visit.slip.orthoScreening : null
+  );
+  const screening = parsed.success ? parsed.data : null;
+  if (!contract.isOrthoSendable(screening)) {
+    return {
+      ok: false,
+      code: 'ORTHO_NOTHING_TO_SEND',
+      error: 'Answer "Interested?" on the ortho screening before sending it to the TC',
+    };
+  }
+
+  const snap = snapshot || {};
+  const patientName = String(snap.patientName || '').trim();
+  if (!patientName) {
+    return {
+      ok: false,
+      code: 'PATIENT_NAME_UNAVAILABLE',
+      error:
+        'Open Dental has not given a name for this patient on this visit yet, so a TC case ' +
+        'cannot be opened for them. Reload the visit and send again.',
+    };
+  }
+  // The DIAGNOSING provider is the appointment's provider (ProvNum — the doctor
+  // who examined), falling back to the provider the appointment displays when
+  // Open Dental named no doctor. `providerSeen` is who the patient was with.
+  const seen = String(snap.providerName || '').trim();
+  const provider = String(snap.doctorName || '').trim() || seen;
+  if (!provider) {
+    return {
+      ok: false,
+      code: 'PROVIDER_UNAVAILABLE',
+      error:
+        'This appointment has no provider on it in Open Dental, and TC needs one to open a ' +
+        'case. Set the provider on the appointment, reload the visit, and send again.',
+    };
+  }
+
+  const slip = visit.slip || {};
+  const phone = String(snap.phone || '').trim();
+  const radiographs = new Set(
+    (Array.isArray(slip.xrayTypes) ? slip.xrayTypes : [])
+      .map((x) => RADIOGRAPH_MAP[x])
+      .filter(Boolean)
+  );
+  if (screening.recordsToday.includes('pano')) radiographs.add('PANO');
+  const benefit = contract.ORTHO_BENEFIT_OPTIONS.find((o) => o.id === screening.orthoBenefit);
+
+  return {
+    ok: true,
+    body: {
+      patientName,
+      patientAge: ageOn(snap.birthdate, date),
+      phone: phone ? phone.slice(0, 200) : null,
+      odPatientId: visit.patNum,
+      diagnosingProvider: provider,
+      category: 'ortho',
+      urgency: 'elective',
+      caseType: 'Ortho screening',
+      operatory: String(snap.opName || ''),
+      visitDate: date,
+      providerSeen: seen || provider,
+      chiefConcern: contract.orthoConcernsText(screening),
+      perioStatus: PERIO_MAP[slip.perioStage] || 'unknown',
+      // A screening is not a recall decision; the treatment handoff carries that.
+      recallType: 'none',
+      radiographs: radiographs.size > 0 ? [...radiographs] : ['none'],
+      // The screening's own answer, not a guess: "Photos" under Taken today.
+      intraoralPhotosTaken: screening.recordsToday.includes('photos'),
+      areasOfConcern: '',
+      suspectedTreatment: contract.orthoScreeningSummary(screening),
+      hygienistRecommendation: screening.noteForTc,
+      insuranceNoted: benefit ? benefit.label : '',
+      patientInterestLevel: INTEREST_MAP[screening.interest] || 'unknown',
+      flagUrgent: false,
+      orthoScreening: screening,
+    },
+  };
+}
+
+/**
  * Send it. NEVER THROWS — every failure is a typed refusal, so the staged write
  * can be marked Failed with a reason instead of the send claiming success.
  *
@@ -275,6 +412,9 @@ async function submitHygieneIntake(req, { office, body }, { timeoutMs = DEFAULT_
 }
 
 module.exports = {
+  ageOn,
+  buildOrthoIntake,
+  INTEREST_MAP,
   buildIntake,
   submitHygieneIntake,
   CATEGORY_MAP,

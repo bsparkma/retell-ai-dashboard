@@ -16,6 +16,7 @@
  */
 import { handleUnauthorized } from "@/lib/api";
 import type { z } from "zod";
+import type { OrthoScreening } from "@shared/hyg/orthoScreening";
 import type {
   CaseCategory,
   CaseStatus,
@@ -47,6 +48,8 @@ import type {
   TcSmileSimulation,
   Urgency,
 } from "@shared/tc/contract";
+import { parseServedFunnel } from "./reports/funnel";
+import type { ServedFunnel } from "./reports/funnel";
 
 type CaseStatusId = z.infer<typeof CaseStatus>;
 type PreauthStatusId = z.infer<typeof PreauthStatus>;
@@ -116,14 +119,15 @@ export function tcErrorMessage(err: unknown): string {
 
 // ── Core request ────────────────────────────────────────────────────────────
 
-interface TcRequestOptions {
+export interface TcRequestOptions {
   method?: "GET" | "POST" | "PUT" | "DELETE";
   office: OfficeId;
   params?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
 }
 
-async function tcRequest<T>(path: string, options: TcRequestOptions): Promise<T> {
+/** Exported for feature modules with their own api file (features/tc/messaging). */
+export async function tcRequest<T>(path: string, options: TcRequestOptions): Promise<T> {
   const { method = "GET", office, params, body } = options;
   const url = new URL(
     `${BASE}${path.startsWith("/") ? "" : "/"}${path}`,
@@ -193,7 +197,16 @@ async function tcRequest<T>(path: string, options: TcRequestOptions): Promise<T>
 export type TcCaseSummary = Omit<
   TcCase,
   "phases" | "objections" | "followups" | "events" | "hygieneIntake"
-> & { createdAt: string; updatedAt: string };
+> & {
+  createdAt: string;
+  updatedAt: string;
+  /**
+   * Item 33: the case arrived with a hygienist's ortho screening. Computed by
+   * the list route from one office-scoped query; optional because a summary
+   * folded back from a full TcCase (mergeCase) keeps the row's own value.
+   */
+  hasOrthoScreening?: boolean;
+};
 
 export interface TcCaseListFilters {
   status?: CaseStatusId;
@@ -563,6 +576,12 @@ export interface TcIntakeSubmit {
    * already carried.
    */
   hygienistName?: string;
+  /**
+   * The hygienist's ortho screening (item 33). Sent only by the hygiene visit's
+   * own send, server-assembled; TC's intake form never sets it, and the server
+   * stores null when it is absent.
+   */
+  orthoScreening?: OrthoScreening | null;
 }
 
 export interface TcMyIntake {
@@ -587,6 +606,8 @@ export interface TcMyIntake {
    * `officeId` — PatNum numbering restarts in every OD database.
    */
   odPatientId: number | null;
+  /** Item 33. Null for every intake that is not an ortho screening. */
+  orthoScreening: OrthoScreening | null;
 }
 
 export interface TcInboxIntake {
@@ -622,6 +643,8 @@ export interface TcInboxIntake {
    * Only meaningful with `officeId`.
    */
   odPatientId: number | null;
+  /** Item 33. Null for every intake that is not an ortho screening. */
+  orthoScreening: OrthoScreening | null;
 }
 
 interface IntakeRowBase {
@@ -646,6 +669,8 @@ interface IntakeRowBase {
   insurance_noted: string;
   patient_interest_level: z.infer<typeof PatientInterestLevel>;
   flag_urgent: boolean;
+  /** jsonb (item 33). Absent from a server older than the column — read as null. */
+  ortho_screening?: OrthoScreening | null;
 }
 
 export function submitHygieneIntake(
@@ -686,6 +711,7 @@ export function myHygieneIntakes(office: OfficeId): Promise<TcMyIntake[]> {
       patientName: row.patient_name,
       caseStatus: row.case_status,
       odPatientId: row.od_patient_id ?? null,
+      orthoScreening: row.ortho_screening ?? null,
     })),
   );
 }
@@ -744,6 +770,7 @@ export function hygieneSubmissions(
       patientName: row.patient_name,
       caseStatus: row.case_status,
       odPatientId: row.od_patient_id ?? null,
+      orthoScreening: row.ortho_screening ?? null,
     })),
     hygienists: r.hygienists,
   }));
@@ -788,6 +815,7 @@ export function hygieneInbox(office: OfficeId): Promise<TcInboxIntake[]> {
       urgency: row.urgency,
       diagnosingProvider: row.diagnosing_provider,
       odPatientId: row.od_patient_id ?? null,
+      orthoScreening: row.ortho_screening ?? null,
     })),
   );
 }
@@ -1396,4 +1424,25 @@ export function putLibrarySection<K extends LibrarySection>(
     `/tc/library/${section}`,
     { method: "PUT", office, body: value },
   ).then((r) => r.value);
+}
+
+// ── Reports (server-computed) ───────────────────────────────────────────────
+
+export interface FunnelWindow {
+  /** YYYY-MM-DD, local. Omitted = the server's default (365 days ending `to`). */
+  from?: string;
+  /** YYYY-MM-DD, local. Omitted = today in the office's time zone. */
+  to?: string;
+}
+
+/**
+ * GET /reports/funnel — the conversion funnel, computed by the server from
+ * recorded status transitions. Parsed and branded on arrival (see
+ * reports/funnel.ts): the only route by which a ServedFunnel exists.
+ */
+export function getConversionFunnel(office: OfficeId, window: FunnelWindow = {}): Promise<ServedFunnel> {
+  return tcRequest<{ funnel: unknown }>("/tc/reports/funnel", {
+    office,
+    params: { from: window.from, to: window.to },
+  }).then((r) => parseServedFunnel(r.funnel));
 }

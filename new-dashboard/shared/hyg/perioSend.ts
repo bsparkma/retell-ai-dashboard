@@ -67,7 +67,10 @@ import {
   type PerioFlag,
   type PerioSite,
   PerioSiteChangeSchema,
+  emptyPerioSite,
+  perioGmIsRecession,
   type PerioSiteChange,
+  type PerioUnreadablePosition,
 } from "./perio";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -292,8 +295,26 @@ export function perioArchVerdict(chart: PerioChart, field: PerioArchStringField)
 // The plan
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The only SequenceTypes a perio send writes row by row. NEVER CAL — Open Dental derives it. */
-export const PerioSendSequenceTypeSchema = z.enum(["Probing", "BleedSupPlaqCalc", "SkipTooth"]);
+/**
+ * The only SequenceTypes a perio send writes row by row.
+ *
+ * ⚠️ **NEVER CAL.** Open Dental derives CAL itself from Probing + GingMargin, so a
+ * CAL CareIN wrote could disagree with the chart of record — and the chart of
+ * record would be the one that looked wrong. `perioCal` computes it for the
+ * SCREEN; it has no path to a payload, `odPerioWriter.js` refuses the type before
+ * the transport, and a test asserts no plan ever carries one.
+ *
+ * GingMargin, Furcation and Mobility are item 26. There is no `Recession` type —
+ * the probe asked, and Open Dental answered `400 SequenceType is invalid.`
+ */
+export const PerioSendSequenceTypeSchema = z.enum([
+  "Probing",
+  "BleedSupPlaqCalc",
+  "SkipTooth",
+  "GingMargin",
+  "Furcation",
+  "Mobility",
+]);
 export type PerioSendSequenceType = z.infer<typeof PerioSendSequenceTypeSchema>;
 
 /** One `POST /periomeasures` body, minus the PerioExamNum it learns once the exam exists. */
@@ -415,6 +436,13 @@ export function planPerioSend(chart: PerioChart): PerioSendPlan {
   });
 
   const rows: PerioMeasurePlan[] = [];
+  /*
+   * ITEM 26: the v2 rows are collected separately and appended AFTER the v1 ones,
+   * so the send keeps its phases — the arch strings and probing first, then
+   * recession, furcation and mobility. The send UI names the phase it is in, and
+   * a plan that interleaved them could not.
+   */
+  const v2Rows: PerioMeasurePlan[] = [];
   const deepSites: PerioCursor[] = [];
   for (let tooth = 1; tooth <= PERIO_TOOTH_COUNT; tooth += 1) {
     const t = normalized.teeth[String(tooth)];
@@ -431,6 +459,75 @@ export function planPerioSend(chart: PerioChart): PerioSendPlan {
       const depth = t.sites[surface].depth;
       if (depth !== null && depth > PERIO_STRING_MAX_DEPTH) deepSites.push({ tooth, surface });
     }
+
+    /*
+     * ═══════════════════════════════════════════════════════════════════════════
+     * ITEM 26's ROWS — ALWAYS PER ROW, WHICHEVER PATH THE ARCHES TAKE
+     * ═══════════════════════════════════════════════════════════════════════════
+     * The four arch strings carry probing depths and flags only. Recession,
+     * furcation and mobility have no string form at all, so they are emitted here
+     * — ABOVE the `perRowJaws` gate below, which decides only whether this jaw's
+     * PROBING has to go row by row.
+     *
+     * ABSENCE OVER ZERO, the arch-string doctrine: `-1` is Open Dental's "no
+     * measurement" and `0` is a real reading, so an unvisited site is `-1` and a
+     * tooth with nothing on it gets NO ROW at all. A row of six `-1`s is a row
+     * that says nothing; Open Dental will store one (measured), and we will not
+     * write one.
+     */
+    const gmOf = (surface: ToothSurface) => t.sites[surface].gm ?? -1;
+    if (ALL_SURFACES.some((surface) => t.sites[surface].gm !== null)) {
+      v2Rows.push({
+        tooth,
+        sequenceType: "GingMargin",
+        body: {
+          // Per site: ToothValue MUST be -1, or Open Dental refuses the row.
+          ToothValue: -1,
+          MBvalue: gmOf("MB"),
+          Bvalue: gmOf("B"),
+          DBvalue: gmOf("DB"),
+          MLvalue: gmOf("ML"),
+          Lvalue: gmOf("L"),
+          DLvalue: gmOf("DL"),
+        },
+      });
+    }
+
+    const furcationOf = (surface: ToothSurface) => t.sites[surface].furcation ?? -1;
+    if (ALL_SURFACES.some((surface) => t.sites[surface].furcation !== null)) {
+      v2Rows.push({
+        tooth,
+        sequenceType: "Furcation",
+        body: {
+          ToothValue: -1,
+          MBvalue: furcationOf("MB"),
+          Bvalue: furcationOf("B"),
+          DBvalue: furcationOf("DB"),
+          MLvalue: furcationOf("ML"),
+          Lvalue: furcationOf("L"),
+          DLvalue: furcationOf("DL"),
+        },
+      });
+    }
+
+    if (t.mobility !== null) {
+      v2Rows.push({
+        tooth,
+        sequenceType: "Mobility",
+        // PER TOOTH: the grade is in ToothValue and EVERY surface must be -1, or
+        // Open Dental refuses the row (`MBvalue is invalid...`, measured).
+        body: {
+          ToothValue: t.mobility,
+          MBvalue: -1,
+          Bvalue: -1,
+          DBvalue: -1,
+          MLvalue: -1,
+          Lvalue: -1,
+          DLvalue: -1,
+        },
+      });
+    }
+
     if (!perRowJaws.has(perioJawOfTooth(tooth))) continue;
 
     // -1 is Open Dental's "no measurement". An uncharted site is -1, NEVER 0.
@@ -473,6 +570,8 @@ export function planPerioSend(chart: PerioChart): PerioSendPlan {
     }
   }
 
+  // v1 first, then v2 — see the comment where `v2Rows` is declared.
+  rows.push(...v2Rows);
   return { strings, arches, rows, deepSites };
 }
 
@@ -503,7 +602,20 @@ export function estimatePerioSendRequests({
 // The read-back
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const PerioMismatchKindSchema = z.enum(["depth", "flags", "skipped", "duplicate"]);
+/**
+ * ITEM 26 adds `gm`, `furcation` and `mobility`: the send reads back EVERY row it
+ * wrote before it says `Written`, and a row it cannot verify is a row it must not
+ * claim.
+ */
+export const PerioMismatchKindSchema = z.enum([
+  "depth",
+  "flags",
+  "skipped",
+  "duplicate",
+  "gm",
+  "furcation",
+  "mobility",
+]);
 
 export const PerioMismatchSchema = z.object({
   tooth: z.number().int(),
@@ -535,6 +647,21 @@ function flagWords(site: PerioSite): string {
  * string finding 4 describes, and it is a mismatch, not noise. A skipped tooth
  * must come back skipped and carry no readings.
  */
+/** "2 mm recession", "102 (unrecognised margin)", "not charted". */
+function gmWords(value: number | null): string {
+  if (value === null) return "not charted";
+  if (!perioGmIsRecession(value)) return `${value} (unrecognised margin)`;
+  return `${value} mm recession`;
+}
+
+function furcationWords(value: number | null): string {
+  return value === null ? "not charted" : `class ${value}`;
+}
+
+function mobilityWords(value: number | null): string {
+  return value === null ? "not charted" : `grade ${value}`;
+}
+
 export function comparePerioReadback(expected: PerioChart, found: PerioChart): PerioMismatch[] {
   const want = normalizePerioChart(expected);
   const have = normalizePerioChart(found);
@@ -551,12 +678,24 @@ export function comparePerioReadback(expected: PerioChart, found: PerioChart): P
         found: f.skipped ? "skipped" : "not skipped",
       });
     }
+    // ITEM 26: mobility is per TOOTH, so it is compared here and carries no surface.
+    // A skipped tooth sends nothing, so nothing must read back on one.
+    const wantMobility = e.skipped ? null : e.mobility;
+    if (wantMobility !== f.mobility) {
+      out.push({
+        tooth,
+        surface: null,
+        kind: "mobility",
+        expected: mobilityWords(wantMobility),
+        found: mobilityWords(f.mobility),
+      });
+    }
     for (const surface of ALL_SURFACES) {
       // A skipped tooth's readings are KEPT on the chart (one key undoes a
       // skip) but never sent, so what must read back there is nothing.
-      const wantSite = e.skipped
-        ? { depth: null, bleeding: false, suppuration: false, plaque: false, calculus: false }
-        : e.sites[surface];
+      // ITEM 26: `emptyPerioSite()` rather than a literal, so a site gaining a
+      // field cannot leave this comparison quietly reading `undefined`.
+      const wantSite = e.skipped ? emptyPerioSite() : e.sites[surface];
       const haveSite = f.sites[surface];
       if (wantSite.depth !== haveSite.depth) {
         out.push({
@@ -569,6 +708,20 @@ export function comparePerioReadback(expected: PerioChart, found: PerioChart): P
       }
       if (flagWords(wantSite) !== flagWords(haveSite)) {
         out.push({ tooth, surface, kind: "flags", expected: flagWords(wantSite), found: flagWords(haveSite) });
+      }
+      // ITEM 26. Compared by VALUE, so a recession read back in the other family
+      // (101–119) is a mismatch rather than something quietly treated as equal.
+      if (wantSite.gm !== haveSite.gm) {
+        out.push({ tooth, surface, kind: "gm", expected: gmWords(wantSite.gm), found: gmWords(haveSite.gm) });
+      }
+      if (wantSite.furcation !== haveSite.furcation) {
+        out.push({
+          tooth,
+          surface,
+          kind: "furcation",
+          expected: furcationWords(wantSite.furcation),
+          found: furcationWords(haveSite.furcation),
+        });
       }
     }
   }
@@ -594,20 +747,80 @@ export function comparePerioReadback(expected: PerioChart, found: PerioChart): P
  * summary. Item 14 runs it the same way round for drift: `before` is what CareIN
  * wrote, `after` is what Open Dental holds now.
  */
+/**
+ * ITEM 31: EVERY FAMILY A SEND WRITES IS A FAMILY DRIFT COMPARES.
+ *
+ * Item 26 widened `comparePerioReadback` to recession, furcation and mobility so
+ * the send could read back every row it wrote, and filtered those three out here
+ * on purpose (26b). This is 26b: they come through now, so a hygienist's
+ * recession or mobility edited in Open Dental is reported as `changed` instead of
+ * silently matching. The doctrine is unchanged — a difference is somebody's
+ * correction, and `changed` still offers no resend.
+ *
+ * Only `duplicate` is dropped: it describes Open Dental holding two ROWS, and two
+ * charts cannot differ that way.
+ */
+function isChangeKind(kind: PerioMismatch["kind"]): kind is PerioSiteChange["kind"] {
+  return kind !== "duplicate";
+}
+
 export function perioChartChanges(before: PerioChart, after: PerioChart): PerioSiteChange[] {
   const out: PerioSiteChange[] = [];
   for (const m of comparePerioReadback(before, after)) {
-    // `duplicate` describes Open Dental holding two rows; two CHARTS cannot differ that way.
-    if (m.kind === "duplicate") continue;
+    if (!isChangeKind(m.kind)) continue;
     out.push({ tooth: m.tooth, surface: m.surface, kind: m.kind, from: m.expected, to: m.found });
   }
   return out;
 }
 
-/** "#14 B: 3 mm → 4 mm" */
+/**
+ * The word a change line carries for its family, so a changed recession reads as
+ * a recession change and not as a depth change. The v1 kinds carry none: their
+ * words ("4 mm", "bleeding", "skipped") already say what they are, and every line
+ * a hygienist has seen since item 13 stays exactly as it was.
+ */
+export const PERIO_CHANGE_KIND_LABEL: Readonly<Record<PerioSiteChange["kind"], string | null>> = Object.freeze({
+  depth: null,
+  flags: null,
+  skipped: null,
+  gm: "gingival margin",
+  furcation: "furcation",
+  mobility: "mobility",
+});
+
+/**
+ * "#14 B: 3 mm → 4 mm", "#3 B gingival margin: 2 mm recession → 3 mm recession",
+ * "#30 mobility: grade 1 → grade 2" — mobility names the TOOTH, never a site.
+ */
 export function perioChangeLine(c: PerioSiteChange): string {
   const where = c.surface === null ? `#${c.tooth}` : `#${c.tooth} ${c.surface}`;
-  return `${where}: ${c.from} → ${c.to}`;
+  const label = PERIO_CHANGE_KIND_LABEL[c.kind];
+  return `${label === null ? where : `${where} ${label}`}: ${c.from} → ${c.to}`;
+}
+
+/**
+ * ITEM 32: "#3 B gingival margin", "#30 mobility" — WHERE Open Dental holds a
+ * value CareIN cannot interpret. Position and family only, never the value.
+ * A row filed on a tooth CareIN cannot place says so instead of a number.
+ */
+export function perioUnreadableRef(p: PerioUnreadablePosition): string {
+  const label = PERIO_CHANGE_KIND_LABEL[p.kind];
+  if (p.tooth === null || p.tooth < 1 || p.tooth > 32) return `${label} on a tooth CareIN cannot place`;
+  return `${p.surface === null ? `#${p.tooth}` : `#${p.tooth} ${p.surface}`} ${label}`;
+}
+
+/** How many positions a sentence names before it counts the rest. */
+export const PERIO_UNREADABLE_NAMED = 3;
+
+/**
+ * "#3 B gingival margin" / "#3 B gingival margin, #30 mobility and 2 more" — the
+ * one list both the drift line and the amend refusal print, so the screen and
+ * the refusal can never name the same positions two different ways.
+ */
+export function perioUnreadableList(positions: readonly PerioUnreadablePosition[]): string {
+  const named = positions.slice(0, PERIO_UNREADABLE_NAMED).map(perioUnreadableRef).join(", ");
+  const rest = positions.length - PERIO_UNREADABLE_NAMED;
+  return rest > 0 ? `${named} and ${rest} more` : named;
 }
 
 /** "#14 B" — the sites an amendment touches, for the audit trail and the grid. */

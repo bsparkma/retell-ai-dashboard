@@ -4,7 +4,12 @@
  * Restyled port of the legacy FollowUpActionCard onto the platform contract:
  * joined case context (status/urgency/value), escalation tier from
  * lib/followups, and the three queue actions (Complete / Skip / Reschedule)
- * wired to the /api/tc followup endpoints. Confirmed-save rule: success toasts
+ * wired to the /api/tc followup endpoints, plus "Draft message" (item 38),
+ * which opens the case's Messages tab with ONE draft seeded from this
+ * follow-up's template — a draft, never a send — and "Email template" (item
+ * 40), which opens the same tab with the email template LIBRARY picker for
+ * this follow-up (nothing is written until the TC picks one and clicks Draft).
+ * Confirmed-save rule: success toasts
  * fire only after the API resolves; failures keep the dialog open with the
  * typed values and toast the server message.
  */
@@ -14,9 +19,11 @@ import { toast } from "sonner";
 import {
   CalendarClock,
   CheckCircle2,
+  FileText,
   Loader2,
   Mail,
   MessageSquare,
+  MessageSquarePlus,
   Phone,
   SkipForward,
   User,
@@ -60,6 +67,14 @@ const CHANNEL_META: Record<ChannelId, { label: string; Icon: typeof Phone }> = {
   text: { label: "Text", Icon: MessageSquare },
   email: { label: "Email", Icon: Mail },
   in_person: { label: "In person", Icon: User },
+};
+
+/** Which message channel "Draft message" opens for each follow-up channel. */
+const DRAFT_CHANNEL: Record<ChannelId, "sms" | "email"> = {
+  phone_call: "sms",
+  text: "sms",
+  email: "email",
+  in_person: "sms",
 };
 
 const KIND_LABELS: Record<TcDueFollowup["kind"], string> = {
@@ -222,6 +237,22 @@ export function FollowupActionCard({
           )}
         </span>
         <div className="flex items-center gap-1.5 shrink-0">
+          <Button asChild size="sm" variant="outline" className="gap-1.5">
+            <Link
+              href={`/tc/cases/${followup.caseId}?tab=messages&draftFrom=${followup.followupId}&channel=${DRAFT_CHANNEL[followup.channel]}`}
+              data-testid="draft-message"
+            >
+              <MessageSquarePlus className="w-3.5 h-3.5" /> Draft message
+            </Link>
+          </Button>
+          <Button asChild size="sm" variant="outline" className="gap-1.5">
+            <Link
+              href={`/tc/cases/${followup.caseId}?tab=messages&draftFrom=${followup.followupId}&channel=email&pickTemplate=1`}
+              data-testid="email-template"
+            >
+              <FileText className="w-3.5 h-3.5" /> Email template
+            </Link>
+          </Button>
           <Button size="sm" className="gap-1.5" onClick={() => setCompleteOpen(true)}>
             <CheckCircle2 className="w-3.5 h-3.5" /> Complete
           </Button>

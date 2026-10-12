@@ -42,11 +42,33 @@
  * cannot reach Open Dental.
  *
  * ═════════════════════════════════════════════════════════════════════════════
- * ONLY THREE SEQUENCE TYPES, AND NEVER CAL
+ * SIX SEQUENCE TYPES, AND NEVER CAL
  * ═════════════════════════════════════════════════════════════════════════════
- * Probing, BleedSupPlaqCalc and SkipTooth. CAL is derived by Open Dental and
- * never stored; recession, mobility and furcation are v2. Refused here, before
- * the transport, whatever the caller asked for.
+ * Probing, BleedSupPlaqCalc, SkipTooth, and item 26's GingMargin, Furcation and
+ * Mobility. Anything else — above all **CAL** — is refused here, before the
+ * transport, whatever the caller asked for. Open Dental derives CAL itself from
+ * Probing + GingMargin, so a CAL CareIN wrote could disagree with the chart of
+ * record, and the chart of record would be the one that looked wrong.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * EACH v2 TYPE HAS A SHAPE, AND OPEN DENTAL DOES NOT ENFORCE THE CLINICAL PART
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Item 19's probe measured all of this (`docs/reports/feature-hyg-perio-v2-probe.md`):
+ *
+ *   GingMargin  per site. `ToothValue` MUST be -1. Surfaces are 0-19 — the
+ *               §0-proven RECESSION family. Open Dental also accepts 101-119;
+ *               CareIN never writes it, so it is refused here too.
+ *   Furcation   per site. `ToothValue` MUST be -1. Surfaces are classes 1-3 —
+ *               and **Open Dental accepted a 5**, and accepted furcation on #8, a
+ *               central incisor. It does not know which teeth have roots to fork.
+ *               So the class range AND the tooth list are enforced HERE.
+ *   Mobility    per tooth, the grade in `ToothValue` (0-3 clinically; Open Dental
+ *               would take 0-19). EVERY surface column MUST be -1 or Open Dental
+ *               refuses the row outright.
+ *
+ * A row whose every value is -1 says nothing, and is refused rather than written:
+ * Open Dental will happily store one (measured), which is exactly why the refusal
+ * has to be on this side.
  *
  * `OPENDENTAL_WRITE_DISABLED=true` is enforced inside `apiWriteRaw` and
  * `apiDeleteRaw` themselves and comes back as an ordinary refusal.
@@ -55,7 +77,74 @@
 const contract = require('../../hyg/contract.gen.cjs');
 
 /** The only SequenceTypes this file will post. See the header. */
-const ALLOWED_SEQUENCE_TYPES = Object.freeze(['Probing', 'BleedSupPlaqCalc', 'SkipTooth']);
+const ALLOWED_SEQUENCE_TYPES = Object.freeze([
+  'Probing',
+  'BleedSupPlaqCalc',
+  'SkipTooth',
+  'GingMargin',
+  'Furcation',
+  'Mobility',
+]);
+
+/** The six surface columns, without ToothValue — item 26 treats the two differently. */
+const SURFACE_VALUE_KEYS = Object.freeze(['MBvalue', 'Bvalue', 'DBvalue', 'MLvalue', 'Lvalue', 'DLvalue']);
+
+/**
+ * Item 26's shape rules, checked before the transport. Returns an error sentence
+ * or null.
+ *
+ * @param {string} sequenceType @param {number} tooth @param {Record<string, number>} v
+ * @returns {string|null}
+ */
+function v2ShapeError(sequenceType, tooth, v) {
+  const surfaces = SURFACE_VALUE_KEYS.map((k) => v[k]);
+  const anyMeasured = surfaces.some((n) => n !== -1);
+
+  if (sequenceType === 'Mobility') {
+    // Per TOOTH. Open Dental refuses a surface value on this type outright.
+    if (!surfaces.every((n) => n === -1)) {
+      return 'A Mobility row carries its grade in ToothValue; every surface must be -1';
+    }
+    if (v.ToothValue < 0 || v.ToothValue > contract.PERIO_MAX_MOBILITY) {
+      return `Mobility is 0-${contract.PERIO_MAX_MOBILITY}`;
+    }
+    return null;
+  }
+
+  if (sequenceType === 'GingMargin' || sequenceType === 'Furcation') {
+    if (v.ToothValue !== -1) return `A ${sequenceType} row is per site; ToothValue must be -1`;
+    if (!anyMeasured) return `A ${sequenceType} row with no measurement on any surface says nothing`;
+  }
+
+  if (sequenceType === 'GingMargin') {
+    // §0: recession is 0-19. 101-119 is the other family and we never write it.
+    for (const n of surfaces) {
+      if (n === -1) continue;
+      if (n < contract.PERIO_GM_FAMILIES.recessionMin || n > contract.PERIO_GM_FAMILIES.recessionMax) {
+        return (
+          `A gingival margin is ${contract.PERIO_GM_FAMILIES.recessionMin}-` +
+          `${contract.PERIO_GM_FAMILIES.recessionMax} mm of recession`
+        );
+      }
+    }
+    return null;
+  }
+
+  if (sequenceType === 'Furcation') {
+    if (!contract.perioToothHasFurcation(tooth)) {
+      return `#${tooth} is not a multi-rooted tooth and has no furcation`;
+    }
+    for (const n of surfaces) {
+      if (n === -1) continue;
+      if (n < contract.PERIO_MIN_FURCATION || n > contract.PERIO_MAX_FURCATION) {
+        return `A furcation class is ${contract.PERIO_MIN_FURCATION}-${contract.PERIO_MAX_FURCATION}`;
+      }
+    }
+    return null;
+  }
+
+  return null;
+}
 
 const WRITE_TIMEOUT_MS = 30000;
 
@@ -174,7 +263,7 @@ async function createPerioExam(od, { patNum, examDate, provNum, strings }) {
  */
 async function createPerioMeasure(od, { examNum, tooth, sequenceType, values }) {
   if (!ALLOWED_SEQUENCE_TYPES.includes(sequenceType)) {
-    // CAL, GingMargin, Mobility, Furcation — refused BEFORE the transport.
+    // CAL above all — refused BEFORE the transport. See the header.
     return refusedBeforeTransport(
       'SEQUENCE_TYPE_NOT_ALLOWED',
       `CareIN does not write ${String(sequenceType)} rows`
@@ -190,11 +279,27 @@ async function createPerioMeasure(od, { examNum, tooth, sequenceType, values }) 
   const body = { PerioExamNum: examNum, SequenceType: sequenceType, IntTooth: tooth };
   for (const key of MEASURE_VALUE_KEYS) {
     const v = Number(values && values[key]);
-    // -1 is "no measurement"; a surface value is 0–19 (a depth) or 0–15 (flags).
-    if (!Number.isInteger(v) || v < -1 || v > contract.PERIO_MAX_DEPTH) {
-      return refusedBeforeTransport('BAD_MEASURE', `A measurement needs ${key} between -1 and 19`);
+    if (!Number.isInteger(v)) {
+      return refusedBeforeTransport('BAD_MEASURE', `A measurement needs ${key} to be a whole number`);
     }
     body[key] = v;
+  }
+
+  /*
+   * ITEM 26: the per-type shape and the clinical limits, BEFORE the generic
+   * -1..19 floor below. Both would refuse a gingival margin of 102, but only this
+   * one says "a gingival margin is 0-19 mm of recession" rather than "between -1
+   * and 19" — and the sentence is what tells a hygienist what to do next.
+   */
+  const shape = v2ShapeError(sequenceType, tooth, body);
+  if (shape !== null) return refusedBeforeTransport('BAD_MEASURE', shape);
+
+  for (const key of MEASURE_VALUE_KEYS) {
+    // -1 is "no measurement"; a surface value is 0–19 (a depth) or 0–15 (flags).
+    // The floor under every type, including the three v1 ones.
+    if (body[key] < -1 || body[key] > contract.PERIO_MAX_DEPTH) {
+      return refusedBeforeTransport('BAD_MEASURE', `A measurement needs ${key} between -1 and 19`);
+    }
   }
 
   const res = await od.client.apiWriteRaw('POST', '/periomeasures', body, {

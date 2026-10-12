@@ -320,7 +320,7 @@ export function PerioSendPanel({
 
       {s.state === "written" && s.supersedesExamNum !== null && !replacedStillThere ? (
         <p className="mt-1 text-xs text-muted-foreground" data-testid="hyg-perio-amended">
-          {s.amendDiff.length} {s.amendDiff.length === 1 ? "site" : "sites"} corrected ·{" "}
+          {s.amendDiff.length} {s.amendDiff.length === 1 ? "reading" : "readings"} corrected ·{" "}
           {s.amendDiff.slice(0, 3).map(perioChangeLine).join("; ")}
           {s.amendDiff.length > 3 ? ` and ${s.amendDiff.length - 3} more` : ""} · exam{" "}
           {s.supersedesExamNum} deleted

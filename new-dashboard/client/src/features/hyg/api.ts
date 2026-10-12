@@ -30,11 +30,13 @@ import {
   HygAppointmentSchema,
   HygDayIdentitiesResponseSchema,
   HygDayResponseSchema,
+  HygOrthoSendResponseSchema,
   HygSendResponseSchema,
   HygVisitSchema,
   OfficeIdSchema,
   type HygDayIdentitiesResponse,
   type HygDayResponse,
+  type HygOrthoSendResponse,
   type HygSendResponse,
   type HygSlip,
   type OfficeId,
@@ -579,6 +581,34 @@ export async function fetchPerio(
 }
 
 /**
+ * Perio voice (item 35): the answer to a token mint, and NOTHING else. Strict,
+ * so a response that grew a field (anything beyond the token and its region)
+ * is refused here rather than carried into the page.
+ */
+const HygVoiceTokenSchema = z
+  .object({ success: z.literal(true), token: z.string().min(1), region: z.string().min(1) })
+  .strict();
+export type HygVoiceToken = z.infer<typeof HygVoiceTokenSchema>;
+
+/**
+ * Mint a 10-minute Azure Speech token for perio voice entry. Sends NO body —
+ * the server refuses one, and nothing that was said is ever sent to CareIN.
+ * The office is only the hyg router's usual scope; the token is not per-office.
+ *
+ * 404 when HYG_VOICE is off on this server; 429 (HYG_VOICE_BUDGET_EXHAUSTED)
+ * when today's voice minutes are spent; 503 when Azure Speech is not set up.
+ */
+export async function mintHygVoiceToken(office: OfficeId): Promise<HygVoiceToken> {
+  return mutate("POST", "/voice/token", { office }, (raw) => {
+    const parsed = HygVoiceTokenSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new HygApiError("CareIN answered the voice token request in a shape this page cannot use", 0, "CONTRACT_MISMATCH");
+    }
+    return parsed.data;
+  });
+}
+
+/**
  * Store the chart, whole, as a Draft.
  *
  * A chart that was staged goes back to Draft if a READING changed — the staged
@@ -621,7 +651,8 @@ export async function savePerio(
  * `drift` rides the same response because it is answered from the same
  * `/perioexams` read. Two of its five answers say NOTHING to the user: `matches`
  * (checked, still true) and `unknown` (Open Dental could not be read). Drawing
- * either of them would be worse than silence.
+ * either of them would be worse than silence. Item 32: `unknown` whose `reason`
+ * is `uninterpretable` is the exception — one quiet line naming where.
  */
 export async function fetchPerioPrior(
   office: OfficeId,
@@ -762,6 +793,39 @@ export async function removePerioReplacedExam(
   return mutate("POST", `/visit/${aptNum}/perio/send/remove-replaced`, { office }, parsePerioSend, {
     examNum,
   });
+}
+
+/**
+ * Send the ortho screening to TC, now (item 33).
+ *
+ * THE BODY IS EMPTY, ON PURPOSE. Office and PatNum come off the stored visit and
+ * the patient and provider off the server's own read of the appointment; there
+ * is nothing this page may tell the server about who the case is for. A 200 is
+ * TC's case, read back onto the visit — `visit.orthoSend` is what the tab
+ * renders as "Sent", never this call's own success.
+ */
+export async function sendOrthoScreening(
+  office: OfficeId,
+  aptNum: number,
+): Promise<HygOrthoSendResponse> {
+  return mutate(
+    "POST",
+    `/visit/${aptNum}/ortho-screening/send`,
+    { office },
+    (raw) => {
+      const parsed = HygOrthoSendResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new HygApiError(
+          "CareIN answered the ortho send with something this page could not read",
+          0,
+          "CONTRACT_MISMATCH",
+          { issues: parsed.error.issues.slice(0, 5) },
+        );
+      }
+      return parsed.data;
+    },
+    {},
+  );
 }
 
 /**

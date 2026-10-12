@@ -81,8 +81,17 @@ const STAGED_COLUMNS = `
 
 const VISIT_COLUMNS = `
   visit_id, office, apt_num, pat_num, visit_date, slip,
+  appointment_snapshot, ortho_tc_case_id, ortho_sent_at, ortho_sent_by, ortho_send_claimed_at,
   created_by, created_at, updated_by, updated_at
 `;
+
+/**
+ * How long an ortho send's claim holds before another press may take it over
+ * (item 33). Long enough to cover TC's 10s loopback timeout many times over;
+ * short enough that a process that died mid-send does not lock the screening
+ * for the rest of the visit.
+ */
+const ORTHO_CLAIM_STALE_SQL = "interval '2 minutes'";
 
 /** An ISO string, or null. Postgres hands back Date objects. */
 function iso(value) {
@@ -206,6 +215,15 @@ function toVisit(visitRow, itemRows, stagedRows) {
     slip: readSlip(visitRow.slip, visitRow.visit_id),
     items: itemRows.map(toItem),
     stagedWrites: stagedRows.map(toStagedWrite),
+    // Item 33. Server-set after TC answered with a case; null until then.
+    orthoSend:
+      visitRow.ortho_tc_case_id !== null && visitRow.ortho_tc_case_id !== undefined
+        ? {
+            caseId: String(visitRow.ortho_tc_case_id),
+            sentAt: iso(visitRow.ortho_sent_at),
+            sentBy: visitRow.ortho_sent_by ?? '',
+          }
+        : null,
     createdBy: visitRow.created_by,
     createdAt: iso(visitRow.created_at),
     updatedBy: visitRow.updated_by ?? null,
@@ -296,15 +314,126 @@ async function openVisit(pool, { office, aptNum, patNum, visitDate, actor }) {
  */
 async function saveSlip(pool, { office, aptNum, slip, actor }) {
   const parsed = contract.HygSlipSchema.parse(slip);
+  /*
+   * THE ORTHO SCREENING FREEZES ONCE IT IS SENT, OR WHILE IT IS BEING SENT
+   * (item 33).
+   *
+   * The client sends the WHOLE slip on every autosave, screening included. Once
+   * TC has a case built from the screening — or while a send holds a fresh
+   * claim — the STORED screening is kept and the incoming one is discarded, in
+   * the same statement, so there is no read-then-write window in which a save
+   * could change the sheet out from under the case it was sent as. Every other
+   * slip field saves exactly as before.
+   */
   const res = await pool.query(
     `UPDATE hyg_visit
-        SET slip = $3::jsonb, updated_by = $4, updated_at = now()
+        SET slip = CASE
+              WHEN ortho_tc_case_id IS NULL
+               AND (ortho_send_claimed_at IS NULL
+                    OR ortho_send_claimed_at < now() - ${ORTHO_CLAIM_STALE_SQL})
+                THEN $3::jsonb
+              ELSE jsonb_set($3::jsonb, '{orthoScreening}', COALESCE(slip->'orthoScreening', 'null'::jsonb))
+            END,
+            updated_by = $4, updated_at = now()
       WHERE office = $1 AND apt_num = $2
       RETURNING ${VISIT_COLUMNS}`,
     [office, aptNum, JSON.stringify(parsed), actor]
   );
   if (res.rowCount === 0) return null;
   return hydrate(pool, res.rows[0]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The ortho screening's send (item 33)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Record what Open Dental last said about this visit's appointment.
+ *
+ * Called ONLY by routes that already read the appointment from Open Dental, so
+ * it costs no Open Dental request of its own. The `pat_num = $3` guard is the
+ * point: a snapshot is written only onto the visit of the patient it
+ * describes, so an appointment that moved to somebody else in Open Dental can
+ * never put that person's name on this visit's case.
+ *
+ * `updated_at` is NOT touched — this is a read being remembered, not an edit
+ * somebody made.
+ *
+ * @returns {Promise<boolean>} whether a visit row took it
+ */
+async function saveAppointmentSnapshot(pool, { office, aptNum, patNum, snapshot }) {
+  const res = await pool.query(
+    `UPDATE hyg_visit SET appointment_snapshot = $4::jsonb
+      WHERE office = $1 AND apt_num = $2 AND pat_num = $3`,
+    [office, aptNum, patNum, JSON.stringify(snapshot)]
+  );
+  return res.rowCount === 1;
+}
+
+/**
+ * The visit and the raw ortho-send facts the contract does not expose: the
+ * appointment snapshot and the claim. Null when there is no visit.
+ */
+async function getOrthoSendContext(pool, { office, aptNum }) {
+  const found = await pool.query(
+    `SELECT ${VISIT_COLUMNS} FROM hyg_visit WHERE office = $1 AND apt_num = $2`,
+    [office, aptNum]
+  );
+  if (found.rowCount === 0) return null;
+  const row = found.rows[0];
+  const snapshot =
+    row.appointment_snapshot && typeof row.appointment_snapshot === 'object'
+      ? row.appointment_snapshot
+      : null;
+  return { visit: await hydrate(pool, row), snapshot };
+}
+
+/**
+ * Take the send. Conditional, so two presses racing each other cannot both
+ * reach TC: only a visit with no case id and no FRESH claim is claimed.
+ *
+ * @returns {Promise<boolean>} true when THIS call holds the claim
+ */
+async function claimOrthoSend(pool, { office, aptNum }) {
+  const res = await pool.query(
+    `UPDATE hyg_visit SET ortho_send_claimed_at = now()
+      WHERE office = $1 AND apt_num = $2
+        AND ortho_tc_case_id IS NULL
+        AND (ortho_send_claimed_at IS NULL
+             OR ortho_send_claimed_at < now() - ${ORTHO_CLAIM_STALE_SQL})
+      RETURNING visit_id`,
+    [office, aptNum]
+  );
+  return res.rowCount === 1;
+}
+
+/**
+ * TC answered with a case: record it and release the claim, in one statement.
+ * `ortho_tc_case_id IS NULL` in the WHERE means a case id, once written, is
+ * never overwritten.
+ *
+ * @returns {Promise<Record<string, any>|null>} the visit, or null if it was already sent
+ */
+async function markOrthoSent(pool, { office, aptNum, caseId, actor }) {
+  const res = await pool.query(
+    `UPDATE hyg_visit
+        SET ortho_tc_case_id = $3, ortho_sent_at = now(), ortho_sent_by = $4,
+            ortho_send_claimed_at = NULL
+      WHERE office = $1 AND apt_num = $2 AND ortho_tc_case_id IS NULL
+      RETURNING ${VISIT_COLUMNS}`,
+    [office, aptNum, caseId, actor]
+  );
+  if (res.rowCount === 0) return null;
+  return hydrate(pool, res.rows[0]);
+}
+
+/** TC did not take it: release the claim. The screening is untouched. */
+async function releaseOrthoClaim(pool, { office, aptNum }) {
+  await pool.query(
+    `UPDATE hyg_visit SET ortho_send_claimed_at = NULL
+      WHERE office = $1 AND apt_num = $2 AND ortho_tc_case_id IS NULL`,
+    [office, aptNum]
+  );
 }
 
 /**
@@ -925,6 +1054,9 @@ async function cancelPerioAmendment(pool, { office, visit, chart, composed, acto
 
 module.exports = {
   CLIENT_MUTABLE_STATES,
+  // Exported so orthoScreeningMigration.test.js can check every column it names
+  // against the replayed tenant schema.
+  VISIT_COLUMNS,
   PERIO_KIND,
   perioRestingState,
   beginPerioAmendment,
@@ -942,6 +1074,11 @@ module.exports = {
   getVisit,
   openVisit,
   saveSlip,
+  saveAppointmentSnapshot,
+  getOrthoSendContext,
+  claimOrthoSend,
+  markOrthoSent,
+  releaseOrthoClaim,
   addItem,
   updateItem,
   removeItem,

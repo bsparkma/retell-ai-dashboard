@@ -104,6 +104,9 @@ export function StatusTransitionDialog({
             caseId: result.case.caseId,
             patientName: result.case.patientName,
             caseValueCents: result.case.caseValueCents,
+            // The persisted case's office: the overlay asks THAT office's
+            // funnel for its served acceptance rate.
+            office: result.case.officeId,
           },
           null,
         );

@@ -259,8 +259,11 @@ describe("ACCEPTANCE 5: letter keys are unchanged", () => {
     [kb("ArrowLeft", "ArrowLeft"), { type: "move", step: -1 }],
     [kb("Backspace", "Backspace"), { type: "erase" }],
     [kb("Delete", "Delete"), { type: "clear" }],
-    [kb("7", "Digit7"), { type: "depth", depth: 7 }],
-    [kb("@", "Digit2", { shiftKey: true }), { type: "depth", depth: 12 }],
+    // ITEM 26: a digit is a `number` now, because what it MEANS depends on the
+    // active mode and a key cannot know the mode. The reducer is the one place
+    // that does.
+    [kb("7", "Digit7"), { type: "number", value: 7 }],
+    [kb("@", "Digit2", { shiftKey: true }), { type: "number", value: 12 }],
   ] as const)("%o", (k, action) => {
     expect(keyToPerioAction(k)).toEqual(action);
   });

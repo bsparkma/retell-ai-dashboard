@@ -48,6 +48,10 @@ export * from "../../new-dashboard/shared/hyg/perio";
 // predicate, the per-row rows and the read-back comparison. perioSend.ts imports
 // from perio.ts and contract.ts, never the reverse.
 export * from "../../new-dashboard/shared/hyg/perioSend";
+// The ortho screening (item 33): its vocabularies, its schema and the ONE
+// summary function the hygiene screen and the TC case both render. contract.ts
+// imports it without re-exporting, so nothing here is exported twice.
+export * from "../../new-dashboard/shared/hyg/orthoScreening";
 // The routes compose small request shapes from contract pieces; export the SAME
 // zod instance so those shapes and the contract schemas share one library
 // version. ZodError is what the 400-shaping helper switches on.

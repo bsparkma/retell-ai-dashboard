@@ -24,6 +24,7 @@ import {
   type TcSmileSimulation,
 } from "./contract";
 import type { EmailBlock } from "./emailBlocks";
+import type { OrthoScreening } from "../hyg/orthoScreening";
 
 type Iso = string;
 
@@ -161,6 +162,12 @@ export interface TcHygieneIntakeRow {
   insurance_noted: string;
   patient_interest_level: string;
   flag_urgent: boolean;
+  /**
+   * jsonb, NULLABLE (item 33). Optional on the row type because a row read
+   * through a column list that predates it simply lacks the key, and that
+   * absence means exactly what null does: no screening.
+   */
+  ortho_screening?: OrthoScreening | null;
 }
 
 export interface TcCaseRows {
@@ -318,6 +325,7 @@ export function caseToRows(tcCase: TcCase, newId: () => string): TcCaseRows {
         insurance_noted: c.hygieneIntake.insuranceNoted,
         patient_interest_level: c.hygieneIntake.patientInterestLevel,
         flag_urgent: c.hygieneIntake.flagUrgent,
+        ortho_screening: c.hygieneIntake.orthoScreening,
       }
     : null;
 
@@ -454,6 +462,7 @@ export function caseFromRows(rows: TcCaseRows): TcCase {
           insuranceNoted: hygieneIntakeRow.insurance_noted,
           patientInterestLevel: hygieneIntakeRow.patient_interest_level,
           flagUrgent: hygieneIntakeRow.flag_urgent,
+          orthoScreening: hygieneIntakeRow.ortho_screening ?? null,
         }
       : null,
   });

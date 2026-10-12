@@ -206,15 +206,46 @@ function sendChart(send) {
 }
 
 /**
- * What Open Dental holds for one exam, as a chart.
+ * What Open Dental holds for one exam, as a chart — AND what it holds that the
+ * chart cannot (item 32).
  *
- * @returns {Promise<{ ok: true, chart: object } | { ok: false, error: string }>}
+ * `uninterpretable` is `chartFromMeasures`' list: v2 values that land in the chart
+ * as "nothing charted" because CareIN cannot interpret them. Before item 32 only
+ * `.chart` was taken, so the correction path saw such a value as empty and could
+ * supersede an exam holding a value somebody put there.
+ *
+ * @returns {Promise<{ ok: true, chart: object, uninterpretable: object[] } | { ok: false, error: string }>}
  */
 async function readExamChart(odGet, examNum) {
   const read = await odPerio.readExamMeasures(odGet, { examNum });
   if (!read.ok) return { ok: false, error: read.error };
   if (read.truncated) return { ok: false, error: `only part of exam ${examNum} came back` };
-  return { ok: true, chart: odPerio.chartFromMeasures(read.rows).chart };
+  const { chart, uninterpretable } = odPerio.chartFromMeasures(read.rows);
+  return { ok: true, chart, uninterpretable };
+}
+
+/**
+ * ITEM 32: NEVER SUPERSEDE AN EXAM CareIN COULD NOT FULLY READ.
+ *
+ * A correction replaces the whole exam. If that exam holds a value CareIN cannot
+ * interpret, the replacement would silently drop it — somebody's hand, erased
+ * by a chart that never knew it was there. So the correction is refused, and the
+ * FIRST sentence names where. This refusal PREVENTS a write; it never causes one.
+ *
+ * @param {number} examNum
+ * @param {object[]} uninterpretable
+ * @param {string} outcome the closing sentence — what did not happen
+ */
+function refuseUnreadableBase(examNum, uninterpretable, outcome) {
+  const where = contract.perioUnreadableList(
+    uninterpretable.map((u) => ({ tooth: u.tooth, surface: u.surface, kind: u.kind }))
+  );
+  return refuse(
+    409,
+    'AMEND_BASE_UNREADABLE',
+    `Exam ${examNum} in Open Dental holds a value CareIN can't read (${where}). ` +
+      `${outcome} Check it in Open Dental; CareIN will not replace an exam it could not fully read.`
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -346,6 +377,11 @@ async function startPerioSend({ pool, office, visit, appointment, request, actor
         'OD_READ_FAILED',
         `Open Dental did not return exam ${live.exam_num}'s readings (${odChart.error}), so the correction was not sent.`
       );
+    }
+    // ITEM 32: checked BEFORE the diff. An unreadable value reads as "nothing
+    // charted", so the diff would either miss it or misname it.
+    if (odChart.uninterpretable.length > 0) {
+      return refuseUnreadableBase(live.exam_num, odChart.uninterpretable, 'Nothing was sent.');
     }
     const baseline = sendChart(live) || odChart.chart;
     const drift = contract.perioChartChanges(baseline, odChart.chart);
@@ -958,6 +994,10 @@ async function beginAmendment({ pool, office, visit, odGet, actor }) {
       `Open Dental did not return exam ${live.exam_num}'s readings (${odChart.error}), so a correction ` +
         'cannot be started. Nothing changed.'
     );
+  }
+  // ITEM 32: before anything is stored or the chart is opened for correction.
+  if (odChart.uninterpretable.length > 0) {
+    return refuseUnreadableBase(live.exam_num, odChart.uninterpretable, 'A correction was not started; nothing changed.');
   }
   const changedInOpenDental = contract.perioChartChanges(sendChart(live) || odChart.chart, odChart.chart).length;
   await store.setSendChart(pool, { office, sendId: live.send_id, chart: odChart.chart });

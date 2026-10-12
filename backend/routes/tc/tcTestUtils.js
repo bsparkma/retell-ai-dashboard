@@ -24,7 +24,7 @@ const userContext = require('../../platform/userContext');
 const { tenantContext, requireModule } = require('../../middleware/tenantContext');
 
 /** Columns stored as jsonb — real pg returns objects, so the fake must too. */
-const JSONB_COLS = new Set(['blocks', 'value', 'detail', 'legacy_snapshot']);
+const JSONB_COLS = new Set(['blocks', 'value', 'detail', 'legacy_snapshot', 'email_blocks']);
 
 /** Comparable scalar for a cell (Date → epoch ms, null → sorts last like pg's default). */
 function sortKey(v) {
@@ -99,6 +99,30 @@ class FakeTenantDb {
         return (r) => {
           const set = params[idx - 1];
           return Array.isArray(set) && set.includes(r[col]);
+        };
+      }
+      // The Opportunities age filter (item 45, store.listForOfficeWithin):
+      //   COALESCE((SELECT max((p->>'plannedDate')::date)
+      //             FROM jsonb_array_elements(<col>) AS p), $u::date) >= $s::date
+      // = the newest plannedDate in a jsonb array of procedures, or the $u
+      // sentinel when none is dated (NULL ⇒ the row fails, as in Postgres).
+      // 'YYYY-MM-DD' strings order like dates.
+      if (
+        (m = term.match(
+          /^COALESCE\(\(SELECT max\(\(p->>'plannedDate'\)::date\) FROM jsonb_array_elements\((\w+)\) AS p\), \$(\d+)::date\) >= \$(\d+)::date$/
+        ))
+      ) {
+        const [, col, undatedIdx, sinceIdx] = m;
+        return (r) => {
+          let procs = r[col];
+          if (typeof procs === 'string') procs = JSON.parse(procs);
+          let newest = null;
+          for (const p of Array.isArray(procs) ? procs : []) {
+            const d = p && typeof p.plannedDate === 'string' ? p.plannedDate : null;
+            if (d && (newest === null || d > newest)) newest = d;
+          }
+          const value = newest ?? params[undatedIdx - 1] ?? null;
+          return value != null && String(value) >= String(params[sinceIdx - 1]);
         };
       }
       if ((m = term.match(/^(\w+) = \$(\d+)$/))) {

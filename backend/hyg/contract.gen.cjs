@@ -14813,10 +14813,10 @@ var require_zod = __commonJS({
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.z = void 0;
-    var z6 = __importStar(require_external());
-    exports2.z = z6;
+    var z7 = __importStar(require_external());
+    exports2.z = z7;
     __exportStar(require_external(), exports2);
-    exports2.default = z6;
+    exports2.default = z7;
   }
 });
 
@@ -14844,6 +14844,7 @@ __export(contract_entry_exports, {
   HygIdentitySchema: () => HygIdentitySchema,
   HygIdentityStateSchema: () => HygIdentityStateSchema,
   HygOperatorySchema: () => HygOperatorySchema,
+  HygOrthoSendResponseSchema: () => HygOrthoSendResponseSchema,
   HygPerioPriorResponseSchema: () => HygPerioPriorResponseSchema,
   HygPerioResponseSchema: () => HygPerioResponseSchema,
   HygPerioSendResponseSchema: () => HygPerioSendResponseSchema,
@@ -14863,18 +14864,58 @@ __export(contract_entry_exports, {
   OD_SECONDS_PER_REQUEST: () => OD_SECONDS_PER_REQUEST,
   OFFICE_IDS: () => OFFICE_IDS,
   OFFICE_TIME_ZONE: () => OFFICE_TIME_ZONE,
+  ORTHO_AFTER_OPTIONS: () => ORTHO_AFTER_OPTIONS,
+  ORTHO_AFTER_TEETH_MAX: () => ORTHO_AFTER_TEETH_MAX,
+  ORTHO_ARCH_OPTIONS: () => ORTHO_ARCH_OPTIONS,
+  ORTHO_BENEFIT_OPTIONS: () => ORTHO_BENEFIT_OPTIONS,
+  ORTHO_CONCERN_OPTIONS: () => ORTHO_CONCERN_OPTIONS,
+  ORTHO_CONSULT_OPTIONS: () => ORTHO_CONSULT_OPTIONS,
+  ORTHO_DECIDER_OPTIONS: () => ORTHO_DECIDER_OPTIONS,
+  ORTHO_INTEREST_OPTIONS: () => ORTHO_INTEREST_OPTIONS,
+  ORTHO_LOWER_APPLIANCE_OPTIONS: () => ORTHO_LOWER_APPLIANCE_OPTIONS,
+  ORTHO_MODALITY_OPTIONS: () => ORTHO_MODALITY_OPTIONS,
+  ORTHO_MONTH_OPTIONS: () => ORTHO_MONTH_OPTIONS,
+  ORTHO_MYO_OPTIONS: () => ORTHO_MYO_OPTIONS,
+  ORTHO_MYO_REASON_OPTIONS: () => ORTHO_MYO_REASON_OPTIONS,
+  ORTHO_NOTE_MAX: () => ORTHO_NOTE_MAX,
+  ORTHO_PHASE_OPTIONS: () => ORTHO_PHASE_OPTIONS,
+  ORTHO_RECORD_OPTIONS: () => ORTHO_RECORD_OPTIONS,
+  ORTHO_UPPER_APPLIANCE_OPTIONS: () => ORTHO_UPPER_APPLIANCE_OPTIONS,
   OfficeIdSchema: () => OfficeIdSchema,
+  OrthoAfterSchema: () => OrthoAfterSchema,
+  OrthoArchSchema: () => OrthoArchSchema,
+  OrthoBenefitSchema: () => OrthoBenefitSchema,
+  OrthoConcernSchema: () => OrthoConcernSchema,
+  OrthoConsultSchema: () => OrthoConsultSchema,
+  OrthoDeciderSchema: () => OrthoDeciderSchema,
+  OrthoInterestSchema: () => OrthoInterestSchema,
+  OrthoLowerApplianceSchema: () => OrthoLowerApplianceSchema,
+  OrthoModalitySchema: () => OrthoModalitySchema,
+  OrthoMyoReasonSchema: () => OrthoMyoReasonSchema,
+  OrthoMyoSchema: () => OrthoMyoSchema,
+  OrthoPhaseSchema: () => OrthoPhaseSchema,
+  OrthoRecordSchema: () => OrthoRecordSchema,
+  OrthoScreeningSchema: () => OrthoScreeningSchema,
+  OrthoSendRequestSchema: () => OrthoSendRequestSchema,
+  OrthoSendSchema: () => OrthoSendSchema,
+  OrthoUpperApplianceSchema: () => OrthoUpperApplianceSchema,
   PERIO_ARCH_STRING_FIELDS: () => PERIO_ARCH_STRING_FIELDS,
   PERIO_ARCH_STRING_LABELS: () => PERIO_ARCH_STRING_LABELS,
   PERIO_ARCH_STRING_SITES: () => PERIO_ARCH_STRING_SITES,
   PERIO_ARCH_STRING_SITES_PER_ARCH: () => PERIO_ARCH_STRING_SITES_PER_ARCH,
+  PERIO_CHANGE_KIND_LABEL: () => PERIO_CHANGE_KIND_LABEL,
   PERIO_FLAGS: () => PERIO_FLAGS,
   PERIO_FLAG_KEYS: () => PERIO_FLAG_KEYS,
   PERIO_FLAG_LABELS: () => PERIO_FLAG_LABELS,
   PERIO_FLAG_LETTERS: () => PERIO_FLAG_LETTERS,
   PERIO_FULL_MOUTH_SITES: () => PERIO_FULL_MOUTH_SITES,
+  PERIO_FURCATION_TEETH: () => PERIO_FURCATION_TEETH,
+  PERIO_GM_FAMILIES: () => PERIO_GM_FAMILIES,
   PERIO_LOWER_TEETH: () => PERIO_LOWER_TEETH,
   PERIO_MAX_DEPTH: () => PERIO_MAX_DEPTH,
+  PERIO_MAX_FURCATION: () => PERIO_MAX_FURCATION,
+  PERIO_MAX_MOBILITY: () => PERIO_MAX_MOBILITY,
+  PERIO_MIN_FURCATION: () => PERIO_MIN_FURCATION,
   PERIO_NO_READING_REFUSAL: () => PERIO_NO_READING_REFUSAL,
   PERIO_SEGMENTS: () => PERIO_SEGMENTS,
   PERIO_SEND_BATCH: () => PERIO_SEND_BATCH,
@@ -14883,6 +14924,7 @@ __export(contract_entry_exports, {
   PERIO_STAGE_LABELS: () => PERIO_STAGE_LABELS,
   PERIO_STRING_MAX_DEPTH: () => PERIO_STRING_MAX_DEPTH,
   PERIO_TOOTH_COUNT: () => PERIO_TOOTH_COUNT,
+  PERIO_UNREADABLE_NAMED: () => PERIO_UNREADABLE_NAMED,
   PERIO_UPPER_TEETH: () => PERIO_UPPER_TEETH,
   PerioArchPathSchema: () => PerioArchPathSchema,
   PerioArchPlanSchema: () => PerioArchPlanSchema,
@@ -14894,6 +14936,7 @@ __export(contract_entry_exports, {
   PerioDeleteExamRequestSchema: () => PerioDeleteExamRequestSchema,
   PerioDirectionSchema: () => PerioDirectionSchema,
   PerioDriftSchema: () => PerioDriftSchema,
+  PerioDriftUnknownReasonSchema: () => PerioDriftUnknownReasonSchema,
   PerioGradeSchema: () => PerioGradeSchema,
   PerioMismatchKindSchema: () => PerioMismatchKindSchema,
   PerioMismatchSchema: () => PerioMismatchSchema,
@@ -14906,12 +14949,14 @@ __export(contract_entry_exports, {
   PerioSendSequenceTypeSchema: () => PerioSendSequenceTypeSchema,
   PerioSendStateSchema: () => PerioSendStateSchema,
   PerioSendViewSchema: () => PerioSendViewSchema,
+  PerioSiteChangeKindSchema: () => PerioSiteChangeKindSchema,
   PerioSiteChangeSchema: () => PerioSiteChangeSchema,
   PerioSiteSchema: () => PerioSiteSchema,
   PerioStageSchema: () => PerioStageSchema,
   PerioSweepSchema: () => PerioSweepSchema,
   PerioToothKeySchema: () => PerioToothKeySchema,
   PerioToothSchema: () => PerioToothSchema,
+  PerioUnreadablePositionSchema: () => PerioUnreadablePositionSchema,
   RECORDS_MATRIX: () => RECORDS_MATRIX,
   RECORD_STATUS_LABELS: () => RECORD_STATUS_LABELS,
   RecordStatusSchema: () => RecordStatusSchema,
@@ -14940,7 +14985,7 @@ __export(contract_entry_exports, {
   VisitUpsertRequestSchema: () => VisitUpsertRequestSchema,
   XRAY_OPTIONS: () => XRAY_OPTIONS,
   YesNoSchema: () => YesNoSchema,
-  ZodError: () => import_zod5.ZodError,
+  ZodError: () => import_zod6.ZodError,
   bleedSupPlaqCalcBits: () => bleedSupPlaqCalcBits,
   chartingOrder: () => chartingOrder,
   comparePerioReadback: () => comparePerioReadback,
@@ -14950,6 +14995,7 @@ __export(contract_entry_exports, {
   defaultPerioSweep: () => defaultPerioSweep,
   deriveCategory: () => deriveCategory,
   emptyNoteField: () => emptyNoteField,
+  emptyOrthoScreening: () => emptyOrthoScreening,
   emptyPerioChart: () => emptyPerioChart,
   emptyPerioSite: () => emptyPerioSite,
   emptyPerioTooth: () => emptyPerioTooth,
@@ -14958,18 +15004,25 @@ __export(contract_entry_exports, {
   fieldText: () => fieldText,
   firstOpenPerioCursor: () => firstOpenPerioCursor,
   flagsFromBits: () => flagsFromBits,
+  formatOrthoMonths: () => formatOrthoMonths,
   freeFieldsFor: () => freeFieldsFor,
   hasPerioChartLine: () => hasPerioChartLine,
   isAnswered: () => isAnswered,
   isChildVisit: () => isChildVisit,
   isOfficeId: () => isOfficeId,
+  isOrthoSendable: () => isOrthoSendable,
   isPatientRight: () => isPatientRight,
   isWellFormedArchString: () => isWellFormedArchString,
   normalizePerioChart: () => normalizePerioChart,
+  orthoConcernsText: () => orthoConcernsText,
+  orthoScreeningRows: () => orthoScreeningRows,
+  orthoScreeningSummary: () => orthoScreeningSummary,
   perioArchVerdict: () => perioArchVerdict,
+  perioCal: () => perioCal,
   perioChangeLine: () => perioChangeLine,
   perioChangeSiteRef: () => perioChangeSiteRef,
   perioChartChanges: () => perioChartChanges,
+  perioGmIsRecession: () => perioGmIsRecession,
   perioHasReading: () => perioHasReading,
   perioJawOfField: () => perioJawOfField,
   perioJawOfTooth: () => perioJawOfTooth,
@@ -14980,6 +15033,10 @@ __export(contract_entry_exports, {
   perioSideOf: () => perioSideOf,
   perioSite: () => perioSite,
   perioTooth: () => perioTooth,
+  perioToothHasFurcation: () => perioToothHasFurcation,
+  perioUnreadableList: () => perioUnreadableList,
+  perioUnreadableRef: () => perioUnreadableRef,
+  pickOne: () => pickOne,
   planPerioSend: () => planPerioSend,
   recordsNeededFor: () => recordsNeededFor,
   renderVisitNote: () => renderVisitNote,
@@ -14990,14 +15047,17 @@ __export(contract_entry_exports, {
   slipNoteField: () => slipNoteField,
   stepPerioCursor: () => stepPerioCursor,
   suggestVisitType: () => suggestVisitType,
+  toggleAfterOrtho: () => toggleAfterOrtho,
+  toggleMany: () => toggleMany,
+  withPerioMobility: () => withPerioMobility,
   withPerioSite: () => withPerioSite,
   withPerioSkipped: () => withPerioSkipped,
-  z: () => import_zod5.z
+  z: () => import_zod6.z
 });
 module.exports = __toCommonJS(contract_entry_exports);
 
 // shared/hyg/contract.ts
-var import_zod2 = __toESM(require_zod(), 1);
+var import_zod3 = __toESM(require_zod(), 1);
 
 // shared/hyg/noteTemplates.ts
 var import_zod = __toESM(require_zod(), 1);
@@ -15415,20 +15475,289 @@ function renderVisitNote(input) {
   return out;
 }
 
+// shared/hyg/orthoScreening.ts
+var import_zod2 = __toESM(require_zod(), 1);
+function enumOf(options) {
+  const ids = options.map((o) => o.id);
+  return import_zod2.z.enum(ids);
+}
+var ORTHO_INTEREST_OPTIONS = [
+  { id: "yes", label: "Yes" },
+  { id: "maybe", label: "Maybe" },
+  { id: "not_now", label: "Not now" }
+];
+var ORTHO_DECIDER_OPTIONS = [
+  { id: "patient", label: "Patient decides" },
+  { id: "parent", label: "Parent decides" }
+];
+var ORTHO_CONCERN_OPTIONS = [
+  { id: "crowding", label: "Crowding" },
+  { id: "spacing", label: "Spacing" },
+  { id: "overbite", label: "Overbite" },
+  { id: "underbite", label: "Underbite" },
+  { id: "crossbite", label: "Crossbite" },
+  { id: "open_bite", label: "Open bite" },
+  { id: "protrusion", label: "Protrusion" },
+  { id: "midline_off", label: "Midline off" },
+  { id: "bite_jaw", label: "Bite / jaw" },
+  { id: "snoring_airway", label: "Snoring / airway" }
+];
+var ORTHO_ARCH_OPTIONS = [
+  { id: "upper", label: "Upper" },
+  { id: "lower", label: "Lower" },
+  { id: "comprehensive", label: "Comprehensive (both)" }
+];
+var ORTHO_MODALITY_OPTIONS = [
+  { id: "aligners", label: "Clear aligners" },
+  { id: "braces", label: "Traditional braces" },
+  { id: "doctor_decides", label: "Doctor to decide" }
+];
+var ORTHO_MONTH_OPTIONS = [6, 9, 12, 15, 18, 21, 24, 30, 36];
+var ORTHO_PHASE_OPTIONS = [
+  { id: "phase_1", label: "Phase 1" },
+  { id: "phase_2", label: "Phase 2" }
+];
+var ORTHO_UPPER_APPLIANCE_OPTIONS = [
+  { id: "expansion_rpe", label: "Expansion / RPE" },
+  { id: "niti_rpe", label: "NiTi RPE" },
+  { id: "mda", label: "MDA" },
+  { id: "rmd", label: "RMD" },
+  { id: "nance", label: "Nance" },
+  { id: "reverse_pull_hg", label: "Reverse-pull HG" }
+];
+var ORTHO_LOWER_APPLIANCE_OPTIONS = [
+  { id: "expansion", label: "Expansion" },
+  { id: "lip_bumper", label: "Lip bumper" },
+  { id: "lingual_3d", label: "3D lingual" },
+  { id: "fla", label: "FLA" },
+  { id: "rmd", label: "RMD" },
+  { id: "mda", label: "MDA" }
+];
+var ORTHO_MYO_OPTIONS = [
+  { id: "not_needed", label: "Not needed" },
+  { id: "before", label: "Before" },
+  { id: "during", label: "During" },
+  { id: "after", label: "After" }
+];
+var ORTHO_MYO_REASON_OPTIONS = [
+  { id: "tongue_thrust", label: "Tongue thrust" },
+  { id: "mouth_breathing", label: "Mouth breathing" },
+  { id: "low_tongue", label: "Low tongue" },
+  { id: "asymmetry", label: "Asymmetry" },
+  { id: "airway", label: "Airway" }
+];
+var ORTHO_AFTER_OPTIONS = [
+  { id: "none", label: "None" },
+  { id: "peg_laterals", label: "Peg laterals" },
+  { id: "anterior_bonding", label: "Anterior bonding" },
+  { id: "implants", label: "Implants" },
+  { id: "pontic_maryland", label: "Pontic / Maryland" },
+  { id: "smile_makeover", label: "Smile makeover" },
+  { id: "fmr", label: "FMR" }
+];
+var ORTHO_RECORD_OPTIONS = [
+  { id: "photos", label: "Photos" },
+  { id: "pano", label: "Pano" },
+  { id: "scan", label: "Scan" },
+  { id: "ceph", label: "Ceph" }
+];
+var ORTHO_BENEFIT_OPTIONS = [
+  { id: "has_benefit", label: "Has ortho benefit" },
+  { id: "no_benefit", label: "No ortho benefit" },
+  { id: "not_sure", label: "Not sure, TC will verify" }
+];
+var ORTHO_CONSULT_OPTIONS = [
+  { id: "in_office", label: "In-office consult" },
+  { id: "phone", label: "Phone consult" },
+  { id: "tc_to_call", label: "TC to call" }
+];
+var ORTHO_AFTER_TEETH_MAX = 40;
+var ORTHO_NOTE_MAX = 280;
+var AFTER_TEETH_PATTERN = /^[0-9A-Ta-t#,\s-]*$/;
+var OrthoInterestSchema = enumOf(ORTHO_INTEREST_OPTIONS);
+var OrthoDeciderSchema = enumOf(ORTHO_DECIDER_OPTIONS);
+var OrthoConcernSchema = enumOf(ORTHO_CONCERN_OPTIONS);
+var OrthoArchSchema = enumOf(ORTHO_ARCH_OPTIONS);
+var OrthoModalitySchema = enumOf(ORTHO_MODALITY_OPTIONS);
+var OrthoPhaseSchema = enumOf(ORTHO_PHASE_OPTIONS);
+var OrthoUpperApplianceSchema = enumOf(ORTHO_UPPER_APPLIANCE_OPTIONS);
+var OrthoLowerApplianceSchema = enumOf(ORTHO_LOWER_APPLIANCE_OPTIONS);
+var OrthoMyoSchema = enumOf(ORTHO_MYO_OPTIONS);
+var OrthoMyoReasonSchema = enumOf(ORTHO_MYO_REASON_OPTIONS);
+var OrthoAfterSchema = enumOf(ORTHO_AFTER_OPTIONS);
+var OrthoRecordSchema = enumOf(ORTHO_RECORD_OPTIONS);
+var OrthoBenefitSchema = enumOf(ORTHO_BENEFIT_OPTIONS);
+var OrthoConsultSchema = enumOf(ORTHO_CONSULT_OPTIONS);
+var OrthoMonthSchema = import_zod2.z.number().int().refine((n) => ORTHO_MONTH_OPTIONS.includes(n), {
+  message: `Estimated months must be one of ${ORTHO_MONTH_OPTIONS.join(", ")}`
+});
+function picks(item, max) {
+  return import_zod2.z.array(item).max(max).refine((values) => new Set(values).size === values.length, {
+    message: "An option was picked twice"
+  }).default([]);
+}
+var OrthoScreeningSchema = import_zod2.z.object({
+  interest: OrthoInterestSchema.nullable().default(null),
+  decider: OrthoDeciderSchema.nullable().default(null),
+  concerns: picks(OrthoConcernSchema, ORTHO_CONCERN_OPTIONS.length),
+  arches: OrthoArchSchema.nullable().default(null),
+  modality: OrthoModalitySchema.nullable().default(null),
+  months: picks(OrthoMonthSchema, ORTHO_MONTH_OPTIONS.length),
+  phase: OrthoPhaseSchema.nullable().default(null),
+  upperAppliances: picks(OrthoUpperApplianceSchema, ORTHO_UPPER_APPLIANCE_OPTIONS.length),
+  lowerAppliances: picks(OrthoLowerApplianceSchema, ORTHO_LOWER_APPLIANCE_OPTIONS.length),
+  myo: OrthoMyoSchema.nullable().default(null),
+  myoReasons: picks(OrthoMyoReasonSchema, ORTHO_MYO_REASON_OPTIONS.length),
+  afterOrtho: picks(OrthoAfterSchema, ORTHO_AFTER_OPTIONS.length).refine(
+    (values) => !values.includes("none") || values.length === 1,
+    { message: '"None" cannot be picked with other work after ortho' }
+  ),
+  afterOrthoTeeth: import_zod2.z.string().max(ORTHO_AFTER_TEETH_MAX).regex(AFTER_TEETH_PATTERN, "Which teeth takes universal tooth numbers only").default(""),
+  recordsToday: picks(OrthoRecordSchema, ORTHO_RECORD_OPTIONS.length),
+  orthoBenefit: OrthoBenefitSchema.nullable().default(null),
+  consult: OrthoConsultSchema.nullable().default(null),
+  /** Optional. A local calendar date, never an instant. */
+  bookedFor: import_zod2.z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Booked for must be YYYY-MM-DD").nullable().default(null),
+  noteForTc: import_zod2.z.string().max(ORTHO_NOTE_MAX).default("")
+}).strict();
+function emptyOrthoScreening() {
+  return {
+    interest: null,
+    decider: null,
+    concerns: [],
+    arches: null,
+    modality: null,
+    months: [],
+    phase: null,
+    upperAppliances: [],
+    lowerAppliances: [],
+    myo: null,
+    myoReasons: [],
+    afterOrtho: [],
+    afterOrthoTeeth: "",
+    recordsToday: [],
+    orthoBenefit: null,
+    consult: null,
+    bookedFor: null,
+    noteForTc: ""
+  };
+}
+function isOrthoSendable(screening) {
+  return screening !== null && screening !== void 0 && screening.interest !== null;
+}
+function pickOne(current, tapped) {
+  return current === tapped ? null : tapped;
+}
+function toggleMany(current, tapped, order) {
+  const next = current.includes(tapped) ? current.filter((v) => v !== tapped) : [...current, tapped];
+  return order.filter((v) => next.includes(v));
+}
+var AFTER_ORDER = ORTHO_AFTER_OPTIONS.map((o) => o.id);
+function toggleAfterOrtho(current, tapped) {
+  if (tapped === "none") return current.includes("none") ? [] : ["none"];
+  return toggleMany(
+    current.filter((v) => v !== "none"),
+    tapped,
+    AFTER_ORDER
+  );
+}
+function labelOf(options, id) {
+  return options.find((o) => o.id === id)?.label ?? id;
+}
+function labelsOf(options, ids) {
+  return ids.map((id) => labelOf(options, id)).join(", ");
+}
+function formatOrthoMonths(months) {
+  if (months.length === 0) return "";
+  const lo = Math.min(...months);
+  const hi = Math.max(...months);
+  return lo === hi ? `${lo} mo` : `${lo}\u2013${hi} mo`;
+}
+function afterOrthoText(s) {
+  const work = labelsOf(ORTHO_AFTER_OPTIONS, s.afterOrtho);
+  const teeth = s.afterOrthoTeeth.trim();
+  if (!work) return teeth ? `Teeth ${teeth}` : "";
+  return teeth && !s.afterOrtho.includes("none") ? `${work} (${teeth})` : work;
+}
+function orthoScreeningSummary(s) {
+  const parts = [];
+  if (s.interest !== null) {
+    parts.push(
+      s.interest === "not_now" ? "Not now" : `Interested: ${labelOf(ORTHO_INTEREST_OPTIONS, s.interest)}`
+    );
+  }
+  if (s.decider !== null) parts.push(labelOf(ORTHO_DECIDER_OPTIONS, s.decider));
+  if (s.concerns.length > 0) parts.push(labelsOf(ORTHO_CONCERN_OPTIONS, s.concerns));
+  if (s.arches !== null) parts.push(labelOf(ORTHO_ARCH_OPTIONS, s.arches));
+  if (s.modality !== null) parts.push(labelOf(ORTHO_MODALITY_OPTIONS, s.modality));
+  const months = formatOrthoMonths(s.months);
+  if (months) parts.push(months);
+  if (s.phase !== null) parts.push(labelOf(ORTHO_PHASE_OPTIONS, s.phase));
+  if (s.upperAppliances.length > 0) {
+    parts.push(`Upper: ${labelsOf(ORTHO_UPPER_APPLIANCE_OPTIONS, s.upperAppliances)}`);
+  }
+  if (s.lowerAppliances.length > 0) {
+    parts.push(`Lower: ${labelsOf(ORTHO_LOWER_APPLIANCE_OPTIONS, s.lowerAppliances)}`);
+  }
+  if (s.myo !== null || s.myoReasons.length > 0) {
+    const when = s.myo !== null ? labelOf(ORTHO_MYO_OPTIONS, s.myo) : "";
+    const why = labelsOf(ORTHO_MYO_REASON_OPTIONS, s.myoReasons);
+    parts.push(`Myo: ${[when, why ? `(${why})` : ""].filter(Boolean).join(" ")}`);
+  }
+  const after = afterOrthoText(s);
+  if (after) parts.push(`After ortho: ${after}`);
+  if (s.recordsToday.length > 0) {
+    parts.push(`Records today: ${labelsOf(ORTHO_RECORD_OPTIONS, s.recordsToday)}`);
+  }
+  if (s.orthoBenefit !== null) parts.push(labelOf(ORTHO_BENEFIT_OPTIONS, s.orthoBenefit));
+  if (s.consult !== null || s.bookedFor !== null) {
+    const consult = s.consult !== null ? labelOf(ORTHO_CONSULT_OPTIONS, s.consult) : "Consult";
+    parts.push(s.bookedFor !== null ? `${consult} ${s.bookedFor}` : consult);
+  }
+  return parts.join(" \xB7 ");
+}
+function orthoConcernsText(s) {
+  return labelsOf(ORTHO_CONCERN_OPTIONS, s.concerns);
+}
+function orthoScreeningRows(s) {
+  const rows = [];
+  const add = (label, value) => {
+    if (value) rows.push({ label, value });
+  };
+  add("Interested?", s.interest !== null ? labelOf(ORTHO_INTEREST_OPTIONS, s.interest) : "");
+  add("Who decides?", s.decider !== null ? labelOf(ORTHO_DECIDER_OPTIONS, s.decider) : "");
+  add("Concerns", labelsOf(ORTHO_CONCERN_OPTIONS, s.concerns));
+  add("Which arches?", s.arches !== null ? labelOf(ORTHO_ARCH_OPTIONS, s.arches) : "");
+  add("Aligners or braces?", s.modality !== null ? labelOf(ORTHO_MODALITY_OPTIONS, s.modality) : "");
+  add("Estimated months", formatOrthoMonths(s.months));
+  add("Phase (if staged)", s.phase !== null ? labelOf(ORTHO_PHASE_OPTIONS, s.phase) : "");
+  add("Upper appliances", labelsOf(ORTHO_UPPER_APPLIANCE_OPTIONS, s.upperAppliances));
+  add("Lower appliances", labelsOf(ORTHO_LOWER_APPLIANCE_OPTIONS, s.lowerAppliances));
+  add("Myo therapy", s.myo !== null ? labelOf(ORTHO_MYO_OPTIONS, s.myo) : "");
+  add("Myo \u2014 why", labelsOf(ORTHO_MYO_REASON_OPTIONS, s.myoReasons));
+  add("After ortho", labelsOf(ORTHO_AFTER_OPTIONS, s.afterOrtho));
+  add("Which teeth", s.afterOrthoTeeth.trim());
+  add("Records taken today", labelsOf(ORTHO_RECORD_OPTIONS, s.recordsToday));
+  add("Ortho benefit", s.orthoBenefit !== null ? labelOf(ORTHO_BENEFIT_OPTIONS, s.orthoBenefit) : "");
+  add("Consult", s.consult !== null ? labelOf(ORTHO_CONSULT_OPTIONS, s.consult) : "");
+  add("Booked for", s.bookedFor ?? "");
+  return rows;
+}
+
 // shared/hyg/contract.ts
-var OfficeIdSchema = import_zod2.z.enum(["roland", "valley"]);
+var OfficeIdSchema = import_zod3.z.enum(["roland", "valley"]);
 var OFFICE_IDS = OfficeIdSchema.options;
 function isOfficeId(value) {
   return OfficeIdSchema.safeParse(value).success;
 }
 var OFFICE_TIME_ZONE = "America/Chicago";
-var TreatmentPrioritySchema = import_zod2.z.enum(["urgent", "preventative", "cosmetic"]);
+var TreatmentPrioritySchema = import_zod3.z.enum(["urgent", "preventative", "cosmetic"]);
 var TREATMENT_PRIORITY_LABELS = {
   urgent: "Urgent",
   preventative: "Preventative",
   cosmetic: "Cosmetic"
 };
-var TreatmentCategorySchema = import_zod2.z.enum([
+var TreatmentCategorySchema = import_zod3.z.enum([
   "Restorative",
   "Endo",
   "Surgery",
@@ -15438,10 +15767,10 @@ var TreatmentCategorySchema = import_zod2.z.enum([
   "Cosmetic",
   "Other"
 ]);
-var TreatmentStatusSchema = import_zod2.z.enum(["proposed", "watch", "confirmed", "scheduled"]);
-var ToothSurfaceSchema = import_zod2.z.enum(["DB", "B", "MB", "DL", "L", "ML"]);
-var ToothSurfaceLabelSchema = import_zod2.z.enum(["M", "O", "D", "B", "L"]);
-var DxCodeSchema = import_zod2.z.enum([
+var TreatmentStatusSchema = import_zod3.z.enum(["proposed", "watch", "confirmed", "scheduled"]);
+var ToothSurfaceSchema = import_zod3.z.enum(["DB", "B", "MB", "DL", "L", "ML"]);
+var ToothSurfaceLabelSchema = import_zod3.z.enum(["M", "O", "D", "B", "L"]);
+var DxCodeSchema = import_zod3.z.enum([
   "I",
   "D",
   "RD",
@@ -15485,7 +15814,7 @@ var DX_LABELS = {
   UE: "Unesthetic",
   GR: "Gingival recession"
 };
-var MotivationCodeSchema = import_zod2.z.enum([
+var MotivationCodeSchema = import_zod3.z.enum([
   "FF",
   "R",
   "esthetic",
@@ -15503,7 +15832,7 @@ var MOTIVATION_LABELS = {
   insurance: "Insurance renewal / benefit",
   other: "Other"
 };
-var HandoffCategorySchema = import_zod2.z.enum([
+var HandoffCategorySchema = import_zod3.z.enum([
   "Restorative",
   "Perio",
   "Ortho",
@@ -15511,28 +15840,28 @@ var HandoffCategorySchema = import_zod2.z.enum([
   "Implant",
   "Other"
 ]);
-var TreatmentItemSchema = import_zod2.z.object({
-  id: import_zod2.z.string().min(1),
-  teeth: import_zod2.z.union([import_zod2.z.array(import_zod2.z.number().int()), import_zod2.z.literal("mouth")]),
+var TreatmentItemSchema = import_zod3.z.object({
+  id: import_zod3.z.string().min(1),
+  teeth: import_zod3.z.union([import_zod3.z.array(import_zod3.z.number().int()), import_zod3.z.literal("mouth")]),
   /** e.g. "Comp", "Crown", "RC", "EX", "IMP", "Ortho", "Aligners". */
-  code: import_zod2.z.string().min(1),
+  code: import_zod3.z.string().min(1),
   category: TreatmentCategorySchema,
-  surfaces: import_zod2.z.array(ToothSurfaceLabelSchema).optional(),
-  dx: import_zod2.z.array(DxCodeSchema),
-  dxNote: import_zod2.z.string().optional(),
+  surfaces: import_zod3.z.array(ToothSurfaceLabelSchema).optional(),
+  dx: import_zod3.z.array(DxCodeSchema),
+  dxNote: import_zod3.z.string().optional(),
   priority: TreatmentPrioritySchema,
-  motivation: import_zod2.z.array(MotivationCodeSchema),
-  motivationNote: import_zod2.z.string().optional(),
+  motivation: import_zod3.z.array(MotivationCodeSchema),
+  motivationNote: import_zod3.z.string().optional(),
   status: TreatmentStatusSchema,
-  crownType: import_zod2.z.enum(["initial", "replacement"]).optional(),
-  prosthesis: import_zod2.z.object({ newOrReplacement: import_zod2.z.enum(["new", "replacement"]), years: import_zod2.z.string().optional() }).optional(),
-  scheduleNext: import_zod2.z.boolean(),
-  note: import_zod2.z.string().optional(),
-  photos: import_zod2.z.array(import_zod2.z.string()),
+  crownType: import_zod3.z.enum(["initial", "replacement"]).optional(),
+  prosthesis: import_zod3.z.object({ newOrReplacement: import_zod3.z.enum(["new", "replacement"]), years: import_zod3.z.string().optional() }).optional(),
+  scheduleNext: import_zod3.z.boolean(),
+  note: import_zod3.z.string().optional(),
+  photos: import_zod3.z.array(import_zod3.z.string()),
   /** Free-form markers, e.g. "post-ortho". */
-  tags: import_zod2.z.array(import_zod2.z.string()).optional(),
-  createdBy: import_zod2.z.string(),
-  createdAt: import_zod2.z.string()
+  tags: import_zod3.z.array(import_zod3.z.string()).optional(),
+  createdBy: import_zod3.z.string(),
+  createdAt: import_zod3.z.string()
 });
 var HANDOFF_CATEGORY_PRIORITY = [
   "Ortho",
@@ -15567,8 +15896,8 @@ function deriveCategory(items) {
   for (const item of items) present.add(handoffCategoryFor(item));
   return HANDOFF_CATEGORY_PRIORITY.find((c) => present.has(c)) ?? "Other";
 }
-var StagedWriteKindSchema = import_zod2.z.enum(["router", "perio", "note", "tc-handoff"]);
-var StagedWriteStateSchema = import_zod2.z.enum([
+var StagedWriteKindSchema = import_zod3.z.enum(["router", "perio", "note", "tc-handoff"]);
+var StagedWriteStateSchema = import_zod3.z.enum([
   "Draft",
   "Staged",
   "Sending",
@@ -15576,39 +15905,39 @@ var StagedWriteStateSchema = import_zod2.z.enum([
   "Failed",
   "Amending"
 ]);
-var HygDayScopeSchema = import_zod2.z.enum(["hygiene", "all"]);
+var HygDayScopeSchema = import_zod3.z.enum(["hygiene", "all"]);
 var HYG_DAY_SCOPES = HygDayScopeSchema.options;
-var FlagSourceSchema = import_zod2.z.enum(["od", "not_read"]);
-var HygDayFlagsSchema = import_zod2.z.object({
-  premed: import_zod2.z.boolean().nullable(),
-  medicalAlerts: import_zod2.z.boolean().nullable(),
-  allergies: import_zod2.z.boolean().nullable(),
-  lastPerioDate: import_zod2.z.string().nullable(),
-  xraysDue: import_zod2.z.boolean().nullable(),
-  examNeeded: import_zod2.z.boolean().nullable(),
-  openTcCase: import_zod2.z.boolean().nullable()
+var FlagSourceSchema = import_zod3.z.enum(["od", "not_read"]);
+var HygDayFlagsSchema = import_zod3.z.object({
+  premed: import_zod3.z.boolean().nullable(),
+  medicalAlerts: import_zod3.z.boolean().nullable(),
+  allergies: import_zod3.z.boolean().nullable(),
+  lastPerioDate: import_zod3.z.string().nullable(),
+  xraysDue: import_zod3.z.boolean().nullable(),
+  examNeeded: import_zod3.z.boolean().nullable(),
+  openTcCase: import_zod3.z.boolean().nullable()
 });
-var HygIdentityStateSchema = import_zod2.z.enum([
+var HygIdentityStateSchema = import_zod3.z.enum([
   "resolved",
   "pending",
   "unavailable",
   "no_patient"
 ]);
-var HygOperatorySchema = import_zod2.z.object({
-  opNum: import_zod2.z.number().int(),
-  name: import_zod2.z.string().nullable(),
-  abbrev: import_zod2.z.string().nullable(),
-  isHygiene: import_zod2.z.boolean().nullable(),
-  itemOrder: import_zod2.z.number().int().nullable()
+var HygOperatorySchema = import_zod3.z.object({
+  opNum: import_zod3.z.number().int(),
+  name: import_zod3.z.string().nullable(),
+  abbrev: import_zod3.z.string().nullable(),
+  isHygiene: import_zod3.z.boolean().nullable(),
+  itemOrder: import_zod3.z.number().int().nullable()
 });
-var HygAppointmentSchema = import_zod2.z.object({
-  aptNum: import_zod2.z.number().int().nullable(),
+var HygAppointmentSchema = import_zod3.z.object({
+  aptNum: import_zod3.z.number().int().nullable(),
   /**
    * MEANINGLESS WITHOUT `office`. PatNum numbering restarts in every Open
    * Dental database: 7115 is the valley test patient and a different, real
    * person in roland. Nothing may carry one of these without the office beside it.
    */
-  patNum: import_zod2.z.number().int().nullable(),
+  patNum: import_zod3.z.number().int().nullable(),
   /**
    * WHY the name and the flags are or are not here. See HygIdentityStateSchema
    * — `patientName: null` alone cannot tell "still loading" from "we asked and
@@ -15616,48 +15945,48 @@ var HygAppointmentSchema = import_zod2.z.object({
    */
   identity: HygIdentityStateSchema,
   /** Null when the patient record could not be read. Never "Unknown Patient". */
-  patientName: import_zod2.z.string().nullable(),
+  patientName: import_zod3.z.string().nullable(),
   /** Open Dental local time, `YYYY-MM-DD HH:mm:ss`. Not a UTC instant. */
-  start: import_zod2.z.string().nullable(),
+  start: import_zod3.z.string().nullable(),
   /** Null when the appointment carries no Pattern. Never a fabricated 30. */
-  lengthMin: import_zod2.z.number().int().nullable(),
-  opNum: import_zod2.z.number().int().nullable(),
-  opName: import_zod2.z.string().nullable(),
+  lengthMin: import_zod3.z.number().int().nullable(),
+  opNum: import_zod3.z.number().int().nullable(),
+  opName: import_zod3.z.string().nullable(),
   /** The APPOINTMENT's own hygiene flag — authoritative for "is this a hygiene visit". */
-  isHygiene: import_zod2.z.boolean().nullable(),
+  isHygiene: import_zod3.z.boolean().nullable(),
   /** The CHAIR's hygiene flag. Can disagree with the above; both are carried. */
-  opIsHygiene: import_zod2.z.boolean().nullable(),
-  provNum: import_zod2.z.number().int().nullable(),
-  provHyg: import_zod2.z.number().int().nullable(),
-  providerName: import_zod2.z.string().nullable(),
-  apptTypeLabel: import_zod2.z.string().nullable(),
+  opIsHygiene: import_zod3.z.boolean().nullable(),
+  provNum: import_zod3.z.number().int().nullable(),
+  provHyg: import_zod3.z.number().int().nullable(),
+  providerName: import_zod3.z.string().nullable(),
+  apptTypeLabel: import_zod3.z.string().nullable(),
   /**
    * The RESOLVED confirmation string Open Dental ships beside the DefNum
    * ("Confirmed", "In Treatment Room"). The DefNum itself is per-office and is
    * deliberately not in this contract — nothing may compare one across offices.
    */
-  confirmedStatus: import_zod2.z.string().nullable(),
-  aptStatus: import_zod2.z.string().nullable(),
-  isNewPatient: import_zod2.z.boolean().nullable(),
+  confirmedStatus: import_zod3.z.string().nullable(),
+  aptStatus: import_zod3.z.string().nullable(),
+  isNewPatient: import_zod3.z.boolean().nullable(),
   flags: HygDayFlagsSchema
 });
-var HygWarningSchema = import_zod2.z.object({
-  resource: import_zod2.z.string(),
-  message: import_zod2.z.string(),
-  detail: import_zod2.z.string().nullable()
+var HygWarningSchema = import_zod3.z.object({
+  resource: import_zod3.z.string(),
+  message: import_zod3.z.string(),
+  detail: import_zod3.z.string().nullable()
 });
-var HygDayStatsSchema = import_zod2.z.object({
+var HygDayStatsSchema = import_zod3.z.object({
   /** Requests spent on list endpoints — appointments, operatories, types, providers. */
-  odListReads: import_zod2.z.number().int(),
+  odListReads: import_zod3.z.number().int(),
   /** `GET /patients/{PatNum}` requests actually issued. One second each. */
-  odPatientReads: import_zod2.z.number().int(),
+  odPatientReads: import_zod3.z.number().int(),
   /** Distinct patients this day needed named, after the fan-out cap. */
-  patientsRequested: import_zod2.z.number().int(),
+  patientsRequested: import_zod3.z.number().int(),
   /** Answered from a fresh cached record — no Open Dental request at all. */
-  patientCacheHits: import_zod2.z.number().int(),
+  patientCacheHits: import_zod3.z.number().int(),
   /** Collapsed into an identical read already in flight — also no request. */
-  patientCacheDeduped: import_zod2.z.number().int(),
-  durationMs: import_zod2.z.number().int(),
+  patientCacheDeduped: import_zod3.z.number().int(),
+  durationMs: import_zod3.z.number().int(),
   /**
    * Wall clock per PHASE — `appointments`, `operatories`, `labels`,
    * `identities`. A total says the day was slow; these say which read was, and
@@ -15666,18 +15995,18 @@ var HygDayStatsSchema = import_zod2.z.object({
    * Optional because the fill endpoint reports the same stats shape without
    * phases: it has only one.
    */
-  phaseMs: import_zod2.z.record(import_zod2.z.string(), import_zod2.z.number().int()).optional()
+  phaseMs: import_zod3.z.record(import_zod3.z.string(), import_zod3.z.number().int()).optional()
 });
-var HygDayResponseSchema = import_zod2.z.object({
-  success: import_zod2.z.literal(true),
+var HygDayResponseSchema = import_zod3.z.object({
+  success: import_zod3.z.literal(true),
   office: OfficeIdSchema,
-  officeName: import_zod2.z.string(),
-  date: import_zod2.z.string(),
-  operatories: import_zod2.z.array(HygOperatorySchema),
-  appointments: import_zod2.z.array(HygAppointmentSchema),
-  warnings: import_zod2.z.array(HygWarningSchema),
-  flagSources: import_zod2.z.record(import_zod2.z.string(), FlagSourceSchema),
-  excludedByStatus: import_zod2.z.number().int(),
+  officeName: import_zod3.z.string(),
+  date: import_zod3.z.string(),
+  operatories: import_zod3.z.array(HygOperatorySchema),
+  appointments: import_zod3.z.array(HygAppointmentSchema),
+  warnings: import_zod3.z.array(HygWarningSchema),
+  flagSources: import_zod3.z.record(import_zod3.z.string(), FlagSourceSchema),
+  excludedByStatus: import_zod3.z.number().int(),
   /** Which appointments this read was asked to serve. See HygDayScopeSchema. */
   scope: HygDayScopeSchema,
   /**
@@ -15692,11 +16021,11 @@ var HygDayResponseSchema = import_zod2.z.object({
    * These appointments carry no PatNum, no name and no audit row: a patient
    * this response did not serve was not disclosed.
    */
-  excludedByScope: import_zod2.z.number().int(),
+  excludedByScope: import_zod3.z.number().int(),
   /** The SCHEDULE is incomplete — an appointment is missing from this payload. */
-  truncated: import_zod2.z.boolean(),
+  truncated: import_zod3.z.boolean(),
   /** Every appointment is here; some carry no name. A different fact. */
-  patientNamesTruncated: import_zod2.z.boolean(),
+  patientNamesTruncated: import_zod3.z.boolean(),
   /**
    * How many appointments are still waiting for a name.
    *
@@ -15706,37 +16035,37 @@ var HygDayResponseSchema = import_zod2.z.object({
    * not, which is what keeps a patient Open Dental will never answer for from
    * becoming a spinner nobody can end.
    */
-  identitiesPending: import_zod2.z.number().int(),
+  identitiesPending: import_zod3.z.number().int(),
   /** What this read cost. See HygDayStatsSchema. */
   stats: HygDayStatsSchema
 });
-var HygIdentitySchema = import_zod2.z.object({
-  patNum: import_zod2.z.number().int(),
+var HygIdentitySchema = import_zod3.z.object({
+  patNum: import_zod3.z.number().int(),
   /** Still nullable: Open Dental can hold a record with neither name half. */
-  patientName: import_zod2.z.string().nullable(),
-  premed: import_zod2.z.boolean().nullable(),
-  medicalAlerts: import_zod2.z.boolean().nullable()
+  patientName: import_zod3.z.string().nullable(),
+  premed: import_zod3.z.boolean().nullable(),
+  medicalAlerts: import_zod3.z.boolean().nullable()
 });
-var HygDayIdentitiesResponseSchema = import_zod2.z.object({
-  success: import_zod2.z.literal(true),
+var HygDayIdentitiesResponseSchema = import_zod3.z.object({
+  success: import_zod3.z.literal(true),
   office: OfficeIdSchema,
-  date: import_zod2.z.string(),
+  date: import_zod3.z.string(),
   scope: HygDayScopeSchema,
-  patients: import_zod2.z.array(HygIdentitySchema),
+  patients: import_zod3.z.array(HygIdentitySchema),
   /** PatNums Open Dental would not answer for. Waiting will not help. */
-  unavailable: import_zod2.z.array(import_zod2.z.number().int()),
+  unavailable: import_zod3.z.array(import_zod3.z.number().int()),
   /** Still unnamed after this batch. Zero means the day is fully named. */
-  pending: import_zod2.z.number().int(),
+  pending: import_zod3.z.number().int(),
   stats: HygDayStatsSchema
 });
-var HygErrorSchema = import_zod2.z.object({
-  success: import_zod2.z.literal(false),
-  error: import_zod2.z.string(),
-  code: import_zod2.z.string().optional(),
+var HygErrorSchema = import_zod3.z.object({
+  success: import_zod3.z.literal(false),
+  error: import_zod3.z.string(),
+  code: import_zod3.z.string().optional(),
   /** The precise odOffices reason behind an OFFICE_NOT_READY. */
-  reason: import_zod2.z.string().optional(),
-  office: import_zod2.z.string().optional(),
-  date: import_zod2.z.string().optional()
+  reason: import_zod3.z.string().optional(),
+  office: import_zod3.z.string().optional(),
+  date: import_zod3.z.string().optional()
 });
 var HYG_ERROR_CODES = [
   "INVALID_OFFICE",
@@ -15748,20 +16077,20 @@ var HYG_ERROR_CODES = [
   "AUDIT_FAILED",
   "INTERNAL_ERROR"
 ];
-var YesNoSchema = import_zod2.z.enum(["yes", "no"]);
-var RecordStatusSchema = import_zod2.z.enum(["needed", "on_file", "taken_today"]);
+var YesNoSchema = import_zod3.z.enum(["yes", "no"]);
+var RecordStatusSchema = import_zod3.z.enum(["needed", "on_file", "taken_today"]);
 var RECORD_STATUS_LABELS = {
   needed: "Needed",
   on_file: "On file",
   taken_today: "Taken today"
 };
-var ExamStatusSchema = import_zod2.z.enum(["needed_today", "completed", "not_due"]);
+var ExamStatusSchema = import_zod3.z.enum(["needed_today", "completed", "not_due"]);
 var EXAM_STATUS_LABELS = {
   needed_today: "Needed today",
   completed: "Completed",
   not_due: "Not due"
 };
-var PerioStageSchema = import_zod2.z.enum([
+var PerioStageSchema = import_zod3.z.enum([
   "health",
   "gingivitis",
   "stage_i",
@@ -15777,7 +16106,7 @@ var PERIO_STAGE_LABELS = {
   stage_iii: "Stage III",
   stage_iv: "Stage IV"
 };
-var PerioGradeSchema = import_zod2.z.enum(["a", "b", "c"]);
+var PerioGradeSchema = import_zod3.z.enum(["a", "b", "c"]);
 var DONE_TODAY_OPTIONS = [
   { id: "prophy", label: "Prophy" },
   { id: "srp-ur", label: "SRP UR" },
@@ -15790,32 +16119,32 @@ var DONE_TODAY_OPTIONS = [
   { id: "polish", label: "Polish" }
 ];
 var XRAY_OPTIONS = ["FMX", "PANO", "BW-4", "BW-2", "PA"];
-var NextVisitSchema = import_zod2.z.object({
-  type: import_zod2.z.string().max(120).nullable(),
-  intervalMonths: import_zod2.z.number().int().min(1).max(24).nullable(),
-  lengthMin: import_zod2.z.number().int().min(5).max(240).nullable(),
-  withDoctor: import_zod2.z.boolean()
+var NextVisitSchema = import_zod3.z.object({
+  type: import_zod3.z.string().max(120).nullable(),
+  intervalMonths: import_zod3.z.number().int().min(1).max(24).nullable(),
+  lengthMin: import_zod3.z.number().int().min(5).max(240).nullable(),
+  withDoctor: import_zod3.z.boolean()
 }).strict();
-var HygSlipSchema = import_zod2.z.object({
+var HygSlipSchema = import_zod3.z.object({
   /** Chip ids from DONE_TODAY_OPTIONS. */
-  doneToday: import_zod2.z.array(import_zod2.z.string().min(1).max(60)),
-  doneTodayNote: import_zod2.z.string().max(4e3),
-  xrayTypes: import_zod2.z.array(import_zod2.z.string().min(1).max(20)),
+  doneToday: import_zod3.z.array(import_zod3.z.string().min(1).max(60)),
+  doneTodayNote: import_zod3.z.string().max(4e3),
+  xrayTypes: import_zod3.z.array(import_zod3.z.string().min(1).max(20)),
   examStatus: ExamStatusSchema.nullable(),
   perioStage: PerioStageSchema.nullable(),
   perioGrade: PerioGradeSchema.nullable(),
-  patientConcerns: import_zod2.z.string().max(4e3),
-  hygieneFindings: import_zod2.z.string().max(4e3),
+  patientConcerns: import_zod3.z.string().max(4e3),
+  hygieneFindings: import_zod3.z.string().max(4e3),
   nextVisit: NextVisitSchema,
   /** A reminder when unanswered. NEVER a gate. See the note above. */
   recareScheduled: YesNoSchema.nullable(),
   /** A reminder when unanswered. NEVER a gate. See the note above. */
   txEnteredInOd: YesNoSchema.nullable(),
-  frontDeskNote: import_zod2.z.string().max(4e3),
-  financialNote: import_zod2.z.string().max(4e3),
-  productsDispensed: import_zod2.z.array(import_zod2.z.string().min(1).max(120)),
+  frontDeskNote: import_zod3.z.string().max(4e3),
+  financialNote: import_zod3.z.string().max(4e3),
+  productsDispensed: import_zod3.z.array(import_zod3.z.string().min(1).max(120)),
   /** Keyed by the record label RECORDS_MATRIX produces. */
-  recordsStatus: import_zod2.z.record(import_zod2.z.string(), RecordStatusSchema),
+  recordsStatus: import_zod3.z.record(import_zod3.z.string(), RecordStatusSchema),
   // ─────────────────────────────────────────────────────────────────────────
   // THE CLINIC NOTE (H1 slice 8)
   // ─────────────────────────────────────────────────────────────────────────
@@ -15852,9 +16181,9 @@ var HygSlipSchema = import_zod2.z.object({
    * answer. An id this build does not know is carried, not dropped — the
    * renderer only ever asks for the ids its own template names.
    */
-  noteFields: import_zod2.z.record(import_zod2.z.string(), NoteFieldSchema).default({}),
+  noteFields: import_zod3.z.record(import_zod3.z.string(), NoteFieldSchema).default({}),
   /** `RTC: ` — the return-to-clinic line every one of the templates ends on. */
-  rtc: import_zod2.z.string().max(4e3).default(""),
+  rtc: import_zod3.z.string().max(4e3).default(""),
   /**
    * Perio Maint's `Perio chart updated` line.
    *
@@ -15863,7 +16192,20 @@ var HygSlipSchema = import_zod2.z.object({
    * was updated when it was not is exactly the kind of sentence this module
    * exists to not write.
    */
-  perioChartUpdated: YesNoSchema.nullable().default(null)
+  perioChartUpdated: YesNoSchema.nullable().default(null),
+  // ─────────────────────────────────────────────────────────────────────────
+  // THE ORTHO SCREENING (item 33)
+  // ─────────────────────────────────────────────────────────────────────────
+  //
+  // `null` means nobody has opened the green sheet on this visit. Defaulted
+  // for the same load-bearing reason as the note fields above: a slip saved
+  // before this branch must parse and gain the key, not read back blank.
+  //
+  // ONCE SENT, THE SERVER FREEZES IT. `visitStore.saveSlip` keeps the stored
+  // screening whenever the visit carries an ortho case id, so the sheet the
+  // TC was sent is the sheet this visit shows — a client cannot edit it after
+  // the fact by sending a whole slip.
+  orthoScreening: OrthoScreeningSchema.nullable().default(null)
 }).strict();
 function emptySlip() {
   return {
@@ -15886,7 +16228,8 @@ function emptySlip() {
     visitTypeSource: null,
     noteFields: {},
     rtc: "",
-    perioChartUpdated: null
+    perioChartUpdated: null,
+    orthoScreening: null
   };
 }
 function slipNoteField(slip, id) {
@@ -15897,18 +16240,18 @@ var TreatmentItemInputSchema = TreatmentItemSchema.omit({
   createdBy: true,
   createdAt: true
 }).strict();
-var VisitUpsertRequestSchema = import_zod2.z.object({ slip: HygSlipSchema }).strict();
+var VisitUpsertRequestSchema = import_zod3.z.object({ slip: HygSlipSchema }).strict();
 var TreatmentItemCreateRequestSchema = TreatmentItemInputSchema;
 var TreatmentItemUpdateRequestSchema = TreatmentItemInputSchema.partial();
-var StagedWriteCreateRequestSchema = import_zod2.z.object({ kind: StagedWriteKindSchema }).strict();
-var StagedWriteSchema = import_zod2.z.object({
-  id: import_zod2.z.string().min(1),
+var StagedWriteCreateRequestSchema = import_zod3.z.object({ kind: StagedWriteKindSchema }).strict();
+var StagedWriteSchema = import_zod3.z.object({
+  id: import_zod3.z.string().min(1),
   kind: StagedWriteKindSchema,
   state: StagedWriteStateSchema,
-  title: import_zod2.z.string(),
-  summary: import_zod2.z.string(),
+  title: import_zod3.z.string(),
+  summary: import_zod3.z.string(),
   /** The lines a hygienist reads before confirming. Slice 3 sends exactly these. */
-  preview: import_zod2.z.array(import_zod2.z.string()),
+  preview: import_zod3.z.array(import_zod3.z.string()),
   /**
    * A fingerprint of `preview`, computed by the server.
    *
@@ -15918,41 +16261,48 @@ var StagedWriteSchema = import_zod2.z.object({
    * between the preview and the confirm — her own edit in another tab, a second
    * device — would send words nobody approved.
    */
-  previewFingerprint: import_zod2.z.string(),
+  previewFingerprint: import_zod3.z.string(),
   /** Why it failed, when it did. Null in every other state. */
-  errorMessage: import_zod2.z.string().nullable(),
+  errorMessage: import_zod3.z.string().nullable(),
   /**
    * What Open Dental (or TC) minted, once it landed: `Document 4711`,
    * `Case 8f3c…`. Null until then. A pointer a person can follow — the
    * difference between "it was sent" and "here is where it went".
    */
-  writtenRef: import_zod2.z.string().nullable(),
-  stagedBy: import_zod2.z.string().nullable(),
-  stagedAt: import_zod2.z.string().nullable(),
-  sentBy: import_zod2.z.string().nullable(),
-  sentAt: import_zod2.z.string().nullable(),
-  updatedAt: import_zod2.z.string()
+  writtenRef: import_zod3.z.string().nullable(),
+  stagedBy: import_zod3.z.string().nullable(),
+  stagedAt: import_zod3.z.string().nullable(),
+  sentBy: import_zod3.z.string().nullable(),
+  sentAt: import_zod3.z.string().nullable(),
+  updatedAt: import_zod3.z.string()
 });
-var HygVisitSchema = import_zod2.z.object({
-  visitId: import_zod2.z.string().min(1),
+var OrthoSendSchema = import_zod3.z.object({
+  caseId: import_zod3.z.string().min(1),
+  sentAt: import_zod3.z.string(),
+  sentBy: import_zod3.z.string()
+});
+var HygVisitSchema = import_zod3.z.object({
+  visitId: import_zod3.z.string().min(1),
   office: OfficeIdSchema,
-  aptNum: import_zod2.z.number().int(),
+  aptNum: import_zod3.z.number().int(),
   /** MEANINGLESS WITHOUT `office` — see HygAppointmentSchema. */
-  patNum: import_zod2.z.number().int(),
-  visitDate: import_zod2.z.string().nullable(),
+  patNum: import_zod3.z.number().int(),
+  visitDate: import_zod3.z.string().nullable(),
   slip: HygSlipSchema,
-  items: import_zod2.z.array(TreatmentItemSchema),
-  stagedWrites: import_zod2.z.array(StagedWriteSchema),
-  createdBy: import_zod2.z.string(),
-  createdAt: import_zod2.z.string(),
-  updatedBy: import_zod2.z.string().nullable(),
-  updatedAt: import_zod2.z.string()
+  items: import_zod3.z.array(TreatmentItemSchema),
+  stagedWrites: import_zod3.z.array(StagedWriteSchema),
+  /** Item 33. Defaulted so a response from an older server still parses. */
+  orthoSend: OrthoSendSchema.nullable().default(null),
+  createdBy: import_zod3.z.string(),
+  createdAt: import_zod3.z.string(),
+  updatedBy: import_zod3.z.string().nullable(),
+  updatedAt: import_zod3.z.string()
 });
-var HygVisitResponseSchema = import_zod2.z.object({
-  success: import_zod2.z.literal(true),
+var HygVisitResponseSchema = import_zod3.z.object({
+  success: import_zod3.z.literal(true),
   visit: HygVisitSchema,
   /** Every record the proposed treatments need, from RECORDS_MATRIX. */
-  recordsNeeded: import_zod2.z.array(import_zod2.z.string()),
+  recordsNeeded: import_zod3.z.array(import_zod3.z.string()),
   /** The handoff category deriveCategory() computes from the items. */
   handoffCategory: HandoffCategorySchema,
   /**
@@ -15964,38 +16314,38 @@ var HygVisitResponseSchema = import_zod2.z.object({
    * client bundle because a doctor's name is per-practice, and a name compiled
    * into a component is a name that gets rendered for the wrong one.
    */
-  doctorOptions: import_zod2.z.array(import_zod2.z.string())
+  doctorOptions: import_zod3.z.array(import_zod3.z.string())
 });
-var PreviewFingerprintSchema = import_zod2.z.string().min(1).max(200);
-var SendConfirmationSchema = import_zod2.z.union([
-  import_zod2.z.object({
-    kind: import_zod2.z.enum(["router", "note", "tc-handoff"]),
+var PreviewFingerprintSchema = import_zod3.z.string().min(1).max(200);
+var SendConfirmationSchema = import_zod3.z.union([
+  import_zod3.z.object({
+    kind: import_zod3.z.enum(["router", "note", "tc-handoff"]),
     previewFingerprint: PreviewFingerprintSchema
   }).strict(),
-  import_zod2.z.object({
-    kind: import_zod2.z.literal("perio"),
+  import_zod3.z.object({
+    kind: import_zod3.z.literal("perio"),
     previewFingerprint: PreviewFingerprintSchema,
-    examDate: import_zod2.z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    provNum: import_zod2.z.number().int().positive()
+    examDate: import_zod3.z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    provNum: import_zod3.z.number().int().positive()
   }).strict()
 ]);
-var SendVisitRequestSchema = import_zod2.z.object({ confirm: import_zod2.z.array(SendConfirmationSchema).min(1).max(4) }).strict();
-var SendOutcomeSchema = import_zod2.z.object({
+var SendVisitRequestSchema = import_zod3.z.object({ confirm: import_zod3.z.array(SendConfirmationSchema).min(1).max(4) }).strict();
+var SendOutcomeSchema = import_zod3.z.object({
   kind: StagedWriteKindSchema,
   state: StagedWriteStateSchema,
   /** Present when it landed. */
-  writtenRef: import_zod2.z.string().nullable(),
+  writtenRef: import_zod3.z.string().nullable(),
   /** Present when it did not. Never empty when the state is Failed. */
-  errorMessage: import_zod2.z.string().nullable(),
+  errorMessage: import_zod3.z.string().nullable(),
   /** The precise reason, for a screen that wants to switch on it. */
-  code: import_zod2.z.string().nullable()
+  code: import_zod3.z.string().nullable()
 });
-var HygSendResponseSchema = import_zod2.z.object({
-  success: import_zod2.z.literal(true),
+var HygSendResponseSchema = import_zod3.z.object({
+  success: import_zod3.z.literal(true),
   visit: HygVisitSchema,
-  recordsNeeded: import_zod2.z.array(import_zod2.z.string()),
+  recordsNeeded: import_zod3.z.array(import_zod3.z.string()),
   handoffCategory: HandoffCategorySchema,
-  doctorOptions: import_zod2.z.array(import_zod2.z.string()),
+  doctorOptions: import_zod3.z.array(import_zod3.z.string()),
   /**
    * One entry per confirmed kind, in the order they were attempted.
    *
@@ -16004,10 +16354,20 @@ var HygSendResponseSchema = import_zod2.z.object({
    * `code: "PERIO_PAUSED"` says the step stopped short — Open Dental did not
    * answer — and `errorMessage` says why; nothing is re-sent before a read.
    */
-  outcomes: import_zod2.z.array(SendOutcomeSchema),
+  outcomes: import_zod3.z.array(SendOutcomeSchema),
   /** Counts, not a verdict. A perio chart still `Sending` is in neither. */
-  written: import_zod2.z.number().int(),
-  failed: import_zod2.z.number().int()
+  written: import_zod3.z.number().int(),
+  failed: import_zod3.z.number().int()
+});
+var OrthoSendRequestSchema = import_zod3.z.object({}).strip();
+var HygOrthoSendResponseSchema = import_zod3.z.object({
+  success: import_zod3.z.literal(true),
+  visit: HygVisitSchema,
+  recordsNeeded: import_zod3.z.array(import_zod3.z.string()),
+  handoffCategory: HandoffCategorySchema,
+  doctorOptions: import_zod3.z.array(import_zod3.z.string()),
+  /** True when this press found it already sent and created nothing. */
+  alreadySent: import_zod3.z.boolean()
 });
 var HYG_VISIT_ERROR_CODES = [
   "INVALID_APT_NUM",
@@ -16045,7 +16405,19 @@ var HYG_VISIT_ERROR_CODES = [
   "NOT_AMENDING",
   "AMEND_BASE_CHANGED",
   "AMEND_BASE_MISSING",
-  "NOT_REPLACED"
+  // Item 32: the exam holds a v2 value CareIN cannot interpret. Never superseded.
+  "AMEND_BASE_UNREADABLE",
+  "NOT_REPLACED",
+  // Item 33: the ortho screening's send to TC.
+  "ORTHO_NOTHING_TO_SEND",
+  "ORTHO_SEND_IN_PROGRESS",
+  "PATIENT_NAME_UNAVAILABLE",
+  "PROVIDER_UNAVAILABLE",
+  "TC_UNREACHABLE",
+  "TC_FORBIDDEN",
+  "TC_ENDPOINT_MISSING",
+  "TC_ERROR",
+  "TC_BAD_RESPONSE"
 ];
 
 // shared/hyg/records.ts
@@ -16100,19 +16472,73 @@ function recordsNeededFor(items) {
 }
 
 // shared/hyg/perio.ts
-var import_zod3 = __toESM(require_zod(), 1);
+var import_zod4 = __toESM(require_zod(), 1);
 var PERIO_MAX_DEPTH = 19;
 var PERIO_TOOTH_COUNT = 32;
 var PERIO_SITES_PER_TOOTH = 6;
 var PERIO_FULL_MOUTH_SITES = PERIO_TOOTH_COUNT * PERIO_SITES_PER_TOOTH;
 var PERIO_UPPER_TEETH = Array.from({ length: 16 }, (_, i) => i + 1);
 var PERIO_LOWER_TEETH = Array.from({ length: 16 }, (_, i) => 32 - i);
-var PerioSiteSchema = import_zod3.z.object({
-  depth: import_zod3.z.number().int().min(0).max(PERIO_MAX_DEPTH).nullable(),
-  bleeding: import_zod3.z.boolean(),
-  suppuration: import_zod3.z.boolean(),
-  plaque: import_zod3.z.boolean(),
-  calculus: import_zod3.z.boolean()
+var PERIO_GM_FAMILIES = Object.freeze({
+  /** What a recession is stored as — measured. CareIN writes only this range. */
+  recessionMin: 0,
+  recessionMax: 19,
+  /** The other family Open Dental accepts. Recognised on read-back, never written. */
+  otherMin: 101,
+  otherMax: 119
+});
+function perioGmIsRecession(value) {
+  return value !== null && Number.isInteger(value) && value >= PERIO_GM_FAMILIES.recessionMin && value <= PERIO_GM_FAMILIES.recessionMax;
+}
+var PERIO_MAX_MOBILITY = 3;
+var PERIO_MIN_FURCATION = 1;
+var PERIO_MAX_FURCATION = 3;
+var PERIO_FURCATION_TEETH = Object.freeze([
+  1,
+  2,
+  3,
+  14,
+  15,
+  16,
+  // upper molars
+  5,
+  12,
+  // upper first premolars — two-rooted
+  17,
+  18,
+  19,
+  30,
+  31,
+  32
+  // lower molars
+]);
+function perioToothHasFurcation(tooth) {
+  return PERIO_FURCATION_TEETH.includes(tooth);
+}
+var PerioSiteSchema = import_zod4.z.object({
+  depth: import_zod4.z.number().int().min(0).max(PERIO_MAX_DEPTH).nullable(),
+  bleeding: import_zod4.z.boolean(),
+  suppuration: import_zod4.z.boolean(),
+  plaque: import_zod4.z.boolean(),
+  calculus: import_zod4.z.boolean(),
+  /*
+   * ITEM 26. Both carry `.default(null)` so a chart stored before v2 parses —
+   * a strict object with a new required field would refuse every draft in the
+   * database.
+   */
+  /**
+   * Gingival margin, in millimetres of RECESSION (§0: the 0–19 family).
+   *
+   * The schema also admits 101–119 because Open Dental does and a read-back can
+   * carry one. CareIN's entry never produces one — `perioGmIsRecession` is how
+   * the two are told apart, and an unrecognised value gets no CAL.
+   */
+  gm: import_zod4.z.union([
+    import_zod4.z.number().int().min(PERIO_GM_FAMILIES.recessionMin).max(PERIO_GM_FAMILIES.recessionMax),
+    import_zod4.z.number().int().min(PERIO_GM_FAMILIES.otherMin).max(PERIO_GM_FAMILIES.otherMax)
+  ]).nullable().default(null),
+  /** Furcation class I–III. Only on a tooth that has one — see PERIO_FURCATION_TEETH. */
+  furcation: import_zod4.z.number().int().min(PERIO_MIN_FURCATION).max(PERIO_MAX_FURCATION).nullable().default(null)
 }).strict();
 var PERIO_FLAGS = ["bleeding", "suppuration", "plaque", "calculus"];
 var PERIO_FLAG_LABELS = {
@@ -16127,9 +16553,16 @@ var PERIO_FLAG_KEYS = {
   plaque: "P",
   calculus: "C"
 };
-var PerioToothSchema = import_zod3.z.object({
-  skipped: import_zod3.z.boolean(),
-  sites: import_zod3.z.object({
+var PerioToothSchema = import_zod4.z.object({
+  skipped: import_zod4.z.boolean(),
+  /**
+   * ITEM 26: mobility is PER TOOTH, not per site — Open Dental stores it in
+   * `ToothValue` with every surface column `-1` (probe §4). Clinical range 0–3;
+   * `0` is a real reading ("tested, firm"), which is why it is nullable rather
+   * than defaulting to zero. `.default(null)` so pre-v2 charts parse.
+   */
+  mobility: import_zod4.z.number().int().min(0).max(PERIO_MAX_MOBILITY).nullable().default(null),
+  sites: import_zod4.z.object({
     DB: PerioSiteSchema,
     B: PerioSiteSchema,
     MB: PerioSiteSchema,
@@ -16138,15 +16571,15 @@ var PerioToothSchema = import_zod3.z.object({
     ML: PerioSiteSchema
   }).strict()
 }).strict();
-var PerioToothKeySchema = import_zod3.z.string().regex(/^(?:[1-9]|[12]\d|3[0-2])$/, "must be a universal tooth number from 1 to 32");
-var PerioSegmentSchema = import_zod3.z.enum([
+var PerioToothKeySchema = import_zod4.z.string().regex(/^(?:[1-9]|[12]\d|3[0-2])$/, "must be a universal tooth number from 1 to 32");
+var PerioSegmentSchema = import_zod4.z.enum([
   "upperFacial",
   "upperLingual",
   "lowerLingual",
   "lowerFacial"
 ]);
-var PerioDirectionSchema = import_zod3.z.enum(["ltr", "rtl"]);
-var PerioSweepSchema = import_zod3.z.object({
+var PerioDirectionSchema = import_zod4.z.enum(["ltr", "rtl"]);
+var PerioSweepSchema = import_zod4.z.object({
   upperFacial: PerioDirectionSchema,
   upperLingual: PerioDirectionSchema,
   lowerLingual: PerioDirectionSchema,
@@ -16155,16 +16588,25 @@ var PerioSweepSchema = import_zod3.z.object({
 function defaultPerioSweep() {
   return { upperFacial: "ltr", upperLingual: "rtl", lowerLingual: "ltr", lowerFacial: "rtl" };
 }
-var PerioChartSchema = import_zod3.z.object({
-  teeth: import_zod3.z.record(PerioToothKeySchema, PerioToothSchema),
+var PerioChartSchema = import_zod4.z.object({
+  teeth: import_zod4.z.record(PerioToothKeySchema, PerioToothSchema),
   sweep: PerioSweepSchema.default(defaultPerioSweep)
 }).strict();
 function emptyPerioSite() {
-  return { depth: null, bleeding: false, suppuration: false, plaque: false, calculus: false };
+  return {
+    depth: null,
+    bleeding: false,
+    suppuration: false,
+    plaque: false,
+    calculus: false,
+    gm: null,
+    furcation: null
+  };
 }
 function emptyPerioTooth() {
   return {
     skipped: false,
+    mobility: null,
     sites: {
       DB: emptyPerioSite(),
       B: emptyPerioSite(),
@@ -16188,6 +16630,8 @@ function withPerioSite(chart, tooth, surface, patch) {
   const current = perioTooth(chart, tooth);
   const next = {
     skipped: current.skipped,
+    // ITEM 26: mobility is a TOOTH value and must survive a change to a site.
+    mobility: current.mobility,
     sites: { ...current.sites, [surface]: { ...current.sites[surface], ...patch } }
   };
   return { ...chart, teeth: { ...chart.teeth, [String(tooth)]: next } };
@@ -16196,7 +16640,17 @@ function withPerioSkipped(chart, tooth, skipped) {
   const current = perioTooth(chart, tooth);
   return {
     ...chart,
-    teeth: { ...chart.teeth, [String(tooth)]: { skipped, sites: current.sites } }
+    teeth: {
+      ...chart.teeth,
+      [String(tooth)]: { skipped, mobility: current.mobility, sites: current.sites }
+    }
+  };
+}
+function withPerioMobility(chart, tooth, mobility) {
+  const current = perioTooth(chart, tooth);
+  return {
+    ...chart,
+    teeth: { ...chart.teeth, [String(tooth)]: { ...current, mobility } }
   };
 }
 function isPatientRight(tooth) {
@@ -16270,22 +16724,29 @@ function flagsFromBits(bits) {
     calculus: (bits & 8) !== 0
   };
 }
-var PerioCountsSchema = import_zod3.z.object({
+var PerioCountsSchema = import_zod4.z.object({
   /** Sites with a depth, on teeth that are not skipped. */
-  sitesCharted: import_zod3.z.number().int(),
+  sitesCharted: import_zod4.z.number().int(),
   /** 192, less six for every skipped tooth. */
-  sitesExpected: import_zod3.z.number().int(),
-  teethSkipped: import_zod3.z.array(import_zod3.z.number().int()),
-  bleeding: import_zod3.z.number().int(),
-  suppuration: import_zod3.z.number().int(),
-  plaque: import_zod3.z.number().int(),
-  calculus: import_zod3.z.number().int(),
-  sitesAtLeast5: import_zod3.z.number().int(),
-  deepest: import_zod3.z.object({ depth: import_zod3.z.number().int(), tooth: import_zod3.z.number().int(), surface: ToothSurfaceSchema }).nullable(),
+  sitesExpected: import_zod4.z.number().int(),
+  teethSkipped: import_zod4.z.array(import_zod4.z.number().int()),
+  bleeding: import_zod4.z.number().int(),
+  suppuration: import_zod4.z.number().int(),
+  plaque: import_zod4.z.number().int(),
+  calculus: import_zod4.z.number().int(),
+  sitesAtLeast5: import_zod4.z.number().int(),
+  deepest: import_zod4.z.object({ depth: import_zod4.z.number().int(), tooth: import_zod4.z.number().int(), surface: ToothSurfaceSchema }).nullable(),
   /** Every expected site charted. A partial chart is `false` and SAYS so. */
-  complete: import_zod3.z.boolean(),
+  complete: import_zod4.z.boolean(),
   /** No depth, no flag, no skipped tooth — nothing to stage. */
-  empty: import_zod3.z.boolean()
+  empty: import_zod4.z.boolean(),
+  /* ITEM 26. `.default(0)` so a response from an older build still parses. */
+  /** Sites carrying a gingival-margin value, on un-skipped teeth. */
+  gmSites: import_zod4.z.number().int().default(0),
+  /** Sites carrying a furcation class. */
+  furcationSites: import_zod4.z.number().int().default(0),
+  /** Teeth carrying a mobility value. */
+  mobilityTeeth: import_zod4.z.number().int().default(0)
 });
 var FACIAL_SITES = ["DB", "B", "MB"];
 var LINGUAL_SITES = ["DL", "L", "ML"];
@@ -16302,7 +16763,10 @@ function countPerioChart(chart) {
     sitesAtLeast5: 0,
     deepest: null,
     complete: false,
-    empty: true
+    empty: true,
+    gmSites: 0,
+    furcationSites: 0,
+    mobilityTeeth: 0
   };
   for (let tooth = 1; tooth <= PERIO_TOOTH_COUNT; tooth += 1) {
     const t = perioTooth(chart, tooth);
@@ -16310,6 +16774,7 @@ function countPerioChart(chart) {
       counts.teethSkipped.push(tooth);
       continue;
     }
+    if (t.mobility !== null) counts.mobilityTeeth += 1;
     for (const surface of ALL_SITES) {
       const site = t.sites[surface];
       if (site.depth !== null) {
@@ -16319,16 +16784,26 @@ function countPerioChart(chart) {
           counts.deepest = { depth: site.depth, tooth, surface };
         }
       }
+      if (site.gm !== null) counts.gmSites += 1;
+      if (site.furcation !== null) counts.furcationSites += 1;
       for (const flag of PERIO_FLAGS) if (site[flag]) counts[flag] += 1;
     }
   }
   counts.sitesExpected = PERIO_FULL_MOUTH_SITES - PERIO_SITES_PER_TOOTH * counts.teethSkipped.length;
   counts.complete = counts.sitesExpected > 0 && counts.sitesCharted === counts.sitesExpected;
-  counts.empty = counts.sitesCharted === 0 && counts.teethSkipped.length === 0 && PERIO_FLAGS.every((flag) => counts[flag] === 0);
+  counts.empty = counts.sitesCharted === 0 && counts.teethSkipped.length === 0 && counts.gmSites === 0 && counts.furcationSites === 0 && counts.mobilityTeeth === 0 && PERIO_FLAGS.every((flag) => counts[flag] === 0);
   return counts;
 }
+function perioCal(site) {
+  if (site.depth === null) return null;
+  if (!perioGmIsRecession(site.gm)) return null;
+  return site.depth + site.gm;
+}
 function perioHasReading(counts) {
-  return counts.sitesCharted > 0 || PERIO_FLAGS.some((flag) => counts[flag] > 0);
+  return counts.sitesCharted > 0 || // ITEM 26: a recession, a furcation class and a mobility grade are all things
+  // she measured, so each one is a reading by item 28's rule. Only a SKIP is
+  // not — and that is still the whole content of the test that pins this.
+  counts.gmSites > 0 || counts.furcationSites > 0 || counts.mobilityTeeth > 0 || PERIO_FLAGS.some((flag) => counts[flag] > 0);
 }
 var PERIO_NO_READING_REFUSAL = "There are no perio readings on this visit yet, so there is nothing to stage. Skipped teeth do not count \u2014 a skip says a tooth was not charted, not what was measured. Open the perio chart and enter a reading first.";
 function perioProgressLabel(counts) {
@@ -16338,7 +16813,7 @@ function perioProgressLabel(counts) {
   return `${head}: ${counts.sitesCharted} of ${counts.sitesExpected} sites charted${tail}`;
 }
 function siteIsEmpty(site) {
-  return site.depth === null && PERIO_FLAGS.every((flag) => !site[flag]);
+  return site.depth === null && site.gm === null && site.furcation === null && PERIO_FLAGS.every((flag) => !site[flag]);
 }
 function normalizePerioChart(chart) {
   const teeth = {};
@@ -16353,7 +16828,11 @@ function normalizePerioChart(chart) {
       L: { ...emptyPerioSite(), ...stored.sites.L },
       ML: { ...emptyPerioSite(), ...stored.sites.ML }
     };
-    const canonical = { skipped: stored.skipped, sites: {} };
+    const canonical = {
+      skipped: stored.skipped,
+      mobility: stored.mobility ?? null,
+      sites: {}
+    };
     for (const surface of ALL_SITES) {
       const s = sites[surface];
       canonical.sites[surface] = {
@@ -16361,10 +16840,12 @@ function normalizePerioChart(chart) {
         bleeding: s.bleeding,
         suppuration: s.suppuration,
         plaque: s.plaque,
-        calculus: s.calculus
+        calculus: s.calculus,
+        gm: s.gm ?? null,
+        furcation: s.furcation ?? null
       };
     }
-    if (!canonical.skipped && ALL_SITES.every((surface) => siteIsEmpty(canonical.sites[surface]))) {
+    if (!canonical.skipped && canonical.mobility === null && ALL_SITES.every((surface) => siteIsEmpty(canonical.sites[surface]))) {
       continue;
     }
     teeth[String(tooth)] = canonical;
@@ -16399,6 +16880,11 @@ function perioPreviewLines(chart) {
       `Deepest: ${counts.deepest.depth} mm at #${counts.deepest.tooth} ${counts.deepest.surface}; sites 5 mm or deeper: ${counts.sitesAtLeast5}`
     );
   }
+  if (counts.gmSites > 0 || counts.furcationSites > 0 || counts.mobilityTeeth > 0) {
+    lines.push(
+      `Recession: ${counts.gmSites} sites; furcation: ${counts.furcationSites} sites; mobility: ${counts.mobilityTeeth} teeth`
+    );
+  }
   lines.push("Depths read DB B MB (facial) and DL L ML (lingual); - is not charted.");
   const notCharted = [];
   for (let tooth = 1; tooth <= PERIO_TOOTH_COUNT; tooth += 1) {
@@ -16417,6 +16903,19 @@ function perioPreviewLines(chart) {
       const at = ALL_SITES.filter((s) => t.sites[s][flag]);
       if (at.length > 0) flagParts.push(`${flag} ${at.join(", ")}`);
     }
+    const gmAt = ALL_SITES.filter((site) => t.sites[site].gm !== null);
+    if (gmAt.length > 0) {
+      flagParts.push(
+        "recession " + gmAt.map((site) => `${site} ${t.sites[site].gm} mm`).join(", ")
+      );
+    }
+    const furcationAt = ALL_SITES.filter((site) => t.sites[site].furcation !== null);
+    if (furcationAt.length > 0) {
+      flagParts.push(
+        "furcation " + furcationAt.map((site) => `${site} class ${t.sites[site].furcation}`).join(", ")
+      );
+    }
+    if (t.mobility !== null) flagParts.push(`mobility grade ${t.mobility}`);
     lines.push(
       `  #${tooth} facial ${depths(FACIAL_SITES)}, lingual ${depths(LINGUAL_SITES)}` + (flagParts.length > 0 ? "; " + flagParts.join("; ") : "")
     );
@@ -16426,13 +16925,13 @@ function perioPreviewLines(chart) {
   }
   return lines;
 }
-var PerioChartSaveRequestSchema = import_zod3.z.object({ chart: PerioChartSchema }).strict();
-var HygPerioResponseSchema = import_zod3.z.object({
-  success: import_zod3.z.literal(true),
+var PerioChartSaveRequestSchema = import_zod4.z.object({ chart: PerioChartSchema }).strict();
+var HygPerioResponseSchema = import_zod4.z.object({
+  success: import_zod4.z.literal(true),
   office: OfficeIdSchema,
-  aptNum: import_zod3.z.number().int(),
+  aptNum: import_zod4.z.number().int(),
   /** False until somebody changes something on this appointment. */
-  visitStarted: import_zod3.z.boolean(),
+  visitStarted: import_zod4.z.boolean(),
   chart: PerioChartSchema,
   stagedWrite: StagedWriteSchema.nullable(),
   counts: PerioCountsSchema,
@@ -16445,75 +16944,102 @@ var HygPerioResponseSchema = import_zod3.z.object({
    * on the next open. A stored row says she has been here. Defaults false so an
    * older answer pre-skips as a first open would.
    */
-  chartStored: import_zod3.z.boolean().default(false)
+  chartStored: import_zod4.z.boolean().default(false)
 });
-var PerioPriorSchema = import_zod3.z.discriminatedUnion("status", [
-  import_zod3.z.object({
-    status: import_zod3.z.literal("found"),
-    examNum: import_zod3.z.number().int(),
+var PerioPriorSchema = import_zod4.z.discriminatedUnion("status", [
+  import_zod4.z.object({
+    status: import_zod4.z.literal("found"),
+    examNum: import_zod4.z.number().int(),
     /** Open Dental's ExamDate, `YYYY-MM-DD`, or null when it gave none. */
-    examDate: import_zod3.z.string().nullable(),
-    provNum: import_zod3.z.number().int().nullable(),
+    examDate: import_zod4.z.string().nullable(),
+    provNum: import_zod4.z.number().int().nullable(),
     chart: PerioChartSchema,
     counts: PerioCountsSchema,
     /** The measurement list did not come back whole. Some readings are missing. */
-    truncated: import_zod3.z.boolean()
+    truncated: import_zod4.z.boolean()
   }),
-  import_zod3.z.object({ status: import_zod3.z.literal("none") }),
-  import_zod3.z.object({
-    status: import_zod3.z.literal("unavailable"),
-    message: import_zod3.z.string(),
+  import_zod4.z.object({ status: import_zod4.z.literal("none") }),
+  import_zod4.z.object({
+    status: import_zod4.z.literal("unavailable"),
+    message: import_zod4.z.string(),
     /** Open Dental's own status line. Never a body. */
-    detail: import_zod3.z.string().nullable()
+    detail: import_zod4.z.string().nullable()
   })
 ]);
-var PerioSiteChangeSchema = import_zod3.z.object({
-  tooth: import_zod3.z.number().int(),
+var PerioSiteChangeKindSchema = import_zod4.z.enum(["depth", "flags", "skipped", "gm", "furcation", "mobility"]);
+var PerioSiteChangeSchema = import_zod4.z.object({
+  tooth: import_zod4.z.number().int(),
   surface: ToothSurfaceSchema.nullable(),
-  kind: import_zod3.z.enum(["depth", "flags", "skipped"]),
-  from: import_zod3.z.string(),
-  to: import_zod3.z.string()
+  kind: PerioSiteChangeKindSchema,
+  from: import_zod4.z.string(),
+  to: import_zod4.z.string()
 });
-var PerioSameDateExamSchema = import_zod3.z.object({
-  examNum: import_zod3.z.number().int(),
-  examDate: import_zod3.z.string().nullable(),
-  provNum: import_zod3.z.number().int().nullable(),
-  careinWrote: import_zod3.z.boolean()
+var PerioSameDateExamSchema = import_zod4.z.object({
+  examNum: import_zod4.z.number().int(),
+  examDate: import_zod4.z.string().nullable(),
+  provNum: import_zod4.z.number().int().nullable(),
+  careinWrote: import_zod4.z.boolean()
 });
-var PerioDriftSchema = import_zod3.z.discriminatedUnion("status", [
-  import_zod3.z.object({ status: import_zod3.z.literal("not_applicable") }),
-  import_zod3.z.object({ status: import_zod3.z.literal("matches"), examNum: import_zod3.z.number().int() }),
-  import_zod3.z.object({
-    status: import_zod3.z.literal("missing"),
-    examNum: import_zod3.z.number().int(),
+var PerioUnreadablePositionSchema = import_zod4.z.object({
+  tooth: import_zod4.z.number().int().nullable(),
+  surface: ToothSurfaceSchema.nullable(),
+  kind: import_zod4.z.enum(["gm", "furcation", "mobility"])
+});
+var PerioDriftUnknownReasonSchema = import_zod4.z.enum(["unreadable_od", "uninterpretable"]);
+var PerioDriftSchema = import_zod4.z.discriminatedUnion("status", [
+  import_zod4.z.object({ status: import_zod4.z.literal("not_applicable") }),
+  import_zod4.z.object({ status: import_zod4.z.literal("matches"), examNum: import_zod4.z.number().int() }),
+  import_zod4.z.object({
+    status: import_zod4.z.literal("missing"),
+    examNum: import_zod4.z.number().int(),
     /**
      * EVERY exam this patient has on the visit's date, CareIN's or not. The
      * hygienist sees this before she creates a second one for the same visit.
      */
-    sameDateExams: import_zod3.z.array(PerioSameDateExamSchema)
+    sameDateExams: import_zod4.z.array(PerioSameDateExamSchema)
   }),
-  import_zod3.z.object({
-    status: import_zod3.z.literal("changed"),
-    examNum: import_zod3.z.number().int(),
+  import_zod4.z.object({
+    status: import_zod4.z.literal("changed"),
+    examNum: import_zod4.z.number().int(),
     /** What Open Dental holds now, against what CareIN wrote. Never empty here. */
-    changes: import_zod3.z.array(PerioSiteChangeSchema)
+    changes: import_zod4.z.array(PerioSiteChangeSchema)
   }),
-  import_zod3.z.object({ status: import_zod3.z.literal("unknown"), examNum: import_zod3.z.number().int() })
+  import_zod4.z.object({
+    status: import_zod4.z.literal("unknown"),
+    examNum: import_zod4.z.number().int(),
+    /**
+     * ITEM 32: WHY CareIN cannot say. Two causes that need different treatment:
+     *
+     *   `unreadable_od`   — Open Dental could not be read (or there is no baseline
+     *                       to compare with). TRANSIENT. Item 14's ruling stands:
+     *                       NOTHING is said.
+     *   `uninterpretable` — Open Dental WAS read, and holds a v2 value CareIN
+     *                       cannot interpret. DURABLE: somebody's hand put it
+     *                       there. A quiet neutral line names where — never the
+     *                       amber notice, never a button.
+     *
+     * Defaults to `unreadable_od` so an answer that does not carry a reason is
+     * read as the silent one it always was.
+     */
+    reason: PerioDriftUnknownReasonSchema.default("unreadable_od"),
+    /** Where the uninterpretable values are. Empty for `unreadable_od`. Never the value. */
+    positions: import_zod4.z.array(PerioUnreadablePositionSchema).default([])
+  })
 ]);
-var PerioPreSkipSchema = import_zod3.z.discriminatedUnion("status", [
-  import_zod3.z.object({
-    status: import_zod3.z.literal("ready"),
+var PerioPreSkipSchema = import_zod4.z.discriminatedUnion("status", [
+  import_zod4.z.object({
+    status: import_zod4.z.literal("ready"),
     /** Permanent teeth 1–32 marked `Missing`. Empty = none, NOT "unknown". */
-    teeth: import_zod3.z.array(import_zod3.z.number().int().min(1).max(PERIO_TOOTH_COUNT))
+    teeth: import_zod4.z.array(import_zod4.z.number().int().min(1).max(PERIO_TOOTH_COUNT))
   }),
-  import_zod3.z.object({ status: import_zod3.z.literal("unavailable") })
+  import_zod4.z.object({ status: import_zod4.z.literal("unavailable") })
 ]);
-var PerioResendRequestSchema = import_zod3.z.object({ examNum: import_zod3.z.number().int().positive() }).strict();
-var HygPerioPriorResponseSchema = import_zod3.z.object({
-  success: import_zod3.z.literal(true),
+var PerioResendRequestSchema = import_zod4.z.object({ examNum: import_zod4.z.number().int().positive() }).strict();
+var HygPerioPriorResponseSchema = import_zod4.z.object({
+  success: import_zod4.z.literal(true),
   office: OfficeIdSchema,
-  aptNum: import_zod3.z.number().int(),
-  date: import_zod3.z.string(),
+  aptNum: import_zod4.z.number().int(),
+  date: import_zod4.z.string(),
   appointment: HygAppointmentSchema,
   prior: PerioPriorSchema,
   drift: PerioDriftSchema,
@@ -16521,9 +17047,9 @@ var HygPerioPriorResponseSchema = import_zod3.z.object({
 });
 
 // shared/hyg/perioSend.ts
-var import_zod4 = __toESM(require_zod(), 1);
+var import_zod5 = __toESM(require_zod(), 1);
 var PERIO_ARCH_STRING_FIELDS = ["UpperFacial", "UpperLingual", "LowerLingual", "LowerFacial"];
-var PerioArchStringFieldSchema = import_zod4.z.enum(PERIO_ARCH_STRING_FIELDS);
+var PerioArchStringFieldSchema = import_zod5.z.enum(PERIO_ARCH_STRING_FIELDS);
 var PERIO_ARCH_STRING_LABELS = {
   UpperFacial: "Upper facial",
   UpperLingual: "Upper lingual",
@@ -16791,19 +17317,26 @@ function perioArchVerdict(chart, field) {
   }
   return { field, status: "string", string: out, sites: last + 1 };
 }
-var PerioSendSequenceTypeSchema = import_zod4.z.enum(["Probing", "BleedSupPlaqCalc", "SkipTooth"]);
-var PerioCursorSchema = import_zod4.z.object({ tooth: import_zod4.z.number().int(), surface: ToothSurfaceSchema });
-var PerioArchPathSchema = import_zod4.z.enum(["string", "per_row", "empty"]);
-var PerioArchPlanSchema = import_zod4.z.object({
+var PerioSendSequenceTypeSchema = import_zod5.z.enum([
+  "Probing",
+  "BleedSupPlaqCalc",
+  "SkipTooth",
+  "GingMargin",
+  "Furcation",
+  "Mobility"
+]);
+var PerioCursorSchema = import_zod5.z.object({ tooth: import_zod5.z.number().int(), surface: ToothSurfaceSchema });
+var PerioArchPathSchema = import_zod5.z.enum(["string", "per_row", "empty"]);
+var PerioArchPlanSchema = import_zod5.z.object({
   field: PerioArchStringFieldSchema,
-  label: import_zod4.z.string(),
+  label: import_zod5.z.string(),
   path: PerioArchPathSchema,
-  reason: import_zod4.z.enum(["deep", "gap", "flag_without_depth", "partner"]).nullable(),
-  at: import_zod4.z.array(PerioCursorSchema),
+  reason: import_zod5.z.enum(["deep", "gap", "flag_without_depth", "partner"]).nullable(),
+  at: import_zod5.z.array(PerioCursorSchema),
   /** Charted sites on this arch. */
-  sites: import_zod4.z.number().int(),
+  sites: import_zod5.z.number().int(),
   /** One sentence for the confirm dialog. */
-  detail: import_zod4.z.string()
+  detail: import_zod5.z.string()
 });
 function siteName(c) {
   return `#${c.tooth} ${c.surface}`;
@@ -16855,6 +17388,7 @@ function planPerioSend(chart) {
     return { ...partial, label: PERIO_ARCH_STRING_LABELS[v.field], detail: archDetail(partial, normalized) };
   });
   const rows = [];
+  const v2Rows = [];
   const deepSites = [];
   for (let tooth = 1; tooth <= PERIO_TOOTH_COUNT; tooth += 1) {
     const t = normalized.teeth[String(tooth)];
@@ -16870,6 +17404,56 @@ function planPerioSend(chart) {
     for (const surface of ALL_SURFACES) {
       const depth2 = t.sites[surface].depth;
       if (depth2 !== null && depth2 > PERIO_STRING_MAX_DEPTH) deepSites.push({ tooth, surface });
+    }
+    const gmOf = (surface) => t.sites[surface].gm ?? -1;
+    if (ALL_SURFACES.some((surface) => t.sites[surface].gm !== null)) {
+      v2Rows.push({
+        tooth,
+        sequenceType: "GingMargin",
+        body: {
+          // Per site: ToothValue MUST be -1, or Open Dental refuses the row.
+          ToothValue: -1,
+          MBvalue: gmOf("MB"),
+          Bvalue: gmOf("B"),
+          DBvalue: gmOf("DB"),
+          MLvalue: gmOf("ML"),
+          Lvalue: gmOf("L"),
+          DLvalue: gmOf("DL")
+        }
+      });
+    }
+    const furcationOf = (surface) => t.sites[surface].furcation ?? -1;
+    if (ALL_SURFACES.some((surface) => t.sites[surface].furcation !== null)) {
+      v2Rows.push({
+        tooth,
+        sequenceType: "Furcation",
+        body: {
+          ToothValue: -1,
+          MBvalue: furcationOf("MB"),
+          Bvalue: furcationOf("B"),
+          DBvalue: furcationOf("DB"),
+          MLvalue: furcationOf("ML"),
+          Lvalue: furcationOf("L"),
+          DLvalue: furcationOf("DL")
+        }
+      });
+    }
+    if (t.mobility !== null) {
+      v2Rows.push({
+        tooth,
+        sequenceType: "Mobility",
+        // PER TOOTH: the grade is in ToothValue and EVERY surface must be -1, or
+        // Open Dental refuses the row (`MBvalue is invalid...`, measured).
+        body: {
+          ToothValue: t.mobility,
+          MBvalue: -1,
+          Bvalue: -1,
+          DBvalue: -1,
+          MLvalue: -1,
+          Lvalue: -1,
+          DLvalue: -1
+        }
+      });
     }
     if (!perRowJaws.has(perioJawOfTooth(tooth))) continue;
     const depth = (s) => t.sites[s].depth ?? -1;
@@ -16908,6 +17492,7 @@ function planPerioSend(chart) {
       });
     }
   }
+  rows.push(...v2Rows);
   return { strings, arches, rows, deepSites };
 }
 var PERIO_SEND_BATCH = 12;
@@ -16919,16 +17504,24 @@ function estimatePerioSendRequests({
   const rows = Math.max(0, rowsRemaining);
   return (examCreated ? 0 : 3) + rows + Math.ceil(rows / PERIO_SEND_BATCH) + 1;
 }
-var PerioMismatchKindSchema = import_zod4.z.enum(["depth", "flags", "skipped", "duplicate"]);
-var PerioMismatchSchema = import_zod4.z.object({
-  tooth: import_zod4.z.number().int(),
+var PerioMismatchKindSchema = import_zod5.z.enum([
+  "depth",
+  "flags",
+  "skipped",
+  "duplicate",
+  "gm",
+  "furcation",
+  "mobility"
+]);
+var PerioMismatchSchema = import_zod5.z.object({
+  tooth: import_zod5.z.number().int(),
   /** null for a whole-tooth difference (skipped, or a duplicate row). */
   surface: ToothSurfaceSchema.nullable(),
   kind: PerioMismatchKindSchema,
   /** What the staged chart says, in words. */
-  expected: import_zod4.z.string(),
+  expected: import_zod5.z.string(),
   /** What Open Dental holds, in words. */
-  found: import_zod4.z.string()
+  found: import_zod5.z.string()
 });
 function depthWords(depth) {
   return depth === null ? "not charted" : `${depth} mm`;
@@ -16936,6 +17529,17 @@ function depthWords(depth) {
 function flagWords(site) {
   const on = PERIO_FLAGS.filter((flag) => site[flag]).map((flag) => PERIO_FLAG_LABELS[flag].toLowerCase());
   return on.length === 0 ? "no flags" : on.join(", ");
+}
+function gmWords(value) {
+  if (value === null) return "not charted";
+  if (!perioGmIsRecession(value)) return `${value} (unrecognised margin)`;
+  return `${value} mm recession`;
+}
+function furcationWords(value) {
+  return value === null ? "not charted" : `class ${value}`;
+}
+function mobilityWords(value) {
+  return value === null ? "not charted" : `grade ${value}`;
 }
 function comparePerioReadback(expected, found) {
   const want = normalizePerioChart(expected);
@@ -16953,8 +17557,18 @@ function comparePerioReadback(expected, found) {
         found: f.skipped ? "skipped" : "not skipped"
       });
     }
+    const wantMobility = e.skipped ? null : e.mobility;
+    if (wantMobility !== f.mobility) {
+      out.push({
+        tooth,
+        surface: null,
+        kind: "mobility",
+        expected: mobilityWords(wantMobility),
+        found: mobilityWords(f.mobility)
+      });
+    }
     for (const surface of ALL_SURFACES) {
-      const wantSite = e.skipped ? { depth: null, bleeding: false, suppuration: false, plaque: false, calculus: false } : e.sites[surface];
+      const wantSite = e.skipped ? emptyPerioSite() : e.sites[surface];
       const haveSite = f.sites[surface];
       if (wantSite.depth !== haveSite.depth) {
         out.push({
@@ -16968,21 +17582,56 @@ function comparePerioReadback(expected, found) {
       if (flagWords(wantSite) !== flagWords(haveSite)) {
         out.push({ tooth, surface, kind: "flags", expected: flagWords(wantSite), found: flagWords(haveSite) });
       }
+      if (wantSite.gm !== haveSite.gm) {
+        out.push({ tooth, surface, kind: "gm", expected: gmWords(wantSite.gm), found: gmWords(haveSite.gm) });
+      }
+      if (wantSite.furcation !== haveSite.furcation) {
+        out.push({
+          tooth,
+          surface,
+          kind: "furcation",
+          expected: furcationWords(wantSite.furcation),
+          found: furcationWords(haveSite.furcation)
+        });
+      }
     }
   }
   return out;
 }
+function isChangeKind(kind) {
+  return kind !== "duplicate";
+}
 function perioChartChanges(before, after) {
   const out = [];
   for (const m of comparePerioReadback(before, after)) {
-    if (m.kind === "duplicate") continue;
+    if (!isChangeKind(m.kind)) continue;
     out.push({ tooth: m.tooth, surface: m.surface, kind: m.kind, from: m.expected, to: m.found });
   }
   return out;
 }
+var PERIO_CHANGE_KIND_LABEL = Object.freeze({
+  depth: null,
+  flags: null,
+  skipped: null,
+  gm: "gingival margin",
+  furcation: "furcation",
+  mobility: "mobility"
+});
 function perioChangeLine(c) {
   const where = c.surface === null ? `#${c.tooth}` : `#${c.tooth} ${c.surface}`;
-  return `${where}: ${c.from} \u2192 ${c.to}`;
+  const label = PERIO_CHANGE_KIND_LABEL[c.kind];
+  return `${label === null ? where : `${where} ${label}`}: ${c.from} \u2192 ${c.to}`;
+}
+function perioUnreadableRef(p) {
+  const label = PERIO_CHANGE_KIND_LABEL[p.kind];
+  if (p.tooth === null || p.tooth < 1 || p.tooth > 32) return `${label} on a tooth CareIN cannot place`;
+  return `${p.surface === null ? `#${p.tooth}` : `#${p.tooth} ${p.surface}`} ${label}`;
+}
+var PERIO_UNREADABLE_NAMED = 3;
+function perioUnreadableList(positions) {
+  const named = positions.slice(0, PERIO_UNREADABLE_NAMED).map(perioUnreadableRef).join(", ");
+  const rest = positions.length - PERIO_UNREADABLE_NAMED;
+  return rest > 0 ? `${named} and ${rest} more` : named;
 }
 function perioChangeSiteRef(c) {
   return c.surface === null ? `#${c.tooth}` : `#${c.tooth} ${c.surface}`;
@@ -16992,51 +17641,51 @@ function perioMismatchLine(m) {
   if (m.kind === "duplicate") return `${where}: ${m.found} in Open Dental where there should be ${m.expected}`;
   return `${where}: the chart says ${m.expected}, Open Dental holds ${m.found}`;
 }
-var PerioSendRequestSchema = import_zod4.z.object({
-  previewFingerprint: import_zod4.z.string().min(1).max(200),
-  examDate: import_zod4.z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  provNum: import_zod4.z.number().int().positive()
+var PerioSendRequestSchema = import_zod5.z.object({
+  previewFingerprint: import_zod5.z.string().min(1).max(200),
+  examDate: import_zod5.z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  provNum: import_zod5.z.number().int().positive()
 }).strict();
-var PerioDeleteExamRequestSchema = import_zod4.z.object({ examNum: import_zod4.z.number().int().positive() }).strict();
+var PerioDeleteExamRequestSchema = import_zod5.z.object({ examNum: import_zod5.z.number().int().positive() }).strict();
 var PERIO_SEND_STATES = ["posting", "filling", "written", "incomplete", "refused", "deleted"];
-var PerioSendStateSchema = import_zod4.z.enum(PERIO_SEND_STATES);
-var PerioSendViewSchema = import_zod4.z.object({
-  sendId: import_zod4.z.string(),
+var PerioSendStateSchema = import_zod5.z.enum(PERIO_SEND_STATES);
+var PerioSendViewSchema = import_zod5.z.object({
+  sendId: import_zod5.z.string(),
   state: PerioSendStateSchema,
-  examNum: import_zod4.z.number().int().nullable(),
-  examDate: import_zod4.z.string(),
-  provNum: import_zod4.z.number().int(),
-  arches: import_zod4.z.array(PerioArchPlanSchema),
-  rowsPlanned: import_zod4.z.number().int(),
-  rowsWritten: import_zod4.z.number().int(),
-  deepSites: import_zod4.z.number().int(),
-  mismatches: import_zod4.z.array(PerioMismatchSchema),
-  errorMessage: import_zod4.z.string().nullable(),
-  requestsRemaining: import_zod4.z.number().int(),
-  startedBy: import_zod4.z.string(),
-  startedAt: import_zod4.z.string(),
-  finishedAt: import_zod4.z.string().nullable(),
-  deletedBy: import_zod4.z.string().nullable(),
-  deletedAt: import_zod4.z.string().nullable(),
+  examNum: import_zod5.z.number().int().nullable(),
+  examDate: import_zod5.z.string(),
+  provNum: import_zod5.z.number().int(),
+  arches: import_zod5.z.array(PerioArchPlanSchema),
+  rowsPlanned: import_zod5.z.number().int(),
+  rowsWritten: import_zod5.z.number().int(),
+  deepSites: import_zod5.z.number().int(),
+  mismatches: import_zod5.z.array(PerioMismatchSchema),
+  errorMessage: import_zod5.z.string().nullable(),
+  requestsRemaining: import_zod5.z.number().int(),
+  startedBy: import_zod5.z.string(),
+  startedAt: import_zod5.z.string(),
+  finishedAt: import_zod5.z.string().nullable(),
+  deletedBy: import_zod5.z.string().nullable(),
+  deletedAt: import_zod5.z.string().nullable(),
   /** An exam this send created, while the send is unfinished. The only exam the undo may touch. */
-  canDelete: import_zod4.z.boolean(),
+  canDelete: import_zod5.z.boolean(),
   // ── the amendment (item 13) ──
   /** The exam this send REPLACES. null on a first send. */
-  supersedesExamNum: import_zod4.z.number().int().nullable(),
+  supersedesExamNum: import_zod5.z.number().int().nullable(),
   /** When the swap's last step removed that old exam. null while it is still there. */
-  supersedesDeletedAt: import_zod4.z.string().nullable(),
+  supersedesDeletedAt: import_zod5.z.string().nullable(),
   /** What this amendment changes, site by site, frozen when it was confirmed. */
-  amendDiff: import_zod4.z.array(PerioSiteChangeSchema),
+  amendDiff: import_zod5.z.array(PerioSiteChangeSchema),
   /**
    * The chart this send WROTE, once it verified — the baseline the next
    * amendment is diffed against. null until a send has verified.
    */
   writtenChart: PerioChartSchema.nullable()
 });
-var HygPerioSendResponseSchema = import_zod4.z.object({
-  success: import_zod4.z.literal(true),
+var HygPerioSendResponseSchema = import_zod5.z.object({
+  success: import_zod5.z.literal(true),
   office: OfficeIdSchema,
-  aptNum: import_zod4.z.number().int(),
+  aptNum: import_zod5.z.number().int(),
   stagedWrite: StagedWriteSchema.nullable(),
   send: PerioSendViewSchema.nullable(),
   /**
@@ -17050,11 +17699,11 @@ var HygPerioSendResponseSchema = import_zod4.z.object({
    * Why this step stopped short without finishing — Open Dental did not answer,
    * or another tab is mid-step. Nothing was lost; the next step reads first.
    */
-  paused: import_zod4.z.string().nullable()
+  paused: import_zod5.z.string().nullable()
 });
 
 // ../backend/hyg/contract.entry.ts
-var import_zod5 = __toESM(require_zod());
+var import_zod6 = __toESM(require_zod());
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   CORRECTED_OPTION_SPELLINGS,
@@ -17078,6 +17727,7 @@ var import_zod5 = __toESM(require_zod());
   HygIdentitySchema,
   HygIdentityStateSchema,
   HygOperatorySchema,
+  HygOrthoSendResponseSchema,
   HygPerioPriorResponseSchema,
   HygPerioResponseSchema,
   HygPerioSendResponseSchema,
@@ -17097,18 +17747,58 @@ var import_zod5 = __toESM(require_zod());
   OD_SECONDS_PER_REQUEST,
   OFFICE_IDS,
   OFFICE_TIME_ZONE,
+  ORTHO_AFTER_OPTIONS,
+  ORTHO_AFTER_TEETH_MAX,
+  ORTHO_ARCH_OPTIONS,
+  ORTHO_BENEFIT_OPTIONS,
+  ORTHO_CONCERN_OPTIONS,
+  ORTHO_CONSULT_OPTIONS,
+  ORTHO_DECIDER_OPTIONS,
+  ORTHO_INTEREST_OPTIONS,
+  ORTHO_LOWER_APPLIANCE_OPTIONS,
+  ORTHO_MODALITY_OPTIONS,
+  ORTHO_MONTH_OPTIONS,
+  ORTHO_MYO_OPTIONS,
+  ORTHO_MYO_REASON_OPTIONS,
+  ORTHO_NOTE_MAX,
+  ORTHO_PHASE_OPTIONS,
+  ORTHO_RECORD_OPTIONS,
+  ORTHO_UPPER_APPLIANCE_OPTIONS,
   OfficeIdSchema,
+  OrthoAfterSchema,
+  OrthoArchSchema,
+  OrthoBenefitSchema,
+  OrthoConcernSchema,
+  OrthoConsultSchema,
+  OrthoDeciderSchema,
+  OrthoInterestSchema,
+  OrthoLowerApplianceSchema,
+  OrthoModalitySchema,
+  OrthoMyoReasonSchema,
+  OrthoMyoSchema,
+  OrthoPhaseSchema,
+  OrthoRecordSchema,
+  OrthoScreeningSchema,
+  OrthoSendRequestSchema,
+  OrthoSendSchema,
+  OrthoUpperApplianceSchema,
   PERIO_ARCH_STRING_FIELDS,
   PERIO_ARCH_STRING_LABELS,
   PERIO_ARCH_STRING_SITES,
   PERIO_ARCH_STRING_SITES_PER_ARCH,
+  PERIO_CHANGE_KIND_LABEL,
   PERIO_FLAGS,
   PERIO_FLAG_KEYS,
   PERIO_FLAG_LABELS,
   PERIO_FLAG_LETTERS,
   PERIO_FULL_MOUTH_SITES,
+  PERIO_FURCATION_TEETH,
+  PERIO_GM_FAMILIES,
   PERIO_LOWER_TEETH,
   PERIO_MAX_DEPTH,
+  PERIO_MAX_FURCATION,
+  PERIO_MAX_MOBILITY,
+  PERIO_MIN_FURCATION,
   PERIO_NO_READING_REFUSAL,
   PERIO_SEGMENTS,
   PERIO_SEND_BATCH,
@@ -17117,6 +17807,7 @@ var import_zod5 = __toESM(require_zod());
   PERIO_STAGE_LABELS,
   PERIO_STRING_MAX_DEPTH,
   PERIO_TOOTH_COUNT,
+  PERIO_UNREADABLE_NAMED,
   PERIO_UPPER_TEETH,
   PerioArchPathSchema,
   PerioArchPlanSchema,
@@ -17128,6 +17819,7 @@ var import_zod5 = __toESM(require_zod());
   PerioDeleteExamRequestSchema,
   PerioDirectionSchema,
   PerioDriftSchema,
+  PerioDriftUnknownReasonSchema,
   PerioGradeSchema,
   PerioMismatchKindSchema,
   PerioMismatchSchema,
@@ -17140,12 +17832,14 @@ var import_zod5 = __toESM(require_zod());
   PerioSendSequenceTypeSchema,
   PerioSendStateSchema,
   PerioSendViewSchema,
+  PerioSiteChangeKindSchema,
   PerioSiteChangeSchema,
   PerioSiteSchema,
   PerioStageSchema,
   PerioSweepSchema,
   PerioToothKeySchema,
   PerioToothSchema,
+  PerioUnreadablePositionSchema,
   RECORDS_MATRIX,
   RECORD_STATUS_LABELS,
   RecordStatusSchema,
@@ -17184,6 +17878,7 @@ var import_zod5 = __toESM(require_zod());
   defaultPerioSweep,
   deriveCategory,
   emptyNoteField,
+  emptyOrthoScreening,
   emptyPerioChart,
   emptyPerioSite,
   emptyPerioTooth,
@@ -17192,18 +17887,25 @@ var import_zod5 = __toESM(require_zod());
   fieldText,
   firstOpenPerioCursor,
   flagsFromBits,
+  formatOrthoMonths,
   freeFieldsFor,
   hasPerioChartLine,
   isAnswered,
   isChildVisit,
   isOfficeId,
+  isOrthoSendable,
   isPatientRight,
   isWellFormedArchString,
   normalizePerioChart,
+  orthoConcernsText,
+  orthoScreeningRows,
+  orthoScreeningSummary,
   perioArchVerdict,
+  perioCal,
   perioChangeLine,
   perioChangeSiteRef,
   perioChartChanges,
+  perioGmIsRecession,
   perioHasReading,
   perioJawOfField,
   perioJawOfTooth,
@@ -17214,6 +17916,10 @@ var import_zod5 = __toESM(require_zod());
   perioSideOf,
   perioSite,
   perioTooth,
+  perioToothHasFurcation,
+  perioUnreadableList,
+  perioUnreadableRef,
+  pickOne,
   planPerioSend,
   recordsNeededFor,
   renderVisitNote,
@@ -17224,6 +17930,9 @@ var import_zod5 = __toESM(require_zod());
   slipNoteField,
   stepPerioCursor,
   suggestVisitType,
+  toggleAfterOrtho,
+  toggleMany,
+  withPerioMobility,
   withPerioSite,
   withPerioSkipped,
   z

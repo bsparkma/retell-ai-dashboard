@@ -130,15 +130,22 @@ test('communications: office-scoped log reads with caseId filter and limit', asy
   }
 });
 
-test('the send pipeline is uniformly FEATURE_DISABLED (501)', async () => {
+// Item 40 unstubbed /render and /send (covered in tcEmailSend.test.js). This
+// test now pins what is STILL disabled, and that a malformed body to the live
+// routes is a 400 that writes nothing (it used to be a 501).
+test('test-send stays FEATURE_DISABLED (501); render/send refuse an empty body and write nothing', async () => {
   const { baseUrl, db, close } = await bootTcApp();
   try {
-    for (const path of ['/render', '/test-send', '/send']) {
+    const testSend = await api(baseUrl, 'POST', '/api/tc/communications/test-send?office=roland', {});
+    assert.equal(testSend.status, 501);
+    assert.equal(testSend.body.code, 'FEATURE_DISABLED');
+    for (const path of ['/render', '/send']) {
       const res = await api(baseUrl, 'POST', `/api/tc/communications${path}?office=roland`, {});
-      assert.equal(res.status, 501, path);
-      assert.equal(res.body.code, 'FEATURE_DISABLED');
+      assert.equal(res.status, 400, path);
+      assert.equal(res.body.code, 'VALIDATION_FAILED');
     }
-    assert.equal(db.table('tc_communications').length, 0, 'disabled endpoints must write nothing');
+    assert.equal(db.table('tc_communications').length, 0, 'refused requests must write nothing');
+    assert.equal(db.table('tc_messages').length, 0, 'refused requests must write nothing');
   } finally {
     await close();
   }

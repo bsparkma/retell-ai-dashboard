@@ -1034,12 +1034,17 @@ module.exports = {
   readOperatories,
   readAppointments,
   readPatients,
+  // Item 33: the ortho send names the appointment's DOCTOR, from the providers
+  // list this same request's day read just cached (asked with a refusing
+  // reader, so it never costs an Open Dental request).
+  readProviderLabels,
   minutesFromPattern,
   odBool,
   odInt,
   FLAG_SOURCES,
   DAY_STATUSES,
   OD_PAGE_SIZE,
+  MAX_PAGES,
   MAX_PATIENT_READS,
   IDENTITY_BATCH,
 };

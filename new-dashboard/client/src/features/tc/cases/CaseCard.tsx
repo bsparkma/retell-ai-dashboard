@@ -29,6 +29,7 @@ import { ALL_CASE_STATUSES, caseStatusLabel } from "../status";
 import type { CaseStatusId } from "../status";
 import { UrgencyBadge } from "../components/TcShell";
 import { OfficeBadge } from "../components/OfficeBadge";
+import { OrthoWorkupChip } from "../caseview/OrthoScreeningSection";
 
 /** Whole days the case has sat in its current status (statusChangedAt, falling back to createdAt). */
 export function daysInStatus(row: TcCaseSummary): number {
@@ -100,6 +101,14 @@ export function CaseCardBody({
       <div className="mt-2 text-sm font-bold text-foreground">
         {formatCents(caseRow.caseValueCents)}
       </div>
+
+      {/* Item 33: a hygiene_review case that arrived with an ortho screening is
+          a work-up waiting for the TC. Once claimed it is ordinary pipeline. */}
+      {caseRow.status === "hygiene_review" && caseRow.hasOrthoScreening === true && (
+        <div className="mt-1.5">
+          <OrthoWorkupChip />
+        </div>
+      )}
 
       <div className="mt-2 flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-1.5">

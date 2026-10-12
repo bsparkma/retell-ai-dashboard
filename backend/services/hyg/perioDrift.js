@@ -38,6 +38,12 @@
  *   exam present, sites DIFFER         → say it, name them.  no resend
  *   Open Dental could not be read      → say nothing.        no resend
  *
+ * "Every site" is every FAMILY a send writes — probing, flags, skips, and since
+ * item 31 recession, furcation and mobility. A v2 value Open Dental holds that
+ * CareIN cannot interpret is the fourth row, never the first: see `driftAnswer`.
+ * ITEM 32: that one is not silent — it names the position on a quiet line, and
+ * so it audits (`driftDiscloses`). A failed read stays silent and unaudited.
+ *
  * The third row is the whole design. A reading that differs is A HUMAN WHO
  * CORRECTED THE CHART IN OPEN DENTAL. Resending there would create a duplicate
  * exam and bury a deliberate correction under CareIN's stale numbers. "It does
@@ -67,6 +73,26 @@ const NOT_APPLICABLE = Object.freeze({ status: 'not_applicable' });
 
 /** How many changed sites the screen is handed. A whole chart can differ at 192. */
 const MAX_REPORTED_CHANGES = 24;
+
+/**
+ * ITEM 32: `unknown` because CareIN could not SEE — a failed or partial read, or
+ * no baseline to compare against. Transient, and silent on screen (item 14).
+ * Distinct from `uninterpretable`, where Open Dental was read and holds a value
+ * somebody put there that CareIN cannot interpret.
+ */
+function unreadableOd(examNum) {
+  return { status: 'unknown', reason: 'unreadable_od', examNum, positions: [] };
+}
+
+/**
+ * Where, never what: `raw` is dropped here so the value CareIN cannot interpret
+ * never reaches the screen as though it meant something. Capped like `changes`.
+ */
+function unreadablePositions(unreadable) {
+  return unreadable
+    .slice(0, MAX_REPORTED_CHANGES)
+    .map((u) => ({ tooth: u.tooth, surface: u.surface, kind: u.kind }));
+}
 
 function refuse(status, code, error) {
   return { ok: false, status, code, error };
@@ -147,7 +173,7 @@ async function checkDrift({ staged, live, exams, latest, odGet, careinExamNums =
 
   // A LIST THAT DID NOT COME BACK WHOLE PROVES NOTHING ABOUT PRESENCE. An exam
   // missing from half a list is not missing from the chart.
-  if (!exams.ok) return { drift: { status: 'unknown', examNum }, odReads: 0 };
+  if (!exams.ok) return { drift: unreadableOd(examNum), odReads: 0 };
 
   if (!exams.list.some((e) => e.examNum === examNum)) {
     return {
@@ -169,25 +195,95 @@ async function checkDrift({ staged, live, exams, latest, odGet, careinExamNums =
    * construction — a claim CareIN has not checked. `unknown` is the honest answer.
    */
   const baseline = perioSend.sendChart(live);
-  if (!baseline) return { drift: { status: 'unknown', examNum }, odReads: 0 };
+  if (!baseline) return { drift: unreadableOd(examNum), odReads: 0 };
 
   let odChart = latest && latest.examNum === examNum ? latest.chart : null;
+  let unreadable = odChart ? latest.uninterpretable || [] : [];
   let odReads = 0;
   if (!odChart) {
     // The live exam is not the newest one — somebody charted a newer exam in Open
     // Dental. One extra read, and only here.
     const read = await odPerio.readExamMeasures(odGet, { examNum });
     odReads = read.odReads;
-    if (!read.ok || read.truncated) return { drift: { status: 'unknown', examNum }, odReads };
-    odChart = odPerio.chartFromMeasures(read.rows).chart;
+    if (!read.ok || read.truncated) return { drift: unreadableOd(examNum), odReads };
+    ({ chart: odChart, uninterpretable: unreadable } = odPerio.chartFromMeasures(read.rows));
   }
 
-  const changes = contract.perioChartChanges(baseline, odChart);
-  if (changes.length === 0) return { drift: { status: 'matches', examNum }, odReads };
-  return {
-    drift: { status: 'changed', examNum, changes: changes.slice(0, MAX_REPORTED_CHANGES) },
-    odReads,
-  };
+  return { drift: driftAnswer({ examNum, baseline, odChart, unreadable }), odReads };
+}
+
+/**
+ * `matches`, `changed` or `unknown`, from two charts and what could not be read.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * ITEM 31: SILENCE IS EARNED ONLY WHEN EVERY COMPARED FAMILY MATCHED
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Since item 31 the comparison covers recession, furcation and mobility as well
+ * as probing. A v2 value Open Dental holds that CareIN cannot interpret
+ * (`chartFromMeasures`' `uninterpretable`) sits in the chart as "nothing
+ * charted", so the comparison at that position is not a comparison at all:
+ *
+ *   - A change reported AT an unreadable position would say "not charted", which
+ *     is false — something IS charted there. Those lines are dropped.
+ *   - Every other change is real and is reported: `changed`, naming them. One
+ *     unreadable site does not hide a recession somebody plainly edited.
+ *   - No reportable change, but something unreadable: `unknown`. NEVER `matches`
+ *     — CareIN did not see that position agree, so it does not say it did.
+ *     ITEM 32: with `reason: 'uninterpretable'` and the positions, so the screen
+ *     can name them — unlike a failed read, this is durable and somebody's hand.
+ *
+ * Pure, so the three outcomes are tested without Open Dental.
+ *
+ * @param {{ examNum: number, baseline: object, odChart: object,
+ *           unreadable: Array<{ tooth: number|null, surface: string|null, kind: string }> }} args
+ */
+function driftAnswer({ examNum, baseline, odChart, unreadable = [] }) {
+  const blind = new Set(unreadable.map((u) => `${u.tooth}|${u.surface}|${u.kind}`));
+  const changes = contract
+    .perioChartChanges(baseline, odChart)
+    .filter((c) => !blind.has(`${c.tooth}|${c.surface}|${c.kind}`));
+  if (changes.length > 0) {
+    return { status: 'changed', examNum, changes: changes.slice(0, MAX_REPORTED_CHANGES) };
+  }
+  if (unreadable.length > 0) {
+    return { status: 'unknown', reason: 'uninterpretable', examNum, positions: unreadablePositions(unreadable) };
+  }
+  return { status: 'matches', examNum };
+}
+
+/**
+ * ITEM 32: does this answer TELL HER something about the chart of record? Then
+ * it is a disclosure and the route audits it, fail-closed.
+ *
+ *   missing, changed            → yes (item 14)
+ *   unknown / uninterpretable   → yes: it names tooth, surface and family
+ *   unknown / unreadable_od     → no: nothing is drawn, nothing is disclosed
+ *   matches, not_applicable     → no
+ */
+function driftDiscloses(drift) {
+  if (drift.status === 'missing' || drift.status === 'changed') return true;
+  return drift.status === 'unknown' && drift.reason === 'uninterpretable';
+}
+
+/**
+ * The audit row's `source_ref` for a disclosing drift answer.
+ *
+ * `perio_exam:7001` for `missing` and `changed`, exactly as item 14 wrote it.
+ * For `uninterpretable`, the positions the screen named are appended:
+ *
+ *     perio_exam:7001;3-B:gm,30:mobility
+ *
+ * `tooth-surface` is the same form `hyg_perio_amend_site` uses, and the family
+ * is the closed `kind` vocabulary. Identifiers only — the raw value never
+ * reaches this function (`unreadablePositions` already dropped it).
+ */
+function driftAuditRef(drift) {
+  const exam = `perio_exam:${drift.examNum}`;
+  if (drift.status !== 'unknown' || drift.reason !== 'uninterpretable') return exam;
+  const where = drift.positions.map(
+    (p) => `${p.tooth === null ? 'x' : p.tooth}${p.surface ? '-' + p.surface : ''}:${p.kind}`
+  );
+  return `${exam};${where.join(',')}`;
 }
 
 /**
@@ -280,8 +376,12 @@ async function resendVanishedChart({ pool, office, visit, odGet, request, actor 
 module.exports = {
   readDriftContext,
   checkDrift,
+  driftAnswer,
+  driftDiscloses,
+  driftAuditRef,
   resendVanishedChart,
   sameDateExams,
+  unreadableOd,
   NOT_APPLICABLE,
   MAX_REPORTED_CHANGES,
 };

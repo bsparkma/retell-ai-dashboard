@@ -1273,6 +1273,13 @@ export type CallbackDisplay = ReturnType<typeof normalizeCallback>;
 // API methods
 // ---------------------------------------------------------------------------
 
+/** The voice lab token route's answer: a short-lived token and the region. Nothing else. */
+export interface VoiceLabToken {
+  success: true;
+  token: string;
+  region: string;
+}
+
 export const api = {
   async getUnifiedCalls(params?: {
     source?: string;
@@ -1541,6 +1548,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify(options ?? {}),
     });
+  },
+
+  /**
+   * Voice lab (queue item 34): mint a 10-minute Azure Speech token. Sends NO
+   * body — the backend refuses one — and gets back only the token and region;
+   * the Speech key never leaves the server. 404 when the lab is not mounted,
+   * 429 when today's lab budget is spent.
+   */
+  voiceLabToken(): Promise<VoiceLabToken> {
+    return request<VoiceLabToken>("/voicelab/token", { method: "POST" });
   },
 
   /**

@@ -19,6 +19,10 @@
  */
 import { z } from "zod";
 import { EmailBlocks } from "./emailBlocks";
+// The hygienist's ortho screening (item 33). ONE vocabulary for both modules:
+// the hygiene slip stores this object and TC carries it, so the schema lives
+// with the screening rather than being restated here.
+import { OrthoScreeningSchema } from "../hyg/orthoScreening";
 
 // ── Shared primitives ────────────────────────────────────────────────────────
 
@@ -354,6 +358,18 @@ export const TcHygieneIntake = z.object({
   insuranceNoted: LongText,
   patientInterestLevel: PatientInterestLevel,
   flagUrgent: z.boolean(),
+  /**
+   * The hygienist's ortho screening, structured (item 33). NULLABLE and
+   * ADDITIVE: every intake before this — and every treatment handoff, which
+   * has no screening — is `null`, and renders exactly as it did. Defaulted so
+   * every pre-existing construction site (legacy import, voice intake, the
+   * treatment handoff) stays valid without naming it.
+   *
+   * The same object the hygiene slip stores, parsed by the same schema; the
+   * text-only `suspectedTreatment` beside it carries the summary line for the
+   * surfaces that do not render structure yet.
+   */
+  orthoScreening: OrthoScreeningSchema.nullable().default(null),
 });
 export type TcHygieneIntake = z.infer<typeof TcHygieneIntake>;
 
@@ -610,6 +626,29 @@ export const LibraryFinancingSettings = z.object({
   ),
 });
 
+/**
+ * Opportunities inbox display window (queue item 45), per office.
+ *
+ * DISPLAY ONLY. The nightly sync still CAPTURES 730 days of treatment plans
+ * (TC_OPPS_LOOKBACK_DAYS); this is how far back the inbox SHOWS them, judged by
+ * the newest planned procedure on a row. The band between the window and the
+ * capture horizon stays in data as the future reactivation pool.
+ *
+ * No stored section ⇒ the default. Beau's ruling 2026-10-10: 18 months.
+ */
+export const OPPORTUNITIES_WINDOW_MIN_MONTHS = 1;
+export const OPPORTUNITIES_WINDOW_MAX_MONTHS = 24;
+export const OPPORTUNITIES_WINDOW_DEFAULT_MONTHS = 18;
+export const LibraryOpportunitiesConfig = z.object({
+  opportunitiesWindowMonths: z
+    .number()
+    .int()
+    .min(OPPORTUNITIES_WINDOW_MIN_MONTHS)
+    .max(OPPORTUNITIES_WINDOW_MAX_MONTHS)
+    .default(OPPORTUNITIES_WINDOW_DEFAULT_MONTHS),
+});
+export type LibraryOpportunitiesConfig = z.infer<typeof LibraryOpportunitiesConfig>;
+
 export const LibrarySectionSchemas = {
   stages: z.array(LibraryStage).max(50),
   objections: z.array(LibraryObjection).max(100),
@@ -622,6 +661,7 @@ export const LibrarySectionSchemas = {
   financing_config: LibraryFinancingConfig,
   cadence_config: LibraryCadenceConfig,
   financing_settings: LibraryFinancingSettings,
+  opportunities_config: LibraryOpportunitiesConfig,
 } as const;
 export type LibrarySection = keyof typeof LibrarySectionSchemas;
 

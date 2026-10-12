@@ -37,6 +37,8 @@ async function bootstrap() {
   const openDentalRouter = require('./routes/openDental');
   const openDentalSyncRouter = require('./routes/openDentalSync');
   const webhooksRouter = require('./routes/webhooks');
+  const twilioWebhooksRouter = require('./routes/twilioWebhooks');
+  const emailWebhooksRouter = require('./routes/emailWebhooks');
   const liveCallsRouter = require('./routes/liveCalls');
   const adminRouter = require('./routes/admin');
   const mangoRouter = require('./routes/mango');
@@ -56,7 +58,10 @@ async function bootstrap() {
   const retentionConfig = require('./config/retention');
   const odHealthCheck = require('./services/odHealthCheck');
   const hygDayWarm = require('./services/hygDayWarm');
+  const tcOpportunitiesSync = require('./services/tcOpportunities/scheduler');
   const hygPilot = require('./config/hygPilot');
+  const tcSms = require('./config/tcSms');
+  const tcEmail = require('./config/tcEmail');
   const { requireDashboardAuth, socketAuth } = require('./middleware/auth');
   const { tenantContext, requireModule } = require('./middleware/tenantContext');
   const { requirePermission, requireReadWrite, requireSuperAdmin } = require('./config/permissions');
@@ -160,7 +165,16 @@ async function bootstrap() {
       if (buf && buf.length) req.rawBody = buf.toString('utf8');
     },
   }));
-  app.use(express.urlencoded({ extended: true }));
+  // Same raw-body capture for form posts: Twilio's webhooks are
+  // application/x-www-form-urlencoded and X-Twilio-Signature is computed over
+  // the exact parameters sent (routes/twilioWebhooks.js validates against the
+  // RAW body, not the extended parser's reshaping of it).
+  app.use(express.urlencoded({
+    extended: true,
+    verify: (req, _res, buf) => {
+      if (buf && buf.length) req.rawBody = buf.toString('utf8');
+    },
+  }));
   // Parse cookies so the Entra SSO session cookie is available to /auth and the gate.
   app.use(cookieParser());
 
@@ -254,6 +268,19 @@ async function bootstrap() {
     requireReadWrite('voice.read', 'voice.sync'),
     openDentalSyncRouter
   );
+  // Twilio (TC text messaging, item 39). Registered BEFORE /api/webhooks so it
+  // answers its own paths, and inside the /api/webhooks exemption from the SSO
+  // gate, tenant gate and rate limiter: no user identity, no module guard.
+  // It authenticates every request itself (X-Twilio-Signature) and resolves its
+  // tenant from TWILIO_TENANT_SLUG through the registry — see the router header.
+  app.use('/api/webhooks/twilio', twilioWebhooksRouter);
+  // TC email unsubscribe link (item 40). Same placement and the same reasoning
+  // as Twilio: a patient's browser or mail client carries no user identity, so
+  // it rides the /api/webhooks exemptions with no module guard. It needs no
+  // signature because its token IS the credential (32 random bytes per email,
+  // stored hashed); it answers every token outcome with one constant page and
+  // resolves its tenant from TC_EMAIL_TENANT_SLUG — see the router header.
+  app.use('/api/webhooks/email', emailWebhooksRouter);
   app.use('/api/webhooks', webhooksRouter);
   app.use('/api/live-calls', voiceModule, voiceSurface, liveCallsRouter);
   // The Admin page: scheduler start/stop, cost ceilings, queues, config. Tenant
@@ -305,6 +332,14 @@ async function bootstrap() {
   app.use('/api/agent-config', voiceModule, voiceSurface, agentConfigRouter);
   app.use('/api/notifications-config', voiceModule, voiceSurface, notificationsConfigRouter);
   app.use('/api/slot-markers', voiceModule, voiceSurface, slotMarkersRouter);
+
+  // Voice lab (queue item 34) — a STAGING-ONLY measurement page's one token
+  // route. Mounted only when VOICE_LAB=1 AND the process is not production
+  // (config/voiceLab.js); otherwise /api/voicelab/* falls through to the 404.
+  // No module guard and no entitlement row by design: it is not a product, it
+  // touches no tenant data, and it sits below the auth gate + tenant context
+  // like every other /api route. Audio never reaches this backend.
+  require('./routes/voiceLab').mountVoiceLab(app);
 
   // TC (Treatment Coordinator) module — Slice 3 backend port. ONE mount for
   // the whole /api/tc/* surface, behind its own module guard. Ships DARK: no
@@ -564,7 +599,26 @@ async function bootstrap() {
     //    next request.
     hygPilot.startRefreshTimer();
 
+    //    TC text messaging kill switch (item 39). Same pattern: read the stored
+    //    value before anything could send, then keep it fresh. It never throws;
+    //    an unreachable control plane leaves texting OFF unless the env
+    //    fallback says otherwise. The adapter also re-reads it before every send.
+    await tcSms.refreshFromDb();
+    tcSms.startRefreshTimer();
+    console.log(`[tcSms] text messaging ${tcSms.smsEnabled() ? 'ON' : 'OFF'} (source=${tcSms.source()})`);
+
+    //    TC email kill switch (item 40). The same pattern as texting.
+    await tcEmail.refreshFromDb();
+    tcEmail.startRefreshTimer();
+    console.log(`[tcEmail] email sending ${tcEmail.emailEnabled() ? 'ON' : 'OFF'} (source=${tcEmail.source()})`);
+
     hygDayWarm.start();
+
+    // 7. Arm the nightly TC Opportunities sync (default 02:30 America/Chicago,
+    //    item 41). DARK: each pass reads platform_setting['tc_opportunities_sync']
+    //    first and does nothing until an office is switched on there. No pass at
+    //    boot. See services/tcOpportunities/scheduler.js.
+    tcOpportunitiesSync.start();
 
     // (M3) The startup `transcribeUntranscribedMango` backfill was removed: it keyed on
     // `recording_path`, which the API ingest path never sets, so it found zero candidates
@@ -582,7 +636,10 @@ async function bootstrap() {
     retentionScheduler.stop();
     odHealthCheck.stop();
     hygDayWarm.stop();
+    tcOpportunitiesSync.stop();
     hygPilot.stopRefreshTimer();
+    tcSms.stopRefreshTimer();
+    tcEmail.stopRefreshTimer();
     await unifiedCallStore.shutdown();
     process.exit(0);
   });
@@ -592,7 +649,10 @@ async function bootstrap() {
     retentionScheduler.stop();
     odHealthCheck.stop();
     hygDayWarm.stop();
+    tcOpportunitiesSync.stop();
     hygPilot.stopRefreshTimer();
+    tcSms.stopRefreshTimer();
+    tcEmail.stopRefreshTimer();
     await unifiedCallStore.shutdown();
     process.exit(0);
   });
