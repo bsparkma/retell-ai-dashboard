@@ -260,7 +260,7 @@ function OfficePostingQueue({ office }: { office: RcmOfficeId }) {
   }, [office, load]);
 
   const page = state.kind === "loaded" ? state.page : null;
-  const waiting = page ? page.byStatus.approved + page.byStatus.failed + page.byStatus.partially_posted : 0;
+  const waiting = page ? waitingToPost(page) : 0;
 
   return (
     <section data-testid={`posting-office-${office}`}>
@@ -443,7 +443,7 @@ function DrainButton({
   draining: boolean;
   onDrain: () => void;
 }) {
-  const waiting = page.byStatus.approved + page.byStatus.failed + page.byStatus.partially_posted;
+  const waiting = waitingToPost(page);
   const disabled = draining || !page.canDrain || !page.drainEnabled || waiting === 0;
 
   /*
@@ -518,7 +518,8 @@ function DrainSummary({ office, result }: { office: RcmOfficeId; result: DrainRe
   const posted = result.outcomes.filter((o) => o.status === "posted").length;
   const blocked = result.outcomes.filter((o) => o.status === "blocked").length;
   const trouble = result.outcomes.filter(
-    (o) => o.status === "failed" || o.status === "partially_posted",
+    // W-21: an unknown outcome needs somebody exactly as much as a partial one.
+    (o) => o.status === "failed" || o.status === "partially_posted" || o.status === "outcome_unknown",
   ).length;
 
   return (
@@ -942,6 +943,7 @@ function PlanCard({
           {row.status === "partially_posted" && (
             <PartlyPosted office={office} row={row} />
           )}
+          {row.status === "outcome_unknown" && <OutcomeUnknown row={row} />}
 
           <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
             {/* `officeDay`, not `day`. An approval at 20:10 Central is 01:10Z
@@ -997,6 +999,53 @@ function PlanCard({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * The plans a press of Post would pick up, counted off the header totals.
+ *
+ * One function for the two places that need it — the header line and the
+ * button's own enabled state — so they cannot disagree. W-21 added
+ * `outcome_unknown`, and it MUST be here: a page holding only unknown plans
+ * would otherwise grey out the one button that settles them, which is the
+ * trap the drainable rule exists to prevent.
+ *
+ * `?? 0` on the new key only: a server mid-deploy, one revision older than
+ * this client, does not send it yet, and NaN would read as "work waiting".
+ */
+function waitingToPost(page: PostingQueuePage): number {
+  return (
+    page.byStatus.approved +
+    page.byStatus.failed +
+    page.byStatus.partially_posted +
+    (page.byStatus.outcome_unknown ?? 0)
+  );
+}
+
+/**
+ * W-21 — A PLAN WHOSE WRITE NOBODY COULD CONFIRM, on the history screen.
+ *
+ * Says what is known and nothing else: whether a check number is on record,
+ * that the payment must not be entered by hand, and that the next press reads
+ * the chart first. No figure, no fix, and never the run's own error text.
+ */
+function OutcomeUnknown({ row }: { row: PostingQueueRow }) {
+  return (
+    <div
+      className="mt-2 rounded-md border border-border bg-muted/40 p-2 text-sm"
+      data-testid={`posting-unknown-${row.queueId}`}
+    >
+      <p className="text-foreground">
+        {row.odClaimPaymentNum != null
+          ? `Open Dental already holds check #${row.odClaimPaymentNum} from an earlier posting run — do not enter the payment by hand.`
+          : "Part of this payment may already be in Open Dental — do not enter it by hand."}
+      </p>
+      <p className="mt-0.5 text-muted-foreground">
+        Press Post to Open Dental again: it reads Open Dental first and settles what landed before it
+        does anything else.
+      </p>
     </div>
   );
 }

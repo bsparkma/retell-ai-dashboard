@@ -321,7 +321,8 @@ describe("the drain's vocabularies", () => {
         "..",
         "backend",
         "migrations-tenant",
-        "1787300000000_rcm_posting_withdraw.js",
+        // W-21 re-keyed it again, adding `outcome_unknown`.
+        "1790900000000_rcm_posting_intent.js",
       ),
       "utf8",
     );
@@ -329,6 +330,7 @@ describe("the drain's vocabularies", () => {
     const stored = [...block![1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
     expect(stored).toContain("blocked");
     expect(stored).toContain("withdrawn");
+    expect(stored).toContain("outcome_unknown");
 
     /*
      * The client maps a LABEL to copy, never a stored word — the server ships
@@ -344,6 +346,7 @@ describe("the drain's vocabularies", () => {
       "failed",
       "blocked",
       "withdrawn",
+      "outcome_unknown",
     ]);
     expect([...labels].filter((l) => !serverLabels.has(l))).toEqual([]);
     expect([...serverLabels].filter((l) => !labels.has(l))).toEqual([]);

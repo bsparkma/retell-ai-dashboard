@@ -26,11 +26,14 @@ import type { PostingLineStatus, PostingQueueLabel, PostingStep } from "@/featur
  * ═════════════════════════════════════════════════════════════════════════════
  * SAY LESS: "NOTHING WAS WRITTEN" IS SAID ONLY WHERE IT IS KNOWN (S5 round 1)
  * ═════════════════════════════════════════════════════════════════════════════
- * The failed state used to read "Nothing was written." The drain marks a run
- * `failed` when it crashes at `office_writeoffs` or `confirm_patient` — both
+ * The failed state used to read "Nothing was written." The drain marked a run
+ * `failed` when it crashed at `office_writeoffs` or `confirm_patient` — both
  * AFTER the check was created — so in exactly those crashes the sentence was
  * false, and false in the direction that invites somebody to hand-enter a
- * payment that already partly exists.
+ * payment that already partly exists. W-21 fixed the drain (those crashes now
+ * end `partially_posted` or `outcome_unknown`, classified from evidence), and
+ * the rule below stays anyway: a screen should never be the last line of
+ * defence for a state the server might one day get wrong again.
  *
  * So no failed or stopped state asserts that nothing was written, sent or
  * called — not in this file, not in the rail, and not by echoing the run's own
@@ -46,6 +49,20 @@ import type { PostingLineStatus, PostingQueueLabel, PostingStep } from "@/featur
  */
 export const POST_AGAIN_SAFE =
   "Press Post again — posting re-reads Open Dental first and starts from what the chart shows.";
+
+/**
+ * W-21 — A WRITE WAS SENT AND NOTHING HAS READ THE CHART SINCE.
+ *
+ * The one state that may say neither "it landed" nor "it did not". It says the
+ * two things that ARE known — a write left for Open Dental, and the next press
+ * reads the chart before it does anything else — and the one instruction that
+ * matters most here: do not enter the payment by hand. A second, hand-entered
+ * payment is the exact double-post W-21 exists to prevent.
+ */
+export const OUTCOME_UNKNOWN_COPY =
+  "A write was sent to Open Dental and the run stopped before it could confirm whether it " +
+  "landed. Do not enter this payment by hand. Press Post again — posting reads Open Dental " +
+  "first and settles what landed before it does anything else.";
 
 /** What a plan's state means, in the words a biller would use. */
 export const QUEUE_STATE_COPY: Record<PostingQueueLabel, { label: string; hint: string }> = {
@@ -82,6 +99,10 @@ export const QUEUE_STATE_COPY: Record<PostingQueueLabel, { label: string; hint: 
       "This check will never post through CareIN. It is kept so there is still a record, but " +
       "it can never be posted from here again.",
   },
+  outcome_unknown: {
+    label: "Not confirmed yet",
+    hint: OUTCOME_UNKNOWN_COPY,
+  },
 };
 
 /**
@@ -117,6 +138,8 @@ export function queueStateTone(label: PostingQueueLabel): string {
       return "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300";
     case "failed":
     case "partially_posted":
+    // W-21: money may have moved, and somebody has to press Post to find out.
+    case "outcome_unknown":
       return "bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300";
     case "blocked":
       return "bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300";
@@ -452,6 +475,9 @@ export const STEP_COPY: Record<PostingStep, string> = {
   office_writeoffs: "Writing the write-offs this office decided on",
   recoupment: "Writing the takeback",
   confirm_patient: "Checking what the patient owes now",
+  // W-21 / W-16: it STARTED that check and did not finish it. Nothing was
+  // compared, which is exactly what the stopped screen goes on to say.
+  confirm_patient_interrupted: "Starting to check what the patient owes now",
   document_attach: "Filing the EOB into the patient chart",
 };
 
