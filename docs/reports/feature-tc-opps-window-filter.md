@@ -177,3 +177,18 @@ generic words.
 6. The queue file itself says "expect RED".
 
 Every consumer of the new values was grepped (§4) and updated or deliberately left out (the card).
+
+## Reviewer verdict and final lane
+
+- **Reviewer (fresh context, round 1): PASS, `LANE: RED`.** It ran `classify-lane.mjs`
+  independently and got RED. By judgment it found: a new shared-vocabulary value (the
+  `opportunities_config` section in the CHECK and contract, `INVALID_MAX_AGE_MONTHS`, the
+  `newest` sort, the `maxAgeMonths` param), a `migrations-tenant/` change, edits to existing
+  test files (setup and fixtures only, no assertion changed), a shared-contract regeneration,
+  and the queue file's own RED marking.
+- **Its whole-repo vocabulary sweep found no missed consumer.** Non-blocking note:
+  `docs/TC_SCHEMA.md:77` still lists 11 library sections; it is documentation, not a code
+  reader.
+- **Its gates on the merge tree:** backend 3408 tests, 3405 pass, 0 fail, 3 skipped. Dashboard
+  `check` clean; 2498 passed, 180 skipped, 0 failed.
+- **Final lane: RED** (orchestrator RED + reviewer RED). Beau merges.
