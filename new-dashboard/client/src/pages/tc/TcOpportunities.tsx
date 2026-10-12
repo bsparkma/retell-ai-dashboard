@@ -8,8 +8,14 @@
  *
  * Reads Postgres only. Every number here is the last completed sync's
  * snapshot, and the header says when that was, per office.
+ *
+ * WINDOW + AGE CHIPS (item 45). The server shows each office's display window
+ * (default 18 months, by the NEWEST plan on a row); the chips narrow it to
+ * 1/2/3/4/6/8/12 months by re-querying with maxAgeMonths. The chip is
+ * view-local state — a reload is the window again — and the dashboard card
+ * never sees it. Default order: newest plan first.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { toast } from "sonner";
 import {
@@ -56,13 +62,17 @@ import {
   listOpportunities,
   type OpportunityStatus,
   type OpportunitySyncState,
+  type OpportunityWindow,
   type TcOpportunity,
 } from "@/features/tc/opportunities/opportunitiesApi";
 import {
+  DEFAULT_SORT,
   SORT_LABELS,
+  ageChips,
   formatPlannedDate,
   sortOpportunities,
   syncSentence,
+  windowSentence,
   type OpportunitySort,
 } from "@/features/tc/opportunities/opportunityView";
 import type { OfficeId } from "@shared/tc/contract";
@@ -204,6 +214,9 @@ function OpportunityCard({
             </span>
             <span className="inline-flex items-center gap-1">
               <CalendarClock className="w-3 h-3" /> Planned {formatPlannedDate(row.plannedDate)}
+              {row.newestPlannedDate && row.newestPlannedDate !== row.plannedDate && (
+                <> · newest {formatPlannedDate(row.newestPlannedDate)}</>
+              )}
             </span>
             <span>
               {row.procedures.length} procedure{row.procedures.length === 1 ? "" : "s"}
@@ -270,7 +283,10 @@ function OpportunityCard({
 export function OpportunitiesInbox({ offices, showOfficeBadges }: { offices: OfficeId[]; showOfficeBadges: boolean }) {
   const [, navigate] = useLocation();
   const [tab, setTab] = useState<OpportunityStatus>("new");
-  const [sort, setSort] = useState<OpportunitySort>("value");
+  const [sort, setSort] = useState<OpportunitySort>(DEFAULT_SORT);
+  /** The age chip. null = each office's own window. View-local: not persisted. */
+  const [maxAge, setMaxAge] = useState<number | null>(null);
+  const [windows, setWindows] = useState<{ officeId: OfficeId; window: OpportunityWindow }[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
   const [syncs, setSyncs] = useState<{ officeId: OfficeId; sync: OpportunitySyncState | null }[]>([]);
   const [totals, setTotals] = useState({ count: 0, valueCents: 0 });
@@ -280,11 +296,19 @@ export function OpportunitiesInbox({ offices, showOfficeBadges }: { offices: Off
   const [busyId, setBusyId] = useState<string | null>(null);
   const [dismissing, setDismissing] = useState<Row | null>(null);
 
+  // Chips and tabs can be clicked faster than a fan-out returns: only the
+  // LATEST request may paint, or the list could show 12 months under "3 mo".
+  const loadSeq = useRef(0);
+
   const load = useCallback(async () => {
+    const mine = ++loadSeq.current;
     setLoading(true);
     setError(null);
     setNotice(null);
-    const result = await fanOutOfficeValues(offices, (o) => listOpportunities(o, tab));
+    const result = await fanOutOfficeValues(offices, (o) =>
+      maxAge === null ? listOpportunities(o, tab) : listOpportunities(o, tab, maxAge),
+    );
+    if (mine !== loadSeq.current) return;
     const merged: Row[] = [];
     let count = 0;
     let valueCents = 0;
@@ -296,16 +320,24 @@ export function OpportunitiesInbox({ offices, showOfficeBadges }: { offices: Off
     setRows(merged);
     setTotals({ count, valueCents });
     setSyncs(result.values.map(({ officeId, value }) => ({ officeId, sync: value.sync })));
+    const loadedWindows = result.values.flatMap(({ officeId, value }) =>
+      value.window ? [{ officeId, window: value.window }] : [],
+    );
+    if (loadedWindows.length) setWindows(loadedWindows);
     setError(hardErrorMessage(result));
     setNotice(partialNotice(result));
     setLoading(false);
-  }, [offices, tab]);
+  }, [offices, tab, maxAge]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   const sorted = useMemo(() => sortOpportunities(rows, sort), [rows, sort]);
+  const chips = useMemo(() => ageChips(windows.map((w) => w.window.officeMonths)), [windows]);
+  const windowLine = windowSentence(
+    windows.map((w) => ({ officeLabel: tcOfficeLabel(w.officeId), window: w.window })),
+  );
 
   const remove = (r: Row) => {
     setRows((prev) => prev.filter((x) => x.opportunityId !== r.opportunityId));
@@ -371,6 +403,36 @@ export function OpportunitiesInbox({ offices, showOfficeBadges }: { offices: Off
           ))}
         </div>
       </div>
+
+      <div className="flex items-center gap-2 flex-wrap mb-2 text-xs">
+        <span className="text-muted-foreground">Planned within</span>
+        <div className="flex gap-1 flex-wrap" role="group" aria-label="Plan age">
+          {chips.map((c) => {
+            const active = maxAge === c.months;
+            return (
+              <button
+                key={c.label}
+                type="button"
+                aria-pressed={active}
+                data-testid={`age-chip-${c.months ?? "all"}`}
+                className={`px-2.5 py-1 rounded-full border text-xs font-medium ${
+                  active
+                    ? "bg-foreground text-background border-foreground"
+                    : "bg-background text-muted-foreground border-border hover:text-foreground"
+                }`}
+                onClick={() => setMaxAge(c.months)}
+              >
+                {c.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      {windowLine && (
+        <p className="text-xs text-muted-foreground mb-3" data-testid="opportunity-window">
+          {windowLine}
+        </p>
+      )}
 
       {!loading && !error && (
         <p className="text-sm text-muted-foreground mb-3" data-testid="opportunity-totals">

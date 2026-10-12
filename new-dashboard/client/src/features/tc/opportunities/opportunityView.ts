@@ -2,17 +2,23 @@
  * Pure view rules for the Opportunities inbox — sorting and the honest
  * "last synced" sentence. No React, so they are tested directly.
  */
-import type { OpportunitySyncState, TcOpportunity } from "./opportunitiesApi";
+import type { OpportunitySyncState, OpportunityWindow, TcOpportunity } from "./opportunitiesApi";
 
-export type OpportunitySort = "value" | "planned" | "lastSeen";
+export type OpportunitySort = "newest" | "value" | "planned" | "lastSeen";
 
+/** Render order of the sort buttons; the first is the default (item 45). */
 export const SORT_LABELS: Record<OpportunitySort, string> = {
+  newest: "Newest plan",
   value: "Value",
   planned: "Planned date",
   lastSeen: "Last seen",
 };
 
+export const DEFAULT_SORT: OpportunitySort = "newest";
+
 /**
+ * newest    NEWEST plan first (the age basis — TCs close the freshest first,
+ *           then work backward); undated last (item 45, the default)
  * value     highest first
  * planned   OLDEST plan first (longest-waiting treatment at the top); undated last
  * lastSeen  most recently confirmed in Open Dental first
@@ -21,6 +27,12 @@ export const SORT_LABELS: Record<OpportunitySort, string> = {
 export function sortOpportunities<T extends TcOpportunity>(rows: readonly T[], sort: OpportunitySort): T[] {
   const byValue = (a: T, b: T) => b.valueCents - a.valueCents || a.odPatientId - b.odPatientId;
   return [...rows].sort((a, b) => {
+    if (sort === "newest") {
+      const ad = a.newestPlannedDate ?? "";
+      const bd = b.newestPlannedDate ?? "";
+      if (ad !== bd) return ad < bd ? 1 : -1;
+      return byValue(a, b);
+    }
     if (sort === "planned") {
       const ad = a.plannedDate ?? "9999-12-31";
       const bd = b.plannedDate ?? "9999-12-31";
@@ -83,4 +95,54 @@ export function formatPlannedDate(d: string | null): string {
     year: "numeric",
     timeZone: "UTC",
   });
+}
+
+/**
+ * The age chips (item 45, Beau's ruling 2026-10-10): narrow the inbox to plans
+ * whose NEWEST procedure is at most N months old. The office window is the
+ * widest chip ("All" within the window), so only steps BELOW it are offered.
+ */
+export const AGE_STEPS = [1, 2, 3, 4, 6, 8, 12, 18] as const;
+
+export interface AgeChip {
+  /** null = the office's own window (no maxAgeMonths sent). */
+  months: number | null;
+  label: string;
+}
+
+/**
+ * Chips for the offices in view. With one window (one office, or offices that
+ * agree) the last chip is labelled with it: "18 mo · All". With differing
+ * windows it is just "All" — each office then applies its own.
+ */
+export function ageChips(officeWindows: readonly number[]): AgeChip[] {
+  const distinct = Array.from(new Set(officeWindows));
+  const widest = distinct.length ? Math.max(...distinct) : 18;
+  const steps: AgeChip[] = AGE_STEPS.filter((n) => n < widest).map((n) => ({ months: n, label: `${n} mo` }));
+  const all = distinct.length === 1 ? `${distinct[0]} mo · All` : "All";
+  return [...steps, { months: null, label: all }];
+}
+
+function monthsText(n: number): string {
+  return `${n} month${n === 1 ? "" : "s"}`;
+}
+
+/**
+ * The read-only line under the tabs: what the list is showing and the office
+ * window it sits in. `windows` is one entry per office in view.
+ */
+export function windowSentence(windows: readonly { officeLabel: string; window: OpportunityWindow }[]): string | null {
+  if (windows.length === 0) return null;
+  const applied = Array.from(new Set(windows.map((w) => w.window.appliedMonths)));
+  const office = Array.from(new Set(windows.map((w) => w.window.officeMonths)));
+  if (applied.length === 1 && office.length === 1) {
+    const a = applied[0]!;
+    const o = office[0]!;
+    return a === o
+      ? `Showing plans from the last ${monthsText(a)}`
+      : `Showing plans from the last ${monthsText(a)} · office window ${monthsText(o)}`;
+  }
+  return `Showing plans from the last ${windows
+    .map((w) => `${monthsText(w.window.appliedMonths)} (${w.officeLabel})`)
+    .join(", ")}`;
 }

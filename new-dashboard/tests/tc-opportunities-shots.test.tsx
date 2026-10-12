@@ -11,6 +11,11 @@
  *   tcopps-03-existing-case  "Already in a case" tab
  *   tcopps-04-sync-partial   the honest stale-sync warning
  *   tcopps-05-dashboard-card the TC dashboard card (real totals)
+ *   tcopps-06-age-chip       item 45: the "3 mo" chip on, newest plan first,
+ *                            "Showing plans from the last 3 months · office
+ *                            window 18 months"
+ *   tcopps-07-windows-differ item 45: all offices, two different office
+ *                            windows — the "All" chip and a per-office line
  *
  * NO NETWORK, NO BACKEND, NO PHI. Synthetic "Test …" names; the PatNums are
  * the designated fixtures (roland 12827 / 12828, valley 7115) plus obviously
@@ -19,7 +24,7 @@
  * Skipped unless TC_SHOTS=1.
  */
 import * as React from "react";
-import { afterEach, describe, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -68,6 +73,7 @@ function mk(over: Partial<TcOpportunity>): TcOpportunity {
     procedures: [],
     valueCents: 0,
     plannedDate: "2026-08-15",
+    newestPlannedDate: "2026-08-15",
     status: "new",
     claimedCaseId: null,
     claimedBy: null,
@@ -82,10 +88,15 @@ function mk(over: Partial<TcOpportunity>): TcOpportunity {
   };
 }
 
-const withValue = (o: TcOpportunity): TcOpportunity => ({
-  ...o,
-  valueCents: o.procedures.reduce((s, p) => s + p.feeCents, 0),
-});
+const withValue = (o: TcOpportunity): TcOpportunity => {
+  const dated = o.procedures.map((p) => p.plannedDate).filter((d): d is string => Boolean(d)).sort();
+  return {
+    ...o,
+    valueCents: o.procedures.reduce((s, p) => s + p.feeCents, 0),
+    plannedDate: dated[0] ?? null,
+    newestPlannedDate: dated.at(-1) ?? null,
+  };
+};
 
 const ROLAND = [
   withValue(
@@ -145,6 +156,7 @@ function list(rows: TcOpportunity[], over: Partial<OpportunitiesList> = {}): Opp
     totals: { count: rows.length, valueCents: rows.reduce((s, r) => s + r.valueCents, 0) },
     truncated: false,
     sync: SYNC_OK,
+    window: { officeMonths: 18, appliedMonths: 18, since: "2025-04-12", includesUndated: true },
     ...over,
   };
 }
@@ -241,5 +253,69 @@ describe.skipIf(!SHOOT)("tc opportunities screenshot dumps", () => {
     );
     await screen.findByText(/diagnosed and not on the schedule/);
     dump("tcopps-05-dashboard-card@1280x300");
+  });
+
+  // Item 45. A ladder of synthetic patients (99xxxx PatNums, "Test, …" names)
+  // whose newest plan is 2 weeks to 16 months old.
+  const LADDER = [
+    { pat: 990201, name: "Test, Fortnight", newest: "2026-09-28", older: "2025-03-02" },
+    { pat: 990202, name: "Test, SixWeeks", newest: "2026-08-31", older: null },
+    { pat: 990203, name: "Test, TenWeeks", newest: "2026-08-03", older: null },
+    { pat: 990204, name: "Test, FiveMonths", newest: "2026-05-11", older: null },
+    { pat: 990205, name: "Test, SixteenMonths", newest: "2025-06-20", older: null },
+  ].map((x, i) =>
+    withValue(
+      mk({
+        opportunityId: `ladder-${i}`,
+        odPatientId: x.pat,
+        patientName: x.name,
+        patientPhone: null,
+        procedures: [
+          P(900 + i * 2, "D2740", "crown - porcelain/ceramic", 120000 + i * 15000, "3", x.newest),
+          ...(x.older ? [P(901 + i * 2, "D2950", "core buildup", 28500, "3", x.older)] : []),
+        ],
+      }),
+    ),
+  );
+  const LADDER_CUTOFF: Record<number, string> = { 1: "2026-09-12", 2: "2026-08-12", 3: "2026-07-12", 4: "2026-06-12", 6: "2026-04-12", 8: "2026-02-12", 12: "2025-10-12" };
+
+  it("06 age chip: 3 months, newest first", async () => {
+    oppApi.listOpportunities.mockImplementation((_o: string, _s: string, maxAge?: number) => {
+      if (maxAge === undefined) return Promise.resolve(list(LADDER));
+      const since = LADDER_CUTOFF[maxAge]!;
+      return Promise.resolve(
+        list(
+          LADDER.filter((r) => (r.newestPlannedDate ?? "") >= since),
+          { window: { officeMonths: 18, appliedMonths: maxAge, since, includesUndated: false } },
+        ),
+      );
+    });
+    render(
+      <Page>
+        <OpportunitiesInbox offices={["roland"]} showOfficeBadges={false} />
+      </Page>,
+    );
+    await screen.findByText("Test, SixteenMonths");
+    fireEvent.click(screen.getByTestId("age-chip-3"));
+    await waitFor(() => expect(screen.queryByText("Test, SixteenMonths")).toBeNull());
+    await screen.findByText(/office window 18 months/);
+    dump("tcopps-06-age-chip@1280x1100");
+  });
+
+  it("07 all offices, two different windows", async () => {
+    oppApi.listOpportunities.mockImplementation((office: string) =>
+      Promise.resolve(
+        office === "roland"
+          ? list(ROLAND)
+          : list(VALLEY, { window: { officeMonths: 12, appliedMonths: 12, since: "2025-10-12", includesUndated: true } }),
+      ),
+    );
+    render(
+      <Page>
+        <OpportunitiesInbox offices={["roland", "valley"]} showOfficeBadges />
+      </Page>,
+    );
+    await screen.findByText("TestValley, Stedi");
+    dump("tcopps-07-windows-differ@1280x1400");
   });
 });

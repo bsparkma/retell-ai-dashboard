@@ -41,7 +41,13 @@ export interface TcOpportunity {
   patientPhone: string | null;
   procedures: OpportunityProcedure[];
   valueCents: number;
+  /** The EARLIEST planned date on the row, as the sync writes it. */
   plannedDate: string | null;
+  /**
+   * The NEWEST planned date on the row — the age basis the display window and
+   * the chips filter on (item 45). null = no procedure is dated.
+   */
+  newestPlannedDate: string | null;
   status: OpportunityStatus;
   claimedCaseId: string | null;
   claimedBy: string | null;
@@ -65,6 +71,20 @@ export interface OpportunitySyncState {
   namesPending: number | null;
 }
 
+/**
+ * What the server applied (item 45). `officeMonths` is the office's display
+ * window (library section opportunities_config, default 18); `appliedMonths`
+ * is what this response was filtered to — a chip narrows within the window and
+ * is clamped to it. `since` is the oldest newest-plan date shown.
+ */
+export interface OpportunityWindow {
+  officeMonths: number;
+  appliedMonths: number;
+  since: string;
+  /** Rows with no dated procedure are shown only at the full window. */
+  includesUndated: boolean;
+}
+
 export interface OpportunitiesList {
   opportunities: TcOpportunity[];
   /** Over every matching row, not just the returned page. */
@@ -72,13 +92,22 @@ export interface OpportunitiesList {
   truncated: boolean;
   /** null = this office has never been synced. */
   sync: OpportunitySyncState | null;
+  window: OpportunityWindow;
 }
 
+/**
+ * `maxAgeMonths` (1..24) narrows to plans whose newest procedure is that
+ * recent. OMIT it for the office's own window — the dashboard card always
+ * does, so a chip on the inbox never changes the card.
+ */
 export function listOpportunities(
   office: OfficeId,
   status: OpportunityStatusFilter = "new",
+  maxAgeMonths?: number,
 ): Promise<OpportunitiesList> {
-  return tcRequest<OpportunitiesList>("/tc/opportunities", { office, params: { status } });
+  const params: Record<string, string> = { status };
+  if (maxAgeMonths !== undefined) params.maxAgeMonths = String(maxAgeMonths);
+  return tcRequest<OpportunitiesList>("/tc/opportunities", { office, params });
 }
 
 export interface ClaimResult {
