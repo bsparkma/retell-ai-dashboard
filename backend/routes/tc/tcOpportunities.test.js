@@ -13,6 +13,13 @@ const { randomUUID } = require('node:crypto');
 
 const { bootTcApp, api, auditRows } = require('./tcTestUtils');
 const { OPEN_CASE_STATUSES, TERMINAL_CASE_STATUSES } = require('../../tc/contract.gen.cjs');
+const oppWindow = require('../../services/tcOpportunities/window');
+
+// Item 45: GET now applies the display window as of "today". Pin today so the
+// 2026-08 plan dates in these fixtures never age out of the 18-month default.
+// Setup only — no assertion below changed.
+test.before(() => oppWindow.setClockForTests(() => Date.parse('2026-10-12T17:00:00Z')));
+test.after(() => oppWindow.setClockForTests(null));
 
 const PROCS = [
   { procNum: 501, code: 'D2740', description: 'crown - porcelain/ceramic', feeCents: 120000, tooth: '3', surf: '', plannedDate: '2026-08-15' },

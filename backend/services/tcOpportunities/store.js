@@ -16,6 +16,7 @@
 
 const { OPEN_CASE_STATUSES } = require('../../tc/contract.gen.cjs');
 const core = require('./core');
+const { newestPlannedDate } = require('./window');
 
 /** tc_opportunities columns every read returns. */
 const OPP_COLS = Object.freeze([
@@ -124,6 +125,9 @@ function toWire(r) {
     procedures: r.procedures,
     valueCents: r.value_cents,
     plannedDate: isoDate(r.planned_date),
+    // The age basis (item 45): the NEWEST planned date on the row. plannedDate
+    // above stays the EARLIEST, as the sync writes it.
+    newestPlannedDate: newestPlannedDate(r.procedures),
     status: String(r.status),
     claimedCaseId: r.claimed_case_id == null ? null : String(r.claimed_case_id),
     claimedBy: r.claimed_by == null ? null : String(r.claimed_by),
@@ -160,6 +164,42 @@ async function listForOffice(q, office) {
       WHERE office_id = $1
       ORDER BY value_cents DESC, od_patient_id`,
     [office]
+  );
+  return res.rows.map(normalizeRow);
+}
+
+/**
+ * Undated-row sentinel for listForOfficeWithin: a date later than any cutoff,
+ * so a row with no planned date passes the `>=` when undated rows are wanted.
+ */
+const UNDATED_PASSES = '9999-12-31';
+
+/**
+ * The inbox read (queue item 45): an office's rows whose NEWEST planned
+ * procedure date is on or after `since` — the age filter runs in Postgres.
+ *
+ * The age basis is computed from the procedures snapshot itself (the max of
+ * every `plannedDate`), not from the `planned_date` column, which holds the
+ * EARLIEST date and is the sync's to own. Nothing the sync writes changes.
+ *
+ * A row with no dated procedure has a NULL max. `$3` decides it: the
+ * UNDATED_PASSES sentinel lets it through (full-window view), NULL keeps it
+ * out (a narrower chip) — `NULL >= date` is NULL, which WHERE treats as false.
+ *
+ * test/FakeTenantDb understands exactly this WHERE term; the real statement is
+ * proven against Postgres 16 in the item-45 report.
+ *
+ * @param {Q} q
+ * @param {string} office
+ * @param {{ since: string, includeUndated: boolean }} opts since 'YYYY-MM-DD'
+ */
+async function listForOfficeWithin(q, office, opts) {
+  const res = await q.query(
+    `SELECT ${OPP_COLS.join(', ')} FROM tc_opportunities
+      WHERE office_id = $1
+        AND COALESCE((SELECT max((p->>'plannedDate')::date) FROM jsonb_array_elements(procedures) AS p), $3::date) >= $2::date
+      ORDER BY value_cents DESC, od_patient_id`,
+    [office, opts.since, opts.includeUndated ? UNDATED_PASSES : null]
   );
   return res.rows.map(normalizeRow);
 }
@@ -360,6 +400,8 @@ module.exports = {
   toWire,
   syncToWire,
   listForOffice,
+  listForOfficeWithin,
+  UNDATED_PASSES,
   getOne,
   insertCandidate,
   refreshOpen,

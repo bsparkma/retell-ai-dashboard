@@ -67,14 +67,18 @@ tenant-global (staff work across both offices).
 
 ### 5. jsonb where the structure is author-owned and deep
 `tc_email_templates.blocks` (closed 8-type block union) and
-`tc_library_config.value` (11 config sections) are jsonb validated by the
+`tc_library_config.value` (12 config sections) are jsonb validated by the
 shared contract at every edge. Normalizing them into tables buys nothing and
 would freeze editor iteration into migrations.
 
 ### 6. tc_library_config absorbs the localStorage settings
 One row per `(office_id, section)`. Sections: `stages, objections, motivators,
 lost_reasons, referral_sources, treatment_categories, financing_providers,
-crown_pricing, financing_config, cadence_config, financing_settings`.
+crown_pricing, financing_config, cadence_config, financing_settings,
+opportunities_config`.
+`opportunities_config` (added by migration `1790900000000`) holds
+`opportunitiesWindowMonths` (int 1..24, default 18): the per-office Opportunities
+inbox DISPLAY window. It does not change the sync's 730-day capture.
 `financing_settings` is the legacy **per-browser localStorage**
 FinancingSettings promoted to server truth (fixes two TCs seeing different
 financing math depending on the laptop). Crown pricing and financing provider

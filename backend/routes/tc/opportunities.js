@@ -8,6 +8,7 @@
  * a case on its own: a human claims (→ case) or dismisses (reason required).
  *
  *   GET  /               ?office= &status=new|claimed|dismissed|existing_case|all
+ *                        &maxAgeMonths=1..24   (item 45; default = the office window)
  *   POST /:id/claim      attach-or-create a TC case (intakeFromCall's rule)
  *   POST /:id/dismiss    { reason }
  *
@@ -31,6 +32,14 @@
  * against the snapshot (core.verifyClaimPhases): every item must be a
  * procedure the opportunity holds, at the fee it holds.
  *
+ * THE DISPLAY WINDOW (queue item 45). The list shows rows whose NEWEST planned
+ * procedure is within the office's window (tc_library_config
+ * `opportunities_config`, default 18 months) — or within `maxAgeMonths` when
+ * the inbox's chip narrows it. The filter runs in Postgres
+ * (store.listForOfficeWithin); the date rules are services/tcOpportunities/
+ * window.js. The nightly sync still captures 730 days: this is display only.
+ * The dashboard card sends no maxAgeMonths, so it always counts the window.
+ *
  * AUDIT. audit_log.action allows only READ/CREATE/UPDATE/DELETE, so the event
  * name rides in resource_type: `tc_opportunity` (READ on list, UPDATE on claim
  * and dismiss) beside the `tc_case` CREATE/UPDATE the claim causes.
@@ -47,6 +56,8 @@ const { findOpenCase } = require('./intakeFromCall');
 const { PhaseCreate } = require('./cases');
 const core = require('../../services/tcOpportunities/core');
 const oppStore = require('../../services/tcOpportunities/store');
+const oppWindow = require('../../services/tcOpportunities/window');
+const tcOppsConfig = require('../../config/tcOpportunities');
 
 const { z, TcCase, Uuid, caseToRows } = contract;
 
@@ -127,15 +138,28 @@ router.get(
         code: 'INVALID_STATUS',
       });
     }
+    const maxAge = oppWindow.parseMaxAgeMonths(req.query.maxAgeMonths);
+    if (!maxAge.ok) {
+      return res.status(400).json({
+        success: false,
+        error: `maxAgeMonths must be a whole number of months from ${oppWindow.MIN_MONTHS} to ${oppWindow.MAX_MONTHS}`,
+        code: 'INVALID_MAX_AGE_MONTHS',
+      });
+    }
     const office = req.tcOffice;
 
     const result = await withTenantTx(req, async (client) => {
       // existing_case is a live fact about the case table, so it is brought up
       // to date on every read — a Postgres-only statement, no Open Dental.
       await oppStore.reconcileExistingCases(client, office);
-      const rows = await oppStore.listForOffice(client, office);
+      const officeMonths = await oppWindow.readOfficeWindowMonths(client, office);
+      const win = oppWindow.resolveWindow(officeMonths, maxAge.value);
+      // "Today" is the practice's calendar day — the same zone the sync's
+      // look-back cutoff uses — so a plan does not age out at UTC midnight.
+      const since = oppWindow.windowCutoff(win.appliedMonths, oppWindow.now(), tcOppsConfig.timezone());
+      const rows = await oppStore.listForOfficeWithin(client, office, { since, includeUndated: win.includeUndated });
       const sync = await oppStore.getSyncState(client, office);
-      return { rows, sync };
+      return { rows, sync, window: { ...win, since } };
     });
 
     const visible = result.rows.filter(
@@ -149,13 +173,29 @@ router.get(
       valueCents: visible.reduce((s, r) => s + r.value_cents, 0),
     };
 
+    // Newest plan first (the inbox's default order), so when the list is
+    // capped it is the freshest rows that are returned — TCs work forward
+    // from the newest. Ties: value, then PatNum, for a stable order.
+    const wire = visible.map(oppStore.toWire).sort((a, b) => {
+      const ad = a.newestPlannedDate ?? '';
+      const bd = b.newestPlannedDate ?? '';
+      if (ad !== bd) return ad < bd ? 1 : -1;
+      return b.valueCents - a.valueCents || a.odPatientId - b.odPatientId;
+    });
+
     await auditTc(req, 'READ', 'tc_opportunity', null, { office });
     res.json({
       success: true,
-      opportunities: visible.slice(0, LIST_LIMIT).map(oppStore.toWire),
+      opportunities: wire.slice(0, LIST_LIMIT),
       totals,
       truncated: visible.length > LIST_LIMIT,
       sync: oppStore.syncToWire(result.sync),
+      window: {
+        officeMonths: result.window.officeMonths,
+        appliedMonths: result.window.appliedMonths,
+        since: result.window.since,
+        includesUndated: result.window.includeUndated,
+      },
     });
   })
 );
