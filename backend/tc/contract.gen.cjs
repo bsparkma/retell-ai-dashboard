@@ -14858,6 +14858,7 @@ __export(contract_entry_exports, {
   LibraryFinancingProvider: () => LibraryFinancingProvider,
   LibraryFinancingSettings: () => LibraryFinancingSettings,
   LibraryObjection: () => LibraryObjection,
+  LibraryOpportunitiesConfig: () => LibraryOpportunitiesConfig,
   LibrarySectionSchemas: () => LibrarySectionSchemas,
   LibraryStage: () => LibraryStage,
   LibraryTag: () => LibraryTag,
@@ -14870,6 +14871,9 @@ __export(contract_entry_exports, {
   NurtureCadence: () => NurtureCadence,
   NurtureType: () => NurtureType,
   OPEN_CASE_STATUSES: () => OPEN_CASE_STATUSES,
+  OPPORTUNITIES_WINDOW_DEFAULT_MONTHS: () => OPPORTUNITIES_WINDOW_DEFAULT_MONTHS,
+  OPPORTUNITIES_WINDOW_MAX_MONTHS: () => OPPORTUNITIES_WINDOW_MAX_MONTHS,
+  OPPORTUNITIES_WINDOW_MIN_MONTHS: () => OPPORTUNITIES_WINDOW_MIN_MONTHS,
   OdTextConsent: () => OdTextConsent,
   OfficeId: () => OfficeId,
   PatientInterestLevel: () => PatientInterestLevel,
@@ -15656,6 +15660,12 @@ var LibraryFinancingSettings = import_zod3.z.object({
     })
   )
 });
+var OPPORTUNITIES_WINDOW_MIN_MONTHS = 1;
+var OPPORTUNITIES_WINDOW_MAX_MONTHS = 24;
+var OPPORTUNITIES_WINDOW_DEFAULT_MONTHS = 18;
+var LibraryOpportunitiesConfig = import_zod3.z.object({
+  opportunitiesWindowMonths: import_zod3.z.number().int().min(OPPORTUNITIES_WINDOW_MIN_MONTHS).max(OPPORTUNITIES_WINDOW_MAX_MONTHS).default(OPPORTUNITIES_WINDOW_DEFAULT_MONTHS)
+});
 var LibrarySectionSchemas = {
   stages: import_zod3.z.array(LibraryStage).max(50),
   objections: import_zod3.z.array(LibraryObjection).max(100),
@@ -15667,7 +15677,8 @@ var LibrarySectionSchemas = {
   crown_pricing: LibraryCrownPricing,
   financing_config: LibraryFinancingConfig,
   cadence_config: LibraryCadenceConfig,
-  financing_settings: LibraryFinancingSettings
+  financing_settings: LibraryFinancingSettings,
+  opportunities_config: LibraryOpportunitiesConfig
 };
 var TcLegacyUserMapEntry = import_zod3.z.object({
   legacyUserId: import_zod3.z.string().min(1).max(40),
@@ -16528,6 +16539,7 @@ var import_zod5 = __toESM(require_zod());
   LibraryFinancingProvider,
   LibraryFinancingSettings,
   LibraryObjection,
+  LibraryOpportunitiesConfig,
   LibrarySectionSchemas,
   LibraryStage,
   LibraryTag,
@@ -16540,6 +16552,9 @@ var import_zod5 = __toESM(require_zod());
   NurtureCadence,
   NurtureType,
   OPEN_CASE_STATUSES,
+  OPPORTUNITIES_WINDOW_DEFAULT_MONTHS,
+  OPPORTUNITIES_WINDOW_MAX_MONTHS,
+  OPPORTUNITIES_WINDOW_MIN_MONTHS,
   OdTextConsent,
   OfficeId,
   PatientInterestLevel,
