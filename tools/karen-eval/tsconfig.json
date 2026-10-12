@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": true,
+    "target": "es2022",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": { "*": ["../../backend/node_modules/*", "../../backend/node_modules/@types/*"] },
+    "typeRoots": ["../../backend/node_modules/@types"],
+    "types": ["node"]
+  },
+  "files": ["inventory.js"]
+}

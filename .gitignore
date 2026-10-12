@@ -121,3 +121,6 @@ deploy/container/.env.container
 # repo -- /app is read-only in the container. The rule stays so that a local run
 # with S10_OUT_DIR pointed back at the old path still cannot commit a manifest.
 backend/scripts/out/
+
+# Karen eval set: local inventory/scenario output (call ids, may later hold PHI) — never commit
+tools/karen-eval/out/
