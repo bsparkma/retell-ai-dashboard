@@ -30,6 +30,7 @@ import { OrthoScreeningSection } from "@/features/tc/caseview/OrthoScreeningSect
 import { ObjectionsTab } from "@/features/tc/caseview/ObjectionsTab";
 import { StatusTransitionDialog } from "@/features/tc/caseview/StatusTransitionDialog";
 import { TreatmentTab } from "@/features/tc/caseview/TreatmentTab";
+import { NurtureCampaignBar } from "@/features/tc/nurture/NurtureCampaignBar";
 
 export default function TcCaseView() {
   const office = useTcOffice();
@@ -177,6 +178,15 @@ function CaseViewInner({ office }: { office: OfficeId }) {
       </div>
 
       <CaseCommandBar office={office} tcCase={tcCase} onChangeStatus={() => setStatusDialogOpen(true)} />
+
+      {/* Nurture campaigns (item 47). Keyed on the status so a status change made
+          elsewhere on this page (a terminal one stops the campaign) re-reads it. */}
+      <NurtureCampaignBar
+        key={tcCase.status}
+        office={office}
+        caseId={tcCase.caseId}
+        onCaseChanged={() => void refreshCase()}
+      />
 
       <StatusTransitionDialog
         office={office}

@@ -21,9 +21,13 @@ import {
   FilePlus2,
   Headphones,
   MessageSquareWarning,
+  PauseCircle,
   PhoneCall,
+  PlayCircle,
+  Send,
   Sprout,
   StickyNote,
+  StopCircle,
 } from "lucide-react";
 
 type EventType = TcCaseEvent["type"];
@@ -37,6 +41,13 @@ const EVENT_META: Record<EventType, { label: string; icon: typeof StickyNote; ic
   nurture_enrolled: { label: "Nurture enrolled", icon: Sprout, iconClass: "text-violet-600 dark:text-violet-400" },
   contact_attempt: { label: "Contact attempt", icon: PhoneCall, iconClass: "text-cyan-600 dark:text-cyan-400" },
   voice_handoff: { label: "From call", icon: Headphones, iconClass: "text-primary" },
+  // Nurture campaigns (item 47). "Touch queued" means a DRAFT was written for a
+  // human to approve, never that anything was sent.
+  nurture_paused: { label: "Nurture paused", icon: PauseCircle, iconClass: "text-amber-600 dark:text-amber-400" },
+  nurture_resumed: { label: "Nurture resumed", icon: PlayCircle, iconClass: "text-violet-600 dark:text-violet-400" },
+  nurture_stopped: { label: "Nurture stopped", icon: StopCircle, iconClass: "text-slate-500 dark:text-slate-400" },
+  nurture_completed: { label: "Nurture completed", icon: Sprout, iconClass: "text-emerald-600 dark:text-emerald-400" },
+  nurture_touch_queued: { label: "Nurture draft queued", icon: Send, iconClass: "text-violet-600 dark:text-violet-400" },
 };
 
 const ATTEMPT_CHANNEL_LABEL = { call: "Call", text: "Text", email: "Email" } as const;

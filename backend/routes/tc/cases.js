@@ -32,6 +32,8 @@ const {
 const { withTenantTx } = require('./tx');
 const tenantDb = require('../../platform/tenantDb');
 const store = require('./caseStore');
+// (item 47) A case leaving TC work stops its nurture enrollment.
+const nurtureHooks = require('../../services/tcNurture/hooks');
 
 const { z, TcCase, TcCasePhase, TcCaseItem, TcObjection, ContactAttemptDetail, CaseStatus, LostReason, Uuid, caseToRows } = contract;
 
@@ -535,11 +537,25 @@ router.post(
         });
       }
 
-      return { aggregate: await store.loadCaseAggregate(client, req.tcOffice, caseId) };
+      // (item 47) Into a TERMINAL status ⇒ any running nurture enrollment on
+      // this case stops (stop_reason 'case_terminal'), in this transaction, so
+      // the status and the stop commit together.
+      const stoppedEnrollments = await nurtureHooks.stopForTerminalCase(client, {
+        office: req.tcOffice,
+        caseId,
+        newStatus: input.status,
+        actor,
+        now: new Date(now),
+      });
+
+      return { aggregate: await store.loadCaseAggregate(client, req.tcOffice, caseId), stoppedEnrollments };
     });
 
     if (result.missing) return notFound(res, 'case');
     if (!result.unchanged) await auditTc(req, 'UPDATE', 'tc_case', caseId);
+    for (const id of result.stoppedEnrollments || []) {
+      await auditTc(req, 'UPDATE', 'tc_nurture_enrollment.stopped', id, { office: req.tcOffice });
+    }
     res.json({ success: true, changed: !result.unchanged, case: result.aggregate });
   })
 );

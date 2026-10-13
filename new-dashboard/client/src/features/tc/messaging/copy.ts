@@ -31,6 +31,7 @@ export const STATUS_LABEL: Record<MessageStatus, string> = {
   delivered: "Delivered",
   failed: "Not sent",
   received: "Received",
+  skipped: "Skipped — not sent",
 };
 
 /** Tone for the status chip. Only `delivered` is green. */
@@ -42,6 +43,7 @@ export const STATUS_TONE: Record<MessageStatus, "muted" | "info" | "ok" | "bad">
   delivered: "ok",
   failed: "bad",
   received: "info",
+  skipped: "muted",
 };
 
 /**

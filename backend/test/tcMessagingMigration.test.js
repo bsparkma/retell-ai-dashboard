@@ -59,13 +59,20 @@ function checkValues(calls, table, column) {
   return [...c.args[2].check.matchAll(/'([^']+)'/g)].map((m) => m[1]);
 }
 
+/**
+ * Statuses a LATER migration added to tc_messages_status_check. This file pins
+ * what 1790300000000 told the database; the newest widening is pinned against
+ * the whole contract enum by its own test (tcNurtureMigration.test.js).
+ */
+const STATUSES_ADDED_LATER = ['skipped']; // 1791100000000_tc_nurture.js (item 47)
+
 test('every CHECK literal equals the contract enum it mirrors', () => {
   const calls = capture();
   const pairs = [
     ['tc_messages', 'office_id', contract.OfficeId.options],
     ['tc_messages', 'direction', contract.MessageDirection.options],
     ['tc_messages', 'channel', contract.MessageChannel.options],
-    ['tc_messages', 'status', contract.MessageStatus.options],
+    ['tc_messages', 'status', contract.MessageStatus.options.filter((s) => !STATUSES_ADDED_LATER.includes(s))],
     ['tc_contact_consent', 'office_id', contract.OfficeId.options],
     ['tc_contact_consent', 'channel', contract.MessageChannel.options],
     ['tc_contact_consent', 'state', contract.ConsentState.options],

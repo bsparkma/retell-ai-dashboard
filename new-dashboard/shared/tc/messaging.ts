@@ -38,6 +38,9 @@ export type MessageChannel = z.infer<typeof MessageChannel>;
  *   failed     the adapter refused or threw; `error` carries why. Terminal —
  *              never retried silently.
  *   received   an inbound message
+ *   skipped    (item 47) a nurture draft a human chose NOT to send, from the
+ *              Nurture Outbox. Terminal; never sendable. Added by
+ *              1791100000000_tc_nurture.js, which widens the CHECK.
  */
 export const MessageStatus = z.enum([
   "draft",
@@ -47,6 +50,7 @@ export const MessageStatus = z.enum([
   "delivered",
   "failed",
   "received",
+  "skipped",
 ]);
 export type MessageStatus = z.infer<typeof MessageStatus>;
 

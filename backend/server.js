@@ -59,6 +59,9 @@ async function bootstrap() {
   const odHealthCheck = require('./services/odHealthCheck');
   const hygDayWarm = require('./services/hygDayWarm');
   const tcOpportunitiesSync = require('./services/tcOpportunities/scheduler');
+  // Requiring it runs the nurture preset/cap assertion: a preset that breaks a
+  // hard cap stops the server here, at boot (config/tcNurture.js).
+  const tcNurtureGenerator = require('./services/tcNurture/scheduler');
   const hygPilot = require('./config/hygPilot');
   const tcSms = require('./config/tcSms');
   const tcEmail = require('./config/tcEmail');
@@ -620,6 +623,12 @@ async function bootstrap() {
     //    boot. See services/tcOpportunities/scheduler.js.
     tcOpportunitiesSync.start();
 
+    // 8. Arm the nightly TC nurture generator (default 05:00 America/Chicago,
+    //    item 47). DRAFTS ONLY — it writes tc_messages drafts a human approves;
+    //    it never sends. DARK: each pass reads platform_setting['tc_nurture_enabled']
+    //    first. No pass at boot. See services/tcNurture/scheduler.js.
+    tcNurtureGenerator.start();
+
     // (M3) The startup `transcribeUntranscribedMango` backfill was removed: it keyed on
     // `recording_path`, which the API ingest path never sets, so it found zero candidates
     // on every run (diagnosis H2). Re-transcribing an already-ingested call is M4's
@@ -637,6 +646,7 @@ async function bootstrap() {
     odHealthCheck.stop();
     hygDayWarm.stop();
     tcOpportunitiesSync.stop();
+    tcNurtureGenerator.stop();
     hygPilot.stopRefreshTimer();
     tcSms.stopRefreshTimer();
     tcEmail.stopRefreshTimer();
@@ -650,6 +660,7 @@ async function bootstrap() {
     odHealthCheck.stop();
     hygDayWarm.stop();
     tcOpportunitiesSync.stop();
+    tcNurtureGenerator.stop();
     hygPilot.stopRefreshTimer();
     tcSms.stopRefreshTimer();
     tcEmail.stopRefreshTimer();

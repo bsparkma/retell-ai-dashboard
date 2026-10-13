@@ -11,8 +11,11 @@
  *                          to work out who it is. Linking one to a case is not in
  *                          this slice; "Mark as seen" clears the count.
  *
- * The TC nav's count is the total of both, from the server. Nothing on this
- * page sends anything.
+ * The TC nav's count is the total of both, from the server.
+ *
+ * (item 47) The Nurture Outbox sits above them: drafts the nurture campaigns
+ * wrote, each waiting for a person to Approve (the ordinary Send) or Skip.
+ * That is the only thing on this page that sends, and only on a click.
  */
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "wouter";
@@ -23,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { tcErrorMessage } from "@/features/tc/api";
 import { TcOfficeGate, TcPageHeader, useTcOffice } from "@/features/tc/components/TcShell";
 import { listInbox, listUnseenOnCases, markSeen } from "@/features/tc/messaging/messagingApi";
+import { NurtureOutbox } from "@/features/tc/nurture/NurtureOutbox";
 
 function formatWhen(iso: string): string {
   const d = new Date(iso);
@@ -92,7 +96,7 @@ export default function TcTexts() {
     <div className="mx-auto max-w-4xl">
       <TcPageHeader
         title="Texts"
-        subtitle="Texts patients sent to this office. Nothing here sends anything."
+        subtitle="Texts patients sent to this office, and nurture drafts waiting for approval."
         actions={
           <Button size="sm" variant="outline" className="gap-1" onClick={() => void load()} disabled={loading}>
             <RefreshCw className="h-3.5 w-3.5" /> Refresh
@@ -113,6 +117,8 @@ export default function TcTexts() {
         </div>
       ) : (
         <div className="space-y-6">
+          <NurtureOutbox office={office} />
+
           <section aria-label="New replies on cases">
             <h2 className="mb-2 text-sm font-semibold text-foreground">New replies on cases</h2>
             {onCases.length === 0 ? (

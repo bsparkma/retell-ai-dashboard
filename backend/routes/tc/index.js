@@ -27,6 +27,10 @@
  *   /opportunities    Open Dental treatment planned + unscheduled, surfaced by
  *                     the nightly sync as candidates a TC claims or dismisses
  *                     (item 41). Postgres-only: no route here reaches OD.
+ *   /nurture          nurture campaigns v1 (item 47): four fixed tracks, a
+ *                     per-office intensity dial, and an outbox of DRAFTS the
+ *                     nightly generator wrote. Nothing here sends; Approve is
+ *                     the ordinary /messages/:id/send. Postgres-only.
  *   /od/patient-search the ONE Open Dental read hygiene holds: attach a patient
  *                     to an intake (PatNum + name + DOB, per-office client)
  *   /od               Open Dental READS (Slice 5) — patient search, treatment
@@ -79,6 +83,7 @@ router.use('/media', tcFull, require('./media'));
 router.use('/library', tcFull, require('./library'));
 router.use('/reports', tcFull, require('./reports'));
 router.use('/opportunities', tcFull, require('./opportunities'));
+router.use('/nurture', tcFull, require('./nurture'));
 // MUST precede the /od mount, for the same registration-order reason as
 // /cases/from-call above: registering it first is what keeps the attach search
 // on tc.hygiene while the rest of the Open Dental family stays tc.full. Doing
