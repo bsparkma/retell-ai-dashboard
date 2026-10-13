@@ -16580,7 +16580,7 @@ var NURTURE_TRACKS = {
     touches: {
       ns1: {
         channel: S,
-        body: "Hi {{firstName}}, we missed you at {{officeName}}! Life happens \u2014 reply here or call {{officePhone}} and we'll find a time that works better. Reply STOP to opt out."
+        body: "Hi {{firstName}}, we missed you at {{officeName}}! Life happens - reply here or call {{officePhone}} and we'll find a time that works better. Reply STOP to opt out."
       },
       ns2: {
         channel: E,
@@ -16624,7 +16624,7 @@ var NURTURE_TRACKS = {
     touches: {
       wf1: {
         channel: S,
-        body: "Hi {{firstName}}, thanks for coming in to {{officeName}}! If any questions came up after your visit, just reply \u2014 we're happy to help. Reply STOP to opt out."
+        body: "Hi {{firstName}}, thanks for coming in to {{officeName}}! If any questions came up after your visit, just reply, we're happy to help. Reply STOP to opt out."
       },
       wf2: {
         channel: E,
@@ -16660,7 +16660,7 @@ var NURTURE_TRACKS = {
       },
       wf8: {
         channel: S,
-        body: "Hi {{firstName}}, quick check-in from {{officeName}} \u2014 still thinking it over, or any questions we can answer? Reply anytime."
+        body: "Hi {{firstName}}, quick check-in from {{officeName}} - still thinking it over, or any questions we can answer? Reply anytime."
       },
       wf9: {
         channel: E,
@@ -16717,7 +16717,7 @@ var NURTURE_TRACKS = {
       },
       ra2: {
         channel: S,
-        body: "Hi {{firstName}}, {{officeName}} here \u2014 your treatment plan is still on file with us. Want to pick it back up? Reply or call {{officePhone}}. Reply STOP to opt out."
+        body: "Hi {{firstName}}, {{officeName}} here - your treatment plan is still on file with us. Want to pick it back up? Reply or call {{officePhone}}. Reply STOP to opt out."
       },
       ra3: {
         channel: E,
@@ -16822,11 +16822,11 @@ var NURTURE_TRACKS = {
       },
       lc6: {
         channel: S,
-        body: "Hi {{firstName}}, {{officeName}} here \u2014 happy to answer any questions about your treatment plan or go over payment options. Just reply. Reply STOP to opt out."
+        body: "Hi {{firstName}}, {{officeName}} here - happy to answer any questions about your treatment plan or go over payment options. Just reply. Reply STOP to opt out."
       },
       lc7: {
         channel: S,
-        body: "Hi {{firstName}}, checking in from {{officeName}} \u2014 want us to set up a quick, no-pressure chat about your plan? Reply yes and we'll arrange it."
+        body: "Hi {{firstName}}, checking in from {{officeName}} - want us to set up a quick, no-pressure chat about your plan? Reply yes and we'll arrange it."
       }
     },
     presets: {

@@ -180,6 +180,39 @@ test('STOP suffix: the FIRST SMS of every preset carries it once rendered, inclu
   assert.ok(!later.body.includes('Reply STOP'), 'a later SMS (after one went out) is not suffixed');
 });
 
+// GSM 03.38 BASIC character set (no extension table: ^ { } \ [ ] ~ | € each cost
+// an escape septet). One character outside this set turns the WHOLE text into
+// UCS-2, which drops a segment from 160 characters to 70 — an em dash or a
+// curly apostrophe roughly doubles what a text costs.
+const GSM7_BASIC = new Set([
+  ...'@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !"#¤%&\'()*+,-./0123456789:;<=>?',
+  ...'¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà',
+]);
+const nonGsm7 = (text) => [...text].filter((ch) => !GSM7_BASIC.has(ch));
+
+test('every SMS template renders to pure GSM-7 basic charset, STOP suffix included (no UCS-2)', () => {
+  assert.deepEqual(nonGsm7(cfg.SMS_STOP_SUFFIX), []);
+  let checked = 0;
+  for (const key of cfg.TRACK_KEYS) {
+    for (const [touchKey, touch] of Object.entries(cfg.TRACKS[key].touches)) {
+      if (touch.channel !== 'sms') continue;
+      // Filled, because the raw copy's {{merge}} braces are themselves outside
+      // the basic set; the merge values here are plain ASCII, so anything this
+      // finds is in the approved copy.
+      const r = engine.renderTouch({ trackKey: key, touchKey, patientName: 'Test 2, Stedi', merge: MERGE, withStopSuffix: true });
+      assert.ok(r.body.endsWith(cfg.SMS_STOP_SUFFIX), `${touchKey} rendered without the suffix`);
+      assert.deepEqual(nonGsm7(r.body), [], `${key}.${touchKey} has non-GSM-7 characters: ${r.body}`);
+      checked += 1;
+    }
+  }
+  assert.ok(checked >= 10, `only ${checked} SMS templates checked`);
+});
+
+test('the GSM-7 check would catch the characters that sneak in through copy edits', () => {
+  assert.deepEqual(nonGsm7('Life happens — reply… we’re “here”'), ['—', '…', '’', '“', '”']);
+  assert.deepEqual(nonGsm7("Life happens - reply... we're \"here\""), []);
+});
+
 test('render fills first name / office / phone; email is a text block + a tel: CTA button', () => {
   const sms = engine.renderTouch({ trackKey: 'no_show_recovery', touchKey: 'ns3', patientName: 'Test 2, Stedi', merge: MERGE, withStopSuffix: false });
   assert.equal(sms.channel, 'sms');

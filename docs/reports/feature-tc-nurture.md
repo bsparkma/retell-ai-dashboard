@@ -232,9 +232,14 @@ whole current enum is pinned by the newest migration's test.
 
 ## 8. Open items for Beau
 
-1. **Em dashes in SMS copy** (ns1, wf1, ra2, wf8, lc6, lc7). They push a text out of GSM-7, so each segment
-   holds 70 characters instead of 160. That costs extra segments per text. The approved copy is unchanged;
-   say the word if you want plain hyphens.
+1. **SMS copy is pure GSM-7 (resolved).** The em dashes in ns1, wf8, ra2, lc6 and lc7 became " - ", and the one
+   in wf1 became a comma ("just reply, we're happy to help"). No SMS had curly quotes or ellipses. One
+   character outside GSM-7 turns the whole text into UCS-2, where a segment holds 70 characters instead of
+   160. The test `every SMS template renders to pure GSM-7 basic charset` in `tcNurtureEngine.test.js`
+   renders every SMS touch with the STOP suffix and fails on any character outside the GSM 03.38 basic set,
+   so a later copy edit can't bring UCS-2 back. Email copy keeps its em dashes. The test checks template
+   copy only. A patient's first name with an accent outside the set (rare) would still make that one text
+   UCS-2; that comes from the case record and is not something the copy can control.
 2. **lc3's sign-off** ("Dr. Beau Sparkman") goes out from both offices, as approved.
 3. **No settings screen** for the dial in this slice (per item 45's precedent). Set it via the API.
 4. **Single replica.** The generator's re-entrancy guard is in-process, same as the opportunities sync. The

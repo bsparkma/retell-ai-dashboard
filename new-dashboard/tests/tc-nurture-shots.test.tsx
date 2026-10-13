@@ -104,7 +104,7 @@ const OUTBOX: NurtureOutboxResponse = {
       drafts: [
         {
           message: msg({
-            body: "Hi Stedi, we missed you at Roland Family Dental! Life happens — reply here or call (918) 555-0100 and we'll find a time that works better. Reply STOP to opt out.",
+            body: "Hi Stedi, we missed you at Roland Family Dental! Life happens - reply here or call (918) 555-0100 and we'll find a time that works better. Reply STOP to opt out.",
           }),
           enrollmentId: ENR,
           caseId: CASE_A,
