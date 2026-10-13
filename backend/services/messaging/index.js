@@ -32,6 +32,11 @@
  *                    phone matches, else unlinked; START/HELP are recorded, never
  *                    acted on; a re-delivered provider id is not stored twice.
  *   applyStatusCallback → (item 39) a provider delivery report, monotonic.
+ *   skipNurtureDraft → (item 47) a human chose NOT to send a nurture draft:
+ *                    draft → skipped. Nothing else moves.
+ *   (item 47) recordInbound / recordOptOut / recordUnsubscribeLink also run
+ *                    the nurture exit hooks: a reply PAUSES a running
+ *                    enrollment, an opt-out STOPS it. Neither sends anything.
  *   countUnseen / markSeen / listUnseenOnCases → (item 39) the "new text" badge.
  *   (item 40, email) draftMessage may build an email from a LIBRARY template
  *                    (a snapshot on the row); sendMessage gives every email a
@@ -67,6 +72,9 @@ const adapters = require('./adapters');
 const templates = require('./templates');
 const twilioStatus = require('./twilio/status');
 const emailContent = require('./emailContent');
+// (item 47) The nurture exit hooks. They only ever stop drafting; nothing in
+// them sends.
+const nurtureHooks = require('../tcNurture/hooks');
 const acsConfig = require('../../config/acsEmail');
 
 const MESSAGE_COLS = [
@@ -539,6 +547,12 @@ async function sendMessage(req, office, messageId) {
   if (!existing.case_id) {
     throw new MessagingError('MESSAGE_NOT_SENDABLE', 'This draft is no longer attached to a case.');
   }
+  // (item 47) A nurture draft written while the case had no usable address
+  // carries no to_address. Refuse it here, before the address comparison
+  // below — which would otherwise read null === null as "unchanged".
+  if (!existing.to_address) {
+    throw noAddressError(existing.channel);
+  }
 
   const channel = existing.channel;
   const decision = await db(req, async (q) => {
@@ -782,11 +796,27 @@ async function recordUnsubscribeLink(req, token) {
       note: null,
       updatedBy: 'system:unsubscribe_link',
     });
-    return { outcome: 'recorded', office: m.office_id, messageId: m.message_id, consentId: row.consent_id };
+    // (item 47) And any running nurture enrollment on that address stops.
+    const stoppedEnrollments = await nurtureHooks.onOptOut(q, {
+      office: m.office_id,
+      channel: 'email',
+      address,
+      actor: 'system:unsubscribe_link',
+    });
+    return {
+      outcome: 'recorded',
+      office: m.office_id,
+      messageId: m.message_id,
+      consentId: row.consent_id,
+      stoppedEnrollments,
+    };
   });
   if (out.outcome === 'recorded') {
     await auditMessage(req, 'UPDATE', 'tc_contact_consent', out.consentId, out.office);
     await auditMessage(req, 'UPDATE', 'tc_message.unsubscribe_link', out.messageId, out.office);
+    for (const id of out.stoppedEnrollments || []) {
+      await auditMessage(req, 'UPDATE', 'tc_nurture_enrollment.stopped', id, out.office);
+    }
   }
   return out.outcome;
 }
@@ -818,7 +848,7 @@ async function recordOptOut(req, office, { caseId, channel, note }) {
     if (!tcCase) throw new MessagingError('CASE_NOT_FOUND', 'Case not found');
     const address = addressFromCase(channel, tcCase);
     if (!address) throw noAddressError(channel);
-    return upsertConsent(q, {
+    const consentRow = await upsertConsent(q, {
       office,
       channel,
       address,
@@ -827,9 +857,15 @@ async function recordOptOut(req, office, { caseId, channel, note }) {
       note: note || null,
       updatedBy: actor,
     });
+    // (item 47) Any running nurture enrollment on this address is stopped too.
+    const stoppedEnrollments = await nurtureHooks.onOptOut(q, { office, channel, address, actor });
+    return { consentRow, stoppedEnrollments };
   });
-  await auditMessage(req, 'UPDATE', 'tc_contact_consent', row.consent_id, office);
-  return toConsent(row);
+  await auditMessage(req, 'UPDATE', 'tc_contact_consent', row.consentRow.consent_id, office);
+  for (const id of row.stoppedEnrollments) {
+    await auditMessage(req, 'UPDATE', 'tc_nurture_enrollment.stopped', id, office);
+  }
+  return toConsent(row.consentRow);
 }
 
 /** The single word an inbound body reduces to, upper-cased, or ''. */
@@ -933,13 +969,25 @@ async function recordInbound(
         updatedBy: 'system:inbound',
       });
     }
-    return { row: await loadMessage(q, office, messageId), optOut, duplicate: false };
+    // (item 47) The patient wrote back: a running nurture enrollment on a case
+    // in THIS office with this number pauses for a human; a STOP stops it.
+    // Matched by address rather than by the linked case, so a reply that landed
+    // unlinked (two open cases share the number) still pauses both.
+    const nurture = await nurtureHooks.onInboundMessage(q, {
+      office,
+      channel,
+      fromAddress: from,
+      stop: family === 'stop',
+    });
+    return { row: await loadMessage(q, office, messageId), optOut, nurture, duplicate: false };
   });
   if (out.duplicate) {
     return { message: toMessage(out.row), optedOut: false, duplicate: true, keyword: family };
   }
   await auditMessage(req, 'CREATE', 'tc_message', messageId, office);
   if (out.optOut) await auditMessage(req, 'UPDATE', 'tc_contact_consent', out.optOut.consent_id, office);
+  for (const id of out.nurture.paused) await auditMessage(req, 'UPDATE', 'tc_nurture_enrollment.paused', id, office);
+  for (const id of out.nurture.stopped) await auditMessage(req, 'UPDATE', 'tc_nurture_enrollment.stopped', id, office);
   if (family === 'start' || family === 'help') {
     // On the record, so "the patient texted START and we still would not text
     // them" is answerable from the trail. Nothing else happens.
@@ -988,6 +1036,45 @@ async function applyStatusCallback(req, office, { provider, providerMessageId, p
     ours === 'failed' ? 'ERROR' : 'SUCCESS'
   );
   return { outcome: 'applied', status: ours };
+}
+
+// ── the Nurture Outbox's Skip (item 47) ────────────────────────────────────
+
+/**
+ * A human looked at a NURTURE draft and chose not to send it: draft → skipped.
+ * Logged (an audit row, plus who and when on the row) and nothing else moves:
+ * the enrollment's schedule already advanced when the draft was written, so a
+ * skip neither re-drafts this touch nor pulls the next one forward. Only a
+ * draft the generator wrote (enrollment_id set) can be skipped; a TC's own
+ * draft is discarded, not skipped.
+ * @param {import('express').Request} req
+ * @param {'roland'|'valley'} office
+ * @param {string} messageId
+ */
+async function skipNurtureDraft(req, office, messageId) {
+  const actor = actorOf(req);
+  const row = await db(req, async (q) => {
+    const meta = await q.query(
+      `SELECT message_id, status, enrollment_id FROM tc_messages WHERE office_id = $1 AND message_id = $2`,
+      [office, messageId]
+    );
+    if (!meta.rows.length) throw new MessagingError('MESSAGE_NOT_FOUND', 'Message not found');
+    if (!meta.rows[0].enrollment_id) {
+      throw new MessagingError('MESSAGE_NOT_EDITABLE', 'Only a nurture draft can be skipped. Discard this one instead.');
+    }
+    const res = await q.query(
+      `UPDATE tc_messages SET status = 'skipped', skipped_by = $1, skipped_at = now()
+        WHERE office_id = $2 AND message_id = $3 AND status = 'draft'
+        RETURNING ${MESSAGE_COLS.join(', ')}`,
+      [actor, office, messageId]
+    );
+    if (!res.rows.length) {
+      throw new MessagingError('MESSAGE_NOT_EDITABLE', 'Only a draft can be skipped.', { status: meta.rows[0].status });
+    }
+    return res.rows[0];
+  });
+  await auditMessage(req, 'UPDATE', 'tc_message.skipped', messageId, office);
+  return toMessage(row);
 }
 
 // ── the "new text" badge (item 39) ──────────────────────────────────────────
@@ -1061,6 +1148,7 @@ async function markSeen(req, office, caseId) {
 module.exports = {
   MESSAGE_COLS,
   CONSENT_COLS,
+  toMessage,
   STOP_KEYWORDS,
   listMessages,
   listInbox,
@@ -1077,6 +1165,7 @@ module.exports = {
   recordOptOut,
   recordInbound,
   applyStatusCallback,
+  skipNurtureDraft,
   countUnseen,
   listUnseenOnCases,
   markSeen,
