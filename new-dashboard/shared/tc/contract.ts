@@ -109,6 +109,17 @@ export const CaseEventType = z.enum([
    * in TC may dereference a voice-module record.
    */
   "voice_handoff",
+  /**
+   * Nurture campaigns v1 (item 47). Server-written only. `nurture_enrolled`
+   * (above) predates the campaign engine and is reused for a campaign
+   * enrollment; these five complete the lifecycle. A touch is QUEUED — a
+   * draft was written for a human to approve — never "sent" by the engine.
+   */
+  "nurture_paused",
+  "nurture_resumed",
+  "nurture_stopped",
+  "nurture_completed",
+  "nurture_touch_queued",
 ]);
 
 /**
@@ -649,6 +660,36 @@ export const LibraryOpportunitiesConfig = z.object({
 });
 export type LibraryOpportunitiesConfig = z.infer<typeof LibraryOpportunitiesConfig>;
 
+/**
+ * Nurture campaigns v1 (queue item 47) — the frozen vocabularies and the
+ * per-office dial. Declared HERE rather than in nurture.ts so the section
+ * schema below does not make contract.ts and nurture.ts import each other;
+ * nurture.ts re-exports them alongside the frozen track table.
+ *
+ * Track keys are frozen (tc_nurture_enrollments.track_key CHECK,
+ * 1791100000000_tc_nurture.js). The dial is the ONLY cadence control.
+ */
+export const NurtureTrackKey = z.enum(["no_show_recovery", "warm_followup", "reactivation", "large_case"]);
+export type NurtureTrackKey = z.infer<typeof NurtureTrackKey>;
+
+export const NurtureIntensity = z.enum(["gentle", "standard", "assertive"]);
+export type NurtureIntensity = z.infer<typeof NurtureIntensity>;
+
+/** No stored dial for a track ⇒ this one. */
+export const NURTURE_DEFAULT_INTENSITY: NurtureIntensity = "standard";
+
+export const NurtureTrackConfig = z.object({ intensity: NurtureIntensity }).strict();
+
+/**
+ * `nurture_config`: `{ tracks: { <trackKey>: { intensity } } }`. A track with
+ * no entry runs at NURTURE_DEFAULT_INTENSITY. No row is written by the
+ * migration; PUT /api/tc/nurture/config is the writer.
+ */
+export const LibraryNurtureConfig = z
+  .object({ tracks: z.partialRecord(NurtureTrackKey, NurtureTrackConfig).default({}) })
+  .strict();
+export type LibraryNurtureConfig = z.infer<typeof LibraryNurtureConfig>;
+
 export const LibrarySectionSchemas = {
   stages: z.array(LibraryStage).max(50),
   objections: z.array(LibraryObjection).max(100),
@@ -662,6 +703,7 @@ export const LibrarySectionSchemas = {
   cadence_config: LibraryCadenceConfig,
   financing_settings: LibraryFinancingSettings,
   opportunities_config: LibraryOpportunitiesConfig,
+  nurture_config: LibraryNurtureConfig,
 } as const;
 export type LibrarySection = keyof typeof LibrarySectionSchemas;
 

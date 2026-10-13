@@ -14813,10 +14813,10 @@ var require_zod = __commonJS({
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.z = void 0;
-    var z6 = __importStar(require_external());
-    exports2.z = z6;
+    var z7 = __importStar(require_external());
+    exports2.z = z7;
     __exportStar(require_external(), exports2);
-    exports2.default = z6;
+    exports2.default = z7;
   }
 });
 
@@ -14857,6 +14857,7 @@ __export(contract_entry_exports, {
   LibraryFinancingConfig: () => LibraryFinancingConfig,
   LibraryFinancingProvider: () => LibraryFinancingProvider,
   LibraryFinancingSettings: () => LibraryFinancingSettings,
+  LibraryNurtureConfig: () => LibraryNurtureConfig,
   LibraryObjection: () => LibraryObjection,
   LibraryOpportunitiesConfig: () => LibraryOpportunitiesConfig,
   LibrarySectionSchemas: () => LibrarySectionSchemas,
@@ -14868,7 +14869,28 @@ __export(contract_entry_exports, {
   MessageChannel: () => MessageChannel,
   MessageDirection: () => MessageDirection,
   MessageStatus: () => MessageStatus,
+  NURTURE_CAPS: () => NURTURE_CAPS,
+  NURTURE_DEFAULT_INTENSITY: () => NURTURE_DEFAULT_INTENSITY,
+  NURTURE_SMS_STOP_SUFFIX: () => NURTURE_SMS_STOP_SUFFIX,
+  NURTURE_STOP_CASE_TERMINAL: () => NURTURE_STOP_CASE_TERMINAL,
+  NURTURE_STOP_OPTED_OUT: () => NURTURE_STOP_OPTED_OUT,
+  NURTURE_TRACKS: () => NURTURE_TRACKS,
   NurtureCadence: () => NurtureCadence,
+  NurtureCaseResponse: () => NurtureCaseResponse,
+  NurtureChannelState: () => NurtureChannelState,
+  NurtureConfigResponse: () => NurtureConfigResponse,
+  NurtureConsentHint: () => NurtureConsentHint,
+  NurtureEnrollBody: () => NurtureEnrollBody,
+  NurtureEnrollmentStatus: () => NurtureEnrollmentStatus,
+  NurtureIntensity: () => NurtureIntensity,
+  NurtureOutboxDraft: () => NurtureOutboxDraft,
+  NurtureOutboxGroup: () => NurtureOutboxGroup,
+  NurtureOutboxResponse: () => NurtureOutboxResponse,
+  NurtureStopBody: () => NurtureStopBody,
+  NurtureTrackAvailability: () => NurtureTrackAvailability,
+  NurtureTrackConfig: () => NurtureTrackConfig,
+  NurtureTrackKey: () => NurtureTrackKey,
+  NurtureTrackUnavailableReason: () => NurtureTrackUnavailableReason,
   NurtureType: () => NurtureType,
   OPEN_CASE_STATUSES: () => OPEN_CASE_STATUSES,
   OPPORTUNITIES_WINDOW_DEFAULT_MONTHS: () => OPPORTUNITIES_WINDOW_DEFAULT_MONTHS,
@@ -14903,6 +14925,7 @@ __export(contract_entry_exports, {
   TcHygieneIntake: () => TcHygieneIntake,
   TcLegacyUserMapEntry: () => TcLegacyUserMapEntry,
   TcMessage: () => TcMessage,
+  TcNurtureEnrollment: () => TcNurtureEnrollment,
   TcObjection: () => TcObjection,
   TcPreauthCase: () => TcPreauthCase,
   TcSmileSimulation: () => TcSmileSimulation,
@@ -14910,7 +14933,9 @@ __export(contract_entry_exports, {
   Urgency: () => Urgency,
   Uuid: () => Uuid,
   VoiceHandoffDetail: () => VoiceHandoffDetail,
-  ZodError: () => import_zod5.ZodError,
+  ZodError: () => import_zod6.ZodError,
+  allPresetViolations: () => allPresetViolations,
+  assertPresetsWithinCaps: () => assertPresetsWithinCaps,
   caseFromRows: () => caseFromRows,
   caseToRows: () => caseToRows,
   communicationToRow: () => communicationToRow,
@@ -14918,11 +14943,19 @@ __export(contract_entry_exports, {
   escapeHtml: () => escapeHtml,
   fillBlockTokens: () => fillBlockTokens,
   fillMergeTokens: () => fillMergeTokens,
+  fillNurtureCopy: () => fillNurtureCopy,
   galleryToRow: () => galleryToRow,
   htmlToPlainText: () => htmlToPlainText,
+  intensityFor: () => intensityFor,
   isContactAttemptDetail: () => isContactAttemptDetail,
   isVoiceHandoffDetail: () => isVoiceHandoffDetail,
+  nurtureSchedule: () => nurtureSchedule,
+  nurtureTemplateId: () => nurtureTemplateId,
+  nurtureTokensIn: () => nurtureTokensIn,
+  nurtureTouch: () => nurtureTouch,
+  nurtureTrack: () => nurtureTrack,
   preauthToRow: () => preauthToRow,
+  presetViolations: () => presetViolations,
   readBlock: () => readBlock,
   readBlocks: () => readBlocks,
   renderEmail: () => renderEmail,
@@ -14930,7 +14963,7 @@ __export(contract_entry_exports, {
   simulationToRow: () => simulationToRow,
   templateToRow: () => templateToRow,
   userMapEntryToRow: () => userMapEntryToRow,
-  z: () => import_zod5.z
+  z: () => import_zod6.z
 });
 module.exports = __toCommonJS(contract_entry_exports);
 
@@ -15250,7 +15283,18 @@ var CaseEventType = import_zod3.z.enum([
    * later (summary text, call id, deep link) is SNAPSHOT into this row. Nothing
    * in TC may dereference a voice-module record.
    */
-  "voice_handoff"
+  "voice_handoff",
+  /**
+   * Nurture campaigns v1 (item 47). Server-written only. `nurture_enrolled`
+   * (above) predates the campaign engine and is reused for a campaign
+   * enrollment; these five complete the lifecycle. A touch is QUEUED — a
+   * draft was written for a human to approve — never "sent" by the engine.
+   */
+  "nurture_paused",
+  "nurture_resumed",
+  "nurture_stopped",
+  "nurture_completed",
+  "nurture_touch_queued"
 ]);
 var OPEN_CASE_STATUSES = [
   "hygiene_review",
@@ -15666,6 +15710,11 @@ var OPPORTUNITIES_WINDOW_DEFAULT_MONTHS = 18;
 var LibraryOpportunitiesConfig = import_zod3.z.object({
   opportunitiesWindowMonths: import_zod3.z.number().int().min(OPPORTUNITIES_WINDOW_MIN_MONTHS).max(OPPORTUNITIES_WINDOW_MAX_MONTHS).default(OPPORTUNITIES_WINDOW_DEFAULT_MONTHS)
 });
+var NurtureTrackKey = import_zod3.z.enum(["no_show_recovery", "warm_followup", "reactivation", "large_case"]);
+var NurtureIntensity = import_zod3.z.enum(["gentle", "standard", "assertive"]);
+var NURTURE_DEFAULT_INTENSITY = "standard";
+var NurtureTrackConfig = import_zod3.z.object({ intensity: NurtureIntensity }).strict();
+var LibraryNurtureConfig = import_zod3.z.object({ tracks: import_zod3.z.partialRecord(NurtureTrackKey, NurtureTrackConfig).default({}) }).strict();
 var LibrarySectionSchemas = {
   stages: import_zod3.z.array(LibraryStage).max(50),
   objections: import_zod3.z.array(LibraryObjection).max(100),
@@ -15678,7 +15727,8 @@ var LibrarySectionSchemas = {
   financing_config: LibraryFinancingConfig,
   cadence_config: LibraryCadenceConfig,
   financing_settings: LibraryFinancingSettings,
-  opportunities_config: LibraryOpportunitiesConfig
+  opportunities_config: LibraryOpportunitiesConfig,
+  nurture_config: LibraryNurtureConfig
 };
 var TcLegacyUserMapEntry = import_zod3.z.object({
   legacyUserId: import_zod3.z.string().min(1).max(40),
@@ -16054,7 +16104,8 @@ var MessageStatus = import_zod4.z.enum([
   "sent",
   "delivered",
   "failed",
-  "received"
+  "received",
+  "skipped"
 ]);
 var SENDABLE_MESSAGE_STATUSES = ["draft"];
 var ConsentState = import_zod4.z.enum(["opted_in", "opted_out", "unknown"]);
@@ -16500,8 +16551,477 @@ function renderEmail(input) {
   return { subject, html, text };
 }
 
+// shared/tc/nurture.ts
+var import_zod5 = __toESM(require_zod(), 1);
+var IsoTimestamp3 = import_zod5.z.string().datetime({ offset: true });
+var NurtureEnrollmentStatus = import_zod5.z.enum(["active", "paused", "completed", "stopped"]);
+var NURTURE_STOP_CASE_TERMINAL = "case_terminal";
+var NURTURE_STOP_OPTED_OUT = "opted_out";
+var NurtureConsentHint = import_zod5.z.enum(["opted_out", "email_unsubscribed", "no_address"]);
+var NURTURE_CAPS = Object.freeze({
+  /** At most this many touches in any rolling 7-day window. */
+  maxTouchesPer7Days: 3,
+  /** At least this many hours between two touches of one enrollment. */
+  minHoursBetweenTouches: 48,
+  /** At most this many touches in one enrollment, ever. */
+  maxTouchesPerEnrollment: 12
+});
+var NURTURE_SMS_STOP_SUFFIX = "Reply STOP to opt out.";
+function defineTrack(def) {
+  return def;
+}
+var S = "sms";
+var E = "email";
+var NURTURE_TRACKS = {
+  no_show_recovery: defineTrack({
+    label: "No-Show Recovery",
+    goal: "Reschedule. Warm, zero guilt.",
+    enrollment: "manual",
+    touches: {
+      ns1: {
+        channel: S,
+        body: "Hi {{firstName}}, we missed you at {{officeName}}! Life happens \u2014 reply here or call {{officePhone}} and we'll find a time that works better. Reply STOP to opt out."
+      },
+      ns2: {
+        channel: E,
+        subject: "Let's find you a new time",
+        body: "Hi {{firstName}}, we missed seeing you! No worries at all \u2014 these things happen. Your spot on our schedule matters to us, so let's get you a new time that actually fits your week. Call {{officePhone}} or just reply to this email and we'll take care of it. \u2014 The team at {{officeName}}",
+        cta: "Reschedule my visit"
+      },
+      ns3: {
+        channel: S,
+        body: "Hi {{firstName}}, still want to get you back on the books at {{officeName}}. Do mornings or afternoons work better for you? Just reply and we'll handle the rest."
+      },
+      ns4: {
+        channel: E,
+        subject: "The door's still open",
+        body: "Hi {{firstName}}, we haven't been able to reconnect since your missed visit, so this is our last nudge for a while \u2014 we don't want to crowd your inbox. Whenever you're ready, one call to {{officePhone}} gets you right back in. We'll be here. \u2014 {{officeName}}",
+        cta: "Pick a new time"
+      }
+    },
+    presets: {
+      gentle: [
+        { touch: "ns2", day: 2 },
+        { touch: "ns4", day: 9 }
+      ],
+      standard: [
+        { touch: "ns1", day: 1 },
+        { touch: "ns2", day: 4 },
+        { touch: "ns3", day: 10 }
+      ],
+      assertive: [
+        { touch: "ns1", day: 1 },
+        { touch: "ns2", day: 3 },
+        { touch: "ns3", day: 6 },
+        { touch: "ns4", day: 10 }
+      ]
+    }
+  }),
+  warm_followup: defineTrack({
+    label: "Warm Follow-Up",
+    goal: "Schedule presented treatment while it's fresh.",
+    enrollment: "manual",
+    touches: {
+      wf1: {
+        channel: S,
+        body: "Hi {{firstName}}, thanks for coming in to {{officeName}}! If any questions came up after your visit, just reply \u2014 we're happy to help. Reply STOP to opt out."
+      },
+      wf2: {
+        channel: E,
+        subject: "Your plan, in plain English",
+        body: "Hi {{firstName}}, it was great seeing you. We know a treatment plan can feel like a lot to take in at the chair, so if anything we discussed deserves a second explanation \u2014 what it involves, why we recommended it, what happens if we wait \u2014 just reply or call {{officePhone}}. No pressure, just answers. \u2014 {{officeName}}",
+        cta: "Ask us anything"
+      },
+      wf3: {
+        channel: S,
+        body: "Hi {{firstName}}, ready to get your next visit scheduled at {{officeName}}? Do mornings or afternoons usually work better? Reply and we'll find you two options."
+      },
+      wf4: {
+        channel: E,
+        subject: "Why sooner beats later",
+        body: "Hi {{firstName}}, one thing we see every week: small issues are quick, comfortable, and affordable to handle \u2014 and the same issues, left a year, rarely stay small. Taking care of your plan now usually means less time in the chair and less out of pocket overall. When you're ready, {{officePhone}} is all it takes. \u2014 {{officeName}}",
+        cta: "Schedule my visit"
+      },
+      wf5: {
+        channel: E,
+        subject: "Let's make it fit your budget",
+        body: "Hi {{firstName}}, if cost is part of what's giving you pause, you're not alone \u2014 and we have options. Flexible payment plans, financing, and ways to phase treatment so it works for your budget. Five minutes with our team and you'll know exactly what's possible. \u2014 {{officeName}}",
+        cta: "See my options"
+      },
+      wf6: {
+        channel: S,
+        body: "Hi {{firstName}}, your plan is still ready and waiting at {{officeName}}. Want us to pull up a couple of times for you? Just reply yes."
+      },
+      wf7: {
+        channel: E,
+        subject: "You're in good company",
+        body: `Hi {{firstName}}, most of the patients we see felt the same hesitation before getting started \u2014 and the thing we hear most afterward is "I wish I'd done this sooner." Our team's job is to make the whole thing easier than you're expecting. Ready when you are: {{officePhone}}. \u2014 {{officeName}}`,
+        cta: "Get started"
+      },
+      wf8: {
+        channel: S,
+        body: "Hi {{firstName}}, quick check-in from {{officeName}} \u2014 still thinking it over, or any questions we can answer? Reply anytime."
+      },
+      wf9: {
+        channel: E,
+        subject: "A note from our team",
+        body: "Hi {{firstName}}, no sales pitch today \u2014 just a reminder that we genuinely care about getting you healthy and keeping you that way. Whatever the holdup is (schedule, cost, nerves \u2014 all normal), tell us and we'll work with it. \u2014 Your team at {{officeName}}",
+        cta: "Reply to the team"
+      },
+      wf10: {
+        channel: E,
+        subject: "We'll quiet down now",
+        body: "Hi {{firstName}}, we've sent a few notes about your treatment plan, and we don't want to be a pest \u2014 so we'll check in much less often from here. Your plan stays on file, and whenever you're ready, one call to {{officePhone}} picks it right back up. \u2014 {{officeName}}",
+        cta: "I'm ready now"
+      }
+    },
+    presets: {
+      gentle: [
+        { touch: "wf2", day: 3 },
+        { touch: "wf3", day: 10 },
+        { touch: "wf5", day: 24 },
+        { touch: "wf8", day: 45 }
+      ],
+      standard: [
+        { touch: "wf1", day: 2 },
+        { touch: "wf2", day: 5 },
+        { touch: "wf3", day: 9 },
+        { touch: "wf5", day: 16 },
+        { touch: "wf7", day: 30 },
+        { touch: "wf8", day: 49 }
+      ],
+      assertive: [
+        { touch: "wf1", day: 1 },
+        { touch: "wf2", day: 3 },
+        { touch: "wf3", day: 5 },
+        { touch: "wf4", day: 8 },
+        { touch: "wf6", day: 12 },
+        { touch: "wf5", day: 19 },
+        { touch: "wf8", day: 26 },
+        { touch: "wf7", day: 33 },
+        { touch: "wf9", day: 47 },
+        { touch: "wf10", day: 56 }
+      ]
+    }
+  }),
+  reactivation: defineTrack({
+    label: "Reactivation Drip",
+    goal: "Re-engage aging plans. Slow, benefit-led.",
+    enrollment: "manual",
+    touches: {
+      ra1: {
+        channel: E,
+        subject: "Your exam findings are still on file",
+        body: "Hi {{firstName}}, it's been a while since we put together your treatment plan, and we wanted you to know it hasn't gone anywhere \u2014 your exam findings are on file and ready whenever you are. One call to {{officePhone}} and we'll pick up right where we left off. \u2014 {{officeName}}",
+        cta: "Pick it back up"
+      },
+      ra2: {
+        channel: S,
+        body: "Hi {{firstName}}, {{officeName}} here \u2014 your treatment plan is still on file with us. Want to pick it back up? Reply or call {{officePhone}}. Reply STOP to opt out."
+      },
+      ra3: {
+        channel: E,
+        subject: "Small things don't stay small",
+        body: "Hi {{firstName}}, the honest truth about dental care: time is the one thing that makes everything harder to fix. What we found at your last exam was manageable then \u2014 and the sooner we look again, the more likely it still is. A quick visit tells us exactly where things stand. \u2014 {{officeName}}",
+        cta: "Book a quick check"
+      },
+      ra4: {
+        channel: E,
+        subject: "Don't leave your benefits on the table",
+        body: "Hi {{firstName}}, if you have dental insurance, unused benefits typically reset at the end of the year \u2014 money you've already paid for through your premiums. Finishing your treatment plan is one of the smartest ways to actually use them. We're happy to check what you have left: {{officePhone}}. \u2014 {{officeName}}",
+        cta: "Check my benefits"
+      },
+      ra5: {
+        channel: S,
+        body: "Hi {{firstName}}, we'd love to see you back at {{officeName}}. Getting restarted is one quick call: {{officePhone}}."
+      },
+      ra6: {
+        channel: E,
+        subject: "Should we keep your plan active?",
+        body: "Hi {{firstName}}, we still have your treatment plan on file, but it's been long enough that some of it may need a fresh look. If you'd like, we'll have the doctor review it and schedule a short visit to update anything that's changed \u2014 so when you start, you're starting from today, not from last year. \u2014 {{officeName}}",
+        cta: "Update my plan"
+      },
+      ra7: {
+        channel: E,
+        subject: "A lot has gotten easier",
+        body: "Hi {{firstName}}, dentistry keeps getting more comfortable \u2014 and so do we. Faster visits, better options, and a team that will meet you wherever you left off, no judgment, no lecture. Come see the difference. \u2014 {{officeName}}",
+        cta: "Come back in"
+      },
+      ra8: {
+        channel: E,
+        subject: "We'll keep the light on",
+        body: "Hi {{firstName}}, this is our last regular note about your treatment plan \u2014 we don't believe in nagging. You'll stay on our books as our patient, and the day you're ready, we're one call away: {{officePhone}}. Take care of yourself. \u2014 {{officeName}}",
+        cta: "I'm ready"
+      }
+    },
+    presets: {
+      // Beau, 2026-10-13: Appendix A listed ra2@67 (E) and ra5@127 (E), but
+      // ra2 and ra5 exist only as SMS copy, and as SMS they stack two texts
+      // back to back. Ruling: keep gentle all-email on the same four days,
+      // using the approved email touches ra3 and ra4.
+      gentle: [
+        { touch: "ra1", day: 7 },
+        { touch: "ra3", day: 67 },
+        { touch: "ra4", day: 127 },
+        { touch: "ra6", day: 187 }
+      ],
+      standard: [
+        { touch: "ra1", day: 7 },
+        { touch: "ra2", day: 37 },
+        { touch: "ra3", day: 67 },
+        { touch: "ra4", day: 97 },
+        { touch: "ra5", day: 127 },
+        { touch: "ra6", day: 157 }
+      ],
+      assertive: [
+        { touch: "ra1", day: 3 },
+        { touch: "ra2", day: 17 },
+        { touch: "ra3", day: 31 },
+        { touch: "ra4", day: 61 },
+        { touch: "ra5", day: 91 },
+        { touch: "ra7", day: 121 },
+        { touch: "ra6", day: 151 },
+        { touch: "ra8", day: 181 }
+      ]
+    }
+  }),
+  large_case: defineTrack({
+    label: "Large Case / Financing",
+    goal: "Convert big presented cases. Fewer, higher-touch, value-first.",
+    enrollment: "manual",
+    touches: {
+      lc1: {
+        channel: E,
+        subject: "The smile you talked about, step by step",
+        body: "Hi {{firstName}}, big decisions deserve clear information, so here's the short version of what we discussed: what we'd be doing, in what order, and what it gets you \u2014 function, comfort, and a result you'll see every day in the mirror. If you'd like us to walk through any part again (or all of it), we'll make the time. \u2014 {{officeName}}",
+        cta: "Walk me through it"
+      },
+      lc2: {
+        channel: E,
+        subject: "Making the investment manageable",
+        body: "Hi {{firstName}}, almost no one pays for comprehensive treatment all at once \u2014 and you don't have to either. Between phasing the work, payment plans, and third-party financing, there's usually a monthly number that feels very doable. Let us run the options for your plan specifically: {{officePhone}}. \u2014 {{officeName}}",
+        cta: "Show me my options"
+      },
+      lc3: {
+        channel: E,
+        subject: "A personal note from Dr. Sparkman",
+        body: "Hi {{firstName}}, I wanted to reach out myself. The plan we put together for you is one I'm confident in, and I don't take recommendations of this size lightly \u2014 I recommend what I'd want for my own family. If you have doubts or questions, I'd rather hear them than have you sit with them. Call the office and they'll get us time to talk. \u2014 Dr. Beau Sparkman, {{officeName}}",
+        cta: "Set up a time to talk"
+      },
+      lc4: {
+        channel: E,
+        subject: "What a finished case looks like",
+        body: "Hi {{firstName}}, it's hard to picture the end result from a treatment plan on paper. Patients who've completed treatment like yours tell us the change in how they eat, speak, and smile was worth every step. We'd love to show you what's possible \u2014 come in for a no-pressure conversation. \u2014 {{officeName}}",
+        cta: "Show me"
+      },
+      lc5: {
+        channel: E,
+        subject: "No rush \u2014 but let's stay in touch",
+        body: "Hi {{firstName}}, a plan like yours is a real decision, and we respect that it takes time. We'll stop checking in so often, but your plan stays on file and our door stays open. When you want to talk \u2014 about the treatment, the timing, or the money \u2014 we're at {{officePhone}}. \u2014 {{officeName}}",
+        cta: "Let's talk"
+      },
+      lc6: {
+        channel: S,
+        body: "Hi {{firstName}}, {{officeName}} here \u2014 happy to answer any questions about your treatment plan or go over payment options. Just reply. Reply STOP to opt out."
+      },
+      lc7: {
+        channel: S,
+        body: "Hi {{firstName}}, checking in from {{officeName}} \u2014 want us to set up a quick, no-pressure chat about your plan? Reply yes and we'll arrange it."
+      }
+    },
+    presets: {
+      gentle: [
+        { touch: "lc1", day: 5 },
+        { touch: "lc2", day: 21 },
+        { touch: "lc5", day: 49 }
+      ],
+      standard: [
+        { touch: "lc1", day: 3 },
+        { touch: "lc2", day: 10 },
+        { touch: "lc3", day: 21 },
+        { touch: "lc6", day: 35 },
+        { touch: "lc5", day: 56 }
+      ],
+      assertive: [
+        { touch: "lc1", day: 2 },
+        { touch: "lc2", day: 6 },
+        { touch: "lc3", day: 12 },
+        { touch: "lc6", day: 21 },
+        { touch: "lc4", day: 30 },
+        { touch: "lc7", day: 42 },
+        { touch: "lc5", day: 56 }
+      ]
+    }
+  })
+};
+function nurtureTrack(key) {
+  return NURTURE_TRACKS[key];
+}
+function nurtureSchedule(key, intensity) {
+  return nurtureTrack(key).presets[intensity];
+}
+function nurtureTouch(key, touchKey) {
+  const touches = nurtureTrack(key).touches;
+  const t = touches[touchKey];
+  if (!t) throw new Error(`nurture: track ${key} has no touch ${touchKey}`);
+  return t;
+}
+function nurtureTemplateId(key, touchKey) {
+  return `nurture.${key}.${touchKey}`;
+}
+function presetViolations(key, intensity, tracks = NURTURE_TRACKS) {
+  const touchOf = (touchKey) => {
+    const touches = tracks[key].touches;
+    const t = touches[touchKey];
+    if (!t) throw new Error(`nurture: track ${key} has no touch ${touchKey}`);
+    return t;
+  };
+  const steps = tracks[key].presets[intensity];
+  const where = `${key}/${intensity}`;
+  const out = [];
+  const minDays = NURTURE_CAPS.minHoursBetweenTouches / 24;
+  if (steps.length === 0) out.push(`${where}: no touches`);
+  if (steps.length > NURTURE_CAPS.maxTouchesPerEnrollment) {
+    out.push(`${where}: ${steps.length} touches > ${NURTURE_CAPS.maxTouchesPerEnrollment}`);
+  }
+  steps.forEach((s, i) => {
+    if (!Number.isInteger(s.day) || s.day < 1) out.push(`${where}: step ${i} day ${s.day} is not a whole day \u2265 1`);
+    let touch = null;
+    try {
+      touch = touchOf(s.touch);
+    } catch {
+      out.push(`${where}: step ${i} names unknown touch ${s.touch}`);
+    }
+    if (touch) {
+      if (!touch.body.trim()) out.push(`${where}: ${s.touch} has no copy`);
+      if (touch.channel === "email" && (!touch.subject.trim() || !touch.cta.trim())) {
+        out.push(`${where}: ${s.touch} needs a subject and a CTA`);
+      }
+    }
+    if (i > 0) {
+      const prev = steps[i - 1];
+      if (s.day - prev.day < minDays) {
+        out.push(`${where}: ${prev.touch}@${prev.day} \u2192 ${s.touch}@${s.day} is under ${NURTURE_CAPS.minHoursBetweenTouches}h`);
+      }
+      let prevTouch = null;
+      try {
+        prevTouch = touchOf(prev.touch);
+      } catch {
+        prevTouch = null;
+      }
+      if (touch && prevTouch && touch.channel === "sms" && prevTouch.channel === "sms") {
+        out.push(`${where}: ${prev.touch} \u2192 ${s.touch} stacks SMS back to back`);
+      }
+    }
+    const inWindow = steps.filter((t) => t.day >= s.day && t.day <= s.day + 6).length;
+    if (inWindow > NURTURE_CAPS.maxTouchesPer7Days) {
+      out.push(`${where}: ${inWindow} touches in the 7 days from day ${s.day}`);
+    }
+  });
+  return out;
+}
+function allPresetViolations(tracks = NURTURE_TRACKS) {
+  const out = [];
+  for (const key of NurtureTrackKey.options) {
+    for (const intensity of NurtureIntensity.options) out.push(...presetViolations(key, intensity, tracks));
+  }
+  return out;
+}
+function assertPresetsWithinCaps(tracks = NURTURE_TRACKS) {
+  const v = allPresetViolations(tracks);
+  if (v.length) {
+    throw new Error(`[tcNurture] ${v.length} preset(s) break the hard caps:
+  ${v.join("\n  ")}`);
+  }
+}
+function fillNurtureCopy(text, values) {
+  return text.replace(/\{\{(firstName|officeName|officePhone)\}\}/g, (_m, k) => values[k]);
+}
+function nurtureTokensIn(text) {
+  return Array.from(text.matchAll(/\{\{\s*([^}]+?)\s*\}\}/g), (m) => m[1]);
+}
+function intensityFor(config, key) {
+  return config?.tracks?.[key]?.intensity ?? NURTURE_DEFAULT_INTENSITY;
+}
+var TcNurtureEnrollment = import_zod5.z.object({
+  enrollmentId: Uuid,
+  caseId: Uuid,
+  officeId: OfficeId,
+  trackKey: NurtureTrackKey,
+  intensityAtEnroll: NurtureIntensity,
+  status: NurtureEnrollmentStatus,
+  stopReason: import_zod5.z.string().max(200).nullable(),
+  nextTouchIndex: import_zod5.z.number().int().min(0),
+  nextTouchDueAt: IsoTimestamp3.nullable(),
+  lastTouchAt: IsoTimestamp3.nullable(),
+  /** The touch the next draft will be, or null when the schedule is exhausted. */
+  nextTouchKey: import_zod5.z.string().max(20).nullable(),
+  touchCount: import_zod5.z.number().int().min(0),
+  createdBy: import_zod5.z.string().max(320).nullable(),
+  createdAt: IsoTimestamp3,
+  updatedAt: IsoTimestamp3
+});
+var NurtureTrackUnavailableReason = import_zod5.z.enum([
+  "switched_off",
+  "case_terminal",
+  "already_enrolled",
+  "no_address"
+]);
+var NurtureTrackAvailability = import_zod5.z.object({
+  trackKey: NurtureTrackKey,
+  label: import_zod5.z.string(),
+  goal: import_zod5.z.string(),
+  intensity: NurtureIntensity,
+  touchCount: import_zod5.z.number().int().min(0),
+  channels: import_zod5.z.array(MessageChannel),
+  available: import_zod5.z.boolean(),
+  reason: NurtureTrackUnavailableReason.nullable()
+});
+var NurtureCaseResponse = import_zod5.z.object({
+  enabled: import_zod5.z.boolean(),
+  enrollments: import_zod5.z.array(TcNurtureEnrollment),
+  tracks: import_zod5.z.array(NurtureTrackAvailability)
+});
+var NurtureEnrollBody = import_zod5.z.object({ case_id: Uuid, track_key: NurtureTrackKey }).strict();
+var NurtureStopBody = import_zod5.z.object({ reason: import_zod5.z.string().trim().min(1).max(200) }).strict();
+var NurtureOutboxDraft = import_zod5.z.object({
+  message: TcMessage,
+  enrollmentId: Uuid,
+  caseId: Uuid,
+  patientName: import_zod5.z.string().max(200).nullable(),
+  // PHI
+  touchKey: import_zod5.z.string().max(20),
+  consentBlockedHint: NurtureConsentHint.nullable()
+});
+var NurtureOutboxGroup = import_zod5.z.object({
+  trackKey: NurtureTrackKey,
+  label: import_zod5.z.string(),
+  drafts: import_zod5.z.array(NurtureOutboxDraft)
+});
+var NurtureChannelState = import_zod5.z.object({
+  channel: MessageChannel,
+  enabled: import_zod5.z.boolean(),
+  reason: import_zod5.z.enum(["switched_off", "not_configured", "office_not_configured"]).nullable()
+});
+var NurtureOutboxResponse = import_zod5.z.object({
+  enabled: import_zod5.z.boolean(),
+  channels: import_zod5.z.array(NurtureChannelState),
+  groups: import_zod5.z.array(NurtureOutboxGroup)
+});
+var NurtureConfigResponse = import_zod5.z.object({
+  enabled: import_zod5.z.boolean(),
+  tracks: import_zod5.z.array(
+    import_zod5.z.object({
+      trackKey: NurtureTrackKey,
+      label: import_zod5.z.string(),
+      intensity: NurtureIntensity,
+      stored: import_zod5.z.boolean()
+    })
+  )
+});
+
 // ../backend/tc/contract.entry.ts
-var import_zod5 = __toESM(require_zod());
+var import_zod6 = __toESM(require_zod());
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   ButtonBlock,
@@ -16538,6 +17058,7 @@ var import_zod5 = __toESM(require_zod());
   LibraryFinancingConfig,
   LibraryFinancingProvider,
   LibraryFinancingSettings,
+  LibraryNurtureConfig,
   LibraryObjection,
   LibraryOpportunitiesConfig,
   LibrarySectionSchemas,
@@ -16549,7 +17070,28 @@ var import_zod5 = __toESM(require_zod());
   MessageChannel,
   MessageDirection,
   MessageStatus,
+  NURTURE_CAPS,
+  NURTURE_DEFAULT_INTENSITY,
+  NURTURE_SMS_STOP_SUFFIX,
+  NURTURE_STOP_CASE_TERMINAL,
+  NURTURE_STOP_OPTED_OUT,
+  NURTURE_TRACKS,
   NurtureCadence,
+  NurtureCaseResponse,
+  NurtureChannelState,
+  NurtureConfigResponse,
+  NurtureConsentHint,
+  NurtureEnrollBody,
+  NurtureEnrollmentStatus,
+  NurtureIntensity,
+  NurtureOutboxDraft,
+  NurtureOutboxGroup,
+  NurtureOutboxResponse,
+  NurtureStopBody,
+  NurtureTrackAvailability,
+  NurtureTrackConfig,
+  NurtureTrackKey,
+  NurtureTrackUnavailableReason,
   NurtureType,
   OPEN_CASE_STATUSES,
   OPPORTUNITIES_WINDOW_DEFAULT_MONTHS,
@@ -16584,6 +17126,7 @@ var import_zod5 = __toESM(require_zod());
   TcHygieneIntake,
   TcLegacyUserMapEntry,
   TcMessage,
+  TcNurtureEnrollment,
   TcObjection,
   TcPreauthCase,
   TcSmileSimulation,
@@ -16592,6 +17135,8 @@ var import_zod5 = __toESM(require_zod());
   Uuid,
   VoiceHandoffDetail,
   ZodError,
+  allPresetViolations,
+  assertPresetsWithinCaps,
   caseFromRows,
   caseToRows,
   communicationToRow,
@@ -16599,11 +17144,19 @@ var import_zod5 = __toESM(require_zod());
   escapeHtml,
   fillBlockTokens,
   fillMergeTokens,
+  fillNurtureCopy,
   galleryToRow,
   htmlToPlainText,
+  intensityFor,
   isContactAttemptDetail,
   isVoiceHandoffDetail,
+  nurtureSchedule,
+  nurtureTemplateId,
+  nurtureTokensIn,
+  nurtureTouch,
+  nurtureTrack,
   preauthToRow,
+  presetViolations,
   readBlock,
   readBlocks,
   renderEmail,

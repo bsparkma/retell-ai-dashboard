@@ -36,6 +36,8 @@ export * from "../../new-dashboard/shared/tc/messaging";
 // Email rendering (item 40): the ONE block-model → HTML implementation, shared
 // with the dashboard's preview helpers.
 export * from "../../new-dashboard/shared/tc/emailRender";
+// Nurture campaigns v1 (item 47): the frozen tracks, presets, caps and copy.
+export * from "../../new-dashboard/shared/tc/nurture";
 // The routes compose small request shapes (status-transition bodies, complete/
 // reschedule payloads) from contract pieces; export the SAME zod instance so
 // those shapes and the contract schemas share one library version.
