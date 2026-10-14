@@ -71,6 +71,7 @@ const { isQuietHours } = require('./quietHours');
 const adapters = require('./adapters');
 const templates = require('./templates');
 const twilioStatus = require('./twilio/status');
+const acsSmsStatus = require('./acs/smsStatus');
 const emailContent = require('./emailContent');
 // (item 47) The nurture exit hooks. They only ever stop drafting; nothing in
 // them sends.
@@ -600,6 +601,9 @@ async function sendMessage(req, office, messageId) {
     throw new MessagingError('FEATURE_DISABLED', disabledSentence(channel, reason), {
       feature: channel === 'sms' ? 'tc_sms_send' : 'tc_email_send',
       reason,
+      // (item 48) Setting NAMES (never values) of what this office is missing,
+      // when the adapter can say — e.g. TC_SMS_ACS_FROM_VALLEY.
+      ...(typeof adapter.missingFor === 'function' ? { missing: adapter.missingFor(office) } : {}),
     });
   }
 
@@ -1002,7 +1006,8 @@ async function recordInbound(
  * Apply ONE provider status report to the outbound message it names.
  *
  * Idempotent and out-of-order safe: the UPDATE only matches a row whose stored
- * status ranks strictly BELOW the incoming one (twilio/status.js), so a
+ * status ranks strictly BELOW the incoming one (twilio/status.js — the ONE
+ * ladder; item 48's acs/smsStatus.js reuses it), so a
  * re-delivered or stale report changes nothing, and `delivered` is never
  * regressed. A row still `sending` (its own Send request has not finished) or
  * a draft is never touched. Office-scoped: the office comes from the callback
@@ -1014,16 +1019,19 @@ async function recordInbound(
  * @returns {Promise<{ outcome: 'applied'|'ignored_status'|'not_found_or_stale', status: string|null }>}
  */
 async function applyStatusCallback(req, office, { provider, providerMessageId, providerStatus, errorCode = null }) {
-  const ours = twilioStatus.mapStatus(providerStatus);
+  // (item 48) Each provider names its statuses its own way; the ladder they
+  // map onto (and the conditional UPDATE below) is the same one.
+  const map = provider === 'acs' ? acsSmsStatus : twilioStatus;
+  const ours = map.mapStatus(providerStatus);
   if (!ours) return { outcome: 'ignored_status', status: null };
-  const error = ours === 'failed' ? twilioStatus.errorText(errorCode, providerStatus) : null;
+  const error = ours === 'failed' ? map.errorText(errorCode, providerStatus) : null;
   const res = await db(req, (q) =>
     q.query(
       `UPDATE tc_messages SET status = $1, error = $2
         WHERE office_id = $3 AND provider = $4 AND provider_message_id = $5 AND direction = 'outbound'
           AND status = ANY($6)
         RETURNING message_id, status`,
-      [ours, error, office, provider, providerMessageId, twilioStatus.replaceableBy(ours)]
+      [ours, error, office, provider, providerMessageId, map.replaceableBy(ours)]
     )
   );
   if (!res.rows.length) return { outcome: 'not_found_or_stale', status: ours };
