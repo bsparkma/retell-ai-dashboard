@@ -14,7 +14,8 @@ that is a FAIL item, not a fix.
 ## Input
 
 - The **queue file** for the slice (its path is given to you; it lives read-only under
-  `C:\Users\beau\carein cursor dashboard\pm-prompts\queue\` — never write there).
+  `C:\Users\beau\carein cursor dashboard-dev\pm-prompts\queue\` in the DEV clone — never
+  write there, and never write anywhere in the PROD folder).
 - The **branch / worktree**. Read the diff yourself:
   `git fetch origin && git diff origin/develop...HEAD` (and `--name-status`).
   The builder's own report, if any, is a claim to check, not evidence.
