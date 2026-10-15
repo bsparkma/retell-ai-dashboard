@@ -103,6 +103,8 @@ const SECTION_LABELS = [
   "Library",
   "Integrations",
   "Data & Backup",
+  // Item 51 adds a ninth section after DentaFlow's eight.
+  "Notifications",
 ];
 
 function nav() {
