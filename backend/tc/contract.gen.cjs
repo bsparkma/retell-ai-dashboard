@@ -14813,10 +14813,10 @@ var require_zod = __commonJS({
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.z = void 0;
-    var z8 = __importStar(require_external());
-    exports2.z = z8;
+    var z9 = __importStar(require_external());
+    exports2.z = z9;
     __exportStar(require_external(), exports2);
-    exports2.default = z8;
+    exports2.default = z9;
   }
 });
 
@@ -14836,6 +14836,7 @@ __export(contract_entry_exports, {
   ConsentState: () => ConsentState,
   ContactAttemptDetail: () => ContactAttemptDetail,
   ContactPreference: () => ContactPreference,
+  DEFAULT_NOTIFICATION_LEVEL: () => DEFAULT_NOTIFICATION_LEVEL,
   DividerBlock: () => DividerBlock,
   DraftMessageBody: () => DraftMessageBody,
   EMAIL_MERGE_TOKENS: () => EMAIL_MERGE_TOKENS,
@@ -14917,6 +14918,8 @@ __export(contract_entry_exports, {
   TC_CHECKOUT_STATUS_LABELS: () => TC_CHECKOUT_STATUS_LABELS,
   TC_CHECKOUT_WAITING: () => TC_CHECKOUT_WAITING,
   TC_INTAKE_KIND_LABELS: () => TC_INTAKE_KIND_LABELS,
+  TC_NOTIFICATION_EVENT_LABELS: () => TC_NOTIFICATION_EVENT_LABELS,
+  TC_NOTIFICATION_LEVEL_LABELS: () => TC_NOTIFICATION_LEVEL_LABELS,
   TERMINAL_CASE_STATUSES: () => TERMINAL_CASE_STATUSES,
   TcCase: () => TcCase,
   TcCaseEvent: () => TcCaseEvent,
@@ -14945,6 +14948,13 @@ __export(contract_entry_exports, {
   TcIntakeSourceKey: () => TcIntakeSourceKey,
   TcLegacyUserMapEntry: () => TcLegacyUserMapEntry,
   TcMessage: () => TcMessage,
+  TcNotificationEvent: () => TcNotificationEvent,
+  TcNotificationLevel: () => TcNotificationLevel,
+  TcNotificationMineRequest: () => TcNotificationMineRequest,
+  TcNotificationOfficeRequest: () => TcNotificationOfficeRequest,
+  TcNotificationPrefRow: () => TcNotificationPrefRow,
+  TcNotificationPrefsResponse: () => TcNotificationPrefsResponse,
+  TcNotificationSource: () => TcNotificationSource,
   TcNurtureEnrollment: () => TcNurtureEnrollment,
   TcObjection: () => TcObjection,
   TcPreauthCase: () => TcPreauthCase,
@@ -14953,7 +14963,7 @@ __export(contract_entry_exports, {
   Urgency: () => Urgency,
   Uuid: () => Uuid,
   VoiceHandoffDetail: () => VoiceHandoffDetail,
-  ZodError: () => import_zod7.ZodError,
+  ZodError: () => import_zod8.ZodError,
   allPresetViolations: () => allPresetViolations,
   assertPresetsWithinCaps: () => assertPresetsWithinCaps,
   caseFromRows: () => caseFromRows,
@@ -14980,11 +14990,12 @@ __export(contract_entry_exports, {
   readBlock: () => readBlock,
   readBlocks: () => readBlocks,
   renderEmail: () => renderEmail,
+  resolveNotificationLevel: () => resolveNotificationLevel,
   safeUrl: () => safeUrl,
   simulationToRow: () => simulationToRow,
   templateToRow: () => templateToRow,
   userMapEntryToRow: () => userMapEntryToRow,
-  z: () => import_zod7.z
+  z: () => import_zod8.z
 });
 module.exports = __toCommonJS(contract_entry_exports);
 
@@ -17192,8 +17203,45 @@ function checkoutPriorityOf(procedures) {
   return null;
 }
 
+// shared/tc/notifications.ts
+var import_zod7 = __toESM(require_zod(), 1);
+var TcNotificationEvent = import_zod7.z.enum(["checkout_handoff", "referral_signoff"]);
+var TC_NOTIFICATION_EVENT_LABELS = {
+  checkout_handoff: "A patient is headed to checkout",
+  referral_signoff: "A referral is waiting for the doctor's sign-off"
+};
+var TcNotificationLevel = import_zod7.z.enum(["silent", "banner", "sound_banner"]);
+var TC_NOTIFICATION_LEVEL_LABELS = {
+  silent: "Badge only",
+  banner: "Banner",
+  sound_banner: "Sound + banner"
+};
+var DEFAULT_NOTIFICATION_LEVEL = "banner";
+var TcNotificationSource = import_zod7.z.enum(["user", "office", "default"]);
+function resolveNotificationLevel(mine, officeDefault) {
+  if (mine) return { level: mine, source: "user" };
+  if (officeDefault) return { level: officeDefault, source: "office" };
+  return { level: DEFAULT_NOTIFICATION_LEVEL, source: "default" };
+}
+var TcNotificationPrefRow = import_zod7.z.object({
+  event: TcNotificationEvent,
+  level: TcNotificationLevel,
+  source: TcNotificationSource,
+  mine: TcNotificationLevel.nullable(),
+  officeDefault: TcNotificationLevel.nullable()
+});
+var TcNotificationPrefsResponse = import_zod7.z.object({
+  success: import_zod7.z.literal(true),
+  office: import_zod7.z.enum(["roland", "valley"]),
+  /** Whether the caller may change the office default (admin). */
+  canEditOffice: import_zod7.z.boolean(),
+  events: import_zod7.z.array(TcNotificationPrefRow)
+});
+var TcNotificationMineRequest = import_zod7.z.object({ level: TcNotificationLevel.nullable() }).strict();
+var TcNotificationOfficeRequest = import_zod7.z.object({ level: TcNotificationLevel.nullable() }).strict();
+
 // ../backend/tc/contract.entry.ts
-var import_zod7 = __toESM(require_zod());
+var import_zod8 = __toESM(require_zod());
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   ButtonBlock,
@@ -17209,6 +17257,7 @@ var import_zod7 = __toESM(require_zod());
   ConsentState,
   ContactAttemptDetail,
   ContactPreference,
+  DEFAULT_NOTIFICATION_LEVEL,
   DividerBlock,
   DraftMessageBody,
   EMAIL_MERGE_TOKENS,
@@ -17290,6 +17339,8 @@ var import_zod7 = __toESM(require_zod());
   TC_CHECKOUT_STATUS_LABELS,
   TC_CHECKOUT_WAITING,
   TC_INTAKE_KIND_LABELS,
+  TC_NOTIFICATION_EVENT_LABELS,
+  TC_NOTIFICATION_LEVEL_LABELS,
   TERMINAL_CASE_STATUSES,
   TcCase,
   TcCaseEvent,
@@ -17318,6 +17369,13 @@ var import_zod7 = __toESM(require_zod());
   TcIntakeSourceKey,
   TcLegacyUserMapEntry,
   TcMessage,
+  TcNotificationEvent,
+  TcNotificationLevel,
+  TcNotificationMineRequest,
+  TcNotificationOfficeRequest,
+  TcNotificationPrefRow,
+  TcNotificationPrefsResponse,
+  TcNotificationSource,
   TcNurtureEnrollment,
   TcObjection,
   TcPreauthCase,
@@ -17353,6 +17411,7 @@ var import_zod7 = __toESM(require_zod());
   readBlock,
   readBlocks,
   renderEmail,
+  resolveNotificationLevel,
   safeUrl,
   simulationToRow,
   templateToRow,
