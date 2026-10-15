@@ -15,6 +15,8 @@
  *   PUT    /hyg-offices/:office                  turn one office's hygiene on or off
  *   GET    /tc-checkout-offices                  the TC checkout handoff switch, per office
  *   PUT    /tc-checkout-offices/:office          turn one office's checkout handoff on or off
+ *   GET    /tc-referrals-offices                 the TC referrals switch, per office (item 52)
+ *   PUT    /tc-referrals-offices/:office         turn one office's referrals on or off
  *
  * THE GATE. Every route here sits behind `requireSuperAdmin()`, applied once at
  * the mount in server.js. There is deliberately no module guard: entitlement
@@ -51,6 +53,7 @@ const { auditForTenant, audit } = require('../platform/audit');
 const retentionConfig = require('../config/retention');
 const hygPilot = require('../config/hygPilot');
 const tcCheckout = require('../config/tcCheckout');
+const tcReferrals = require('../config/tcReferrals');
 const { realOffices } = require('../config/tcOfficeSwitch');
 const odOffices = require('../config/odOffices');
 const retentionScheduler = require('../services/retentionScheduler');
@@ -675,6 +678,58 @@ router.put('/tc-checkout-offices/:office', async (req, res) => {
     console.error('[platform] checkout switch write failed:', err && err.message ? err.message : err);
     const status = code === 'INVALID_OFFICE' || code === 'INVALID_BODY' ? 400 : 500;
     return fail(res, status, 'Could not save the checkout switch', code);
+  }
+});
+
+// ── TC referrals switch (item 52) — the same shape as checkout's ────────────
+
+function tcReferralsPayload() {
+  return {
+    offices: realOffices().map((office) => tcReferrals.officeState(office)),
+    settingKey: tcReferrals.settingKey,
+  };
+}
+
+/** GET /tc-referrals-offices — refreshed from the control plane before answering. */
+router.get('/tc-referrals-offices', async (req, res) => {
+  const refreshed = await tcReferrals.refreshFromDb();
+  return res.json({ success: true, ...tcReferralsPayload(), controlPlaneError: refreshed.error });
+});
+
+/**
+ * PUT /tc-referrals-offices/:office   { enabled: boolean }
+ *
+ * Writes, re-reads from the database, answers with what was stored. Audited
+ * to the acting super_admin's own tenant, `priorState` on|off.
+ */
+router.put('/tc-referrals-offices/:office', async (req, res) => {
+  const office = String(req.params.office || '');
+  const enabled = req.body ? req.body.enabled : undefined;
+  if (typeof enabled !== 'boolean') {
+    return fail(res, 400, 'enabled must be true or false', 'INVALID_BODY');
+  }
+  if (!realOffices().includes(office)) {
+    return fail(res, 404, 'No such office', 'INVALID_OFFICE');
+  }
+
+  try {
+    await tcReferrals.refreshFromDb();
+    const before = tcReferrals.officeState(office);
+    await tcReferrals.persist(office, enabled, actorEmail(req));
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'platform_setting',
+      resourceId: tcReferrals.settingKey,
+      result: 'SUCCESS',
+      office,
+      priorState: before.enabled ? 'on' : 'off',
+    });
+    return res.json({ success: true, ...tcReferralsPayload() });
+  } catch (err) {
+    const code = err && err.code ? err.code : 'TC_REFERRALS_SWITCH_WRITE_FAILED';
+    console.error('[platform] referrals switch write failed:', err && err.message ? err.message : err);
+    const status = code === 'INVALID_OFFICE' || code === 'INVALID_BODY' ? 400 : 500;
+    return fail(res, status, 'Could not save the referrals switch', code);
   }
 });
 

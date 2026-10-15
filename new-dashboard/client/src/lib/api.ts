@@ -407,6 +407,12 @@ export interface TcCheckoutSwitchState {
   controlPlaneError?: string | null;
 }
 
+/**
+ * The referrals switch panel's whole view (item 52). The same factory
+ * (config/tcOfficeSwitch.js) answers it, so it is the same shape.
+ */
+export type TcReferralsSwitchState = TcCheckoutSwitchState;
+
 /** The nightly prune's result, from POST /api/admin/call-store/prune. */
 export interface PruneResult {
   scanned?: number;
@@ -2086,6 +2092,19 @@ export const api = {
   async setTcCheckoutOfficeEnabled(office: string, enabled: boolean): Promise<TcCheckoutSwitchState> {
     return request<TcCheckoutSwitchState>(
       `/platform/tc-checkout-offices/${encodeURIComponent(office)}`,
+      { method: "PUT", body: JSON.stringify({ enabled }) },
+    );
+  },
+
+  /** The TC referrals switch for every office (item 52), with the layer that answered. */
+  async getTcReferralsOffices(): Promise<TcReferralsSwitchState> {
+    return request<TcReferralsSwitchState>("/platform/tc-referrals-offices");
+  },
+
+  /** Turn referrals on or off for ONE office. Returns the state as stored. */
+  async setTcReferralsOfficeEnabled(office: string, enabled: boolean): Promise<TcReferralsSwitchState> {
+    return request<TcReferralsSwitchState>(
+      `/platform/tc-referrals-offices/${encodeURIComponent(office)}`,
       { method: "PUT", body: JSON.stringify({ enabled }) },
     );
   },

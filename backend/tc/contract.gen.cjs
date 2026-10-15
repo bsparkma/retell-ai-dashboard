@@ -14813,10 +14813,10 @@ var require_zod = __commonJS({
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.z = void 0;
-    var z9 = __importStar(require_external());
-    exports2.z = z9;
+    var z10 = __importStar(require_external());
+    exports2.z = z10;
     __exportStar(require_external(), exports2);
-    exports2.default = z9;
+    exports2.default = z10;
   }
 });
 
@@ -14838,6 +14838,7 @@ __export(contract_entry_exports, {
   ContactAttemptDetail: () => ContactAttemptDetail,
   ContactPreference: () => ContactPreference,
   DEFAULT_NOTIFICATION_LEVEL: () => DEFAULT_NOTIFICATION_LEVEL,
+  DIRECTORY_EMAIL_RE: () => DIRECTORY_EMAIL_RE,
   DividerBlock: () => DividerBlock,
   DraftMessageBody: () => DraftMessageBody,
   EMAIL_MERGE_TOKENS: () => EMAIL_MERGE_TOKENS,
@@ -14921,6 +14922,11 @@ __export(contract_entry_exports, {
   TC_INTAKE_KIND_LABELS: () => TC_INTAKE_KIND_LABELS,
   TC_NOTIFICATION_EVENT_LABELS: () => TC_NOTIFICATION_EVENT_LABELS,
   TC_NOTIFICATION_LEVEL_LABELS: () => TC_NOTIFICATION_LEVEL_LABELS,
+  TC_REFERRAL_ATTACHMENT_MAX_BYTES: () => TC_REFERRAL_ATTACHMENT_MAX_BYTES,
+  TC_REFERRAL_ATTACHMENT_MAX_FILES: () => TC_REFERRAL_ATTACHMENT_MAX_FILES,
+  TC_REFERRAL_ATTACHMENT_TYPES: () => TC_REFERRAL_ATTACHMENT_TYPES,
+  TC_REFERRAL_STATUS_LABELS: () => TC_REFERRAL_STATUS_LABELS,
+  TC_REFERRAL_URGENCY_LABELS: () => TC_REFERRAL_URGENCY_LABELS,
   TERMINAL_CASE_STATUSES: () => TERMINAL_CASE_STATUSES,
   TcCase: () => TcCase,
   TcCaseEvent: () => TcCaseEvent,
@@ -14961,12 +14967,20 @@ __export(contract_entry_exports, {
   TcNurtureEnrollment: () => TcNurtureEnrollment,
   TcObjection: () => TcObjection,
   TcPreauthCase: () => TcPreauthCase,
+  TcReferralDirectoryEntry: () => TcReferralDirectoryEntry,
+  TcReferralDirectoryInput: () => TcReferralDirectoryInput,
+  TcReferralPolicy: () => TcReferralPolicy,
+  TcReferralSettingsRequest: () => TcReferralSettingsRequest,
+  TcReferralSettingsResponse: () => TcReferralSettingsResponse,
+  TcReferralStatus: () => TcReferralStatus,
+  TcReferralUrgency: () => TcReferralUrgency,
+  TcReferralsStatus: () => TcReferralsStatus,
   TcSmileSimulation: () => TcSmileSimulation,
   TextBlock: () => TextBlock,
   Urgency: () => Urgency,
   Uuid: () => Uuid,
   VoiceHandoffDetail: () => VoiceHandoffDetail,
-  ZodError: () => import_zod8.ZodError,
+  ZodError: () => import_zod9.ZodError,
   allPresetViolations: () => allPresetViolations,
   assertPresetsWithinCaps: () => assertPresetsWithinCaps,
   caseFromRows: () => caseFromRows,
@@ -15002,7 +15016,7 @@ __export(contract_entry_exports, {
   templateToRow: () => templateToRow,
   unpricedCheckoutPhases: () => unpricedCheckoutPhases,
   userMapEntryToRow: () => userMapEntryToRow,
-  z: () => import_zod8.z
+  z: () => import_zod9.z
 });
 module.exports = __toCommonJS(contract_entry_exports);
 
@@ -17281,8 +17295,103 @@ var TcNotificationPrefsResponse = import_zod7.z.object({
 var TcNotificationMineRequest = import_zod7.z.object({ level: TcNotificationLevel.nullable() }).strict();
 var TcNotificationOfficeRequest = import_zod7.z.object({ level: TcNotificationLevel.nullable() }).strict();
 
+// shared/tc/referrals.ts
+var import_zod8 = __toESM(require_zod(), 1);
+var TcReferralStatus = import_zod8.z.enum([
+  "draft",
+  "pending_signoff",
+  "approved",
+  "sent",
+  "acknowledged",
+  "patient_seen",
+  "closed",
+  "declined",
+  "cancelled"
+]);
+var TC_REFERRAL_STATUS_LABELS = {
+  draft: "Draft",
+  pending_signoff: "Pending Dr. sign-off",
+  approved: "Approved",
+  sent: "Sent",
+  acknowledged: "Acknowledged",
+  patient_seen: "Patient seen",
+  closed: "Closed",
+  declined: "Declined",
+  cancelled: "Cancelled"
+};
+var TcReferralUrgency = import_zod8.z.enum(["routine", "soon", "urgent"]);
+var TC_REFERRAL_URGENCY_LABELS = {
+  routine: "Routine",
+  soon: "Soon",
+  urgent: "Urgent"
+};
+var TC_REFERRAL_ATTACHMENT_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+  "application/pdf"
+];
+var TC_REFERRAL_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+var TC_REFERRAL_ATTACHMENT_MAX_FILES = 5;
+var DIRECTORY_EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+var Field = (max) => import_zod8.z.string().trim().max(max);
+var TcReferralDirectoryInput = import_zod8.z.object({
+  practiceName: import_zod8.z.string().trim().min(1, "Practice name is required").max(200),
+  specialistName: Field(200).default(""),
+  specialty: Field(120).default(""),
+  contactPerson: Field(200).default(""),
+  email: Field(200).default("").refine((v) => v === "" || DIRECTORY_EMAIL_RE.test(v), "That email address does not look right"),
+  phone: Field(40).default(""),
+  fax: Field(40).default(""),
+  notes: Field(2e3).default(""),
+  preferredFormatNotes: Field(2e3).default(""),
+  active: import_zod8.z.boolean().default(true)
+}).strict();
+var TcReferralDirectoryEntry = import_zod8.z.object({
+  entryId: import_zod8.z.string().uuid(),
+  officeId: import_zod8.z.enum(["roland", "valley"]),
+  practiceName: import_zod8.z.string(),
+  specialistName: import_zod8.z.string(),
+  specialty: import_zod8.z.string(),
+  contactPerson: import_zod8.z.string(),
+  email: import_zod8.z.string(),
+  phone: import_zod8.z.string(),
+  fax: import_zod8.z.string(),
+  notes: import_zod8.z.string(),
+  preferredFormatNotes: import_zod8.z.string(),
+  active: import_zod8.z.boolean(),
+  createdBy: import_zod8.z.string(),
+  createdAt: import_zod8.z.string(),
+  updatedBy: import_zod8.z.string(),
+  updatedAt: import_zod8.z.string()
+});
+var TcReferralPolicy = import_zod8.z.object({
+  value: import_zod8.z.boolean(),
+  source: import_zod8.z.enum(["env", "office", "default"])
+});
+var TcReferralSettingsResponse = import_zod8.z.object({
+  success: import_zod8.z.literal(true),
+  office: import_zod8.z.enum(["roland", "valley"]),
+  signoffRequired: TcReferralPolicy,
+  autosendOnApproval: TcReferralPolicy,
+  /** Admin-only for now: may this user change the two policies? */
+  canEdit: import_zod8.z.boolean(),
+  updatedBy: import_zod8.z.string().nullable(),
+  updatedAt: import_zod8.z.string().nullable()
+});
+var TcReferralSettingsRequest = import_zod8.z.object({
+  signoffRequired: import_zod8.z.boolean().optional(),
+  autosendOnApproval: import_zod8.z.boolean().optional()
+}).strict().refine((v) => v.signoffRequired !== void 0 || v.autosendOnApproval !== void 0, "Nothing to change");
+var TcReferralsStatus = import_zod8.z.object({
+  success: import_zod8.z.literal(true),
+  office: import_zod8.z.enum(["roland", "valley"]),
+  enabled: import_zod8.z.boolean()
+});
+
 // ../backend/tc/contract.entry.ts
-var import_zod8 = __toESM(require_zod());
+var import_zod9 = __toESM(require_zod());
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   ButtonBlock,
@@ -17300,6 +17409,7 @@ var import_zod8 = __toESM(require_zod());
   ContactAttemptDetail,
   ContactPreference,
   DEFAULT_NOTIFICATION_LEVEL,
+  DIRECTORY_EMAIL_RE,
   DividerBlock,
   DraftMessageBody,
   EMAIL_MERGE_TOKENS,
@@ -17383,6 +17493,11 @@ var import_zod8 = __toESM(require_zod());
   TC_INTAKE_KIND_LABELS,
   TC_NOTIFICATION_EVENT_LABELS,
   TC_NOTIFICATION_LEVEL_LABELS,
+  TC_REFERRAL_ATTACHMENT_MAX_BYTES,
+  TC_REFERRAL_ATTACHMENT_MAX_FILES,
+  TC_REFERRAL_ATTACHMENT_TYPES,
+  TC_REFERRAL_STATUS_LABELS,
+  TC_REFERRAL_URGENCY_LABELS,
   TERMINAL_CASE_STATUSES,
   TcCase,
   TcCaseEvent,
@@ -17423,6 +17538,14 @@ var import_zod8 = __toESM(require_zod());
   TcNurtureEnrollment,
   TcObjection,
   TcPreauthCase,
+  TcReferralDirectoryEntry,
+  TcReferralDirectoryInput,
+  TcReferralPolicy,
+  TcReferralSettingsRequest,
+  TcReferralSettingsResponse,
+  TcReferralStatus,
+  TcReferralUrgency,
+  TcReferralsStatus,
   TcSmileSimulation,
   TextBlock,
   Urgency,

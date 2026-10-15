@@ -37,6 +37,9 @@
  *                     tc_checkout_enabled switch. Postgres-only.
  *   /notification-prefs  in-app alert preferences (item 51): the caller's own
  *                     override and the office default (admin). Postgres-only.
+ *   /referrals        referral foundations (item 52): the specialist directory
+ *                     and the two referral policies. Nothing sends. Dark behind
+ *                     the per-office tc_referrals_enabled switch. Postgres-only.
  *   /od/patient-search the ONE Open Dental read hygiene holds: attach a patient
  *                     to an intake (PatNum + name + DOB, per-office client)
  *   /od               Open Dental READS (Slice 5) — patient search, treatment
@@ -92,6 +95,7 @@ router.use('/opportunities', tcFull, require('./opportunities'));
 router.use('/nurture', tcFull, require('./nurture'));
 router.use('/checkout', tcFull, require('./checkout'));
 router.use('/notification-prefs', tcFull, require('./notifications'));
+router.use('/referrals', tcFull, require('./referrals'));
 // MUST precede the /od mount, for the same registration-order reason as
 // /cases/from-call above: registering it first is what keeps the attach search
 // on tc.hygiene while the rest of the Open Dental family stays tc.full. Doing
