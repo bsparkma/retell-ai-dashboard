@@ -188,6 +188,231 @@ async function upsertSettings(q, office, next, actor) {
   return res.rows[0] || null;
 }
 
+// ── R2 (item 53): referral records and their transitions ────────────────────
+
+const REFERRAL_COLS = [
+  'referral_id',
+  'office_id',
+  'od_patient_id',
+  'patient_name',
+  'tc_case_id',
+  'source_kind',
+  'source_ref',
+  'referring_provider',
+  'directory_entry_id',
+  'specialty',
+  'reason',
+  'teeth',
+  'urgency',
+  'narrative',
+  'status',
+  'status_changed_at',
+  'status_changed_by',
+  'created_by',
+  'created_at',
+  'updated_at',
+];
+
+const EVENT_COLS = ['event_id', 'office_id', 'referral_id', 'from_status', 'to_status', 'actor', 'at', 'note'];
+
+/** jsonb teeth: pg returns the value; a fake may hold the JSON text. */
+function teethOf(v) {
+  if (typeof v === 'string') {
+    try {
+      return JSON.parse(v);
+    } catch {
+      return [];
+    }
+  }
+  return v ?? [];
+}
+
+/** One row → the contract's TcReferral. `practiceName` from the directory, for display. */
+function toReferral(r, practiceName = null, events = undefined) {
+  const out = {
+    referralId: String(r.referral_id),
+    officeId: r.office_id,
+    odPatientId: Number(r.od_patient_id),
+    patientName: r.patient_name,
+    tcCaseId: r.tc_case_id ? String(r.tc_case_id) : null,
+    sourceKind: r.source_kind,
+    sourceRef: r.source_ref ?? '',
+    referringProvider: r.referring_provider ?? '',
+    directoryEntryId: r.directory_entry_id ? String(r.directory_entry_id) : null,
+    practiceName,
+    specialty: r.specialty ?? '',
+    reason: r.reason ?? '',
+    teeth: teethOf(r.teeth),
+    urgency: r.urgency,
+    narrative: r.narrative ?? '',
+    status: r.status,
+    statusChangedAt: iso(r.status_changed_at),
+    statusChangedBy: r.status_changed_by,
+    createdBy: r.created_by,
+    createdAt: iso(r.created_at),
+    updatedAt: iso(r.updated_at),
+  };
+  if (events) out.events = events;
+  return out;
+}
+
+function toEvent(e) {
+  return {
+    eventId: String(e.event_id),
+    fromStatus: e.from_status ?? null,
+    toStatus: e.to_status,
+    actor: e.actor,
+    at: iso(e.at),
+    note: e.note ?? '',
+  };
+}
+
+async function findReferral(q, office, referralId) {
+  const res = await q.query(
+    `SELECT ${REFERRAL_COLS.join(', ')} FROM tc_referrals WHERE office_id = $1 AND referral_id = $2`,
+    [office, referralId]
+  );
+  return res.rows[0] || null;
+}
+
+/**
+ * The office's referrals, newest first, narrowed by any of: a case, a source
+ * (kind + ref), a status. Every filter is a parameter.
+ */
+async function listReferrals(q, office, { caseId = null, sourceKind = null, sourceRef = null, status = null, oldestFirst = false } = {}) {
+  const where = ['office_id = $1'];
+  const values = [office];
+  if (caseId) {
+    values.push(caseId);
+    where.push(`tc_case_id = $${values.length}`);
+  }
+  if (sourceKind) {
+    values.push(sourceKind);
+    where.push(`source_kind = $${values.length}`);
+  }
+  if (sourceRef) {
+    values.push(sourceRef);
+    where.push(`source_ref = $${values.length}`);
+  }
+  if (status) {
+    values.push(status);
+    where.push(`status = $${values.length}`);
+  }
+  const res = await q.query(
+    `SELECT ${REFERRAL_COLS.join(', ')} FROM tc_referrals WHERE ${where.join(' AND ')} ORDER BY created_at ${oldestFirst ? 'ASC' : 'DESC'} LIMIT 200`,
+    values
+  );
+  return res.rows;
+}
+
+/** practice_name for each directory entry id named by these rows (one query, no JOIN). */
+async function practiceNames(q, office, rows) {
+  const ids = [...new Set(rows.map((r) => r.directory_entry_id).filter(Boolean).map(String))];
+  if (ids.length === 0) return new Map();
+  const res = await q.query(
+    'SELECT entry_id, practice_name FROM tc_referral_directory WHERE office_id = $1 AND entry_id = ANY($2)',
+    [office, ids]
+  );
+  return new Map(res.rows.map((r) => [String(r.entry_id), r.practice_name]));
+}
+
+async function listEvents(q, office, referralId) {
+  const res = await q.query(
+    `SELECT ${EVENT_COLS.join(', ')} FROM tc_referral_events WHERE office_id = $1 AND referral_id = $2 ORDER BY at ASC`,
+    [office, referralId]
+  );
+  return res.rows.map(toEvent);
+}
+
+/** Insert a draft, then READ IT BACK. The id is minted here so the read can name it. */
+async function insertReferral(q, f) {
+  const referralId = randomUUID();
+  const cols = [
+    'referral_id',
+    'office_id',
+    'od_patient_id',
+    'patient_name',
+    'tc_case_id',
+    'source_kind',
+    'source_ref',
+    'referring_provider',
+    'directory_entry_id',
+    'specialty',
+    'reason',
+    'teeth',
+    'urgency',
+    'narrative',
+    'status',
+    'status_changed_at',
+    'status_changed_by',
+    'created_by',
+  ];
+  const vals = [
+    referralId,
+    f.office,
+    f.odPatientId,
+    f.patientName,
+    f.tcCaseId,
+    f.sourceKind,
+    f.sourceRef,
+    f.input.referringProvider,
+    f.input.directoryEntryId,
+    f.input.specialty,
+    f.input.reason,
+    JSON.stringify(f.input.teeth),
+    f.input.urgency,
+    f.input.narrative,
+    'draft',
+    f.at,
+    f.actor,
+    f.actor,
+  ];
+  await q.query(
+    `INSERT INTO tc_referrals (${cols.join(', ')}) VALUES (${cols.map((_, i) => `$${i + 1}`).join(', ')})`,
+    vals
+  );
+  return findReferral(q, f.office, referralId);
+}
+
+/** Edit a DRAFT's fields; null when it is not a draft (any more). */
+async function updateDraft(q, office, referralId, input) {
+  const res = await q.query(
+    `UPDATE tc_referrals SET referring_provider = $4, directory_entry_id = $5, specialty = $6, reason = $7, teeth = $8, urgency = $9, narrative = $10, updated_at = now() WHERE office_id = $1 AND referral_id = $2 AND status = $3 RETURNING ${REFERRAL_COLS.join(', ')}`,
+    [
+      office,
+      referralId,
+      'draft',
+      input.referringProvider,
+      input.directoryEntryId,
+      input.specialty,
+      input.reason,
+      JSON.stringify(input.teeth),
+      input.urgency,
+      input.narrative,
+    ]
+  );
+  return res.rows[0] || null;
+}
+
+/**
+ * Move a referral from `from` to `to`, CONDITIONAL on it still being `from`:
+ * two people acting on one referral cannot both win. null = it was not `from`.
+ */
+async function casStatus(q, { office, referralId, from, to, actor, at }) {
+  const res = await q.query(
+    `UPDATE tc_referrals SET status = $4, status_changed_at = $5, status_changed_by = $6, updated_at = now() WHERE office_id = $1 AND referral_id = $2 AND status = $3 RETURNING ${REFERRAL_COLS.join(', ')}`,
+    [office, referralId, from, to, at, actor]
+  );
+  return res.rows[0] || null;
+}
+
+async function insertEvent(q, { office, referralId, from, to, actor, at, note }) {
+  await q.query(
+    `INSERT INTO tc_referral_events (event_id, office_id, referral_id, from_status, to_status, actor, at, note) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [randomUUID(), office, referralId, from, to, actor, at, note || '']
+  );
+}
+
 module.exports = {
   DIRECTORY_COLS,
   POLICIES,
@@ -202,4 +427,15 @@ module.exports = {
   resolvePolicies,
   effectivePolicies,
   upsertSettings,
+  REFERRAL_COLS,
+  EVENT_COLS,
+  toReferral,
+  findReferral,
+  listReferrals,
+  practiceNames,
+  listEvents,
+  insertReferral,
+  updateDraft,
+  casStatus,
+  insertEvent,
 };

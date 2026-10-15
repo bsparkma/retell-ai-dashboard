@@ -14905,6 +14905,8 @@ __export(contract_entry_exports, {
   PerioStatus: () => PerioStatus,
   PreauthStatus: () => PreauthStatus,
   PreauthType: () => PreauthType,
+  REFERRAL_EDITABLE_STATUSES: () => REFERRAL_EDITABLE_STATUSES,
+  REFERRAL_READY_TO_SEND_COPY: () => REFERRAL_READY_TO_SEND_COPY,
   Radiograph: () => Radiograph,
   RecallType: () => RecallType,
   RecordOptOutBody: () => RecordOptOutBody,
@@ -14925,6 +14927,7 @@ __export(contract_entry_exports, {
   TC_REFERRAL_ATTACHMENT_MAX_BYTES: () => TC_REFERRAL_ATTACHMENT_MAX_BYTES,
   TC_REFERRAL_ATTACHMENT_MAX_FILES: () => TC_REFERRAL_ATTACHMENT_MAX_FILES,
   TC_REFERRAL_ATTACHMENT_TYPES: () => TC_REFERRAL_ATTACHMENT_TYPES,
+  TC_REFERRAL_CHIP_LABELS: () => TC_REFERRAL_CHIP_LABELS,
   TC_REFERRAL_STATUS_LABELS: () => TC_REFERRAL_STATUS_LABELS,
   TC_REFERRAL_URGENCY_LABELS: () => TC_REFERRAL_URGENCY_LABELS,
   TERMINAL_CASE_STATUSES: () => TERMINAL_CASE_STATUSES,
@@ -14967,13 +14970,22 @@ __export(contract_entry_exports, {
   TcNurtureEnrollment: () => TcNurtureEnrollment,
   TcObjection: () => TcObjection,
   TcPreauthCase: () => TcPreauthCase,
+  TcReferral: () => TcReferral,
+  TcReferralCreateRequest: () => TcReferralCreateRequest,
+  TcReferralDeclineRequest: () => TcReferralDeclineRequest,
   TcReferralDirectoryEntry: () => TcReferralDirectoryEntry,
   TcReferralDirectoryInput: () => TcReferralDirectoryInput,
+  TcReferralEvent: () => TcReferralEvent,
+  TcReferralInput: () => TcReferralInput,
   TcReferralPolicy: () => TcReferralPolicy,
   TcReferralSettingsRequest: () => TcReferralSettingsRequest,
   TcReferralSettingsResponse: () => TcReferralSettingsResponse,
+  TcReferralSignoffSummary: () => TcReferralSignoffSummary,
+  TcReferralSourceKind: () => TcReferralSourceKind,
   TcReferralStatus: () => TcReferralStatus,
+  TcReferralTeeth: () => TcReferralTeeth,
   TcReferralUrgency: () => TcReferralUrgency,
+  TcReferralVerb: () => TcReferralVerb,
   TcReferralsStatus: () => TcReferralsStatus,
   TcSmileSimulation: () => TcSmileSimulation,
   TextBlock: () => TextBlock,
@@ -15009,6 +15021,8 @@ __export(contract_entry_exports, {
   presetViolations: () => presetViolations,
   readBlock: () => readBlock,
   readBlocks: () => readBlocks,
+  referralChipFor: () => referralChipFor,
+  referralNextStatus: () => referralNextStatus,
   renderEmail: () => renderEmail,
   resolveNotificationLevel: () => resolveNotificationLevel,
   safeUrl: () => safeUrl,
@@ -17389,6 +17403,102 @@ var TcReferralsStatus = import_zod8.z.object({
   office: import_zod8.z.enum(["roland", "valley"]),
   enabled: import_zod8.z.boolean()
 });
+var TcReferralSourceKind = import_zod8.z.enum(["case", "checkout", "hyg_visit", "call"]);
+var TcReferralTeeth = import_zod8.z.union([
+  import_zod8.z.array(import_zod8.z.number().int().min(1).max(32)).max(32),
+  import_zod8.z.literal("mouth")
+]);
+var TcReferralInput = import_zod8.z.object({
+  directoryEntryId: import_zod8.z.string().uuid().nullable().default(null),
+  referringProvider: import_zod8.z.string().trim().max(200).default(""),
+  specialty: import_zod8.z.string().trim().max(120).default(""),
+  reason: import_zod8.z.string().trim().min(1, "Say why you are referring").max(2e3),
+  teeth: TcReferralTeeth.default([]),
+  urgency: TcReferralUrgency.default("routine"),
+  narrative: import_zod8.z.string().trim().max(8e3).default("")
+}).strict();
+var TcReferralCreateRequest = import_zod8.z.object({
+  source: import_zod8.z.union([
+    import_zod8.z.object({ caseId: import_zod8.z.string().uuid() }).strict(),
+    import_zod8.z.object({ handoffId: import_zod8.z.string().uuid() }).strict()
+  ]),
+  referral: TcReferralInput
+}).strict();
+var TcReferralDeclineRequest = import_zod8.z.object({ reason: import_zod8.z.string().trim().min(1, "Say why").max(500) }).strict();
+var TcReferralEvent = import_zod8.z.object({
+  eventId: import_zod8.z.string().uuid(),
+  fromStatus: TcReferralStatus.nullable(),
+  toStatus: TcReferralStatus,
+  actor: import_zod8.z.string(),
+  at: import_zod8.z.string(),
+  note: import_zod8.z.string()
+});
+var TcReferral = import_zod8.z.object({
+  referralId: import_zod8.z.string().uuid(),
+  officeId: import_zod8.z.enum(["roland", "valley"]),
+  odPatientId: import_zod8.z.number().int().positive(),
+  patientName: import_zod8.z.string(),
+  tcCaseId: import_zod8.z.string().uuid().nullable(),
+  sourceKind: TcReferralSourceKind,
+  sourceRef: import_zod8.z.string(),
+  referringProvider: import_zod8.z.string(),
+  directoryEntryId: import_zod8.z.string().uuid().nullable(),
+  /** The directory entry's current name, for display; null when none is chosen. */
+  practiceName: import_zod8.z.string().nullable(),
+  specialty: import_zod8.z.string(),
+  reason: import_zod8.z.string(),
+  teeth: TcReferralTeeth,
+  urgency: TcReferralUrgency,
+  narrative: import_zod8.z.string(),
+  status: TcReferralStatus,
+  statusChangedAt: import_zod8.z.string(),
+  statusChangedBy: import_zod8.z.string(),
+  createdBy: import_zod8.z.string(),
+  createdAt: import_zod8.z.string(),
+  updatedAt: import_zod8.z.string(),
+  /** Only on the detail read. */
+  events: import_zod8.z.array(TcReferralEvent).optional()
+});
+var TcReferralVerb = import_zod8.z.enum(["submit", "withdraw", "cancel", "approve", "decline"]);
+function referralNextStatus(from, verb, opts) {
+  switch (verb) {
+    case "submit":
+      return from === "draft" ? opts.signoffRequired ? "pending_signoff" : "approved" : null;
+    case "withdraw":
+      return from === "pending_signoff" ? "draft" : null;
+    case "cancel":
+      return from === "draft" || from === "pending_signoff" ? "cancelled" : null;
+    case "approve":
+      return from === "pending_signoff" ? "approved" : null;
+    case "decline":
+      return from === "pending_signoff" ? "declined" : null;
+  }
+}
+var REFERRAL_EDITABLE_STATUSES = ["draft"];
+var TC_REFERRAL_CHIP_LABELS = {
+  none: "None",
+  staged: "Staged",
+  pending_signoff: "Pending Dr. sign-off",
+  approved: "Approved",
+  declined: "Declined"
+};
+function referralChipFor(referrals) {
+  const live = referrals.filter((r) => r.status !== "cancelled").sort((a, b) => a.createdAt < b.createdAt ? 1 : -1);
+  const top = live[0];
+  if (!top) return "none";
+  if (top.status === "draft") return "staged";
+  if (top.status === "pending_signoff") return "pending_signoff";
+  if (top.status === "declined") return "declined";
+  return "approved";
+}
+var REFERRAL_READY_TO_SEND_COPY = "Ready to send \u2014 sending ships in a later update.";
+var TcReferralSignoffSummary = import_zod8.z.object({
+  success: import_zod8.z.literal(true),
+  office: import_zod8.z.enum(["roland", "valley"]),
+  enabled: import_zod8.z.boolean(),
+  waiting: import_zod8.z.number().int().nonnegative(),
+  newest: import_zod8.z.object({ referralId: import_zod8.z.string().uuid(), patientName: import_zod8.z.string(), at: import_zod8.z.string() }).nullable()
+});
 
 // ../backend/tc/contract.entry.ts
 var import_zod9 = __toESM(require_zod());
@@ -17476,6 +17586,8 @@ var import_zod9 = __toESM(require_zod());
   PerioStatus,
   PreauthStatus,
   PreauthType,
+  REFERRAL_EDITABLE_STATUSES,
+  REFERRAL_READY_TO_SEND_COPY,
   Radiograph,
   RecallType,
   RecordOptOutBody,
@@ -17496,6 +17608,7 @@ var import_zod9 = __toESM(require_zod());
   TC_REFERRAL_ATTACHMENT_MAX_BYTES,
   TC_REFERRAL_ATTACHMENT_MAX_FILES,
   TC_REFERRAL_ATTACHMENT_TYPES,
+  TC_REFERRAL_CHIP_LABELS,
   TC_REFERRAL_STATUS_LABELS,
   TC_REFERRAL_URGENCY_LABELS,
   TERMINAL_CASE_STATUSES,
@@ -17538,13 +17651,22 @@ var import_zod9 = __toESM(require_zod());
   TcNurtureEnrollment,
   TcObjection,
   TcPreauthCase,
+  TcReferral,
+  TcReferralCreateRequest,
+  TcReferralDeclineRequest,
   TcReferralDirectoryEntry,
   TcReferralDirectoryInput,
+  TcReferralEvent,
+  TcReferralInput,
   TcReferralPolicy,
   TcReferralSettingsRequest,
   TcReferralSettingsResponse,
+  TcReferralSignoffSummary,
+  TcReferralSourceKind,
   TcReferralStatus,
+  TcReferralTeeth,
   TcReferralUrgency,
+  TcReferralVerb,
   TcReferralsStatus,
   TcSmileSimulation,
   TextBlock,
@@ -17580,6 +17702,8 @@ var import_zod9 = __toESM(require_zod());
   presetViolations,
   readBlock,
   readBlocks,
+  referralChipFor,
+  referralNextStatus,
   renderEmail,
   resolveNotificationLevel,
   safeUrl,

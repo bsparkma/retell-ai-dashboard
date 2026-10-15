@@ -10,7 +10,10 @@ import {
   TcReferralDirectoryEntry,
   TcReferralSettingsResponse,
   TcReferralsStatus,
+  TcReferral,
+  TcReferralSignoffSummary,
   type TcReferralDirectoryInput,
+  type TcReferralInput,
 } from "@shared/tc/referrals";
 import type { OfficeId } from "@shared/tc/contract";
 
@@ -81,4 +84,86 @@ export async function updateReferralSettings(
     TcReferralSettingsResponse,
     await tcRequest<unknown>("/tc/referrals/settings", { office, method: "PUT", body: change }),
   );
+}
+
+// ── R2 (item 53): referrals and the sign-off queue ──────────────────────────
+
+const ReferralResponse = z.object({ success: z.literal(true), referral: TcReferral });
+const ReferralListResponse = z.object({ success: z.literal(true), referrals: z.array(TcReferral) });
+
+/** A case's referrals, or a checkout's. Newest first. */
+export async function listReferrals(
+  office: OfficeId,
+  filter: { caseId: string } | { handoffId: string },
+): Promise<TcReferral[]> {
+  const res = parse(ReferralListResponse, await tcRequest<unknown>("/tc/referrals", { office, params: filter }));
+  return res.referrals;
+}
+
+/** Start a referral FROM a case or a checkout; the server derives the patient. */
+export async function createReferral(
+  office: OfficeId,
+  source: { caseId: string } | { handoffId: string },
+  referral: TcReferralInput,
+): Promise<TcReferral> {
+  const res = parse(
+    ReferralResponse,
+    await tcRequest<unknown>("/tc/referrals", { office, method: "POST", body: { source, referral } }),
+  );
+  return res.referral;
+}
+
+export async function getReferral(office: OfficeId, referralId: string): Promise<TcReferral> {
+  return parse(ReferralResponse, await tcRequest<unknown>(`/tc/referrals/${referralId}`, { office })).referral;
+}
+
+export async function updateReferral(office: OfficeId, referralId: string, referral: TcReferralInput): Promise<TcReferral> {
+  return parse(
+    ReferralResponse,
+    await tcRequest<unknown>(`/tc/referrals/${referralId}`, { office, method: "PUT", body: referral }),
+  ).referral;
+}
+
+/** submit / withdraw / cancel — the TC side's verbs. */
+export async function referralVerb(
+  office: OfficeId,
+  referralId: string,
+  verb: "submit" | "withdraw" | "cancel",
+): Promise<TcReferral> {
+  return parse(
+    ReferralResponse,
+    await tcRequest<unknown>(`/tc/referrals/${referralId}/${verb}`, { office, method: "POST", body: {} }),
+  ).referral;
+}
+
+// The doctor's side (tc.referral_signoff).
+
+export async function getSignoffSummary(office: OfficeId): Promise<TcReferralSignoffSummary> {
+  return parse(TcReferralSignoffSummary, await tcRequest<unknown>("/tc/referrals/signoff/summary", { office }));
+}
+
+export async function listSignoffQueue(office: OfficeId): Promise<TcReferral[]> {
+  return parse(ReferralListResponse, await tcRequest<unknown>("/tc/referrals/signoff/queue", { office })).referrals;
+}
+
+export async function getSignoffReferral(office: OfficeId, referralId: string): Promise<TcReferral> {
+  return parse(ReferralResponse, await tcRequest<unknown>(`/tc/referrals/signoff/${referralId}`, { office })).referral;
+}
+
+export async function approveReferral(office: OfficeId, referralId: string): Promise<TcReferral> {
+  return parse(
+    ReferralResponse,
+    await tcRequest<unknown>(`/tc/referrals/signoff/${referralId}/approve`, { office, method: "POST", body: {} }),
+  ).referral;
+}
+
+export async function declineReferral(office: OfficeId, referralId: string, reason: string): Promise<TcReferral> {
+  return parse(
+    ReferralResponse,
+    await tcRequest<unknown>(`/tc/referrals/signoff/${referralId}/decline`, {
+      office,
+      method: "POST",
+      body: { reason },
+    }),
+  ).referral;
 }

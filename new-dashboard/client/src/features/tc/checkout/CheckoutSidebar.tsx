@@ -13,6 +13,7 @@
  * The answer renders from the server's read-back, never from the click.
  */
 import { useCallback, useEffect, useState } from "react";
+import { ReferralsPanel } from "@/features/tc/referrals/ReferralsPanel";
 import { Link } from "wouter";
 import { toast } from "sonner";
 import {
@@ -254,10 +255,10 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
                 </section>
               )}
 
-              <section className="flex items-center justify-between rounded-lg border border-dashed border-border p-2.5 text-sm" data-testid="checkout-referral">
-                <span className="text-muted-foreground">Referral</span>
-                <span>None</span>
-              </section>
+              {/* Item 53: the referral chip goes live (None / Staged / Pending
+                  Dr. sign-off / Approved) with Start referral beside it. It
+                  reads "None" exactly as before while referrals is off. */}
+              <ReferralsPanel compact office={handoff.officeId} source={{ handoffId: handoff.handoffId }} />
 
               {waiting ? (
                 <section className="space-y-3 border-t border-border pt-4">

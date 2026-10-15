@@ -63,7 +63,7 @@ async function readState(req) {
   return {
     success: true,
     office,
-    canEditOffice: holdsPermission(req, 'admin.all'),
+    canEditOffice: holdsPermission(req, 'tc.notification_defaults'),
     events: TcNotificationEvent.options.map((event) => {
       const m = mineBy.get(event) ?? null;
       const o = officeBy.get(event) ?? null;
@@ -121,10 +121,10 @@ router.put(
 router.put(
   '/office/:event',
   h(async (req, res) => {
-    if (!holdsPermission(req, 'admin.all')) {
+    if (!holdsPermission(req, 'tc.notification_defaults')) {
       return res.status(403).json({
         success: false,
-        error: "Only a practice admin can change the office's default alerts",
+        error: "Only a practice admin or office manager can change the office's default alerts",
         code: 'FORBIDDEN',
       });
     }

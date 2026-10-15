@@ -587,12 +587,35 @@ router.delete(
     const caseId = parseId(res, req.params.caseId, 'case');
     if (!caseId) return;
 
-    const deleted = await tenantDb.withTenantDb(req, (pool) =>
-      pool.query('DELETE FROM tc_cases WHERE office_id = $1 AND case_id = $2 RETURNING case_id', [
-        req.tcOffice,
-        caseId,
-      ])
-    );
+    // Item 53: a referral names its case through a RESTRICT foreign key (a
+    // referral is a record of care and must not lose its case silently). Say
+    // so plainly instead of letting the constraint surface as a 500 — checked
+    // first, and the constraint itself mapped too for a referral created in
+    // between.
+    const refusedForReferrals = () =>
+      res.status(409).json({
+        success: false,
+        error: 'This case has referrals, so it cannot be deleted. Cancel or close them instead.',
+        code: 'CASE_HAS_REFERRALS',
+      });
+    let deleted;
+    try {
+      deleted = await tenantDb.withTenantDb(req, async (pool) => {
+        const named = await pool.query(
+          'SELECT referral_id FROM tc_referrals WHERE office_id = $1 AND tc_case_id = $2 LIMIT 1',
+          [req.tcOffice, caseId]
+        );
+        if (named.rows.length > 0) return null;
+        return pool.query('DELETE FROM tc_cases WHERE office_id = $1 AND case_id = $2 RETURNING case_id', [
+          req.tcOffice,
+          caseId,
+        ]);
+      });
+    } catch (err) {
+      if (err && err.code === '23503' && err.constraint === 'tc_referrals_case_fk') return refusedForReferrals();
+      throw err;
+    }
+    if (deleted === null) return refusedForReferrals();
     if (deleted.rows.length === 0) return notFound(res, 'case');
 
     await auditTc(req, 'DELETE', 'tc_case', caseId);

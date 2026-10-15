@@ -51,6 +51,7 @@ import {
   EyeOff,
   MessageSquare,
   DoorOpen,
+  Stamp,
 } from "lucide-react";
 import { api, isRateLimited } from "@/lib/api";
 import { usePolling } from "@/hooks/usePolling";
@@ -61,6 +62,7 @@ import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
 import { isTcSharedRoute, resolveTcOfficeScope } from "@/features/tc/officeScope";
 import { getUnseenTotal } from "@/features/tc/messaging/messagingApi";
 import { useCheckoutWatch } from "@/features/tc/checkout/useCheckoutWatch";
+import { useSignoffWatch } from "@/features/tc/referrals/useSignoffWatch";
 import type { OfficeId } from "@shared/tc/contract";
 import { TcGlobalSearch } from "@/features/tc/search/TcGlobalSearch";
 import { can, canVisit } from "@/lib/permissions";
@@ -196,6 +198,11 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
         // Item 50. Shown only while checkout is switched on for an office in
         // scope (see `checkout.enabled` below), with a waiting-count badge.
         { path: "/tc/checkout", label: "Checkout", icon: DoorOpen },
+        // Item 53. Gated on tc.referral_signoff (doctor + admin) through
+        // ROUTE_PERMISSIONS, and shown only while referrals is on for an office
+        // in scope (see `signoff.enabled` below), with a waiting-count badge.
+        // For a `doctor` it is the whole TC nav.
+        { path: "/tc/referrals/signoff", label: "Awaiting sign-off", icon: Stamp },
         { path: "/tc/preauth", label: "Pre-Auth", icon: ShieldCheck },
       ],
     },
@@ -440,6 +447,17 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
    */
   const checkout = useCheckoutWatch(tcTextsInScope);
 
+  /**
+   * Item 53: the "Awaiting sign-off" badge and alert. Scoped like the Texts
+   * badge but on its OWN action: a doctor holds tc.referral_signoff and not
+   * tc.full, so the tc.full scope above would leave them with nothing.
+   */
+  const signoffInScope =
+    isTcRoute && can(permissionsForTexts, "tc.referral_signoff")
+      ? resolveTcOfficeScope({ selection: office, roster: offices }).offices
+      : [];
+  const signoff = useSignoffWatch(signoffInScope);
+
   const handleNavClick = () => {
     setSidebarOpen(false);
   };
@@ -481,7 +499,10 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           : g,
       )
       // Checkout ships dark per office: no office on ⇒ no nav item.
-      .map((g) => ({ ...g, items: g.items.filter((i) => i.path !== "/tc/checkout" || checkout.enabled) })),
+      .map((g) => ({ ...g, items: g.items.filter((i) => i.path !== "/tc/checkout" || checkout.enabled) }))
+      // Referrals ships dark per office too: no office on ⇒ no sign-off item.
+      .map((g) => ({ ...g, items: g.items.filter((i) => i.path !== "/tc/referrals/signoff" || signoff.enabled) }))
+      .filter((g) => g.items.length > 0),
     ...(isSuperAdmin ? [PLATFORM_GROUP] : []),
   ];
   // wouter's `location` is the pathname only, so the query — which is what
@@ -704,6 +725,16 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                           aria-label={`${checkout.waiting} waiting at checkout`}
                         >
                           {checkout.waiting > 99 ? "99+" : checkout.waiting}
+                        </span>
+                      )}
+                      {path === "/tc/referrals/signoff" && signoff.waiting > 0 && (
+                        <span
+                          className="rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none"
+                          style={{ backgroundColor: "oklch(0.62 0.15 186)", color: "oklch(0.15 0.02 250)" }}
+                          data-testid="tc-signoff-waiting"
+                          aria-label={`${signoff.waiting} awaiting sign-off`}
+                        >
+                          {signoff.waiting > 99 ? "99+" : signoff.waiting}
                         </span>
                       )}
                     </div>
