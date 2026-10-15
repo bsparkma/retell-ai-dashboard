@@ -132,14 +132,48 @@ new-dashboard $ pnpm run test (vitest run)      -> exit 0
   (incl. tc-contract-bundle and hyg-contract-bundle: both regenerated bundles byte-match)
 ```
 
-New tests alone: `hygCheckoutAlert.test.js` 12/12, `tcCheckoutIntake.test.js` 13/13,
+**Gates after fix round 1** (merge tree; `origin/develop` merged, "Already up to date"):
+```
+backend $ node --check server.js  -> OK
+backend $ node --test             -> exit 0   # tests 3558  # pass 3555  # fail 0  # skipped 3
+new-dashboard $ pnpm run check    -> exit 0
+new-dashboard $ pnpm run test     -> exit 0   Test Files 150 passed | 32 skipped (182); Tests 2510 passed | 188 skipped (2698)
+```
+The reviewer's own round-2 run hit the same Node 22 flake on a different file, `routes/sendToTc.test.js`. In isolation it passes 18/18.
+
+New tests alone (after fix round 1): `hygCheckoutAlert.test.js` 13/13, `tcCheckoutIntake.test.js` 13/13,
 `checkoutHandoffMigration.test.js` 7/7, `hyg-checkout-alert.test.tsx` 7/7.
 Screenshots: `pnpm exec vite build` → `HYG_SHOTS=1 pnpm exec vitest run tests/hyg-checkout-shots.test.tsx`
 → `node scripts/shoot-hyg.mjs` (only the six new PNGs written).
 
 ## Lane
 
-LANE_PLACEHOLDER
+**RED. Both verdicts agree.**
+
+**Orchestrator (me):** RED.
+- `classify-lane.mjs` → RED. Its triggers:
+  - `backend/migrations-tenant/` (two migrations)
+  - shared contracts (`shared/tc/checkout.ts`, `shared/hyg/contract.ts`, both `contract.gen.cjs`)
+  - a new enum value in a shared vocabulary (`TcIntakeKind` gains `checkout`)
+  - office/PatNum derivation code touched
+  - the queue file marks itself RED
+- It also flagged "removed text asserted on by an existing test" for moved code in `tcHandoffClient.js`, `tcTestUtils.js` and `contract.gen.cjs`. I checked: no existing test assertion was edited, and every existing test is green.
+- By judgment, RED regardless: a new platform-settings key, new error-code slugs, and a new audit resource type.
+
+**Reviewer (fresh agent, `.claude/agents/reviewer.md`):**
+- Round 1: **FAIL**, one defect. A FINAL checkout update that lost the revision compare-and-swap to a concurrent non-final write was answered with the winner's older snapshot. The hygiene side then stamped `checkout_final_at` and reported `delivered` for notes TC did not hold. That breaks Hard rule 4 (honest states).
+- Round 2: **PASS, LANE RED.**
+
+**Fix round 1** (`7f99dde`) fixed it on both sides:
+- **TC side:** a final submit re-reads and retries the swap (max 5) and is refused with 409 `CHECKOUT_UPDATE_CONFLICT` if it never lands. A non-final submit that loses still yields.
+- **Hygiene side:** a final send counts as delivered only when TC's answer says `handoff.final === true`. Otherwise it reports `not_delivered` / `CHECKOUT_NOT_FINAL`, writes an ERROR audit row, and leaves `finalAt` unstamped.
+- **Regression tests:** three swap tests in `tcCheckoutIntake.test.js` and one in `hygCheckoutAlert.test.js`.
+- **The reviewer's non-blocking notes, also taken:**
+  - "Alert checkout" hides while the retry banner shows.
+  - `HYG_VISIT_ERROR_CODES` lists `CHECKOUT_NOT_FINAL`, `CHECKOUT_UPDATE_CONFLICT` and `CHECKOUT_ERROR`.
+- **Vocabulary sweep re-run:** no consumer keys on the new codes.
+
+**Final lane: RED.** Push, open the PR, send NEEDS REVIEW, stop. Beau merges.
 
 ## Staging test steps (after Beau merges and staging deploys)
 
