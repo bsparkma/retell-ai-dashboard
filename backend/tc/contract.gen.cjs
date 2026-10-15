@@ -14824,6 +14824,7 @@ var require_zod = __commonJS({
 var contract_entry_exports = {};
 __export(contract_entry_exports, {
   ButtonBlock: () => ButtonBlock,
+  CHECKOUT_PHASE_NAME_RE: () => CHECKOUT_PHASE_NAME_RE,
   CaseCategory: () => CaseCategory,
   CaseEventType: () => CaseEventType,
   CaseStatus: () => CaseStatus,
@@ -14926,11 +14927,13 @@ __export(contract_entry_exports, {
   TcCaseEventDetail: () => TcCaseEventDetail,
   TcCaseItem: () => TcCaseItem,
   TcCasePhase: () => TcCasePhase,
+  TcCheckoutCaseTreatment: () => TcCheckoutCaseTreatment,
   TcCheckoutDismissRequest: () => TcCheckoutDismissRequest,
   TcCheckoutHandoff: () => TcCheckoutHandoff,
   TcCheckoutNextVisit: () => TcCheckoutNextVisit,
   TcCheckoutOutcome: () => TcCheckoutOutcome,
   TcCheckoutOutcomeRequest: () => TcCheckoutOutcomeRequest,
+  TcCheckoutPanelItem: () => TcCheckoutPanelItem,
   TcCheckoutPriority: () => TcCheckoutPriority,
   TcCheckoutProcedure: () => TcCheckoutProcedure,
   TcCheckoutSnapshot: () => TcCheckoutSnapshot,
@@ -14968,6 +14971,9 @@ __export(contract_entry_exports, {
   assertPresetsWithinCaps: () => assertPresetsWithinCaps,
   caseFromRows: () => caseFromRows,
   caseToRows: () => caseToRows,
+  checkoutItemKey: () => checkoutItemKey,
+  checkoutPhaseName: () => checkoutPhaseName,
+  checkoutPhaseNames: () => checkoutPhaseNames,
   checkoutPriorityOf: () => checkoutPriorityOf,
   communicationToRow: () => communicationToRow,
   emailBodyText: () => emailBodyText,
@@ -14994,6 +15000,7 @@ __export(contract_entry_exports, {
   safeUrl: () => safeUrl,
   simulationToRow: () => simulationToRow,
   templateToRow: () => templateToRow,
+  unpricedCheckoutPhases: () => unpricedCheckoutPhases,
   userMapEntryToRow: () => userMapEntryToRow,
   z: () => import_zod8.z
 });
@@ -17202,6 +17209,40 @@ function checkoutPriorityOf(procedures) {
   }
   return null;
 }
+function checkoutPhaseName(visitDate) {
+  return `Hygiene visit ${visitDate ?? ""}`.trim();
+}
+var CHECKOUT_PHASE_NAME_RE = /^Hygiene visit \d{4}-\d{2}-\d{2}$/;
+function unpricedCheckoutPhases(phases) {
+  return phases.filter((p) => CHECKOUT_PHASE_NAME_RE.test(p.name) && p.items.some((i) => i.feeCents === 0)).map((p) => p.name);
+}
+function checkoutPhaseNames(phases) {
+  return phases.filter((p) => CHECKOUT_PHASE_NAME_RE.test(p.name)).map((p) => p.name);
+}
+function checkoutItemKey(p) {
+  return JSON.stringify([p.code, p.teeth, p.surfaces]);
+}
+var TcCheckoutPanelItem = import_zod6.z.object({
+  index: import_zod6.z.number().int().nonnegative(),
+  procedure: TcCheckoutProcedure,
+  /** Set while a CURRENT (non-stale) attestation exists. */
+  enteredBy: import_zod6.z.string().nullable(),
+  enteredAt: import_zod6.z.string().nullable(),
+  /** An attestation exists but was made against an item that has since changed. */
+  stale: import_zod6.z.boolean()
+});
+var TcCheckoutCaseTreatment = import_zod6.z.object({
+  success: import_zod6.z.literal(true),
+  caseId: import_zod6.z.string().uuid(),
+  /** Admin-only: may undo an attestation. */
+  canUnattest: import_zod6.z.boolean(),
+  visits: import_zod6.z.array(
+    import_zod6.z.object({
+      handoff: TcCheckoutHandoff,
+      items: import_zod6.z.array(TcCheckoutPanelItem)
+    })
+  )
+});
 
 // shared/tc/notifications.ts
 var import_zod7 = __toESM(require_zod(), 1);
@@ -17245,6 +17286,7 @@ var import_zod8 = __toESM(require_zod());
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   ButtonBlock,
+  CHECKOUT_PHASE_NAME_RE,
   CaseCategory,
   CaseEventType,
   CaseStatus,
@@ -17347,11 +17389,13 @@ var import_zod8 = __toESM(require_zod());
   TcCaseEventDetail,
   TcCaseItem,
   TcCasePhase,
+  TcCheckoutCaseTreatment,
   TcCheckoutDismissRequest,
   TcCheckoutHandoff,
   TcCheckoutNextVisit,
   TcCheckoutOutcome,
   TcCheckoutOutcomeRequest,
+  TcCheckoutPanelItem,
   TcCheckoutPriority,
   TcCheckoutProcedure,
   TcCheckoutSnapshot,
@@ -17389,6 +17433,9 @@ var import_zod8 = __toESM(require_zod());
   assertPresetsWithinCaps,
   caseFromRows,
   caseToRows,
+  checkoutItemKey,
+  checkoutPhaseName,
+  checkoutPhaseNames,
   checkoutPriorityOf,
   communicationToRow,
   emailBodyText,
@@ -17415,6 +17462,7 @@ var import_zod8 = __toESM(require_zod());
   safeUrl,
   simulationToRow,
   templateToRow,
+  unpricedCheckoutPhases,
   userMapEntryToRow,
   z
 });

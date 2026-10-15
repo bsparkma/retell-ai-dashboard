@@ -120,6 +120,128 @@ async function findById(q, office, handoffId) {
   return res.rows[0] || null;
 }
 
+// ── C2b (item 50b): the staff panel and its attestations ────────────────────
+
+const ATTESTATION_COLS = ['office_id', 'handoff_id', 'item_index', 'item_key', 'attested_by', 'attested_at'];
+
+/**
+ * Every handoff answered onto a case, newest visit first. Office-scoped; the
+ * case id alone never crosses offices.
+ */
+async function listForCase(q, office, caseId) {
+  const res = await q.query(
+    `SELECT ${COLS.join(', ')} FROM tc_checkout_handoffs
+      WHERE office_id = $1 AND case_id = $2
+      ORDER BY visit_date DESC, created_at DESC LIMIT 100`,
+    [office, caseId]
+  );
+  return res.rows;
+}
+
+/** The handoffs linked to any of these cases (the pipeline badge). */
+async function listForCases(q, office, caseIds) {
+  if (caseIds.length === 0) return [];
+  const res = await q.query(
+    `SELECT handoff_id, case_id, payload FROM tc_checkout_handoffs
+      WHERE office_id = $1 AND case_id = ANY($2)`,
+    [office, caseIds]
+  );
+  return res.rows;
+}
+
+/** Every attestation on these handoffs. */
+async function listAttestations(q, office, handoffIds) {
+  if (handoffIds.length === 0) return [];
+  const res = await q.query(
+    `SELECT ${ATTESTATION_COLS.join(', ')} FROM tc_checkout_attestations
+      WHERE office_id = $1 AND handoff_id = ANY($2)`,
+    [office, handoffIds]
+  );
+  return res.rows;
+}
+
+/** One attestation, or null. */
+async function findAttestation(q, office, handoffId, index) {
+  const res = await q.query(
+    `SELECT ${ATTESTATION_COLS.join(', ')} FROM tc_checkout_attestations
+      WHERE office_id = $1 AND handoff_id = $2 AND item_index = $3`,
+    [office, handoffId, index]
+  );
+  return res.rows[0] || null;
+}
+
+/**
+ * Record (or re-record over a stale one) "this item is in Open Dental".
+ * Returns the stored row, read back by RETURNING: what the caller reports is
+ * what persisted.
+ */
+async function upsertAttestation(q, { office, handoffId, index, itemKey, actor, at }) {
+  const res = await q.query(
+    `INSERT INTO tc_checkout_attestations (office_id, handoff_id, item_index, item_key, attested_by, attested_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (office_id, handoff_id, item_index) DO UPDATE SET item_key = EXCLUDED.item_key, attested_by = EXCLUDED.attested_by, attested_at = EXCLUDED.attested_at RETURNING ${ATTESTATION_COLS.join(', ')}`,
+    [office, handoffId, index, itemKey, actor, at]
+  );
+  return res.rows[0] || null;
+}
+
+/** Remove one attestation; returns the removed row, or null if there was none. */
+async function deleteAttestation(q, office, handoffId, index) {
+  const res = await q.query(
+    `DELETE FROM tc_checkout_attestations WHERE office_id = $1 AND handoff_id = $2 AND item_index = $3 RETURNING ${ATTESTATION_COLS.join(', ')}`,
+    [office, handoffId, index]
+  );
+  return res.rows[0] || null;
+}
+
+/** The snapshot's procedures (an empty list for a malformed payload). */
+function proceduresOf(row) {
+  const payload = obj(row.payload);
+  return payload && Array.isArray(payload.procedures) ? payload.procedures : [];
+}
+
+/**
+ * The staff panel's items for one handoff: each staged procedure with its
+ * CURRENT attestation. An attestation made against a different item (the
+ * snapshot was revised after it) is `stale` and does not count as entered.
+ * Pure.
+ *
+ * @param {object} row  a tc_checkout_handoffs row
+ * @param {object[]} attestations  rows for this handoff
+ * @param {(p: object) => string} keyOf  contract.checkoutItemKey
+ */
+function panelItems(row, attestations, keyOf) {
+  const byIndex = new Map(attestations.map((a) => [Number(a.item_index), a]));
+  return proceduresOf(row).map((procedure, index) => {
+    const a = byIndex.get(index);
+    const current = Boolean(a) && a.item_key === keyOf(procedure);
+    return {
+      index,
+      procedure,
+      enteredBy: current ? a.attested_by : null,
+      enteredAt: current ? iso(a.attested_at) : null,
+      stale: Boolean(a) && !current,
+    };
+  });
+}
+
+/**
+ * The case ids, among these handoffs, with at least one staged item not yet
+ * attested as entered in Open Dental. Pure.
+ */
+function casesWithUnenteredTreatment(handoffRows, attestations, keyOf) {
+  const byHandoff = new Map();
+  for (const a of attestations) {
+    const k = String(a.handoff_id);
+    if (!byHandoff.has(k)) byHandoff.set(k, []);
+    byHandoff.get(k).push(a);
+  }
+  const out = new Set();
+  for (const row of handoffRows) {
+    const items = panelItems(row, byHandoff.get(String(row.handoff_id)) || [], keyOf);
+    if (items.some((i) => i.enteredBy === null)) out.add(String(row.case_id));
+  }
+  return out;
+}
+
 /** One office's handoffs for one office day, in the given statuses, newest first. */
 async function listForDay(q, office, day, statuses) {
   const res = await q.query(
@@ -283,6 +405,15 @@ module.exports = {
   PG_UNIQUE_VIOLATION,
   toHandoff,
   findById,
+  listForCase,
+  listForCases,
+  listAttestations,
+  findAttestation,
+  upsertAttestation,
+  deleteAttestation,
+  proceduresOf,
+  panelItems,
+  casesWithUnenteredTreatment,
   listForDay,
   expireBefore,
   claim,

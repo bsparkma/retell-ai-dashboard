@@ -282,3 +282,70 @@ export function checkoutPriorityOf(
   }
   return null;
 }
+
+// ── C2b (item 50b): the treatment stays on the case ─────────────────────────
+
+/**
+ * The name of the treatment-plan phase a checkout writes onto its case. One
+ * place, so the backend that writes it and the screens that recognise it
+ * (the Present guard, the Open Dental pull warning) cannot drift apart.
+ */
+export function checkoutPhaseName(visitDate: string | null): string {
+  return `Hygiene visit ${visitDate ?? ""}`.trim();
+}
+
+/** A phase name a checkout wrote: "Hygiene visit YYYY-MM-DD". */
+export const CHECKOUT_PHASE_NAME_RE = /^Hygiene visit \d{4}-\d{2}-\d{2}$/;
+
+/**
+ * The checkout-origin phases of a plan that still hold an unpriced ($0) item.
+ * The Present guard asks for confirmation while this is non-empty. Pure.
+ */
+export function unpricedCheckoutPhases(
+  phases: readonly { name: string; items: readonly { feeCents: number }[] }[],
+): string[] {
+  return phases
+    .filter((p) => CHECKOUT_PHASE_NAME_RE.test(p.name) && p.items.some((i) => i.feeCents === 0))
+    .map((p) => p.name);
+}
+
+/** The checkout-origin phase names in a plan (the OD-pull warning names them). */
+export function checkoutPhaseNames(phases: readonly { name: string }[]): string[] {
+  return phases.filter((p) => CHECKOUT_PHASE_NAME_RE.test(p.name)).map((p) => p.name);
+}
+
+/**
+ * Which procedure an attestation was made against. A later visit Send can
+ * revise the snapshot; an attestation whose key no longer matches the item at
+ * its index is STALE and counts as not entered. Pure.
+ */
+export function checkoutItemKey(p: Pick<TcCheckoutProcedure, "code" | "teeth" | "surfaces">): string {
+  return JSON.stringify([p.code, p.teeth, p.surfaces]);
+}
+
+/** One staged item on the staff panel, with its "entered in Open Dental" state. */
+export const TcCheckoutPanelItem = z.object({
+  index: z.number().int().nonnegative(),
+  procedure: TcCheckoutProcedure,
+  /** Set while a CURRENT (non-stale) attestation exists. */
+  enteredBy: z.string().nullable(),
+  enteredAt: z.string().nullable(),
+  /** An attestation exists but was made against an item that has since changed. */
+  stale: z.boolean(),
+});
+export type TcCheckoutPanelItem = z.infer<typeof TcCheckoutPanelItem>;
+
+/** GET /api/tc/checkout/by-case/:caseId — the staff-only "Treatment from hygiene" panel. */
+export const TcCheckoutCaseTreatment = z.object({
+  success: z.literal(true),
+  caseId: z.string().uuid(),
+  /** Admin-only: may undo an attestation. */
+  canUnattest: z.boolean(),
+  visits: z.array(
+    z.object({
+      handoff: TcCheckoutHandoff,
+      items: z.array(TcCheckoutPanelItem),
+    }),
+  ),
+});
+export type TcCheckoutCaseTreatment = z.infer<typeof TcCheckoutCaseTreatment>;

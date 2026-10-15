@@ -13,6 +13,9 @@
  *   POST /:id/claim            "I've got this patient" (open → claimed)
  *   POST /:id/dismiss          not a checkout after all — a reason is required
  *   POST /:id/outcome          scheduled | not_scheduled | nothing_needed
+ *   GET  /by-case/:caseId      the staff-only "Treatment from hygiene" panel (C2b)
+ *   POST   /:id/items/:index/entered   attest "this item is in Open Dental"
+ *   DELETE /:id/items/:index/entered   undo that attestation (admin only)
  *
  * ═════════════════════════════════════════════════════════════════════════════
  * THE THREE OUTCOMES
@@ -28,6 +31,30 @@
  *                   a reason to move a case backwards. No open case → one is
  *                   CREATED at `pending_pt`.
  *   nothing_needed  the handoff closes and NO case is created.
+ *
+ * THE TREATMENT GOES ON THE CASE (C2b). Scheduled and Not scheduled also copy
+ * the staged procedures into the case's own treatment plan (the Treatment
+ * tab the coordinator presents from): one phase per checkout, "Hygiene visit
+ * <date>", appended after whatever the plan already holds, one item per
+ * procedure. Created or attached, same transaction, so a lost race leaves no
+ * phase either. The plan is PATIENT-FACING (the presentation slides show the
+ * phase description, an item's patientDescription in place of its name, and
+ * its timeEstimate), so the hygienist's notes, the schedule-next flags and
+ * "fees not set" go in a staff-only timeline event instead, never in those
+ * fields. Fees are not known at checkout, so the items carry $0. The contract
+ * caps a plan at 20 phases; a full plan gets no phase, and the event lists the
+ * items as text instead so nothing is silently dropped.
+ *
+ * THE STAFF PANEL AND "ENTERED IN OPEN DENTAL" (C2b, PM revision). Beau's
+ * requirement: the hygienist's diagnosed treatment stays visible on the case
+ * until a HUMAN confirms it was entered into Open Dental. The plan phase can be
+ * edited or replaced (Edit plan, Pull from Open Dental), so the persistent
+ * record is the HANDOFF's own stored snapshot, rendered staff-only by
+ * GET /by-case/:caseId. Each staged item carries a manual attestation (who,
+ * when; tc_checkout_attestations). It is NOT a sync: nothing here reads or
+ * writes Open Dental. An attestation made against an item the hygienist later
+ * revised is stale and reads as not entered. Undoing one is admin-only. Every
+ * attestation and undo writes one audit row, after the write committed.
  * The handoff's status update is conditional on the status the request read,
  * inside the same transaction as the case write: two people answering the
  * same checkout cannot both win, and the loser leaves no case behind.
@@ -58,6 +85,7 @@ const express = require('express');
 const { randomUUID } = require('node:crypto');
 
 const { contract, requireOffice, actorEmail, parseBody, h, auditTc } = require('./helpers');
+const { holdsPermission } = require('../../config/permissions');
 const { withTenantTx } = require('./tx');
 const tenantDb = require('../../platform/tenantDb');
 const store = require('./caseStore');
@@ -67,7 +95,7 @@ const nurtureHooks = require('../../services/tcNurture/hooks');
 const { localDayKey } = require('../../services/localDayClock');
 const tcCheckout = require('../../config/tcCheckout');
 
-const { z, TcCase, caseToRows, TcCheckoutOutcomeRequest, TcCheckoutDismissRequest } = contract;
+const { z, TcCase, TcCasePhase, caseToRows, TcCheckoutOutcomeRequest, TcCheckoutDismissRequest } = contract;
 
 const router = express.Router();
 router.use(requireOffice);
@@ -187,6 +215,114 @@ function procedureLines(snapshot) {
     const teeth = p.teeth === 'mouth' ? 'Whole mouth' : `#${(p.teeth || []).join(', #')}`;
     return `${teeth} ${p.code} (${p.priority})`;
   });
+}
+
+/** The contract's cap on a plan's phases (TcCase.phases max). */
+const MAX_PHASES = 20;
+
+/** tc_case_phases UNIQUE (case_id, position), migration 1785373200000. */
+const PHASE_POSITION_UNIQUE = 'tc_case_phases_case_position_unique';
+
+/** "#3 O", "#3, #4 MO", "Whole mouth", or "" — the plan item's tooth column. */
+function toothText(p) {
+  if (p.teeth === 'mouth') return 'Whole mouth';
+  const teeth = Array.isArray(p.teeth) && p.teeth.length ? `#${p.teeth.join(', #')}` : '';
+  const surfaces = Array.isArray(p.surfaces) ? p.surfaces.join('') : '';
+  return [teeth, surfaces].filter(Boolean).join(' ').slice(0, 200);
+}
+
+/**
+ * The checkout's staged procedures as ONE treatment-plan phase, or null when
+ * nothing was staged. Pure; parsed by the contract so a bad snapshot throws
+ * (rolling the outcome back) rather than writing a plan the case cannot load.
+ * Only patient-safe fields are filled (see the header).
+ *
+ * @param {object} snapshot  the handoff's payload
+ * @param {{ visitDate: string|null }} handoff
+ * @param {number} position
+ */
+function checkoutPhase(snapshot, handoff, position) {
+  const procs = snapshot && Array.isArray(snapshot.procedures) ? snapshot.procedures : [];
+  if (procs.length === 0) return null;
+  return TcCasePhase.parse({
+    phaseId: randomUUID(),
+    position,
+    name: contract.checkoutPhaseName(handoff.visitDate || null).slice(0, 200),
+    description: '',
+    items: procs.slice(0, 100).map((p, i) => ({
+      itemId: randomUUID(),
+      legacyItemId: null,
+      odProcNum: null,
+      position: i,
+      tooth: toothText(p),
+      procedureName: String(p.code || 'Other').slice(0, 200),
+      patientDescription: '',
+      feeCents: 0,
+      insuranceEstCents: 0,
+      patientPortionCents: 0,
+      urgency: URGENCY_BY_PRIORITY[p.priority] || 'medium',
+      timeEstimate: '',
+      benefits: [],
+      risksOfDelay: [],
+      expectedOutcome: '',
+    })),
+  });
+}
+
+/**
+ * The staff-only timeline line that goes with a checkout phase: where it came
+ * from, that fees are unset, and each item's schedule-next flag and the
+ * hygienist's note. `added` false says the plan was full and lists the items
+ * so they are not lost.
+ */
+function treatmentEventText(snapshot, handoff, phaseName, added) {
+  const procs = snapshot && Array.isArray(snapshot.procedures) ? snapshot.procedures : [];
+  const by = handoff.provider ? ` (provider ${handoff.provider})` : '';
+  const head = added
+    ? `Checkout treatment added to the plan as "${phaseName}"${by}. Fees are not known at checkout: set them before presenting.`
+    : `Checkout treatment not added to the plan (it already has ${MAX_PHASES} phases)${by}:`;
+  const lines = procedureLines(snapshot).map((line, i) => {
+    const p = procs[i] || {};
+    const extra = [p.scheduleNext ? 'schedule at next visit' : '', p.note ? `note: ${p.note}` : '']
+      .filter(Boolean)
+      .join('; ');
+    return extra ? `${line}: ${extra}` : line;
+  });
+  return [head, ...lines].join('\n').slice(0, 8000);
+}
+
+/** Write one phase and its items onto an existing case. */
+async function insertPhase(client, office, caseId, phase) {
+  await store.insertPhaseRow(client, {
+    phase_id: phase.phaseId,
+    case_id: caseId,
+    office_id: office,
+    position: phase.position,
+    name: phase.name,
+    description: phase.description,
+  });
+  for (const it of phase.items) {
+    await store.insertItemRow(client, {
+      item_id: it.itemId,
+      phase_id: phase.phaseId,
+      case_id: caseId,
+      office_id: office,
+      position: it.position,
+      legacy_item_id: it.legacyItemId,
+      od_proc_num: it.odProcNum,
+      tooth: it.tooth,
+      procedure_name: it.procedureName,
+      patient_description: it.patientDescription,
+      fee_cents: it.feeCents,
+      insurance_est_cents: it.insuranceEstCents,
+      patient_portion_cents: it.patientPortionCents,
+      urgency: it.urgency,
+      time_estimate: it.timeEstimate,
+      benefits: it.benefits,
+      risks_of_delay: it.risksOfDelay,
+      expected_outcome: it.expectedOutcome,
+    });
+  }
 }
 
 // ── GET / — today's handoffs ────────────────────────────────────────────────
@@ -400,6 +536,44 @@ router.post(
                 legacy_id: null,
               });
             }
+
+            // C2b: the staged treatment goes onto the open case's plan too.
+            // Row-lock the case first (an UPDATE takes it; the case IS
+            // changing). Without it two answers attaching at once both read
+            // the same max(position), and the loser dies on the
+            // (case_id, position) unique index as a 500 instead of failing
+            // the handoff CAS as a 409. With it the loser waits, re-reads the
+            // winner's phase, and then loses the CAS cleanly. It also keeps
+            // the 20-phase cap honest under concurrency.
+            await client.query(
+              `UPDATE tc_cases SET updated_at = now() WHERE office_id = $1 AND case_id = $2`,
+              [office, openCaseId]
+            );
+            const existing = await client.query(
+              'SELECT position FROM tc_case_phases WHERE office_id = $1 AND case_id = $2',
+              [office, openCaseId]
+            );
+            const positions = existing.rows.map((r) => Number(r.position));
+            const phase = checkoutPhase(
+              snapshot,
+              checkoutStore.toHandoff(handoff),
+              positions.length ? Math.max(...positions) + 1 : 0
+            );
+            if (phase) {
+              const added = positions.length < MAX_PHASES;
+              if (added) await insertPhase(client, office, openCaseId, phase);
+              await store.insertEventRow(client, {
+                event_id: randomUUID(),
+                case_id: openCaseId,
+                office_id: office,
+                ts: now,
+                type: 'note_added',
+                description: treatmentEventText(snapshot, checkoutStore.toHandoff(handoff), phase.name, added),
+                actor,
+                detail: null,
+                legacy_id: null,
+              });
+            }
           } else {
             caseId = randomUUID();
             caseAction = 'CREATE';
@@ -435,8 +609,21 @@ router.post(
                 detail: null,
               });
             }
+            const phase = checkoutPhase(snapshot, checkoutStore.toHandoff(handoff), 0);
+            if (phase) {
+              events.push({
+                eventId: randomUUID(),
+                legacyId: null,
+                ts: now,
+                type: 'note_added',
+                description: treatmentEventText(snapshot, checkoutStore.toHandoff(handoff), phase.name, true),
+                actor,
+                detail: null,
+              });
+            }
             const aggregate = TcCase.parse({
               ...CHECKOUT_CASE_DEFAULTS,
+              phases: phase ? [phase] : [],
               caseId,
               officeId: office,
               patientName: handoff.patient_name,
@@ -452,6 +639,8 @@ router.post(
             });
             const rows = caseToRows(aggregate, randomUUID);
             await store.insertCaseRow(client, rows.caseRow);
+            for (const p of rows.phaseRows) await store.insertPhaseRow(client, p);
+            for (const it of rows.itemRows) await store.insertItemRow(client, it);
             for (const e of rows.eventRows) await store.insertEventRow(client, e);
           }
         }
@@ -474,6 +663,16 @@ router.post(
       });
     } catch (err) {
       if (err && err.code === 'CHECKOUT_RACE') return refusal(req, res, id.data, 'answered');
+      // The plan was rewritten underneath this answer (an Edit-plan save or
+      // a Pull from Open Dental landed between the read and the insert).
+      // Everything rolled back; say so rather than 500.
+      if (err && err.code === '23505' && err.constraint === PHASE_POSITION_UNIQUE) {
+        return res.status(409).json({
+          success: false,
+          error: "The case's treatment plan changed while this was saving. Nothing was recorded; try again.",
+          code: 'CHECKOUT_PLAN_CHANGED',
+        });
+      }
       throw err;
     }
 
@@ -503,6 +702,159 @@ router.post(
       url: result.caseId ? `/tc/cases/${result.caseId}` : null,
       attached: result.caseAction === 'UPDATE',
     });
+  })
+);
+
+// ── C2b: the staff panel and "entered in Open Dental" ──────────────────────
+
+const ItemIndex = z.coerce.number().int().min(0).max(99);
+
+/** The panel's view of one handoff, as the client renders it. */
+function panelVisit(row, attestations) {
+  return {
+    handoff: checkoutStore.toHandoff(row),
+    items: checkoutStore.panelItems(row, attestations, contract.checkoutItemKey),
+  };
+}
+
+router.get(
+  '/by-case/:caseId',
+  h(async (req, res) => {
+    const caseId = z.string().uuid().safeParse(req.params.caseId);
+    if (!caseId.success) return res.status(400).json({ success: false, error: 'Invalid case id', code: 'INVALID_ID' });
+    const today = await enter(req, res);
+    if (today === null) return undefined;
+    const office = req.tcOffice;
+    const { rows, attestations } = await tenantDb.withTenantDb(req, async (pool) => {
+      const found = await checkoutStore.listForCase(pool, office, caseId.data);
+      const atts = await checkoutStore.listAttestations(
+        pool,
+        office,
+        found.map((r) => String(r.handoff_id))
+      );
+      return { rows: found, attestations: atts };
+    });
+    // A PHI read (the staged treatment): audited even when it is empty.
+    await auditTc(req, 'READ', 'tc_checkout_handoff', null, { office, sourceRef: `case:${caseId.data}` });
+    return res.json({
+      success: true,
+      caseId: caseId.data,
+      canUnattest: holdsPermission(req, 'admin.all'),
+      visits: rows.map((row) =>
+        panelVisit(
+          row,
+          attestations.filter((a) => String(a.handoff_id) === String(row.handoff_id))
+        )
+      ),
+    });
+  })
+);
+
+/** Parse `:id` + `:index`, or answer the 400 and return null. */
+function itemParams(req, res) {
+  const id = HandoffId.safeParse(req.params.id);
+  const index = ItemIndex.safeParse(req.params.index);
+  if (!id.success || !index.success || !/^\d{1,2}$/.test(String(req.params.index))) {
+    res.status(400).json({ success: false, error: 'Invalid handoff id or item', code: 'INVALID_ID' });
+    return null;
+  }
+  return { id: id.data, index: index.data };
+}
+
+/** The handoff, linked to a case, with a staged item at `index`; or the refusal. */
+async function attestTarget(client, office, id, index) {
+  const row = await checkoutStore.findById(client, office, id);
+  if (!row) return { refusal: [404, 'Checkout handoff not found', 'NOT_FOUND'] };
+  if (!row.case_id) {
+    return { refusal: [409, 'This checkout is not on a case, so there is nothing to mark.', 'CHECKOUT_NOT_ON_CASE'] };
+  }
+  const procs = checkoutStore.proceduresOf(row);
+  if (index >= procs.length) return { refusal: [404, 'That item is not on this checkout', 'ITEM_NOT_FOUND'] };
+  return { row, procedure: procs[index] };
+}
+
+router.post(
+  '/:id/items/:index/entered',
+  h(async (req, res) => {
+    const p = itemParams(req, res);
+    if (!p) return undefined;
+    const today = await enter(req, res);
+    if (today === null) return undefined;
+    const office = req.tcOffice;
+
+    const result = await withTenantTx(req, async (client) => {
+      const target = await attestTarget(client, office, p.id, p.index);
+      if (target.refusal) return target;
+      const itemKey = contract.checkoutItemKey(target.procedure);
+      const prior = await checkoutStore.findAttestation(client, office, p.id, p.index);
+      if (prior && prior.item_key === itemKey) return { row: target.row, already: true };
+      const stored = await checkoutStore.upsertAttestation(client, {
+        office,
+        handoffId: p.id,
+        index: p.index,
+        itemKey,
+        actor: actorEmail(req),
+        at: clock().toISOString(),
+      });
+      if (!stored) throw new Error('attestation was not stored');
+      return { row: target.row, priorState: prior ? 'stale' : 'unattested' };
+    });
+    if (result.refusal) {
+      const [status, error, code] = result.refusal;
+      return res.status(status).json({ success: false, error, code });
+    }
+
+    if (!result.already) {
+      await auditTc(req, result.priorState === 'stale' ? 'UPDATE' : 'CREATE', 'tc_checkout_item_attestation', `${p.id}:${p.index}`, {
+        office,
+        priorState: result.priorState,
+      });
+    }
+    // Report what PERSISTED: read the attestation back after the commit.
+    const atts = await tenantDb.withTenantDb(req, (pool) => checkoutStore.listAttestations(pool, office, [p.id]));
+    const item = panelVisit(result.row, atts).items[p.index];
+    if (!item || !item.enteredBy) {
+      return res.status(500).json({ success: false, error: 'The attestation could not be read back', code: 'ATTESTATION_NOT_PERSISTED' });
+    }
+    return res.json({ success: true, handoffId: p.id, item, alreadyEntered: result.already === true });
+  })
+);
+
+router.delete(
+  '/:id/items/:index/entered',
+  h(async (req, res) => {
+    const p = itemParams(req, res);
+    if (!p) return undefined;
+    if (!holdsPermission(req, 'admin.all')) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only a practice admin can undo "entered in Open Dental".',
+        code: 'UNATTEST_ADMIN_ONLY',
+      });
+    }
+    const today = await enter(req, res);
+    if (today === null) return undefined;
+    const office = req.tcOffice;
+
+    const result = await withTenantTx(req, async (client) => {
+      const target = await attestTarget(client, office, p.id, p.index);
+      if (target.refusal) return target;
+      const removed = await checkoutStore.deleteAttestation(client, office, p.id, p.index);
+      if (!removed) return { refusal: [404, 'That item is not marked as entered', 'NOT_ATTESTED'] };
+      // What it WAS: a current mark, or one already stale against a revised item.
+      const priorState = removed.item_key === contract.checkoutItemKey(target.procedure) ? 'attested' : 'stale';
+      return { row: target.row, priorState };
+    });
+    if (result.refusal) {
+      const [status, error, code] = result.refusal;
+      return res.status(status).json({ success: false, error, code });
+    }
+    await auditTc(req, 'DELETE', 'tc_checkout_item_attestation', `${p.id}:${p.index}`, {
+      office,
+      priorState: result.priorState,
+    });
+    const atts = await tenantDb.withTenantDb(req, (pool) => checkoutStore.listAttestations(pool, office, [p.id]));
+    return res.json({ success: true, handoffId: p.id, item: panelVisit(result.row, atts).items[p.index] });
   })
 );
 

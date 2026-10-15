@@ -30,6 +30,7 @@ import type { CaseStatusId } from "../status";
 import { UrgencyBadge } from "../components/TcShell";
 import { OfficeBadge } from "../components/OfficeBadge";
 import { OrthoWorkupChip } from "../caseview/OrthoScreeningSection";
+import { TxNotInOdChip } from "../checkout/HygieneTreatmentPanel";
 
 /** Whole days the case has sat in its current status (statusChangedAt, falling back to createdAt). */
 export function daysInStatus(row: TcCaseSummary): number {
@@ -107,6 +108,14 @@ export function CaseCardBody({
       {caseRow.status === "hygiene_review" && caseRow.hasOrthoScreening === true && (
         <div className="mt-1.5">
           <OrthoWorkupChip />
+        </div>
+      )}
+
+      {/* Item 50b: hygiene-visit treatment not yet marked entered in Open
+          Dental. Clears once every item is marked (on the case's staff panel). */}
+      {caseRow.txNotInOd === true && (
+        <div className="mt-1.5">
+          <TxNotInOdChip />
         </div>
       )}
 

@@ -527,3 +527,453 @@ test('dismiss audits the status the DATABASE matched (claimed), not a pre-read',
   const audit = auditRows(db).find((a) => a.resource_type === 'tc_checkout_handoff');
   assert.equal(audit.prior_state, 'claimed');
 });
+
+// ── C2b (queue 50b): the treatment persists on the case ─────────────────────
+
+const TWO_PROCS = {
+  ...SNAPSHOT,
+  procedures: [
+    { ...SNAPSHOT.procedures[0], note: 'Fractured cusp' },
+    {
+      teeth: 'mouth',
+      code: 'SRP',
+      category: 'Perio',
+      priority: 'preventative',
+      status: 'proposed',
+      surfaces: [],
+      scheduleNext: false,
+      note: '',
+    },
+  ],
+};
+
+/** A plan phase (+ one item) already on a case. */
+function seedPhase(db, caseRow, position, name = `Phase ${position + 1}`) {
+  const phaseId = randomUUID();
+  db.table('tc_case_phases').push({
+    phase_id: phaseId,
+    case_id: caseRow.case_id,
+    office_id: caseRow.office_id,
+    position,
+    name,
+    description: '',
+  });
+  db.table('tc_case_items').push({
+    item_id: randomUUID(),
+    phase_id: phaseId,
+    case_id: caseRow.case_id,
+    office_id: caseRow.office_id,
+    position: 0,
+    legacy_item_id: null,
+    od_proc_num: null,
+    tooth: '#14',
+    procedure_name: 'Implant',
+    patient_description: '',
+    fee_cents: 450000,
+    insurance_est_cents: 0,
+    patient_portion_cents: 450000,
+    urgency: 'medium',
+    time_estimate: '',
+    benefits: [],
+    risks_of_delay: [],
+    expected_outcome: '',
+  });
+  return phaseId;
+}
+
+const CASE = (office, id) => `/api/tc/cases/${id}?office=${office}`;
+
+test('C2b-1: a case CREATED at checkout carries every staged item on its Treatment plan', async (t) => {
+  for (const outcome of ['scheduled', 'not_scheduled']) {
+    await t.test(outcome, async (tt) => {
+      switchCheckout(tt, { roland: true });
+      const { baseUrl, db } = await boot(tt);
+      const h = seed(db, { payload: TWO_PROCS });
+      const r = await api(baseUrl, 'POST', ACT('roland', h.handoff_id, 'outcome'), { outcome });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+
+      // Read back through the case route the Treatment tab loads from.
+      const got = await api(baseUrl, 'GET', CASE('roland', r.body.caseId));
+      assert.equal(got.status, 200, JSON.stringify(got.body));
+      const phases = got.body.case.phases;
+      assert.equal(phases.length, 1);
+      assert.equal(phases[0].name, `Hygiene visit ${TODAY}`);
+      assert.equal(phases[0].position, 0);
+      const items = [...phases[0].items].sort((a, b) => a.position - b.position);
+      assert.deepEqual(
+        items.map((i) => [i.tooth, i.procedureName, i.urgency, i.feeCents]),
+        [
+          ['#3 O', 'Crown', 'high', 0],
+          ['Whole mouth', 'SRP', 'medium', 0],
+        ]
+      );
+      // The plan is patient-facing (presentation slides): nothing staff-only
+      // lands in the fields a patient sees.
+      assert.equal(phases[0].description, '');
+      for (const i of items) {
+        assert.equal(i.patientDescription, '');
+        assert.equal(i.timeEstimate, '');
+      }
+      // The staff detail goes on the case timeline instead.
+      const staff = got.body.case.events.find((e) => /Checkout treatment added to the plan/.test(e.description));
+      assert.ok(staff, 'a staff-only timeline line');
+      assert.equal(
+        staff.description,
+        `Checkout treatment added to the plan as "Hygiene visit ${TODAY}" (provider DOC1). ` +
+          'Fees are not known at checkout: set them before presenting.\n' +
+          '#3 Crown (urgent): schedule at next visit; note: Fractured cusp\n' +
+          'Whole mouth SRP (preventative)'
+      );
+      // The notes text from item 50 is unchanged.
+      assert.match(db.table('tc_cases')[0].notes, /^Staged at the hygiene visit:\n#3 Crown \(urgent\)\nWhole mouth SRP \(preventative\)/);
+    });
+  }
+});
+
+test('C2b-2: ATTACHING to an open case appends a phase after its plan and leaves the plan alone', async (t) => {
+  for (const [outcome, status] of [['scheduled', 'presented'], ['not_scheduled', 'considering']]) {
+    await t.test(outcome, async (tt) => {
+      switchCheckout(tt, { roland: true });
+      const { baseUrl, db } = await boot(tt);
+      const c = seedCase(db, { status });
+      seedPhase(db, c, 0, 'Implant phase');
+      seedPhase(db, c, 3, 'Later phase');
+      const h = seed(db);
+      const r = await api(baseUrl, 'POST', ACT('roland', h.handoff_id, 'outcome'), { outcome });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.equal(r.body.attached, true);
+
+      const got = await api(baseUrl, 'GET', CASE('roland', c.case_id));
+      assert.equal(got.status, 200, JSON.stringify(got.body));
+      const phases = [...got.body.case.phases].sort((a, b) => a.position - b.position);
+      assert.deepEqual(phases.map((p) => [p.position, p.name]), [
+        [0, 'Implant phase'],
+        [3, 'Later phase'],
+        [4, `Hygiene visit ${TODAY}`],
+      ]);
+      assert.deepEqual(phases[0].items.map((i) => [i.procedureName, i.feeCents]), [['Implant', 450000]], 'untouched');
+      assert.deepEqual(phases[2].items.map((i) => [i.tooth, i.procedureName, i.urgency]), [['#3 O', 'Crown', 'high']]);
+      assert.ok(
+        got.body.case.events.some((e) => /^Checkout treatment added to the plan as "Hygiene visit /.test(e.description)),
+        'the staff-only timeline line'
+      );
+      for (const row of db.table('tc_case_items')) assert.equal(row.office_id, 'roland');
+    });
+  }
+});
+
+test('C2b-3: Nothing needed, or a checkout with nothing staged, puts no phase anywhere', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  const c = seedCase(db, { status: 'presented' });
+  const none = seed(db);
+  let r = await api(baseUrl, 'POST', ACT('roland', none.handoff_id, 'outcome'), { outcome: 'nothing_needed' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(db.table('tc_case_phases').length, 0);
+
+  const empty = seed(db, { payload: { ...SNAPSHOT, procedures: [], priority: null } });
+  r = await api(baseUrl, 'POST', ACT('roland', empty.handoff_id, 'outcome'), { outcome: 'not_scheduled' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.caseId, c.case_id);
+  assert.equal(db.table('tc_case_phases').length, 0);
+  assert.equal(db.table('tc_case_items').length, 0);
+});
+
+test('C2b-3: a lost race refuses before any phase is reported (the transaction rolls it back)', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  const h = seed(db);
+  db.onQuery(/^UPDATE tc_checkout_handoffs SET status = \$4/, () => ({ rows: [], rowCount: 0 }));
+  const r = await api(baseUrl, 'POST', ACT('roland', h.handoff_id, 'outcome'), { outcome: 'scheduled' });
+  assert.equal(r.status, 409);
+  assert.equal(r.body.caseId, undefined, 'no case or plan is reported');
+});
+
+test('C2b-4: a plan already at 20 phases gets no phase; the event lists the items instead', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  const c = seedCase(db, { status: 'presented' });
+  for (let i = 0; i < 20; i += 1) seedPhase(db, c, i);
+  const h = seed(db, { payload: TWO_PROCS });
+  const r = await api(baseUrl, 'POST', ACT('roland', h.handoff_id, 'outcome'), { outcome: 'scheduled' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(db.table('tc_case_phases').length, 20);
+  const note = db.table('tc_case_events').find((e) => e.type === 'note_added' && /not added to the plan/.test(e.description));
+  assert.ok(note, 'the items are not silently dropped');
+  assert.match(
+    note.description,
+    /^Checkout treatment not added to the plan \(it already has 20 phases\) \(provider DOC1\):\n#3 Crown \(urgent\): schedule at next visit; note: Fractured cusp\nWhole mouth SRP \(preventative\)$/
+  );
+  // The case still loads: the contract's 20-phase cap holds.
+  assert.equal((await api(baseUrl, 'GET', CASE('roland', c.case_id))).status, 200);
+});
+
+test("C2b-6: office-scoped — the other office's case and plan are never touched", async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  // Valley holds an open case under the SAME PatNum the roland handoff
+  // carries. PatNums restart per office, so that is a different person.
+  const valley = seedCase(db, { office_id: 'valley', od_patient_id: 12827, status: 'presented' });
+  seedPhase(db, valley, 0);
+  const h = seed(db);
+  const r = await api(baseUrl, 'POST', ACT('roland', h.handoff_id, 'outcome'), { outcome: 'scheduled' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.attached, false, "valley's case is not roland's open case");
+  assert.notEqual(r.body.caseId, valley.case_id);
+  assert.equal(db.table('tc_case_phases').filter((p) => p.case_id === valley.case_id).length, 1);
+  const rolandPhases = db.table('tc_case_phases').filter((p) => p.case_id === r.body.caseId);
+  assert.equal(rolandPhases.length, 1);
+  assert.equal(rolandPhases[0].office_id, 'roland');
+  assert.equal((await api(baseUrl, 'GET', CASE('roland', valley.case_id))).status, 404);
+});
+
+test('C2b-3: attaching locks the case row before reading the plan (no position collision under a race)', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  const c = seedCase(db, { status: 'considering' });
+  const h = seed(db);
+  const order = [];
+  db.onQuery(/^UPDATE tc_cases SET updated_at = now\(\) WHERE office_id = \$1 AND case_id = \$2$/, (_text, params) => {
+    order.push(['lock', ...params]);
+    return { rows: [], rowCount: 1 };
+  });
+  db.onQuery(/^SELECT position FROM tc_case_phases/, () => {
+    order.push(['read']);
+    return { rows: [] };
+  });
+  const r = await api(baseUrl, 'POST', ACT('roland', h.handoff_id, 'outcome'), { outcome: 'not_scheduled' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual(order, [['lock', 'roland', c.case_id], ['read']], 'lock, then read');
+});
+
+test('C2b-3: a plan rewritten mid-answer (unique position clash) is an honest 409, not a 500', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  seedCase(db, { status: 'considering' });
+  const h = seed(db);
+  db.onQuery(/^INSERT INTO tc_case_phases/, () => {
+    const err = new Error('duplicate key value violates unique constraint "tc_case_phases_case_position_unique"');
+    Object.assign(err, { code: '23505', constraint: 'tc_case_phases_case_position_unique' });
+    throw err;
+  });
+  const r = await api(baseUrl, 'POST', ACT('roland', h.handoff_id, 'outcome'), { outcome: 'not_scheduled' });
+  assert.equal(r.status, 409, JSON.stringify(r.body));
+  assert.equal(r.body.code, 'CHECKOUT_PLAN_CHANGED');
+  assert.ok(!auditRows(db).some((a) => a.resource_type === 'tc_checkout_handoff'), 'nothing audited as answered');
+});
+
+// ── C2b PM revision: the staff panel, "entered in Open Dental", the badge ────
+
+const PANEL = (office, caseId) => `/api/tc/checkout/by-case/${caseId}?office=${office}`;
+const ENTERED = (office, id, index) => `/api/tc/checkout/${id}/items/${index}/entered?office=${office}`;
+const CASES = (office) => `/api/tc/cases?office=${office}`;
+
+/** A roland case created at checkout from a two-item visit; returns its ids. */
+async function answered(baseUrl, db, outcome = 'not_scheduled', payload = TWO_PROCS) {
+  const h = seed(db, { payload });
+  const r = await api(baseUrl, 'POST', ACT('roland', h.handoff_id, 'outcome'), { outcome });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  return { handoffId: h.handoff_id, caseId: r.body.caseId };
+}
+
+test('C2b-7: the staff panel lists the handoff snapshot, and survives the plan being replaced', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  const { handoffId, caseId } = await answered(baseUrl, db);
+
+  // The coordinator replaces the whole plan (Edit plan / Pull from Open Dental).
+  const replaced = await api(baseUrl, 'PUT', `/api/tc/cases/${caseId}/phases?office=roland`, [
+    { position: 0, name: 'Re-planned', items: [] },
+  ]);
+  assert.equal(replaced.status, 200, JSON.stringify(replaced.body));
+  assert.ok(!db.table('tc_case_phases').some((p) => /^Hygiene visit/.test(p.name)), 'the plan phase is gone');
+
+  const r = await api(baseUrl, 'GET', PANEL('roland', caseId));
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.visits.length, 1);
+  const visit = r.body.visits[0];
+  assert.equal(visit.handoff.handoffId, handoffId);
+  assert.equal(visit.handoff.visitDate, TODAY);
+  assert.equal(visit.handoff.snapshot.nextVisit.type, 'Prophy');
+  assert.deepEqual(
+    visit.items.map((i) => [i.index, i.procedure.code, i.procedure.priority, i.procedure.note, i.enteredBy, i.stale]),
+    [
+      [0, 'Crown', 'urgent', 'Fractured cusp', null, false],
+      [1, 'SRP', 'preventative', '', null, false],
+    ]
+  );
+  assert.equal(r.body.canUnattest, true, 'the default test user is an admin');
+  assert.ok(
+    auditRows(db).some((a) => a.action === 'READ' && a.resource_type === 'tc_checkout_handoff' && a.source_ref === `case:${caseId}`),
+    'reading the staged treatment is audited'
+  );
+});
+
+test('C2b-7: the panel is office-scoped and dark when checkout is off', async (t) => {
+  switchCheckout(t, { roland: true, valley: true });
+  const { baseUrl, db } = await boot(t);
+  const { caseId } = await answered(baseUrl, db);
+  const other = await api(baseUrl, 'GET', PANEL('valley', caseId));
+  assert.equal(other.status, 200);
+  assert.deepEqual(other.body.visits, [], "valley sees nothing of roland's case");
+
+  tcCheckout.resetCacheForTests();
+  registry.getPlatformSetting = async () => null; // the floor: OFF
+  const off = await api(baseUrl, 'GET', PANEL('roland', caseId));
+  assert.equal(off.status, 403);
+  assert.equal(off.body.code, 'CHECKOUT_DISABLED');
+});
+
+test('C2b-8: "entered in Open Dental" records who and when, audits once, and is idempotent', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  const { handoffId, caseId } = await answered(baseUrl, db);
+
+  const r = await api(baseUrl, 'POST', ENTERED('roland', handoffId, 0), {});
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.item.enteredBy, 'tc@carein.ai');
+  assert.equal(r.body.item.enteredAt, NOW.toISOString());
+  assert.equal(r.body.alreadyEntered, false);
+  const rows = db.table('tc_checkout_attestations');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].office_id, 'roland');
+  assert.equal(rows[0].attested_by, 'tc@carein.ai');
+
+  const audits = () => auditRows(db).filter((a) => a.resource_type === 'tc_checkout_item_attestation');
+  assert.equal(audits().length, 1);
+  assert.equal(audits()[0].action, 'CREATE');
+  assert.equal(audits()[0].resource_id, `${handoffId}:0`);
+  assert.equal(audits()[0].prior_state, 'unattested');
+
+  const again = await api(baseUrl, 'POST', ENTERED('roland', handoffId, 0), {});
+  assert.equal(again.status, 200);
+  assert.equal(again.body.alreadyEntered, true);
+  assert.equal(audits().length, 1, 'no second audit row for a no-op');
+
+  const panel = await api(baseUrl, 'GET', PANEL('roland', caseId));
+  assert.deepEqual(panel.body.visits[0].items.map((i) => i.enteredBy), ['tc@carein.ai', null]);
+});
+
+test('C2b-8: nothing is reported as entered unless it persisted', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  const { handoffId } = await answered(baseUrl, db);
+  db.onQuery(/^INSERT INTO tc_checkout_attestations/, () => ({ rows: [], rowCount: 0 }));
+  const r = await api(baseUrl, 'POST', ENTERED('roland', handoffId, 0), {});
+  assert.equal(r.status, 500);
+  assert.equal(r.body.success, false);
+  assert.ok(!auditRows(db).some((a) => a.resource_type === 'tc_checkout_item_attestation'));
+});
+
+test('C2b-8: a tc user can mark entered but cannot undo it (admin only)', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t, { role: 'tc' });
+  const { handoffId, caseId } = await answered(baseUrl, db);
+  assert.equal((await api(baseUrl, 'POST', ENTERED('roland', handoffId, 1), {})).status, 200);
+  const refused = await api(baseUrl, 'DELETE', ENTERED('roland', handoffId, 1));
+  assert.equal(refused.status, 403);
+  assert.equal(refused.body.code, 'UNATTEST_ADMIN_ONLY');
+  assert.equal(db.table('tc_checkout_attestations').length, 1, 'the attestation stays');
+  assert.ok(!auditRows(db).some((a) => a.resource_type === 'tc_checkout_item_attestation' && a.action === 'DELETE'));
+  assert.equal((await api(baseUrl, 'GET', PANEL('roland', caseId))).body.canUnattest, false);
+});
+
+test('C2b-8: an admin undoes it, audited with what it was', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  const { handoffId } = await answered(baseUrl, db);
+  assert.equal((await api(baseUrl, 'POST', ENTERED('roland', handoffId, 1), {})).status, 200);
+  const undone = await api(baseUrl, 'DELETE', ENTERED('roland', handoffId, 1));
+  assert.equal(undone.status, 200, JSON.stringify(undone.body));
+  assert.equal(undone.body.item.enteredBy, null);
+  assert.equal(db.table('tc_checkout_attestations').length, 0);
+  const del = auditRows(db).find((a) => a.resource_type === 'tc_checkout_item_attestation' && a.action === 'DELETE');
+  assert.ok(del);
+  assert.equal(del.resource_id, `${handoffId}:1`);
+  assert.equal(del.prior_state, 'attested');
+  assert.equal((await api(baseUrl, 'DELETE', ENTERED('roland', handoffId, 1))).status, 404, 'nothing left to undo');
+});
+
+test('C2b-8: a revised item makes its attestation stale; marking it again records over it', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  const { handoffId, caseId } = await answered(baseUrl, db);
+  assert.equal((await api(baseUrl, 'POST', ENTERED('roland', handoffId, 0), {})).status, 200);
+
+  // The hygienist's later Send revised item 0 (a different tooth).
+  const row = db.table('tc_checkout_handoffs').find((x) => x.handoff_id === handoffId);
+  row.payload = { ...TWO_PROCS, procedures: [{ ...TWO_PROCS.procedures[0], teeth: [4] }, TWO_PROCS.procedures[1]] };
+
+  const panel = await api(baseUrl, 'GET', PANEL('roland', caseId));
+  assert.deepEqual(panel.body.visits[0].items[0].enteredBy, null);
+  assert.equal(panel.body.visits[0].items[0].stale, true);
+
+  const again = await api(baseUrl, 'POST', ENTERED('roland', handoffId, 0), {});
+  assert.equal(again.status, 200);
+  const audit = auditRows(db).filter((a) => a.resource_type === 'tc_checkout_item_attestation').at(-1);
+  assert.equal(audit.action, 'UPDATE');
+  assert.equal(audit.prior_state, 'stale');
+});
+
+test('C2b-8: refusals — other office, no case, no such item, switched off', async (t) => {
+  switchCheckout(t, { roland: true, valley: true });
+  const { baseUrl, db } = await boot(t);
+  const { handoffId } = await answered(baseUrl, db);
+  assert.equal((await api(baseUrl, 'POST', ENTERED('valley', handoffId, 0), {})).status, 404);
+  assert.equal((await api(baseUrl, 'POST', ENTERED('roland', handoffId, 2), {})).status, 404);
+  assert.equal((await api(baseUrl, 'POST', ENTERED('roland', handoffId, 'x'), {})).status, 400);
+
+  const none = seed(db);
+  assert.equal((await api(baseUrl, 'POST', ACT('roland', none.handoff_id, 'outcome'), { outcome: 'nothing_needed' })).status, 200);
+  const notOnCase = await api(baseUrl, 'POST', ENTERED('roland', none.handoff_id, 0), {});
+  assert.equal(notOnCase.status, 409);
+  assert.equal(notOnCase.body.code, 'CHECKOUT_NOT_ON_CASE');
+
+  tcCheckout.resetCacheForTests();
+  registry.getPlatformSetting = async () => null;
+  assert.equal((await api(baseUrl, 'POST', ENTERED('roland', handoffId, 0), {})).status, 403);
+  assert.equal(db.table('tc_checkout_attestations').length, 0);
+});
+
+test('C2b-9: the card says "Tx not in OD" until every item is entered; never for no treatment', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  const { handoffId, caseId } = await answered(baseUrl, db);
+  const flag = async (id) => (await api(baseUrl, 'GET', CASES('roland'))).body.cases.find((c) => c.caseId === id).txNotInOd;
+
+  assert.equal(await flag(caseId), true);
+  assert.equal((await api(baseUrl, 'POST', ENTERED('roland', handoffId, 0), {})).status, 200);
+  assert.equal(await flag(caseId), true, 'one of two entered');
+  assert.equal((await api(baseUrl, 'POST', ENTERED('roland', handoffId, 1), {})).status, 200);
+  assert.equal(await flag(caseId), false, 'all entered');
+
+  // A case whose checkout staged nothing carries no badge.
+  db.table('tc_cases').length = 0;
+  const empty = await answered(baseUrl, db, 'not_scheduled', { ...SNAPSHOT, procedures: [], priority: null });
+  assert.equal(await flag(empty.caseId), false);
+  // An ordinary case with no checkout at all carries none either.
+  const plain = seedCase(db, { od_patient_id: 12828 });
+  assert.equal(await flag(plain.case_id), false);
+});
+
+test('C2b-9: the badge is dark when checkout is switched off', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  const { caseId } = await answered(baseUrl, db);
+  tcCheckout.resetCacheForTests();
+  registry.getPlatformSetting = async () => null;
+  const list = await api(baseUrl, 'GET', CASES('roland'));
+  assert.equal(list.body.cases.find((c) => c.caseId === caseId).txNotInOd, false);
+});
+
+test('C2b-8: undoing a mark that had gone stale is audited as stale, not attested', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  const { handoffId } = await answered(baseUrl, db);
+  assert.equal((await api(baseUrl, 'POST', ENTERED('roland', handoffId, 0), {})).status, 200);
+  const row = db.table('tc_checkout_handoffs').find((x) => x.handoff_id === handoffId);
+  row.payload = { ...TWO_PROCS, procedures: [{ ...TWO_PROCS.procedures[0], code: 'Onlay' }, TWO_PROCS.procedures[1]] };
+  assert.equal((await api(baseUrl, 'DELETE', ENTERED('roland', handoffId, 0))).status, 200);
+  const del = auditRows(db).find((a) => a.resource_type === 'tc_checkout_item_attestation' && a.action === 'DELETE');
+  assert.equal(del.prior_state, 'stale');
+});
