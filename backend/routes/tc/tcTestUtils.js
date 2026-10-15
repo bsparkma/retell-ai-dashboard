@@ -129,6 +129,12 @@ class FakeTenantDb {
         const [, col, idx] = m;
         return (r) => r[col] === params[idx - 1];
       }
+      // Strict `<`, for the checkout expiry sweep (`visit_date < $3`). Dates are
+      // 'YYYY-MM-DD' strings here, which order like dates.
+      if ((m = term.match(/^(\w+) < \$(\d+)$/))) {
+        const [, col, idx] = m;
+        return (r) => r[col] != null && String(r[col]) < String(params[idx - 1]);
+      }
       if ((m = term.match(/^(\w+) <= \$(\d+)$/))) {
         const [, col, idx] = m;
         return (r) => String(r[col]) <= String(params[idx - 1]);

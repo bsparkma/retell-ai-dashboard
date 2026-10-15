@@ -13,6 +13,8 @@
  *   GET    /retention/impact?days=N              how much shortening would cost
  *   GET    /hyg-offices                          the hygiene pilot switch, per office
  *   PUT    /hyg-offices/:office                  turn one office's hygiene on or off
+ *   GET    /tc-checkout-offices                  the TC checkout handoff switch, per office
+ *   PUT    /tc-checkout-offices/:office          turn one office's checkout handoff on or off
  *
  * THE GATE. Every route here sits behind `requireSuperAdmin()`, applied once at
  * the mount in server.js. There is deliberately no module guard: entitlement
@@ -48,6 +50,8 @@ const tenantDb = require('../platform/tenantDb');
 const { auditForTenant, audit } = require('../platform/audit');
 const retentionConfig = require('../config/retention');
 const hygPilot = require('../config/hygPilot');
+const tcCheckout = require('../config/tcCheckout');
+const { realOffices } = require('../config/tcOfficeSwitch');
 const odOffices = require('../config/odOffices');
 const retentionScheduler = require('../services/retentionScheduler');
 const unifiedCallStore = require('../services/unifiedCallStore');
@@ -609,6 +613,68 @@ router.put('/hyg-offices/:office', async (req, res) => {
     console.error('[platform] hygiene switch write failed:', err && err.message ? err.message : err);
     const status = code === 'INVALID_OFFICE' || code === 'INVALID_HYG_ENABLED' ? 400 : 500;
     return fail(res, status, 'Could not save the hygiene switch', code);
+  }
+});
+
+// ── the TC checkout handoff switch (item 50) ────────────────────────────────
+//
+// Per office, like the hygiene switch above, and for the same reason it is not
+// the module entitlement: TC is bought per practice, but whether the hygiene
+// visit's "Alert checkout" (and the visit Send's handoff) is live is decided
+// per LOCATION. config/tcOfficeSwitch.js holds the precedence — an env `=false`
+// always wins, a stored row beats an env `=true`, the floor is OFF — and
+// `officeState()` reports which layer answered, so the panel can say when the
+// environment, not this switch, is in charge.
+
+/** The panel's whole view, freshly composed. */
+function tcCheckoutPayload() {
+  return {
+    offices: realOffices().map((office) => tcCheckout.officeState(office)),
+    settingKey: tcCheckout.settingKey,
+  };
+}
+
+/** GET /tc-checkout-offices — refreshed from the control plane before answering. */
+router.get('/tc-checkout-offices', async (req, res) => {
+  const refreshed = await tcCheckout.refreshFromDb();
+  return res.json({ success: true, ...tcCheckoutPayload(), controlPlaneError: refreshed.error });
+});
+
+/**
+ * PUT /tc-checkout-offices/:office   { enabled: boolean }
+ *
+ * `persist` writes, then re-reads from the database, so the answer is what was
+ * stored. Audited to the acting super_admin's own tenant like the hygiene
+ * switch, with `priorState` on|off.
+ */
+router.put('/tc-checkout-offices/:office', async (req, res) => {
+  const office = String(req.params.office || '');
+  const enabled = req.body ? req.body.enabled : undefined;
+  if (typeof enabled !== 'boolean') {
+    return fail(res, 400, 'enabled must be true or false', 'INVALID_BODY');
+  }
+  if (!realOffices().includes(office)) {
+    return fail(res, 404, 'No such office', 'INVALID_OFFICE');
+  }
+
+  try {
+    await tcCheckout.refreshFromDb();
+    const before = tcCheckout.officeState(office);
+    await tcCheckout.persist(office, enabled, actorEmail(req));
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'platform_setting',
+      resourceId: tcCheckout.settingKey,
+      result: 'SUCCESS',
+      office,
+      priorState: before.enabled ? 'on' : 'off',
+    });
+    return res.json({ success: true, ...tcCheckoutPayload() });
+  } catch (err) {
+    const code = err && err.code ? err.code : 'TC_CHECKOUT_SWITCH_WRITE_FAILED';
+    console.error('[platform] checkout switch write failed:', err && err.message ? err.message : err);
+    const status = code === 'INVALID_OFFICE' || code === 'INVALID_BODY' ? 400 : 500;
+    return fail(res, status, 'Could not save the checkout switch', code);
   }
 });
 

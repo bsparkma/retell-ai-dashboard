@@ -386,6 +386,27 @@ export interface HygSwitchState {
   controlPlaneError?: string | null;
 }
 
+/** One office's TC checkout switch (item 50) — backend config/tcOfficeSwitch.js officeState(). */
+export interface TcCheckoutOfficeSwitch {
+  office: string;
+  enabled: boolean;
+  /** Which layer answered: the env break-glass, the stored row, or the floor. */
+  source: "env" | "db" | "default";
+  policyKnown: boolean;
+  envValue: boolean | null;
+  settingKey: string;
+  envVar: string;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+/** The checkout switch panel's whole view. */
+export interface TcCheckoutSwitchState {
+  offices: TcCheckoutOfficeSwitch[];
+  settingKey: string;
+  controlPlaneError?: string | null;
+}
+
 /** The nightly prune's result, from POST /api/admin/call-store/prune. */
 export interface PruneResult {
   scanned?: number;
@@ -2052,6 +2073,19 @@ export const api = {
   async setHygOfficeEnabled(office: string, enabled: boolean): Promise<HygSwitchState> {
     return request<HygSwitchState>(
       `/platform/hyg-offices/${encodeURIComponent(office)}`,
+      { method: "PUT", body: JSON.stringify({ enabled }) },
+    );
+  },
+
+  /** The TC checkout handoff switch for every office (item 50), with the layer that answered. */
+  async getTcCheckoutOffices(): Promise<TcCheckoutSwitchState> {
+    return request<TcCheckoutSwitchState>("/platform/tc-checkout-offices");
+  },
+
+  /** Turn the checkout handoff on or off for ONE office. Returns the state as stored. */
+  async setTcCheckoutOfficeEnabled(office: string, enabled: boolean): Promise<TcCheckoutSwitchState> {
+    return request<TcCheckoutSwitchState>(
+      `/platform/tc-checkout-offices/${encodeURIComponent(office)}`,
       { method: "PUT", body: JSON.stringify({ enabled }) },
     );
   },

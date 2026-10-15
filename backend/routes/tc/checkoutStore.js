@@ -1,7 +1,8 @@
 'use strict';
 
 /**
- * tc_checkout_handoffs — reads and writes (queue item 49).
+ * tc_checkout_handoffs — reads and writes (queue item 49; the front desk's
+ * lifecycle, item 50).
  *
  * Explicit columns, parameterized, office in every WHERE. No Open Dental
  * anywhere: a handoff is a snapshot the hygiene module sent.
@@ -26,7 +27,42 @@ const COLS = [
   'updated_by',
   'created_at',
   'updated_at',
+  // Item 50.
+  'status',
+  'claimed_by',
+  'claimed_at',
+  'dismissed_reason',
+  'dismissed_by',
+  'dismissed_at',
+  'outcome_by',
+  'outcome_at',
+  'appointment_note',
+  'case_id',
+  'expired_at',
+  'expired_by',
 ];
+
+/**
+ * The actor recorded on an expiry — the row's `expired_by` and the audit
+ * row's user. A constant, like the nurture module's `system:nurture`, because
+ * the system closed it, not whoever's request happened to run the sweep.
+ */
+const EXPIRY_ACTOR = 'system:checkout_expiry';
+
+/** Still waiting on the front desk — what the inbox shows and the badge counts. */
+const WAITING_STATUSES = Object.freeze(['open', 'claimed']);
+/** Every status a handoff can hold; the same seven as the DB CHECK. */
+const STATUSES = Object.freeze([
+  'open',
+  'claimed',
+  'scheduled',
+  'not_scheduled',
+  'nothing_needed',
+  'dismissed',
+  'expired',
+]);
+/** The three front-desk answers. */
+const OUTCOMES = Object.freeze(['scheduled', 'not_scheduled', 'nothing_needed']);
 
 /** Postgres's unique-violation SQLSTATE. */
 const PG_UNIQUE_VIOLATION = '23505';
@@ -60,7 +96,115 @@ function toHandoff(row) {
     submittedBy: row.submitted_by,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
+    status: row.status ?? 'open',
+    claimedBy: row.claimed_by ?? null,
+    claimedAt: iso(row.claimed_at),
+    dismissedReason: row.dismissed_reason ?? null,
+    dismissedBy: row.dismissed_by ?? null,
+    dismissedAt: iso(row.dismissed_at),
+    outcomeBy: row.outcome_by ?? null,
+    outcomeAt: iso(row.outcome_at),
+    appointmentNote: row.appointment_note ?? null,
+    caseId: row.case_id ? String(row.case_id) : null,
+    expiredAt: iso(row.expired_at),
+    expiredBy: row.expired_by ?? null,
   };
+}
+
+/** One handoff by id, in one office, or null. */
+async function findById(q, office, handoffId) {
+  const res = await q.query(
+    `SELECT ${COLS.join(', ')} FROM tc_checkout_handoffs WHERE office_id = $1 AND handoff_id = $2`,
+    [office, handoffId]
+  );
+  return res.rows[0] || null;
+}
+
+/** One office's handoffs for one office day, in the given statuses, newest first. */
+async function listForDay(q, office, day, statuses) {
+  const res = await q.query(
+    `SELECT ${COLS.join(', ')} FROM tc_checkout_handoffs
+      WHERE office_id = $1 AND visit_date = $2 AND status = ANY($3)
+      ORDER BY created_at DESC, handoff_id DESC LIMIT 500`,
+    [office, day, [...statuses]]
+  );
+  return res.rows;
+}
+
+/**
+ * Close every still-waiting handoff whose office day has passed, as `expired`.
+ *
+ * One statement PER PRIOR STATUS, so each closed row is known with what it was
+ * — the audit row's `prior_state`. Conditional on that status, so a row a human
+ * acted on in the meantime is never overwritten.
+ *
+ * @returns {Promise<Array<{ handoffId: string, priorState: 'open'|'claimed' }>>}
+ */
+async function expireBefore(q, office, today) {
+  const out = [];
+  for (const prior of WAITING_STATUSES) {
+    const res = await q.query(
+      `UPDATE tc_checkout_handoffs
+          SET status = 'expired', expired_at = now(), expired_by = $4, updated_at = now()
+        WHERE office_id = $1 AND status = $2 AND visit_date < $3
+        RETURNING handoff_id`,
+      [office, prior, today, EXPIRY_ACTOR]
+    );
+    for (const r of res.rows) out.push({ handoffId: String(r.handoff_id), priorState: prior });
+  }
+  return out;
+}
+
+/** Claim: open → claimed. Conditional; false when somebody else got there. */
+async function claim(q, { office, handoffId, actor }) {
+  const res = await q.query(
+    `UPDATE tc_checkout_handoffs
+        SET status = 'claimed', claimed_by = $3, claimed_at = now(), updated_at = now()
+      WHERE office_id = $1 AND handoff_id = $2 AND status = 'open'
+      RETURNING handoff_id`,
+    [office, handoffId, actor]
+  );
+  return res.rowCount === 1;
+}
+
+/**
+ * Dismiss: open/claimed → dismissed, with a reason. One conditional statement
+ * PER PRIOR STATUS (like expireBefore), so the status it replaced is the one
+ * the database matched — never a read taken before a concurrent claim.
+ *
+ * @returns {Promise<'open'|'claimed'|null>} what it was, or null when nothing matched
+ */
+async function dismiss(q, { office, handoffId, actor, reason }) {
+  for (const prior of WAITING_STATUSES) {
+    const res = await q.query(
+      `UPDATE tc_checkout_handoffs
+          SET status = 'dismissed', dismissed_reason = $3, dismissed_by = $4, dismissed_at = now(),
+              updated_at = now()
+        WHERE office_id = $1 AND handoff_id = $2 AND status = $5
+        RETURNING handoff_id`,
+      [office, handoffId, reason, actor, prior]
+    );
+    if (res.rowCount === 1) return prior;
+  }
+  return null;
+}
+
+/**
+ * Record an outcome: open/claimed → scheduled | not_scheduled | nothing_needed.
+ * Conditional on the status the caller READ, so two people answering the same
+ * checkout cannot both win; the loser's transaction (and any case it made)
+ * rolls back.
+ */
+async function recordOutcome(q, { office, handoffId, expectStatus, outcome, actor, appointmentNote, caseId }) {
+  const res = await q.query(
+    `UPDATE tc_checkout_handoffs
+        SET status = $4, outcome_by = $5, outcome_at = now(), appointment_note = $6, case_id = $7,
+            updated_at = now()
+      WHERE office_id = $1 AND handoff_id = $2 AND status = $3
+      RETURNING handoff_id`,
+    [office, handoffId, expectStatus, outcome, actor, appointmentNote, caseId]
+  );
+  return res.rowCount === 1;
 }
 
 /** The handoff for one source key in one office, or null. */
@@ -89,11 +233,14 @@ async function insertHandoff(q, row) {
     'revision',
     'submitted_by',
     'updated_by',
+    'status',
   ];
   const placeholders = cols.map((c, i) => (c === 'payload' ? `$${i + 1}::jsonb` : `$${i + 1}`));
   await q.query(
     `INSERT INTO tc_checkout_handoffs (${cols.join(', ')}) VALUES (${placeholders.join(', ')})`,
-    cols.map((c) => (c === 'payload' ? JSON.stringify(row[c]) : row[c]))
+    cols.map((c) =>
+      c === 'payload' ? JSON.stringify(row[c]) : c === 'status' ? row.status || 'open' : row[c]
+    )
   );
 }
 
@@ -129,8 +276,18 @@ async function updatePayload(q, { office, handoffId, expectRevision, row }) {
 
 module.exports = {
   COLS,
+  WAITING_STATUSES,
+  STATUSES,
+  EXPIRY_ACTOR,
+  OUTCOMES,
   PG_UNIQUE_VIOLATION,
   toHandoff,
+  findById,
+  listForDay,
+  expireBefore,
+  claim,
+  dismiss,
+  recordOutcome,
   findBySourceKey,
   insertHandoff,
   updatePayload,

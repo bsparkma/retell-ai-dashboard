@@ -23,7 +23,7 @@
  * second place for that decision to be made by accident.
  */
 import { useEffect, useState } from "react";
-import { ShieldAlert, Building2, Database, Stethoscope } from "lucide-react";
+import { ShieldAlert, Building2, Database, Stethoscope, DoorOpen } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/contexts/AuthContext";
@@ -32,6 +32,7 @@ import type { Practice } from "@/lib/api";
 import PracticesPanel from "./platform/PracticesPanel";
 import RetentionPanel from "./platform/RetentionPanel";
 import HygienePanel from "./platform/HygienePanel";
+import { TcCheckoutPanel } from "./platform/TcCheckoutPanel";
 
 /** The message to show for a failed request — the server's, whenever it sent one. */
 export function loadError(e: unknown): string {
@@ -120,6 +121,10 @@ export default function Platform() {
             <Stethoscope className="mr-1.5 h-3.5 w-3.5" />
             Hygiene
           </TabsTrigger>
+          <TabsTrigger value="tc-checkout" data-testid="tab-tc-checkout">
+            <DoorOpen className="mr-1.5 h-3.5 w-3.5" />
+            TC checkout
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="practices" className="mt-4">
@@ -139,6 +144,10 @@ export default function Platform() {
           {/* The offices are platform-level; `practices` is passed in only so the
               panel can show the OTHER axis (entitlement) beside the switch. */}
           <HygienePanel practices={practices} />
+        </TabsContent>
+
+        <TabsContent value="tc-checkout" className="mt-4">
+          <TcCheckoutPanel />
         </TabsContent>
       </Tabs>
     </div>

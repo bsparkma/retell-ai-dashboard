@@ -50,6 +50,7 @@ import {
   Archive,
   EyeOff,
   MessageSquare,
+  DoorOpen,
 } from "lucide-react";
 import { api, isRateLimited } from "@/lib/api";
 import { usePolling } from "@/hooks/usePolling";
@@ -59,6 +60,7 @@ import { useModule } from "@/contexts/ModuleContext";
 import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
 import { isTcSharedRoute, resolveTcOfficeScope } from "@/features/tc/officeScope";
 import { getUnseenTotal } from "@/features/tc/messaging/messagingApi";
+import { useCheckoutWatch } from "@/features/tc/checkout/useCheckoutWatch";
 import type { OfficeId } from "@shared/tc/contract";
 import { TcGlobalSearch } from "@/features/tc/search/TcGlobalSearch";
 import { can, canVisit } from "@/lib/permissions";
@@ -191,6 +193,9 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
         { path: "/tc/followups", label: "Follow-Ups", icon: BellRing },
         { path: "/tc/texts", label: "Texts", icon: MessageSquare },
         { path: "/tc/opportunities", label: "Opportunities", icon: Telescope },
+        // Item 50. Shown only while checkout is switched on for an office in
+        // scope (see `checkout.enabled` below), with a waiting-count badge.
+        { path: "/tc/checkout", label: "Checkout", icon: DoorOpen },
         { path: "/tc/preauth", label: "Pre-Auth", icon: ShieldCheck },
       ],
     },
@@ -427,6 +432,14 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
   usePolling(check, 60_000);
 
+  /**
+   * Item 50: the Checkout nav item, its badge and the arrival toast. Same scope
+   * and the same gate as the Texts badge — a TC route, someone holding tc.full.
+   * An office with checkout switched off contributes nothing; with none on,
+   * the nav item is not drawn at all.
+   */
+  const checkout = useCheckoutWatch(tcTextsInScope);
+
   const handleNavClick = () => {
     setSidebarOpen(false);
   };
@@ -461,11 +474,14 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
    */
   const showPostingHistory = navModule === "rcm" && can(permissions, "admin.all");
   const navGroups = [
-    ...visibleNav(NAV_BY_MODULE[navModule] ?? NAV_BY_MODULE.voice ?? [], permissions).map((g) =>
-      showPostingHistory && g.title === "Revenue Cycle"
-        ? { ...g, items: [...g.items, RCM_POSTING_HISTORY] }
-        : g,
-    ),
+    ...visibleNav(NAV_BY_MODULE[navModule] ?? NAV_BY_MODULE.voice ?? [], permissions)
+      .map((g) =>
+        showPostingHistory && g.title === "Revenue Cycle"
+          ? { ...g, items: [...g.items, RCM_POSTING_HISTORY] }
+          : g,
+      )
+      // Checkout ships dark per office: no office on ⇒ no nav item.
+      .map((g) => ({ ...g, items: g.items.filter((i) => i.path !== "/tc/checkout" || checkout.enabled) })),
     ...(isSuperAdmin ? [PLATFORM_GROUP] : []),
   ];
   // wouter's `location` is the pathname only, so the query — which is what
@@ -678,6 +694,16 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                           aria-label={`${unseenTexts.capped ? "99 or more" : unseenTexts.count} unread texts`}
                         >
                           {unseenTexts.capped ? "99+" : unseenTexts.count}
+                        </span>
+                      )}
+                      {path === "/tc/checkout" && checkout.waiting > 0 && (
+                        <span
+                          className="rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none"
+                          style={{ backgroundColor: "oklch(0.62 0.15 186)", color: "oklch(0.15 0.02 250)" }}
+                          data-testid="tc-checkout-waiting"
+                          aria-label={`${checkout.waiting} waiting at checkout`}
+                        >
+                          {checkout.waiting > 99 ? "99+" : checkout.waiting}
                         </span>
                       )}
                     </div>
