@@ -120,7 +120,6 @@ async function findById(q, office, handoffId) {
   return res.rows[0] || null;
 }
 
-/** One office's handoffs for one office day, in the given statuses, newest first. */
 // ── C2b (item 50b): the staff panel and its attestations ────────────────────
 
 const ATTESTATION_COLS = ['office_id', 'handoff_id', 'item_index', 'item_key', 'attested_by', 'attested_at'];
@@ -243,6 +242,7 @@ function casesWithUnenteredTreatment(handoffRows, attestations, keyOf) {
   return out;
 }
 
+/** One office's handoffs for one office day, in the given statuses, newest first. */
 async function listForDay(q, office, day, statuses) {
   const res = await q.query(
     `SELECT ${COLS.join(', ')} FROM tc_checkout_handoffs

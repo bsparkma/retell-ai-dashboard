@@ -965,3 +965,15 @@ test('C2b-9: the badge is dark when checkout is switched off', async (t) => {
   const list = await api(baseUrl, 'GET', CASES('roland'));
   assert.equal(list.body.cases.find((c) => c.caseId === caseId).txNotInOd, false);
 });
+
+test('C2b-8: undoing a mark that had gone stale is audited as stale, not attested', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  const { handoffId } = await answered(baseUrl, db);
+  assert.equal((await api(baseUrl, 'POST', ENTERED('roland', handoffId, 0), {})).status, 200);
+  const row = db.table('tc_checkout_handoffs').find((x) => x.handoff_id === handoffId);
+  row.payload = { ...TWO_PROCS, procedures: [{ ...TWO_PROCS.procedures[0], code: 'Onlay' }, TWO_PROCS.procedures[1]] };
+  assert.equal((await api(baseUrl, 'DELETE', ENTERED('roland', handoffId, 0))).status, 200);
+  const del = auditRows(db).find((a) => a.resource_type === 'tc_checkout_item_attestation' && a.action === 'DELETE');
+  assert.equal(del.prior_state, 'stale');
+});

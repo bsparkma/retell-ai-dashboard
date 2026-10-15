@@ -841,7 +841,9 @@ router.delete(
       if (target.refusal) return target;
       const removed = await checkoutStore.deleteAttestation(client, office, p.id, p.index);
       if (!removed) return { refusal: [404, 'That item is not marked as entered', 'NOT_ATTESTED'] };
-      return { row: target.row };
+      // What it WAS: a current mark, or one already stale against a revised item.
+      const priorState = removed.item_key === contract.checkoutItemKey(target.procedure) ? 'attested' : 'stale';
+      return { row: target.row, priorState };
     });
     if (result.refusal) {
       const [status, error, code] = result.refusal;
@@ -849,7 +851,7 @@ router.delete(
     }
     await auditTc(req, 'DELETE', 'tc_checkout_item_attestation', `${p.id}:${p.index}`, {
       office,
-      priorState: 'attested',
+      priorState: result.priorState,
     });
     const atts = await tenantDb.withTenantDb(req, (pool) => checkoutStore.listAttestations(pool, office, [p.id]));
     return res.json({ success: true, handoffId: p.id, item: panelVisit(result.row, atts).items[p.index] });
