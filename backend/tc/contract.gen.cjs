@@ -17158,7 +17158,9 @@ var TcCheckoutHandoff = import_zod6.z.object({
   outcomeAt: import_zod6.z.string().nullable().default(null),
   appointmentNote: import_zod6.z.string().nullable().default(null),
   caseId: import_zod6.z.string().uuid().nullable().default(null),
-  expiredAt: import_zod6.z.string().nullable().default(null)
+  expiredAt: import_zod6.z.string().nullable().default(null),
+  /** Always `system:checkout_expiry` when set — the system closed it, not a person. */
+  expiredBy: import_zod6.z.string().nullable().default(null)
 });
 var TcCheckoutOutcomeRequest = import_zod6.z.object({
   outcome: TcCheckoutOutcome,

@@ -39,7 +39,15 @@ const COLS = [
   'appointment_note',
   'case_id',
   'expired_at',
+  'expired_by',
 ];
+
+/**
+ * The actor recorded on an expiry — the row's `expired_by` and the audit
+ * row's user. A constant, like the nurture module's `system:nurture`, because
+ * the system closed it, not whoever's request happened to run the sweep.
+ */
+const EXPIRY_ACTOR = 'system:checkout_expiry';
 
 /** Still waiting on the front desk — what the inbox shows and the badge counts. */
 const WAITING_STATUSES = Object.freeze(['open', 'claimed']);
@@ -99,6 +107,7 @@ function toHandoff(row) {
     appointmentNote: row.appointment_note ?? null,
     caseId: row.case_id ? String(row.case_id) : null,
     expiredAt: iso(row.expired_at),
+    expiredBy: row.expired_by ?? null,
   };
 }
 
@@ -136,10 +145,10 @@ async function expireBefore(q, office, today) {
   for (const prior of WAITING_STATUSES) {
     const res = await q.query(
       `UPDATE tc_checkout_handoffs
-          SET status = 'expired', expired_at = now(), updated_at = now()
+          SET status = 'expired', expired_at = now(), expired_by = $4, updated_at = now()
         WHERE office_id = $1 AND status = $2 AND visit_date < $3
         RETURNING handoff_id`,
-      [office, prior, today]
+      [office, prior, today, EXPIRY_ACTOR]
     );
     for (const r of res.rows) out.push({ handoffId: String(r.handoff_id), priorState: prior });
   }
@@ -158,17 +167,26 @@ async function claim(q, { office, handoffId, actor }) {
   return res.rowCount === 1;
 }
 
-/** Dismiss: open/claimed → dismissed, with a reason. Conditional. */
+/**
+ * Dismiss: open/claimed → dismissed, with a reason. One conditional statement
+ * PER PRIOR STATUS (like expireBefore), so the status it replaced is the one
+ * the database matched — never a read taken before a concurrent claim.
+ *
+ * @returns {Promise<'open'|'claimed'|null>} what it was, or null when nothing matched
+ */
 async function dismiss(q, { office, handoffId, actor, reason }) {
-  const res = await q.query(
-    `UPDATE tc_checkout_handoffs
-        SET status = 'dismissed', dismissed_reason = $3, dismissed_by = $4, dismissed_at = now(),
-            updated_at = now()
-      WHERE office_id = $1 AND handoff_id = $2 AND status = ANY($5)
-      RETURNING handoff_id`,
-    [office, handoffId, reason, actor, [...WAITING_STATUSES]]
-  );
-  return res.rowCount === 1;
+  for (const prior of WAITING_STATUSES) {
+    const res = await q.query(
+      `UPDATE tc_checkout_handoffs
+          SET status = 'dismissed', dismissed_reason = $3, dismissed_by = $4, dismissed_at = now(),
+              updated_at = now()
+        WHERE office_id = $1 AND handoff_id = $2 AND status = $5
+        RETURNING handoff_id`,
+      [office, handoffId, reason, actor, prior]
+    );
+    if (res.rowCount === 1) return prior;
+  }
+  return null;
 }
 
 /**
@@ -260,6 +278,7 @@ module.exports = {
   COLS,
   WAITING_STATUSES,
   STATUSES,
+  EXPIRY_ACTOR,
   OUTCOMES,
   PG_UNIQUE_VIOLATION,
   toHandoff,

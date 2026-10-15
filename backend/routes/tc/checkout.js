@@ -20,10 +20,13 @@
  *   scheduled       the patient's open case (if any) MOVES to `scheduled`, with
  *                   a status_change event in the funnel's `from → to` format;
  *                   otherwise a case is CREATED at `scheduled`.
- *   not_scheduled   the patient's open case (if any) gets a note and keeps its
- *                   status — "left without booking" is never a reason to move a
- *                   case backwards; otherwise a case is CREATED at `pending_pt`
- *                   ("Pending Patient": the TC is waiting on the patient).
+ *   not_scheduled   the patient's open case (if any) moves FORWARD to
+ *                   `pending_pt` ("Pending Patient") when it is still before
+ *                   it — hygiene_review / diagnosed / pending_tc, which is
+ *                   where the same visit's own hygiene case usually sits — and
+ *                   otherwise only gets a note: "left without booking" is never
+ *                   a reason to move a case backwards. No open case → one is
+ *                   CREATED at `pending_pt`.
  *   nothing_needed  the handoff closes and NO case is created.
  * The handoff's status update is conditional on the status the request read,
  * inside the same transaction as the case write: two people answering the
@@ -36,9 +39,9 @@
  * So every request here first closes, as `expired`, each still-waiting handoff
  * whose visit day is before the office's today (America/Chicago unless
  * OFFICE_TIMEZONE says otherwise). One audit row per expiry, `prior_state` the
- * status it had, `source_ref` `checkout_day_expiry` — the actor on that row is
- * whoever's request ran the sweep, and the source_ref says it was the system's
- * act, not theirs. Nothing is deleted.
+ * status it had, `source_ref` `checkout_day_expiry`, and the SYSTEM as the
+ * actor (`system:checkout_expiry`, also stamped on the row's `expired_by`) —
+ * never whoever's request happened to run the sweep. Nothing is deleted.
  *
  * ═════════════════════════════════════════════════════════════════════════════
  * GUARDRAILS
@@ -83,6 +86,21 @@ function officeToday() {
 
 const HandoffId = z.string().uuid();
 const View = z.enum(['waiting', 'done']).default('waiting');
+
+/**
+ * Open case statuses that sit BEFORE "Pending Patient" — where "Not scheduled"
+ * moves a case forward to pending_pt. Everything else open is at or past it.
+ */
+const BEFORE_PENDING_PT = Object.freeze(['hygiene_review', 'diagnosed', 'pending_tc']);
+
+/**
+ * The request the expiry audit rows are written through: the real request
+ * (tenant, endpoint, ip) with the SYSTEM as its user, so the trail never names
+ * a person for an act the system performed.
+ */
+function systemRequest(req) {
+  return Object.assign(Object.create(req), { user: { email: checkoutStore.EXPIRY_ACTOR } });
+}
 
 /** Statuses the "Done today" view shows: every answer a human gave. */
 const DONE_STATUSES = Object.freeze(['scheduled', 'not_scheduled', 'nothing_needed', 'dismissed']);
@@ -140,8 +158,9 @@ async function sweep(req, office, today) {
   const expired = await tenantDb.withTenantDb(req, (pool) =>
     checkoutStore.expireBefore(pool, office, today)
   );
+  const asSystem = systemRequest(req);
   for (const e of expired) {
-    await auditTc(req, 'UPDATE', 'tc_checkout_handoff', e.handoffId, {
+    await auditTc(asSystem, 'UPDATE', 'tc_checkout_handoff', e.handoffId, {
       office,
       sourceRef: 'checkout_day_expiry',
       priorState: e.priorState,
@@ -276,17 +295,15 @@ router.post(
     const today = await enter(req, res);
     if (today === null) return undefined;
     const actor = actorEmail(req);
-    const before = await tenantDb.withTenantDb(req, (pool) => checkoutStore.findById(pool, req.tcOffice, id.data));
-    if (!before) return res.status(404).json({ success: false, error: 'Checkout handoff not found', code: 'NOT_FOUND' });
-    const ok = await tenantDb.withTenantDb(req, (pool) =>
+    const prior = await tenantDb.withTenantDb(req, (pool) =>
       checkoutStore.dismiss(pool, { office: req.tcOffice, handoffId: id.data, actor, reason: body.reason })
     );
-    if (!ok) return refusal(req, res, id.data, 'dismissed');
+    if (!prior) return refusal(req, res, id.data, 'dismissed');
     // The reason is the TC's own words and stays on the row; the audit row
-    // carries only what the handoff WAS.
+    // carries only what the handoff WAS — as the database matched it.
     await auditTc(req, 'UPDATE', 'tc_checkout_handoff', id.data, {
       office: req.tcOffice,
-      priorState: before.status || 'open',
+      priorState: prior,
     });
     const row = await tenantDb.withTenantDb(req, (pool) => checkoutStore.findById(pool, req.tcOffice, id.data));
     return res.json({ success: true, handoff: checkoutStore.toHandoff(row) });
@@ -336,12 +353,20 @@ router.post(
             caseId = openCaseId;
             caseAction = 'UPDATE';
             const header = await store.getCaseHeader(client, office, openCaseId);
-            if (body.outcome === 'scheduled' && header && header.status !== 'scheduled') {
+            // Where the open case moves, if anywhere: Scheduled always moves it
+            // to scheduled; Not scheduled moves it to pending_pt only FORWARD.
+            const moveTo =
+              body.outcome === 'scheduled'
+                ? 'scheduled'
+                : header && BEFORE_PENDING_PT.includes(header.status)
+                  ? 'pending_pt'
+                  : null;
+            if (moveTo && header && header.status !== moveTo) {
               await client.query(
                 `UPDATE tc_cases
                     SET status = $3, status_changed_at = $4, updated_at = now()
                   WHERE office_id = $1 AND case_id = $2`,
-                [office, openCaseId, 'scheduled', now]
+                [office, openCaseId, moveTo, now]
               );
               await store.insertEventRow(client, {
                 event_id: randomUUID(),
@@ -350,7 +375,7 @@ router.post(
                 ts: now,
                 type: 'status_change',
                 // The funnel report parses `<from> → <to>`; keep that prefix exact.
-                description: `${header.status} → scheduled: Scheduled at checkout${noteSuffix}`,
+                description: `${header.status} → ${moveTo}: ${label} at checkout${noteSuffix}`,
                 actor,
                 detail: null,
                 legacy_id: null,
@@ -358,7 +383,7 @@ router.post(
               stoppedEnrollments = await nurtureHooks.stopForTerminalCase(client, {
                 office,
                 caseId: openCaseId,
-                newStatus: 'scheduled',
+                newStatus: moveTo,
                 actor,
                 now: new Date(now),
               });

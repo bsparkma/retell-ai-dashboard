@@ -483,3 +483,47 @@ test("item 49's submit stores a handoff the inbox then shows as open", async (t)
   assert.equal(sub.status, 201, JSON.stringify(sub.body));
   assert.equal(sub.body.handoff.status, 'open');
 });
+
+// ── review round 1 ──────────────────────────────────────────────────────────
+
+for (const from of ['hygiene_review', 'diagnosed', 'pending_tc']) {
+  test(`Not scheduled moves an open ${from} case FORWARD to pending_pt (funnel format)`, async (t) => {
+    switchCheckout(t, { roland: true });
+    const { baseUrl, db } = await boot(t);
+    const c = seedCase(db, { status: from });
+    const h = seed(db);
+    const r = await api(baseUrl, 'POST', ACT('roland', h.handoff_id, 'outcome'), { outcome: 'not_scheduled' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.caseId, c.case_id);
+    assert.equal(db.table('tc_cases').length, 1, 'no second case');
+    assert.equal(db.table('tc_cases')[0].status, 'pending_pt', 'now in a pipeline column');
+    const change = db.table('tc_case_events').find((e) => e.case_id === c.case_id && e.type === 'status_change');
+    assert.equal(change.description, `${from} → pending_pt: Not scheduled at checkout`);
+    assert.ok(auditRows(db).some((a) => a.resource_type === 'tc_case' && a.action === 'UPDATE'));
+  });
+}
+
+test('expiry is the SYSTEM\'s act: expired_by and the audit actor are system:checkout_expiry', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  const stale = seed(db, { visit_date: YESTERDAY });
+  await api(baseUrl, 'GET', '/api/tc/checkout/summary?office=roland');
+  const row = db.table('tc_checkout_handoffs').find((x) => x.handoff_id === stale.handoff_id);
+  assert.equal(row.status, 'expired');
+  assert.equal(row.expired_by, 'system:checkout_expiry');
+  const audit = auditRows(db).find((a) => a.source_ref === 'checkout_day_expiry');
+  assert.equal(audit.user_id, 'system:checkout_expiry', 'never the person whose poll ran the sweep');
+  assert.equal(audit.tenant_id, 'T1', 'still filed in the tenant');
+  const read = await api(baseUrl, 'GET', `/api/tc/checkout/${stale.handoff_id}?office=roland`);
+  assert.equal(read.body.handoff.expiredBy, 'system:checkout_expiry');
+});
+
+test('dismiss audits the status the DATABASE matched (claimed), not a pre-read', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  const h = seed(db, { status: 'claimed', claimed_by: 'tc2@carein.ai', claimed_at: NOW });
+  const r = await api(baseUrl, 'POST', ACT('roland', h.handoff_id, 'dismiss'), { reason: 'Not a checkout' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const audit = auditRows(db).find((a) => a.resource_type === 'tc_checkout_handoff');
+  assert.equal(audit.prior_state, 'claimed');
+});

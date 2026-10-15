@@ -72,8 +72,11 @@ test('the pairing CHECKs say what each state carries', () => {
   const calls = capture();
   assert.match(check(calls, 'tc_checkout_handoffs_dismissed_check'), /\(status = 'dismissed'\) = \(dismissed_reason IS NOT NULL/);
   assert.match(check(calls, 'tc_checkout_handoffs_outcome_check'), /outcome_by IS NOT NULL AND outcome_at IS NOT NULL/);
-  assert.match(check(calls, 'tc_checkout_handoffs_case_check'), /status <> 'nothing_needed' OR case_id IS NULL/);
-  assert.match(check(calls, 'tc_checkout_handoffs_expired_check'), /\(status = 'expired'\) = \(expired_at IS NOT NULL\)/);
+  assert.equal(check(calls, 'tc_checkout_handoffs_case_check'), "status <> 'nothing_needed' OR case_id IS NULL");
+  assert.equal(
+    check(calls, 'tc_checkout_handoffs_expired_check'),
+    "(status = 'expired') = (expired_at IS NOT NULL AND expired_by IS NOT NULL)"
+  );
   assert.match(check(calls, 'tc_checkout_handoffs_claimed_check'), /claimed_by IS NOT NULL AND claimed_at IS NOT NULL/);
 });
 
@@ -82,7 +85,7 @@ test('down() drops the constraints before the columns', () => {
   const firstDropCol = calls.findIndex((c) => c.op === 'dropColumns');
   const lastDropCon = calls.map((c) => c.op).lastIndexOf('dropConstraint');
   assert.ok(lastDropCon < firstDropCol);
-  assert.equal(calls[firstDropCol].args[1].length, 11);
+  assert.equal(calls[firstDropCol].args[1].length, 12);
 });
 
 test('numbered after develop\'s item-49 migrations; uniform width; unique', () => {
@@ -96,4 +99,18 @@ test('numbered after develop\'s item-49 migrations; uniform width; unique', () =
 test('every column the store SELECTs exists once every tenant migration has run', () => {
   const table = buildTenantSchema().get('tc_checkout_handoffs');
   assert.deepEqual(checkoutStore.COLS.filter((c) => !table.has(c)), []);
+});
+
+test('review round 1: a case an outcome linked can still be DELETED (ON DELETE SET NULL vs the CHECK)', () => {
+  // Postgres re-checks CHECKs on the row an ON DELETE SET NULL action rewrites.
+  // A CHECK requiring case_id for scheduled / not_scheduled would make every
+  // such case undeletable (23514 -> 500 on DELETE /api/tc/cases/:id). The only
+  // case rule left is the one SET NULL can never violate.
+  const calls = capture();
+  const cols = calls.find((c) => c.op === 'addColumns').args[1];
+  assert.equal(cols.case_id.onDelete, 'SET NULL');
+  for (const c of calls.filter((x) => x.op === 'addConstraint')) {
+    const sql = String(c.args[2].check || '');
+    assert.ok(!/case_id IS NOT NULL/.test(sql), `${c.args[1]} would refuse the SET NULL a case delete performs`);
+  }
 });

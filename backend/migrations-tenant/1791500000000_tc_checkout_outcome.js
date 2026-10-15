@@ -52,6 +52,9 @@ exports.up = (pgm) => {
     // The case an outcome created or moved. NULL for nothing_needed / dismissed / expired.
     case_id: { type: 'uuid', references: 'tc_cases', onDelete: 'SET NULL' },
     expired_at: { type: 'timestamptz' },
+    // WHO closed it: always the system — a constant actor, never the person
+    // whose request happened to run the sweep.
+    expired_by: { type: 'text' },
   });
 
   pgm.addConstraint('tc_checkout_handoffs', 'tc_checkout_handoffs_status_check', {
@@ -73,14 +76,18 @@ exports.up = (pgm) => {
       "(status IN ('scheduled', 'not_scheduled', 'nothing_needed')) = " +
       '(outcome_by IS NOT NULL AND outcome_at IS NOT NULL)',
   });
-  // Scheduled / not scheduled land on a case; nothing needed never does.
+  // Nothing needed never carries a case. Scheduled / not scheduled are WRITTEN
+  // with one (the route always sets it), but the column may later read NULL:
+  // case_id is ON DELETE SET NULL, and Postgres re-checks CHECKs on the row
+  // that action rewrites — requiring NOT NULL here would make every case an
+  // outcome touched impossible to delete. A NULL after an outcome means "the
+  // case was deleted since", which is the honest reading.
   pgm.addConstraint('tc_checkout_handoffs', 'tc_checkout_handoffs_case_check', {
-    check:
-      "(status NOT IN ('scheduled', 'not_scheduled') OR case_id IS NOT NULL) AND " +
-      "(status <> 'nothing_needed' OR case_id IS NULL)",
+    check: "status <> 'nothing_needed' OR case_id IS NULL",
   });
+  // Expired ⇔ when AND by whom (the system's constant actor).
   pgm.addConstraint('tc_checkout_handoffs', 'tc_checkout_handoffs_expired_check', {
-    check: "(status = 'expired') = (expired_at IS NOT NULL)",
+    check: "(status = 'expired') = (expired_at IS NOT NULL AND expired_by IS NOT NULL)",
   });
 
   pgm.createIndex('tc_checkout_handoffs', ['office_id', 'status', 'visit_date'], {
@@ -121,6 +128,7 @@ exports.down = (pgm) => {
       'appointment_note',
       'case_id',
       'expired_at',
+      'expired_by',
     ],
     { ifExists: true }
   );

@@ -223,6 +223,8 @@ export const TcCheckoutHandoff = z.object({
   appointmentNote: z.string().nullable().default(null),
   caseId: z.string().uuid().nullable().default(null),
   expiredAt: z.string().nullable().default(null),
+  /** Always `system:checkout_expiry` when set — the system closed it, not a person. */
+  expiredBy: z.string().nullable().default(null),
 });
 export type TcCheckoutHandoff = z.infer<typeof TcCheckoutHandoff>;
 

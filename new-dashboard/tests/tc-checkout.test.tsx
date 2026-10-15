@@ -264,6 +264,31 @@ function summary(over: Partial<TcCheckoutSummary> = {}): TcCheckoutSummary {
 }
 
 describe("useCheckoutWatch", () => {
+  it("answering the newest does NOT announce the older patient beneath it", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const older = { handoffId: "5d2a7e10-0000-4000-8000-000000000001", patientName: "Older, Pat", createdAt: "2026-09-08T13:00:00.000Z" };
+      const newer = { handoffId: "5d2a7e10-0000-4000-8000-000000000002", patientName: "Newer, Pat", createdAt: "2026-09-08T14:00:00.000Z" };
+      // Both waiting; then the desk answers the newer one, so the server's
+      // newest WAITING handoff becomes the older one.
+      state.summaries = [summary({ waiting: 2, newest: newer }), summary({ waiting: 1, newest: older })];
+      const memory = memoryLocation({ path: "/tc" });
+      render(
+        <WouterRouter hook={memory.hook}>
+          <Probe offices={["roland"]} />
+        </WouterRouter>,
+      );
+      await waitFor(() => expect(screen.getByTestId("probe").textContent).toBe("true:2"));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      await waitFor(() => expect(screen.getByTestId("probe").textContent).toBe("true:1"));
+      expect(toastMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("off for the office → not enabled, no badge, no toast", async () => {
     state.summaries = [summary({ enabled: false, today: null })];
     const memory = memoryLocation({ path: "/tc" });
