@@ -20,6 +20,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { OfficeId, TcCase } from "@shared/tc/contract";
+import { checkoutPhaseNames } from "@shared/tc/checkout";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -332,6 +333,18 @@ export function OdPullDialog({ office, tcCase, open, onOpenChange, onImported }:
                     This case already has a treatment plan. Importing replaces every existing phase.
                   </p>
                 )}
+                {/* Item 50b: say by name which checkout section goes, and that
+                    the hygienist's treatment is still kept on the staff panel. */}
+                {checkoutPhaseNames(tcCase.phases).map((name) => (
+                  <p
+                    key={name}
+                    className="text-xs font-medium text-amber-700 dark:text-amber-400"
+                    data-testid="tc-od-pull-checkout-warning"
+                  >
+                    This will remove the '{name}' section added at checkout — that treatment remains on
+                    the staff panel.
+                  </p>
+                ))}
               </>
             )}
           </div>

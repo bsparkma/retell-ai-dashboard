@@ -206,6 +206,12 @@ export type TcCaseSummary = Omit<
    * folded back from a full TcCase (mergeCase) keeps the row's own value.
    */
   hasOrthoScreening?: boolean;
+  /**
+   * Item 50b: the case holds hygiene-visit treatment (a checkout) that nobody
+   * has yet marked "entered in Open Dental". Same list-route computation and
+   * the same optionality as hasOrthoScreening.
+   */
+  txNotInOd?: boolean;
 };
 
 export interface TcCaseListFilters {

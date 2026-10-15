@@ -32,6 +32,8 @@ const {
 const { withTenantTx } = require('./tx');
 const tenantDb = require('../../platform/tenantDb');
 const store = require('./caseStore');
+const checkoutStore = require('./checkoutStore');
+const tcCheckout = require('../../config/tcCheckout');
 // (item 47) A case leaving TC work stops its nurture enrollment.
 const nurtureHooks = require('../../services/tcNurture/hooks');
 
@@ -313,12 +315,29 @@ router.get(
       for (const r of found.rows) screened.add(r.case_id);
     }
 
+    // C2b: which of these cases hold hygiene-visit treatment nobody has yet
+    // attested as entered in Open Dental (the card's "Tx not in OD" badge).
+    // Only where checkout is switched on for the office; dark otherwise.
+    let unentered = new Set();
+    if (ids.length > 0 && (await tcCheckout.isEnabled(req.tcOffice))) {
+      unentered = await tenantDb.withTenantDb(req, async (pool) => {
+        const handoffs = await checkoutStore.listForCases(pool, req.tcOffice, ids);
+        const atts = await checkoutStore.listAttestations(
+          pool,
+          req.tcOffice,
+          handoffs.map((r) => String(r.handoff_id))
+        );
+        return checkoutStore.casesWithUnenteredTreatment(handoffs, atts, contract.checkoutItemKey);
+      });
+    }
+
     await auditTc(req, 'READ', 'tc_case', null);
     res.json({
       success: true,
       cases: rows.rows.map((r) => ({
         ...caseRowToSummary(r),
         hasOrthoScreening: screened.has(r.case_id),
+        txNotInOd: unentered.has(String(r.case_id)),
       })),
     });
   })
