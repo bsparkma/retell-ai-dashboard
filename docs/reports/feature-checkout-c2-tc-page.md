@@ -174,7 +174,35 @@ Screenshots: `pnpm exec vite build` -> `TC_SHOTS=1 pnpm exec vitest run tests/tc
 
 ## Lane
 
-LANE_PLACEHOLDER
+**RED. Both verdicts agree.**
+
+**Orchestrator (me): RED.**
+- `classify-lane.mjs` says RED. Its triggers:
+  - the tenant migration
+  - the new status enum and CHECK on `tc_checkout_handoffs`
+  - audit `prior_state` vocabulary
+  - new machine routes (`/api/tc/checkout/*`, `/api/platform/tc-checkout-offices`)
+  - the shared contract (regenerated bundle)
+  - the queue file marks itself RED
+- By judgment, the platform console is the super-admin surface, and the switch now writes a settings key.
+
+**Reviewer** (fresh agent, `.claude/agents/reviewer.md`):
+- Round 1: **FAIL**, with five findings (see "Review" below).
+- Round 2, after `df81a43`: **PASS, LANE RED**.
+
+**Gates after fix round 1** (merge tree, develop up to date):
+```
+backend $ node --check server.js  -> OK
+backend $ node --test             -> # tests 3590  # pass 3586  # fail 1  # skipped 3
+  not ok 53 - routes\\platform.test.js  failureType: 'uncaughtException'
+  error: 'Unable to deserialize cloned data due to invalid or unsupported version.'
+  -> known Node 22 file-level flake, no assertion; isolated: node --test routes/platform.test.js -> # pass 20 # fail 0
+new-dashboard $ pnpm run check    -> exit 0
+new-dashboard $ pnpm run test     -> Test Files 153 passed | 33 skipped (186); Tests 2530 passed | 192 skipped (2722)
+```
+The reviewer's own round-2 run had no flake: 3593 tests / 3590 passed / 0 failed.
+
+**Final lane: RED.** Push, open the PR, send NEEDS REVIEW, stop. Beau merges.
 
 ## Staging test steps (after Beau merges and staging deploys)
 
