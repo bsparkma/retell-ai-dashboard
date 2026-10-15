@@ -527,3 +527,202 @@ test('dismiss audits the status the DATABASE matched (claimed), not a pre-read',
   const audit = auditRows(db).find((a) => a.resource_type === 'tc_checkout_handoff');
   assert.equal(audit.prior_state, 'claimed');
 });
+
+// ── C2b (queue 50b): the treatment persists on the case ─────────────────────
+
+const TWO_PROCS = {
+  ...SNAPSHOT,
+  procedures: [
+    { ...SNAPSHOT.procedures[0], note: 'Fractured cusp' },
+    {
+      teeth: 'mouth',
+      code: 'SRP',
+      category: 'Perio',
+      priority: 'preventative',
+      status: 'proposed',
+      surfaces: [],
+      scheduleNext: false,
+      note: '',
+    },
+  ],
+};
+
+/** A plan phase (+ one item) already on a case. */
+function seedPhase(db, caseRow, position, name = `Phase ${position + 1}`) {
+  const phaseId = randomUUID();
+  db.table('tc_case_phases').push({
+    phase_id: phaseId,
+    case_id: caseRow.case_id,
+    office_id: caseRow.office_id,
+    position,
+    name,
+    description: '',
+  });
+  db.table('tc_case_items').push({
+    item_id: randomUUID(),
+    phase_id: phaseId,
+    case_id: caseRow.case_id,
+    office_id: caseRow.office_id,
+    position: 0,
+    legacy_item_id: null,
+    od_proc_num: null,
+    tooth: '#14',
+    procedure_name: 'Implant',
+    patient_description: '',
+    fee_cents: 450000,
+    insurance_est_cents: 0,
+    patient_portion_cents: 450000,
+    urgency: 'medium',
+    time_estimate: '',
+    benefits: [],
+    risks_of_delay: [],
+    expected_outcome: '',
+  });
+  return phaseId;
+}
+
+const CASE = (office, id) => `/api/tc/cases/${id}?office=${office}`;
+
+test('C2b-1: a case CREATED at checkout carries every staged item on its Treatment plan', async (t) => {
+  for (const outcome of ['scheduled', 'not_scheduled']) {
+    await t.test(outcome, async (tt) => {
+      switchCheckout(tt, { roland: true });
+      const { baseUrl, db } = await boot(tt);
+      const h = seed(db, { payload: TWO_PROCS });
+      const r = await api(baseUrl, 'POST', ACT('roland', h.handoff_id, 'outcome'), { outcome });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+
+      // Read back through the case route the Treatment tab loads from.
+      const got = await api(baseUrl, 'GET', CASE('roland', r.body.caseId));
+      assert.equal(got.status, 200, JSON.stringify(got.body));
+      const phases = got.body.case.phases;
+      assert.equal(phases.length, 1);
+      assert.equal(phases[0].name, `Hygiene visit ${TODAY}`);
+      assert.equal(phases[0].position, 0);
+      const items = [...phases[0].items].sort((a, b) => a.position - b.position);
+      assert.deepEqual(
+        items.map((i) => [i.tooth, i.procedureName, i.urgency, i.feeCents]),
+        [
+          ['#3 O', 'Crown', 'high', 0],
+          ['Whole mouth', 'SRP', 'medium', 0],
+        ]
+      );
+      // The plan is patient-facing (presentation slides): nothing staff-only
+      // lands in the fields a patient sees.
+      assert.equal(phases[0].description, '');
+      for (const i of items) {
+        assert.equal(i.patientDescription, '');
+        assert.equal(i.timeEstimate, '');
+      }
+      // The staff detail goes on the case timeline instead.
+      const staff = got.body.case.events.find((e) => /Checkout treatment added to the plan/.test(e.description));
+      assert.ok(staff, 'a staff-only timeline line');
+      assert.equal(
+        staff.description,
+        `Checkout treatment added to the plan as "Hygiene visit ${TODAY}" (provider DOC1). ` +
+          'Fees are not known at checkout: set them before presenting.\n' +
+          '#3 Crown (urgent): schedule at next visit; note: Fractured cusp\n' +
+          'Whole mouth SRP (preventative)'
+      );
+      // The notes text from item 50 is unchanged.
+      assert.match(db.table('tc_cases')[0].notes, /^Staged at the hygiene visit:\n#3 Crown \(urgent\)\nWhole mouth SRP \(preventative\)/);
+    });
+  }
+});
+
+test('C2b-2: ATTACHING to an open case appends a phase after its plan and leaves the plan alone', async (t) => {
+  for (const [outcome, status] of [['scheduled', 'presented'], ['not_scheduled', 'considering']]) {
+    await t.test(outcome, async (tt) => {
+      switchCheckout(tt, { roland: true });
+      const { baseUrl, db } = await boot(tt);
+      const c = seedCase(db, { status });
+      seedPhase(db, c, 0, 'Implant phase');
+      seedPhase(db, c, 3, 'Later phase');
+      const h = seed(db);
+      const r = await api(baseUrl, 'POST', ACT('roland', h.handoff_id, 'outcome'), { outcome });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.equal(r.body.attached, true);
+
+      const got = await api(baseUrl, 'GET', CASE('roland', c.case_id));
+      assert.equal(got.status, 200, JSON.stringify(got.body));
+      const phases = [...got.body.case.phases].sort((a, b) => a.position - b.position);
+      assert.deepEqual(phases.map((p) => [p.position, p.name]), [
+        [0, 'Implant phase'],
+        [3, 'Later phase'],
+        [4, `Hygiene visit ${TODAY}`],
+      ]);
+      assert.deepEqual(phases[0].items.map((i) => [i.procedureName, i.feeCents]), [['Implant', 450000]], 'untouched');
+      assert.deepEqual(phases[2].items.map((i) => [i.tooth, i.procedureName, i.urgency]), [['#3 O', 'Crown', 'high']]);
+      assert.ok(
+        got.body.case.events.some((e) => /^Checkout treatment added to the plan as "Hygiene visit /.test(e.description)),
+        'the staff-only timeline line'
+      );
+      for (const row of db.table('tc_case_items')) assert.equal(row.office_id, 'roland');
+    });
+  }
+});
+
+test('C2b-3: Nothing needed, or a checkout with nothing staged, puts no phase anywhere', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  const c = seedCase(db, { status: 'presented' });
+  const none = seed(db);
+  let r = await api(baseUrl, 'POST', ACT('roland', none.handoff_id, 'outcome'), { outcome: 'nothing_needed' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(db.table('tc_case_phases').length, 0);
+
+  const empty = seed(db, { payload: { ...SNAPSHOT, procedures: [], priority: null } });
+  r = await api(baseUrl, 'POST', ACT('roland', empty.handoff_id, 'outcome'), { outcome: 'not_scheduled' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.caseId, c.case_id);
+  assert.equal(db.table('tc_case_phases').length, 0);
+  assert.equal(db.table('tc_case_items').length, 0);
+});
+
+test('C2b-3: a lost race refuses before any phase is reported (the transaction rolls it back)', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  const h = seed(db);
+  db.onQuery(/^UPDATE tc_checkout_handoffs SET status = \$4/, () => ({ rows: [], rowCount: 0 }));
+  const r = await api(baseUrl, 'POST', ACT('roland', h.handoff_id, 'outcome'), { outcome: 'scheduled' });
+  assert.equal(r.status, 409);
+  assert.equal(r.body.caseId, undefined, 'no case or plan is reported');
+});
+
+test('C2b-4: a plan already at 20 phases gets no phase; the event lists the items instead', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  const c = seedCase(db, { status: 'presented' });
+  for (let i = 0; i < 20; i += 1) seedPhase(db, c, i);
+  const h = seed(db, { payload: TWO_PROCS });
+  const r = await api(baseUrl, 'POST', ACT('roland', h.handoff_id, 'outcome'), { outcome: 'scheduled' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(db.table('tc_case_phases').length, 20);
+  const note = db.table('tc_case_events').find((e) => e.type === 'note_added' && /not added to the plan/.test(e.description));
+  assert.ok(note, 'the items are not silently dropped');
+  assert.match(
+    note.description,
+    /^Checkout treatment not added to the plan \(it already has 20 phases\) \(provider DOC1\):\n#3 Crown \(urgent\): schedule at next visit; note: Fractured cusp\nWhole mouth SRP \(preventative\)$/
+  );
+  // The case still loads: the contract's 20-phase cap holds.
+  assert.equal((await api(baseUrl, 'GET', CASE('roland', c.case_id))).status, 200);
+});
+
+test("C2b-6: office-scoped — the other office's case and plan are never touched", async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  // Valley holds an open case under the SAME PatNum the roland handoff
+  // carries. PatNums restart per office, so that is a different person.
+  const valley = seedCase(db, { office_id: 'valley', od_patient_id: 12827, status: 'presented' });
+  seedPhase(db, valley, 0);
+  const h = seed(db);
+  const r = await api(baseUrl, 'POST', ACT('roland', h.handoff_id, 'outcome'), { outcome: 'scheduled' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.attached, false, "valley's case is not roland's open case");
+  assert.notEqual(r.body.caseId, valley.case_id);
+  assert.equal(db.table('tc_case_phases').filter((p) => p.case_id === valley.case_id).length, 1);
+  const rolandPhases = db.table('tc_case_phases').filter((p) => p.case_id === r.body.caseId);
+  assert.equal(rolandPhases.length, 1);
+  assert.equal(rolandPhases[0].office_id, 'roland');
+  assert.equal((await api(baseUrl, 'GET', CASE('roland', valley.case_id))).status, 404);
+});

@@ -28,6 +28,19 @@
  *                   a reason to move a case backwards. No open case → one is
  *                   CREATED at `pending_pt`.
  *   nothing_needed  the handoff closes and NO case is created.
+ *
+ * THE TREATMENT GOES ON THE CASE (C2b). Scheduled and Not scheduled also copy
+ * the staged procedures into the case's own treatment plan (the Treatment
+ * tab the coordinator presents from): one phase per checkout, "Hygiene visit
+ * <date>", appended after whatever the plan already holds, one item per
+ * procedure. Created or attached, same transaction, so a lost race leaves no
+ * phase either. The plan is PATIENT-FACING (the presentation slides show the
+ * phase description, an item's patientDescription in place of its name, and
+ * its timeEstimate), so the hygienist's notes, the schedule-next flags and
+ * "fees not set" go in a staff-only timeline event instead, never in those
+ * fields. Fees are not known at checkout, so the items carry $0. The contract
+ * caps a plan at 20 phases; a full plan gets no phase, and the event lists the
+ * items as text instead so nothing is silently dropped.
  * The handoff's status update is conditional on the status the request read,
  * inside the same transaction as the case write: two people answering the
  * same checkout cannot both win, and the loser leaves no case behind.
@@ -67,7 +80,7 @@ const nurtureHooks = require('../../services/tcNurture/hooks');
 const { localDayKey } = require('../../services/localDayClock');
 const tcCheckout = require('../../config/tcCheckout');
 
-const { z, TcCase, caseToRows, TcCheckoutOutcomeRequest, TcCheckoutDismissRequest } = contract;
+const { z, TcCase, TcCasePhase, caseToRows, TcCheckoutOutcomeRequest, TcCheckoutDismissRequest } = contract;
 
 const router = express.Router();
 router.use(requireOffice);
@@ -187,6 +200,111 @@ function procedureLines(snapshot) {
     const teeth = p.teeth === 'mouth' ? 'Whole mouth' : `#${(p.teeth || []).join(', #')}`;
     return `${teeth} ${p.code} (${p.priority})`;
   });
+}
+
+/** The contract's cap on a plan's phases (TcCase.phases max). */
+const MAX_PHASES = 20;
+
+/** "#3 O", "#3, #4 MO", "Whole mouth", or "" — the plan item's tooth column. */
+function toothText(p) {
+  if (p.teeth === 'mouth') return 'Whole mouth';
+  const teeth = Array.isArray(p.teeth) && p.teeth.length ? `#${p.teeth.join(', #')}` : '';
+  const surfaces = Array.isArray(p.surfaces) ? p.surfaces.join('') : '';
+  return [teeth, surfaces].filter(Boolean).join(' ').slice(0, 200);
+}
+
+/**
+ * The checkout's staged procedures as ONE treatment-plan phase, or null when
+ * nothing was staged. Pure; parsed by the contract so a bad snapshot throws
+ * (rolling the outcome back) rather than writing a plan the case cannot load.
+ * Only patient-safe fields are filled (see the header).
+ *
+ * @param {object} snapshot  the handoff's payload
+ * @param {{ visitDate: string|null }} handoff
+ * @param {number} position
+ */
+function checkoutPhase(snapshot, handoff, position) {
+  const procs = snapshot && Array.isArray(snapshot.procedures) ? snapshot.procedures : [];
+  if (procs.length === 0) return null;
+  return TcCasePhase.parse({
+    phaseId: randomUUID(),
+    position,
+    name: `Hygiene visit ${handoff.visitDate || ''}`.trim().slice(0, 200),
+    description: '',
+    items: procs.slice(0, 100).map((p, i) => ({
+      itemId: randomUUID(),
+      legacyItemId: null,
+      odProcNum: null,
+      position: i,
+      tooth: toothText(p),
+      procedureName: String(p.code || 'Other').slice(0, 200),
+      patientDescription: '',
+      feeCents: 0,
+      insuranceEstCents: 0,
+      patientPortionCents: 0,
+      urgency: URGENCY_BY_PRIORITY[p.priority] || 'medium',
+      timeEstimate: '',
+      benefits: [],
+      risksOfDelay: [],
+      expectedOutcome: '',
+    })),
+  });
+}
+
+/**
+ * The staff-only timeline line that goes with a checkout phase: where it came
+ * from, that fees are unset, and each item's schedule-next flag and the
+ * hygienist's note. `added` false says the plan was full and lists the items
+ * so they are not lost.
+ */
+function treatmentEventText(snapshot, handoff, phaseName, added) {
+  const procs = snapshot && Array.isArray(snapshot.procedures) ? snapshot.procedures : [];
+  const by = handoff.provider ? ` (provider ${handoff.provider})` : '';
+  const head = added
+    ? `Checkout treatment added to the plan as "${phaseName}"${by}. Fees are not known at checkout: set them before presenting.`
+    : `Checkout treatment not added to the plan (it already has ${MAX_PHASES} phases)${by}:`;
+  const lines = procedureLines(snapshot).map((line, i) => {
+    const p = procs[i] || {};
+    const extra = [p.scheduleNext ? 'schedule at next visit' : '', p.note ? `note: ${p.note}` : '']
+      .filter(Boolean)
+      .join('; ');
+    return extra ? `${line}: ${extra}` : line;
+  });
+  return [head, ...lines].join('\n').slice(0, 8000);
+}
+
+/** Write one phase and its items onto an existing case. */
+async function insertPhase(client, office, caseId, phase) {
+  await store.insertPhaseRow(client, {
+    phase_id: phase.phaseId,
+    case_id: caseId,
+    office_id: office,
+    position: phase.position,
+    name: phase.name,
+    description: phase.description,
+  });
+  for (const it of phase.items) {
+    await store.insertItemRow(client, {
+      item_id: it.itemId,
+      phase_id: phase.phaseId,
+      case_id: caseId,
+      office_id: office,
+      position: it.position,
+      legacy_item_id: it.legacyItemId,
+      od_proc_num: it.odProcNum,
+      tooth: it.tooth,
+      procedure_name: it.procedureName,
+      patient_description: it.patientDescription,
+      fee_cents: it.feeCents,
+      insurance_est_cents: it.insuranceEstCents,
+      patient_portion_cents: it.patientPortionCents,
+      urgency: it.urgency,
+      time_estimate: it.timeEstimate,
+      benefits: it.benefits,
+      risks_of_delay: it.risksOfDelay,
+      expected_outcome: it.expectedOutcome,
+    });
+  }
 }
 
 // ── GET / — today's handoffs ────────────────────────────────────────────────
@@ -400,6 +518,33 @@ router.post(
                 legacy_id: null,
               });
             }
+
+            // C2b: the staged treatment goes onto the open case's plan too.
+            const existing = await client.query(
+              'SELECT position FROM tc_case_phases WHERE office_id = $1 AND case_id = $2',
+              [office, openCaseId]
+            );
+            const positions = existing.rows.map((r) => Number(r.position));
+            const phase = checkoutPhase(
+              snapshot,
+              checkoutStore.toHandoff(handoff),
+              positions.length ? Math.max(...positions) + 1 : 0
+            );
+            if (phase) {
+              const added = positions.length < MAX_PHASES;
+              if (added) await insertPhase(client, office, openCaseId, phase);
+              await store.insertEventRow(client, {
+                event_id: randomUUID(),
+                case_id: openCaseId,
+                office_id: office,
+                ts: now,
+                type: 'note_added',
+                description: treatmentEventText(snapshot, checkoutStore.toHandoff(handoff), phase.name, added),
+                actor,
+                detail: null,
+                legacy_id: null,
+              });
+            }
           } else {
             caseId = randomUUID();
             caseAction = 'CREATE';
@@ -435,8 +580,21 @@ router.post(
                 detail: null,
               });
             }
+            const phase = checkoutPhase(snapshot, checkoutStore.toHandoff(handoff), 0);
+            if (phase) {
+              events.push({
+                eventId: randomUUID(),
+                legacyId: null,
+                ts: now,
+                type: 'note_added',
+                description: treatmentEventText(snapshot, checkoutStore.toHandoff(handoff), phase.name, true),
+                actor,
+                detail: null,
+              });
+            }
             const aggregate = TcCase.parse({
               ...CHECKOUT_CASE_DEFAULTS,
+              phases: phase ? [phase] : [],
               caseId,
               officeId: office,
               patientName: handoff.patient_name,
@@ -452,6 +610,8 @@ router.post(
             });
             const rows = caseToRows(aggregate, randomUUID);
             await store.insertCaseRow(client, rows.caseRow);
+            for (const p of rows.phaseRows) await store.insertPhaseRow(client, p);
+            for (const it of rows.itemRows) await store.insertItemRow(client, it);
             for (const e of rows.eventRows) await store.insertEventRow(client, e);
           }
         }
