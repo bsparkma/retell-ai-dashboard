@@ -233,10 +233,22 @@ router.put(
         signoffRequired: body.signoffRequired ?? stored.signoffRequired,
         autosendOnApproval: body.autosendOnApproval ?? stored.autosendOnApproval,
       };
+      // Item 53 (carried from R1's review): auto-send with sign-off OFF would
+      // send a referral no doctor ever read the moment it is submitted. That
+      // pair is refused, not stored; sign-off back ON, or auto-send OFF.
+      if (!next.signoffRequired && next.autosendOnApproval) return { unsafe: true };
       const written = await store.upsertSettings(pool, office, next, actorEmail(req));
       if (!written) throw new Error('referral settings were not stored');
       return store.resolvePolicies(office, row);
     });
+    if (before.unsafe) {
+      return res.status(409).json({
+        success: false,
+        error:
+          'Auto-send needs the doctor\'s sign-off: with sign-off off, a referral would go out before any doctor read it. Turn sign-off on, or auto-send off.',
+        code: 'REFERRAL_POLICY_UNSAFE',
+      });
+    }
     await auditTc(req, 'UPDATE', 'tc_referral_settings', office, { office, priorState: settingsSlug(before) });
     res.json(await settingsPayload(req));
   })

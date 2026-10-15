@@ -12,7 +12,8 @@
  * The alert obeys the person's `referral_signoff` preference (item 51):
  * silent → badge only, banner → toast, sound_banner → toast + chime. The
  * preference route is a tc.full surface, so a `doctor` (who holds only the
- * sign-off) cannot read it and gets the built-in `banner` — the alert is never
+ * sign-off) cannot read it: `canReadPrefs` false skips the call (rather than
+ * a 403 every minute) and the built-in `banner` applies — the alert is never
  * lost because the preference was.
  *
  * Scope is the caller's: the layout passes offices only for someone holding
@@ -35,7 +36,7 @@ export interface SignoffWatch {
   waiting: number;
 }
 
-export function useSignoffWatch(offices: readonly OfficeId[]): SignoffWatch {
+export function useSignoffWatch(offices: readonly OfficeId[], canReadPrefs = true): SignoffWatch {
   const [, navigate] = useLocation();
   const [state, setState] = useState<SignoffWatch>({ enabled: false, waiting: 0 });
   const key = [...offices].sort().join("+");
@@ -54,7 +55,9 @@ export function useSignoffWatch(offices: readonly OfficeId[]): SignoffWatch {
     const asked = key;
     void Promise.all([
       Promise.allSettled(offices.map((o) => getSignoffSummary(o))),
-      Promise.allSettled(offices.map((o) => getNotificationPrefs(o))),
+      Promise.allSettled(
+        offices.map((o) => (canReadPrefs ? getNotificationPrefs(o) : Promise.reject(new Error("no tc.full")))),
+      ),
     ]).then(([results, prefs]) => {
       if (asked !== currentKey.current) return;
       let chime = false;
@@ -89,7 +92,7 @@ export function useSignoffWatch(offices: readonly OfficeId[]): SignoffWatch {
       setState({ enabled, waiting });
     });
     // `offices` is described by `key`.
-  }, [key, navigate]);
+  }, [key, navigate, canReadPrefs]);
 
   usePolling(tick, offices.length > 0 ? 60_000 : null);
 

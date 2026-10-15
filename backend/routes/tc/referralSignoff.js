@@ -36,6 +36,13 @@ router.use(requireOffice);
 
 const ReferralId = z.string().uuid();
 
+/**
+ * What the sign-off surface may open: a referral waiting for sign-off, or one
+ * that has been through it (so the doctor can see the result). Not drafts,
+ * not cancelled ones — those are the TC's, not the doctor's.
+ */
+const SIGNOFF_READABLE = Object.freeze(['pending_signoff', 'approved', 'declined']);
+
 router.get(
   '/summary',
   h(async (req, res) => {
@@ -46,7 +53,10 @@ router.get(
     const rows = await tenantDb.withTenantDb(req, (pool) =>
       store.listReferrals(pool, office, { status: 'pending_signoff' })
     );
-    const newest = rows[0] || null; // newest first
+    // "Newest" is the one that most recently ARRIVED for sign-off — a referral
+    // withdrawn and resubmitted is a new arrival though it was created earlier.
+    const arrived = (r) => new Date(r.status_changed_at).getTime();
+    const newest = rows.reduce((best, r) => (best === null || arrived(r) > arrived(best) ? r : best), null);
     return res.json({
       success: true,
       office,
@@ -98,7 +108,9 @@ router.get(
     const id = ReferralId.safeParse(req.params.id);
     if (!id.success) return res.status(400).json({ success: false, error: 'Invalid referral id', code: 'INVALID_ID' });
     const referral = await transitions.readBack(req, id.data);
-    if (!referral) return res.status(404).json({ success: false, error: 'Referral not found', code: 'NOT_FOUND' });
+    if (!referral || !SIGNOFF_READABLE.includes(referral.status)) {
+      return res.status(404).json({ success: false, error: 'Referral not found', code: 'NOT_FOUND' });
+    }
     await auditTc(req, 'READ', 'tc_referral', id.data, { office: req.tcOffice });
     return res.json({ success: true, referral });
   })

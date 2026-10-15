@@ -257,8 +257,8 @@ describe("the sign-off page", () => {
 
 // ── the sign-off arrival obeys the referral_signoff preference ──────────────
 
-function Probe() {
-  const w = useSignoffWatch(["roland"]);
+function Probe({ canReadPrefs = true }: { canReadPrefs?: boolean }) {
+  const w = useSignoffWatch(["roland"], canReadPrefs);
   return <div data-testid="probe">{`${w.enabled}:${w.waiting}`}</div>;
 }
 
@@ -284,14 +284,14 @@ function prefs(level: TcNotificationLevel): TcNotificationPrefsResponse {
   };
 }
 
-async function arrive() {
+async function arrive(canReadPrefs = true) {
   ref.getSignoffSummary.mockResolvedValueOnce(summary(1, 1)).mockResolvedValueOnce(summary(2, 2));
   vi.useFakeTimers({ shouldAdvanceTime: true });
   try {
     const memory = memoryLocation({ path: "/tc" });
     render(
       <WouterRouter hook={memory.hook}>
-        <Probe />
+        <Probe canReadPrefs={canReadPrefs} />
       </WouterRouter>,
     );
     await waitFor(() => expect(screen.getByTestId("probe").textContent).toBe("true:1"));
@@ -320,7 +320,15 @@ describe("the sign-off arrival obeys the referral_signoff preference", () => {
     expect(chime).toHaveBeenCalledTimes(1);
   });
 
-  it("a doctor cannot read preferences (tc.full) — the banner still comes", async () => {
+  it("a doctor (no tc.full) is never sent to the preference route; the banner comes", async () => {
+    const prefsApi = await import("@/features/tc/notifications/notificationsApi");
+    state.prefs = prefs("silent");
+    await arrive(false);
+    expect(prefsApi.getNotificationPrefs).not.toHaveBeenCalled();
+    expect(toastMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a preference that cannot be read falls back to a banner", async () => {
     state.prefsFail = true;
     await arrive();
     expect(toastMock).toHaveBeenCalledTimes(1);

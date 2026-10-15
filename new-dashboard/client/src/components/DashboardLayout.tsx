@@ -456,7 +456,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     isTcRoute && can(permissionsForTexts, "tc.referral_signoff")
       ? resolveTcOfficeScope({ selection: office, roster: offices }).offices
       : [];
-  const signoff = useSignoffWatch(signoffInScope);
+  const signoff = useSignoffWatch(signoffInScope, can(permissionsForTexts, "tc.full"));
 
   const handleNavClick = () => {
     setSidebarOpen(false);

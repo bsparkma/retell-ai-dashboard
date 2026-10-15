@@ -472,3 +472,40 @@ test('8: nobody — not even an admin — sets another person\'s own alert choic
   assert.equal(r.status, 400);
   assert.equal(db.table('tc_notification_prefs').length, 0);
 });
+
+test("the sign-off surface opens only referrals in or past sign-off — not a TC's drafts or cancelled ones", async (t) => {
+  switchReferrals(t);
+  const { baseUrl, db } = await boot(t);
+  const c = seedCase(db);
+  const draft = await create(baseUrl, { caseId: c.case_id });
+  assert.equal((await api(baseUrl, 'GET', SIGN(`/${draft.referralId}`))).status, 404, 'a draft');
+  await api(baseUrl, 'POST', REF(`/${draft.referralId}/submit`));
+  assert.equal((await api(baseUrl, 'GET', SIGN(`/${draft.referralId}`))).status, 200, 'pending');
+  await api(baseUrl, 'POST', SIGN(`/${draft.referralId}/approve`));
+  assert.equal((await api(baseUrl, 'GET', SIGN(`/${draft.referralId}`))).status, 200, 'approved: the doctor sees the result');
+  const gone = await create(baseUrl, { caseId: c.case_id });
+  await api(baseUrl, 'POST', REF(`/${gone.referralId}/cancel`));
+  assert.equal((await api(baseUrl, 'GET', SIGN(`/${gone.referralId}`))).status, 404, 'cancelled');
+});
+
+test("the summary's newest is the latest ARRIVAL for sign-off, not the latest created", async (t) => {
+  switchReferrals(t);
+  const { baseUrl, db } = await boot(t);
+  const c = seedCase(db);
+  const older = await create(baseUrl, { caseId: c.case_id });
+  const newer = await create(baseUrl, { caseId: c.case_id });
+  const rows = db.table('tc_referrals');
+  Object.assign(rows.find((r) => r.referral_id === older.referralId), {
+    created_at: new Date('2026-10-16T09:00:00Z'),
+    status: 'pending_signoff',
+    status_changed_at: new Date('2026-10-16T12:00:00Z'), // withdrawn and resubmitted later
+  });
+  Object.assign(rows.find((r) => r.referral_id === newer.referralId), {
+    created_at: new Date('2026-10-16T10:00:00Z'),
+    status: 'pending_signoff',
+    status_changed_at: new Date('2026-10-16T10:00:00Z'),
+  });
+  const s = await api(baseUrl, 'GET', SIGN('/summary'));
+  assert.equal(s.body.newest.referralId, older.referralId);
+  assert.equal(s.body.newest.at, '2026-10-16T12:00:00.000Z');
+});
