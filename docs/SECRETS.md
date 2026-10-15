@@ -99,6 +99,8 @@ kebab-case; the app reads the env keys.
 | `TC_EMAIL_PUBLIC_BASE_URL` | Public `https://` origin for the unsubscribe link (`/api/webhooks/email/unsubscribe`). Absent ⇒ email disabled: no email goes out without a working unsubscribe link. |
 | `TC_EMAIL_TENANT_SLUG` | The tenant the public unsubscribe endpoint records into (it carries no SSO user). Must be active and entitled to `tc`. Absent ⇒ email disabled and the endpoint answers 503. |
 | `TC_EMAIL_ENABLED` | Kill-switch fallback. `false` always forces email OFF; `true` turns it on only when no `platform_setting['tc_email_enabled']` row exists. See `backend/config/tcEmail.js`. |
+| `TC_CHECKOUT_ENABLED_<OFFICE>` | Checkout handoff switch (item 49), per office (`_ROLAND`, `_VALLEY`). `false` always forces that office OFF; `true` turns it on only when `platform_setting['tc_checkout_enabled']` does not name the office. Floor is OFF. See `backend/config/tcCheckout.js`.
+| `TC_SWITCH_REFRESH_MINUTES` | How long a per-office TC switch (`config/tcOfficeSwitch.js`) trusts its cached read before re-reading `platform_setting`. Default 5.
 | `TC_EMAIL_REFRESH_MINUTES` | How often the kill switch is re-read (default 5). The adapter also re-reads it before every send. |
 
 ### Non-secret Open Dental config (NOT in Key Vault)
