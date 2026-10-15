@@ -38,6 +38,7 @@ async function bootstrap() {
   const openDentalSyncRouter = require('./routes/openDentalSync');
   const webhooksRouter = require('./routes/webhooks');
   const twilioWebhooksRouter = require('./routes/twilioWebhooks');
+  const acsSmsWebhooksRouter = require('./routes/acsSmsWebhooks');
   const emailWebhooksRouter = require('./routes/emailWebhooks');
   const liveCallsRouter = require('./routes/liveCalls');
   const adminRouter = require('./routes/admin');
@@ -277,6 +278,14 @@ async function bootstrap() {
   // It authenticates every request itself (X-Twilio-Signature) and resolves its
   // tenant from TWILIO_TENANT_SLUG through the registry — see the router header.
   app.use('/api/webhooks/twilio', twilioWebhooksRouter);
+  // ACS SMS (TC text messaging, item 48 — the default provider). Same
+  // placement and reasoning as Twilio: Event Grid carries no user identity, so
+  // it rides the /api/webhooks exemptions with no module guard. It
+  // authenticates every request itself (X-CareIN-Webhook-Token, a Key Vault
+  // shared secret Event Grid sends as a secret delivery header) and resolves
+  // its tenant from TC_SMS_ACS_TENANT_SLUG — see the router header. It never
+  // sends.
+  app.use('/api/webhooks/acs-sms', acsSmsWebhooksRouter);
   // TC email unsubscribe link (item 40). Same placement and the same reasoning
   // as Twilio: a patient's browser or mail client carries no user identity, so
   // it rides the /api/webhooks exemptions with no module guard. It needs no

@@ -10,6 +10,9 @@
  *
  *   channel   'sms' | 'email'            — the registry key
  *   provider  string | null              — e.g. 'twilio', 'acs'; null while a stub
+ *                                          (item 48: SMS is 'acs' by default,
+ *                                          'twilio' only when TC_SMS_PROVIDER
+ *                                          names it; see selectedSmsAdapter)
  *   enabled() → boolean                  — is the provider configured AND switched
  *                                          on for this deployment? Synchronous,
  *                                          no I/O.
@@ -71,11 +74,49 @@
  * @typedef {{ provider: string, providerMessageId: string, status: 'sent'|'queued', fromAddress?: string|null }} AdapterResult
  */
 
-const smsAdapter = require('./smsAdapter');
+const twilioSmsAdapter = require('./smsAdapter');
+const acsSmsAdapter = require('./acsSmsAdapter');
 const emailAdapter = require('./emailAdapter');
+const { MessagingError } = require('../errors');
+const tcSmsProvider = require('../../../config/tcSmsProvider');
 
-/** @type {Record<'sms'|'email', { channel: string, provider: string|null, enabled: () => boolean, enabledFor?: (office: string) => boolean, unavailableReason?: (office: string) => string|null, send: Function }>} */
-const DEFAULT_ADAPTERS = Object.freeze({ sms: smsAdapter, email: emailAdapter });
+/**
+ * (item 48) The SMS adapter for a TC_SMS_PROVIDER value that names no
+ * provider. Never connected, never sends: an unknown value fails CLOSED with
+ * the honest "not connected" reason, rather than falling back to either real
+ * provider.
+ */
+const UNSELECTED_SMS_ADAPTER = Object.freeze({
+  channel: 'sms',
+  provider: null,
+  enabled: () => false,
+  enabledFor: () => false,
+  unavailableReason: () => 'not_configured',
+  missingFor: () => [tcSmsProvider.ENV_KEY],
+  async send() {
+    throw new MessagingError(
+      'FEATURE_DISABLED',
+      `Text messaging is not connected yet: ${tcSmsProvider.ENV_KEY} names no texting provider. Nothing was sent.`,
+      { feature: 'tc_sms_send', reason: 'not_configured' }
+    );
+  },
+});
+
+/**
+ * (item 48) Which SMS adapter TC_SMS_PROVIDER selects, read at CALL time:
+ * acs (the default) → ./acsSmsAdapter.js, twilio → ./smsAdapter.js (dormant
+ * unless named), anything else → UNSELECTED_SMS_ADAPTER. Exactly one is ever
+ * handed out per call; the other is never asked anything.
+ */
+function selectedSmsAdapter() {
+  const provider = tcSmsProvider.smsProvider();
+  if (provider === 'acs') return acsSmsAdapter;
+  if (provider === 'twilio') return twilioSmsAdapter;
+  return UNSELECTED_SMS_ADAPTER;
+}
+
+/** @type {Record<'sms'|'email', { channel: string, provider: string|null, enabled: () => boolean, enabledFor?: (office: string) => boolean, unavailableReason?: (office: string) => string|null, send: Function } | null>} */
+const DEFAULT_ADAPTERS = Object.freeze({ sms: null, email: emailAdapter });
 
 let adapters = { ...DEFAULT_ADAPTERS };
 
@@ -83,7 +124,9 @@ let adapters = { ...DEFAULT_ADAPTERS };
  * @param {'sms'|'email'} channel
  */
 function getAdapter(channel) {
-  const a = adapters[channel];
+  // sms: null means "whatever TC_SMS_PROVIDER selects right now"; a test's
+  // setAdapterForTests replaces that with its fake.
+  const a = channel === 'sms' && adapters.sms === null ? selectedSmsAdapter() : adapters[channel];
   if (!a) throw new Error(`[messaging] no adapter registered for channel '${channel}'`);
   return a;
 }
@@ -154,6 +197,8 @@ function resetAdapters() {
 
 module.exports = {
   getAdapter,
+  selectedSmsAdapter,
+  UNSELECTED_SMS_ADAPTER,
   isChannelEnabled,
   channelUnavailableReason,
   UNAVAILABLE_REASONS,
