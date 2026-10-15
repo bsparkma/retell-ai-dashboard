@@ -23,7 +23,7 @@
  * second place for that decision to be made by accident.
  */
 import { useEffect, useState } from "react";
-import { ShieldAlert, Building2, Database, Stethoscope, DoorOpen } from "lucide-react";
+import { ShieldAlert, Building2, Database, Stethoscope, DoorOpen, Send } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/contexts/AuthContext";
@@ -33,6 +33,7 @@ import PracticesPanel from "./platform/PracticesPanel";
 import RetentionPanel from "./platform/RetentionPanel";
 import HygienePanel from "./platform/HygienePanel";
 import { TcCheckoutPanel } from "./platform/TcCheckoutPanel";
+import { TcReferralsPanel } from "./platform/TcReferralsPanel";
 
 /** The message to show for a failed request — the server's, whenever it sent one. */
 export function loadError(e: unknown): string {
@@ -125,6 +126,10 @@ export default function Platform() {
             <DoorOpen className="mr-1.5 h-3.5 w-3.5" />
             TC checkout
           </TabsTrigger>
+          <TabsTrigger value="tc-referrals" data-testid="tab-tc-referrals">
+            <Send className="mr-1.5 h-3.5 w-3.5" />
+            TC referrals
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="practices" className="mt-4">
@@ -148,6 +153,10 @@ export default function Platform() {
 
         <TabsContent value="tc-checkout" className="mt-4">
           <TcCheckoutPanel />
+        </TabsContent>
+
+        <TabsContent value="tc-referrals" className="mt-4">
+          <TcReferralsPanel />
         </TabsContent>
       </Tabs>
     </div>
