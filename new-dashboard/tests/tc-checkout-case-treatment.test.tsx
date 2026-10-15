@@ -31,6 +31,8 @@ vi.mock("@/features/tc/api", async (orig) => ({
 }));
 
 import { TreatmentTab } from "@/features/tc/caseview/TreatmentTab";
+import { patientPortionCentsOf } from "@/features/tc/caseview/FinancingTab";
+import { casePatientPortionCents } from "@/features/tc/present/slides";
 
 const EXISTING: TcCasePhase = {
   phaseId: "0b1c2d3e-4f50-4a61-8b72-938495a6b7c8",
@@ -137,6 +139,19 @@ describe("C2b: the checkout's treatment on the case's Treatment tab", () => {
     render(<TreatmentTab office="roland" tcCase={tcCase([])} onCaseUpdate={() => {}} />);
     expect(screen.getByText("No treatment plan yet.")).toBeTruthy();
     expect(screen.queryByText(/Hygiene visit/)).toBeNull();
+  });
+});
+
+describe("C2b: unpriced checkout items never zero out the Financing tab", () => {
+  it("falls back to the case value when every item is still $0, like the slides", () => {
+    const valued = { ...tcCase([FROM_CHECKOUT]), caseValueCents: 300000 };
+    expect(patientPortionCentsOf(valued)).toBe(300000);
+    expect(casePatientPortionCents(valued)).toBe(300000);
+  });
+  it("uses the itemized portion once anything is priced", () => {
+    const priced = { ...tcCase([EXISTING, FROM_CHECKOUT]), caseValueCents: 300000 };
+    expect(patientPortionCentsOf(priced)).toBe(450000);
+    expect(casePatientPortionCents(priced)).toBe(450000);
   });
 });
 

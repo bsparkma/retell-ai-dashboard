@@ -205,6 +205,9 @@ function procedureLines(snapshot) {
 /** The contract's cap on a plan's phases (TcCase.phases max). */
 const MAX_PHASES = 20;
 
+/** tc_case_phases UNIQUE (case_id, position), migration 1785373200000. */
+const PHASE_POSITION_UNIQUE = 'tc_case_phases_case_position_unique';
+
 /** "#3 O", "#3, #4 MO", "Whole mouth", or "" — the plan item's tooth column. */
 function toothText(p) {
   if (p.teeth === 'mouth') return 'Whole mouth';
@@ -520,6 +523,17 @@ router.post(
             }
 
             // C2b: the staged treatment goes onto the open case's plan too.
+            // Row-lock the case first (an UPDATE takes it; the case IS
+            // changing). Without it two answers attaching at once both read
+            // the same max(position), and the loser dies on the
+            // (case_id, position) unique index as a 500 instead of failing
+            // the handoff CAS as a 409. With it the loser waits, re-reads the
+            // winner's phase, and then loses the CAS cleanly. It also keeps
+            // the 20-phase cap honest under concurrency.
+            await client.query(
+              `UPDATE tc_cases SET updated_at = now() WHERE office_id = $1 AND case_id = $2`,
+              [office, openCaseId]
+            );
             const existing = await client.query(
               'SELECT position FROM tc_case_phases WHERE office_id = $1 AND case_id = $2',
               [office, openCaseId]
@@ -634,6 +648,16 @@ router.post(
       });
     } catch (err) {
       if (err && err.code === 'CHECKOUT_RACE') return refusal(req, res, id.data, 'answered');
+      // The plan was rewritten underneath this answer (an Edit-plan save or
+      // a Pull from Open Dental landed between the read and the insert).
+      // Everything rolled back; say so rather than 500.
+      if (err && err.code === '23505' && err.constraint === PHASE_POSITION_UNIQUE) {
+        return res.status(409).json({
+          success: false,
+          error: "The case's treatment plan changed while this was saving. Nothing was recorded; try again.",
+          code: 'CHECKOUT_PLAN_CHANGED',
+        });
+      }
       throw err;
     }
 

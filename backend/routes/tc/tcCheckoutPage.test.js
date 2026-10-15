@@ -726,3 +726,38 @@ test("C2b-6: office-scoped — the other office's case and plan are never touche
   assert.equal(rolandPhases[0].office_id, 'roland');
   assert.equal((await api(baseUrl, 'GET', CASE('roland', valley.case_id))).status, 404);
 });
+
+test('C2b-3: attaching locks the case row before reading the plan (no position collision under a race)', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  const c = seedCase(db, { status: 'considering' });
+  const h = seed(db);
+  const order = [];
+  db.onQuery(/^UPDATE tc_cases SET updated_at = now\(\) WHERE office_id = \$1 AND case_id = \$2$/, (_text, params) => {
+    order.push(['lock', ...params]);
+    return { rows: [], rowCount: 1 };
+  });
+  db.onQuery(/^SELECT position FROM tc_case_phases/, () => {
+    order.push(['read']);
+    return { rows: [] };
+  });
+  const r = await api(baseUrl, 'POST', ACT('roland', h.handoff_id, 'outcome'), { outcome: 'not_scheduled' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual(order, [['lock', 'roland', c.case_id], ['read']], 'lock, then read');
+});
+
+test('C2b-3: a plan rewritten mid-answer (unique position clash) is an honest 409, not a 500', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t);
+  seedCase(db, { status: 'considering' });
+  const h = seed(db);
+  db.onQuery(/^INSERT INTO tc_case_phases/, () => {
+    const err = new Error('duplicate key value violates unique constraint "tc_case_phases_case_position_unique"');
+    Object.assign(err, { code: '23505', constraint: 'tc_case_phases_case_position_unique' });
+    throw err;
+  });
+  const r = await api(baseUrl, 'POST', ACT('roland', h.handoff_id, 'outcome'), { outcome: 'not_scheduled' });
+  assert.equal(r.status, 409, JSON.stringify(r.body));
+  assert.equal(r.body.code, 'CHECKOUT_PLAN_CHANGED');
+  assert.ok(!auditRows(db).some((a) => a.resource_type === 'tc_checkout_handoff'), 'nothing audited as answered');
+});
