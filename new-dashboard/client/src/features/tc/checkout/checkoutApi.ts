@@ -9,6 +9,8 @@ import { tcRequest, TcApiError } from "@/features/tc/api";
 import {
   TcCheckoutHandoff,
   TcCheckoutSummary,
+  TcCheckoutCaseTreatment,
+  TcCheckoutPanelItem,
   type TcCheckoutOutcome,
 } from "@shared/tc/checkout";
 import type { OfficeId } from "@shared/tc/contract";
@@ -91,6 +93,58 @@ export async function recordCheckoutOutcome(
       office,
       method: "POST",
       body: { outcome, appointmentNote },
+    }),
+  );
+}
+
+// ── C2b (item 50b): the staff panel and "entered in Open Dental" ────────────
+
+const EnteredResponse = z.object({
+  success: z.literal(true),
+  handoffId: z.string().uuid(),
+  item: TcCheckoutPanelItem,
+  alreadyEntered: z.boolean().optional(),
+});
+export type CheckoutEnteredResult = z.infer<typeof EnteredResponse>;
+
+/** The staff-only "Treatment from hygiene" panel for one case. */
+export async function getCaseHygieneTreatment(
+  office: OfficeId,
+  caseId: string,
+): Promise<TcCheckoutCaseTreatment> {
+  return parse(
+    TcCheckoutCaseTreatment,
+    await tcRequest<unknown>(`/tc/checkout/by-case/${caseId}`, { office }),
+  );
+}
+
+/** Attest that one staged item has been entered in Open Dental (by hand). */
+export async function markItemEntered(
+  office: OfficeId,
+  handoffId: string,
+  index: number,
+): Promise<CheckoutEnteredResult> {
+  return parse(
+    EnteredResponse,
+    await tcRequest<unknown>(`/tc/checkout/${handoffId}/items/${index}/entered`, {
+      office,
+      method: "POST",
+      body: {},
+    }),
+  );
+}
+
+/** Undo that attestation (admin only; the server enforces it). */
+export async function undoItemEntered(
+  office: OfficeId,
+  handoffId: string,
+  index: number,
+): Promise<CheckoutEnteredResult> {
+  return parse(
+    EnteredResponse,
+    await tcRequest<unknown>(`/tc/checkout/${handoffId}/items/${index}/entered`, {
+      office,
+      method: "DELETE",
     }),
   );
 }

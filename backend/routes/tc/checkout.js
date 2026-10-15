@@ -13,6 +13,9 @@
  *   POST /:id/claim            "I've got this patient" (open → claimed)
  *   POST /:id/dismiss          not a checkout after all — a reason is required
  *   POST /:id/outcome          scheduled | not_scheduled | nothing_needed
+ *   GET  /by-case/:caseId      the staff-only "Treatment from hygiene" panel (C2b)
+ *   POST   /:id/items/:index/entered   attest "this item is in Open Dental"
+ *   DELETE /:id/items/:index/entered   undo that attestation (admin only)
  *
  * ═════════════════════════════════════════════════════════════════════════════
  * THE THREE OUTCOMES
@@ -41,6 +44,17 @@
  * fields. Fees are not known at checkout, so the items carry $0. The contract
  * caps a plan at 20 phases; a full plan gets no phase, and the event lists the
  * items as text instead so nothing is silently dropped.
+ *
+ * THE STAFF PANEL AND "ENTERED IN OPEN DENTAL" (C2b, PM revision). Beau's
+ * requirement: the hygienist's diagnosed treatment stays visible on the case
+ * until a HUMAN confirms it was entered into Open Dental. The plan phase can be
+ * edited or replaced (Edit plan, Pull from Open Dental), so the persistent
+ * record is the HANDOFF's own stored snapshot, rendered staff-only by
+ * GET /by-case/:caseId. Each staged item carries a manual attestation (who,
+ * when; tc_checkout_attestations). It is NOT a sync: nothing here reads or
+ * writes Open Dental. An attestation made against an item the hygienist later
+ * revised is stale and reads as not entered. Undoing one is admin-only. Every
+ * attestation and undo writes one audit row, after the write committed.
  * The handoff's status update is conditional on the status the request read,
  * inside the same transaction as the case write: two people answering the
  * same checkout cannot both win, and the loser leaves no case behind.
@@ -71,6 +85,7 @@ const express = require('express');
 const { randomUUID } = require('node:crypto');
 
 const { contract, requireOffice, actorEmail, parseBody, h, auditTc } = require('./helpers');
+const { holdsPermission } = require('../../config/permissions');
 const { withTenantTx } = require('./tx');
 const tenantDb = require('../../platform/tenantDb');
 const store = require('./caseStore');
@@ -232,7 +247,7 @@ function checkoutPhase(snapshot, handoff, position) {
   return TcCasePhase.parse({
     phaseId: randomUUID(),
     position,
-    name: `Hygiene visit ${handoff.visitDate || ''}`.trim().slice(0, 200),
+    name: contract.checkoutPhaseName(handoff.visitDate || null).slice(0, 200),
     description: '',
     items: procs.slice(0, 100).map((p, i) => ({
       itemId: randomUUID(),
@@ -687,6 +702,157 @@ router.post(
       url: result.caseId ? `/tc/cases/${result.caseId}` : null,
       attached: result.caseAction === 'UPDATE',
     });
+  })
+);
+
+// ── C2b: the staff panel and "entered in Open Dental" ──────────────────────
+
+const ItemIndex = z.coerce.number().int().min(0).max(99);
+
+/** The panel's view of one handoff, as the client renders it. */
+function panelVisit(row, attestations) {
+  return {
+    handoff: checkoutStore.toHandoff(row),
+    items: checkoutStore.panelItems(row, attestations, contract.checkoutItemKey),
+  };
+}
+
+router.get(
+  '/by-case/:caseId',
+  h(async (req, res) => {
+    const caseId = z.string().uuid().safeParse(req.params.caseId);
+    if (!caseId.success) return res.status(400).json({ success: false, error: 'Invalid case id', code: 'INVALID_ID' });
+    const today = await enter(req, res);
+    if (today === null) return undefined;
+    const office = req.tcOffice;
+    const { rows, attestations } = await tenantDb.withTenantDb(req, async (pool) => {
+      const found = await checkoutStore.listForCase(pool, office, caseId.data);
+      const atts = await checkoutStore.listAttestations(
+        pool,
+        office,
+        found.map((r) => String(r.handoff_id))
+      );
+      return { rows: found, attestations: atts };
+    });
+    // A PHI read (the staged treatment): audited even when it is empty.
+    await auditTc(req, 'READ', 'tc_checkout_handoff', null, { office, sourceRef: `case:${caseId.data}` });
+    return res.json({
+      success: true,
+      caseId: caseId.data,
+      canUnattest: holdsPermission(req, 'admin.all'),
+      visits: rows.map((row) =>
+        panelVisit(
+          row,
+          attestations.filter((a) => String(a.handoff_id) === String(row.handoff_id))
+        )
+      ),
+    });
+  })
+);
+
+/** Parse `:id` + `:index`, or answer the 400 and return null. */
+function itemParams(req, res) {
+  const id = HandoffId.safeParse(req.params.id);
+  const index = ItemIndex.safeParse(req.params.index);
+  if (!id.success || !index.success || !/^\d{1,2}$/.test(String(req.params.index))) {
+    res.status(400).json({ success: false, error: 'Invalid handoff id or item', code: 'INVALID_ID' });
+    return null;
+  }
+  return { id: id.data, index: index.data };
+}
+
+/** The handoff, linked to a case, with a staged item at `index`; or the refusal. */
+async function attestTarget(client, office, id, index) {
+  const row = await checkoutStore.findById(client, office, id);
+  if (!row) return { refusal: [404, 'Checkout handoff not found', 'NOT_FOUND'] };
+  if (!row.case_id) {
+    return { refusal: [409, 'This checkout is not on a case, so there is nothing to mark.', 'CHECKOUT_NOT_ON_CASE'] };
+  }
+  const procs = checkoutStore.proceduresOf(row);
+  if (index >= procs.length) return { refusal: [404, 'That item is not on this checkout', 'ITEM_NOT_FOUND'] };
+  return { row, procedure: procs[index] };
+}
+
+router.post(
+  '/:id/items/:index/entered',
+  h(async (req, res) => {
+    const p = itemParams(req, res);
+    if (!p) return undefined;
+    const today = await enter(req, res);
+    if (today === null) return undefined;
+    const office = req.tcOffice;
+
+    const result = await withTenantTx(req, async (client) => {
+      const target = await attestTarget(client, office, p.id, p.index);
+      if (target.refusal) return target;
+      const itemKey = contract.checkoutItemKey(target.procedure);
+      const prior = await checkoutStore.findAttestation(client, office, p.id, p.index);
+      if (prior && prior.item_key === itemKey) return { row: target.row, already: true };
+      const stored = await checkoutStore.upsertAttestation(client, {
+        office,
+        handoffId: p.id,
+        index: p.index,
+        itemKey,
+        actor: actorEmail(req),
+        at: clock().toISOString(),
+      });
+      if (!stored) throw new Error('attestation was not stored');
+      return { row: target.row, priorState: prior ? 'stale' : 'unattested' };
+    });
+    if (result.refusal) {
+      const [status, error, code] = result.refusal;
+      return res.status(status).json({ success: false, error, code });
+    }
+
+    if (!result.already) {
+      await auditTc(req, result.priorState === 'stale' ? 'UPDATE' : 'CREATE', 'tc_checkout_item_attestation', `${p.id}:${p.index}`, {
+        office,
+        priorState: result.priorState,
+      });
+    }
+    // Report what PERSISTED: read the attestation back after the commit.
+    const atts = await tenantDb.withTenantDb(req, (pool) => checkoutStore.listAttestations(pool, office, [p.id]));
+    const item = panelVisit(result.row, atts).items[p.index];
+    if (!item || !item.enteredBy) {
+      return res.status(500).json({ success: false, error: 'The attestation could not be read back', code: 'ATTESTATION_NOT_PERSISTED' });
+    }
+    return res.json({ success: true, handoffId: p.id, item, alreadyEntered: result.already === true });
+  })
+);
+
+router.delete(
+  '/:id/items/:index/entered',
+  h(async (req, res) => {
+    const p = itemParams(req, res);
+    if (!p) return undefined;
+    if (!holdsPermission(req, 'admin.all')) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only a practice admin can undo "entered in Open Dental".',
+        code: 'UNATTEST_ADMIN_ONLY',
+      });
+    }
+    const today = await enter(req, res);
+    if (today === null) return undefined;
+    const office = req.tcOffice;
+
+    const result = await withTenantTx(req, async (client) => {
+      const target = await attestTarget(client, office, p.id, p.index);
+      if (target.refusal) return target;
+      const removed = await checkoutStore.deleteAttestation(client, office, p.id, p.index);
+      if (!removed) return { refusal: [404, 'That item is not marked as entered', 'NOT_ATTESTED'] };
+      return { row: target.row };
+    });
+    if (result.refusal) {
+      const [status, error, code] = result.refusal;
+      return res.status(status).json({ success: false, error, code });
+    }
+    await auditTc(req, 'DELETE', 'tc_checkout_item_attestation', `${p.id}:${p.index}`, {
+      office,
+      priorState: 'attested',
+    });
+    const atts = await tenantDb.withTenantDb(req, (pool) => checkoutStore.listAttestations(pool, office, [p.id]));
+    return res.json({ success: true, handoffId: p.id, item: panelVisit(result.row, atts).items[p.index] });
   })
 );
 

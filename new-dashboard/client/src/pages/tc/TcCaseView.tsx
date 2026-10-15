@@ -31,6 +31,7 @@ import { ObjectionsTab } from "@/features/tc/caseview/ObjectionsTab";
 import { StatusTransitionDialog } from "@/features/tc/caseview/StatusTransitionDialog";
 import { TreatmentTab } from "@/features/tc/caseview/TreatmentTab";
 import { NurtureCampaignBar } from "@/features/tc/nurture/NurtureCampaignBar";
+import { HygieneTreatmentPanel } from "@/features/tc/checkout/HygieneTreatmentPanel";
 
 export default function TcCaseView() {
   const office = useTcOffice();
@@ -199,6 +200,11 @@ function CaseViewInner({ office }: { office: OfficeId }) {
       {/* What hygiene handed over (item 33). Renders nothing for a case without
           a screening. Item 22's hygiene treatment list belongs in this slot too. */}
       <OrthoScreeningSection tcCase={tcCase} />
+
+      {/* Item 50b: the hygienist's checkout treatment, staff-only, with the
+          per-item "entered in Open Dental" marks. Renders nothing without a
+          checkout on this case or with checkout switched off. */}
+      <HygieneTreatmentPanel office={office} caseId={tcCase.caseId} />
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
