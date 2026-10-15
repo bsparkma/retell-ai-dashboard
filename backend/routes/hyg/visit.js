@@ -84,6 +84,7 @@ const perioSend = require('../../services/hyg/perioSend');
 const perioDrift = require('../../services/hyg/perioDrift');
 const hygStaff = require('../../config/hygStaff');
 const tcHandoff = require('../../services/hyg/tcHandoffClient');
+const tcCheckout = require('../../config/tcCheckout');
 const { snapshotFromAppointment } = require('../../services/hyg/appointmentSnapshot');
 const contract = require('../../hyg/contract.gen.cjs');
 
@@ -433,6 +434,9 @@ router.get(
       // on first open, and `office` here is the REQUEST's office, which the
       // module gate has already checked.
       doctorOptions: hygStaff.doctorOptions(office),
+      // Item 49: whether this office shows "Alert checkout" at all. The switch
+      // is re-checked on every send; this only decides what the page draws.
+      checkoutEnabled: await tcCheckout.isEnabled(office),
     });
   })
 );
@@ -1783,6 +1787,15 @@ router.post(
       });
     }
 
+    // ITEM 49: THE CHECKOUT HANDOFF RIDES THE SEND — AFTER every chart write,
+    // and it can never fail the Send. It creates the handoff when there is
+    // none, and replaces the early alert's snapshot with the final one when
+    // there is (TC's source key makes it the SAME handoff either way). Off for
+    // this office → `checkout: null`, nothing sent.
+    const checkout = (await tcCheckout.isEnabled(office))
+      ? await deliverCheckout(req, { office, aptNum, final: true })
+      : null;
+
     const after = await tenantDb.withTenantDb(req, (pool) =>
       visitStore.getVisit(pool, { office, aptNum })
     );
@@ -1803,6 +1816,7 @@ router.post(
       outcomes: outcome.outcomes,
       written,
       failed,
+      checkout: checkout ? checkout.delivery : null,
     });
   })
 );
@@ -2050,6 +2064,211 @@ router.post(
       after ||
       (await tenantDb.withTenantDb(req, (pool) => visitStore.getVisit(pool, { office, aptNum })));
     return res.json({ ...visitPayload(visit), alreadySent: false });
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The checkout handoff (item 49)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Send this visit's checkout snapshot to TC and record it on the visit.
+ *
+ * Shared by the early "Alert checkout" (final: false, AFTER the route took the
+ * claim) and the visit Send's update (final: true, no claim — TC's source key
+ * makes it the same handoff). NEVER THROWS: every outcome is a typed answer.
+ *
+ * ⚠️ ZERO OPEN DENTAL CALLS. ⚠️ The visit row, its items and the appointment
+ * snapshot are all this reads; the snapshot was recorded by a route that had
+ * ALREADY read the appointment.
+ *
+ * @returns {Promise<{ ok: boolean, status: number, code: string|null, error: string|null,
+ *                     visit: Record<string, any>|null,
+ *                     delivery: { state: 'delivered'|'not_delivered', code: string|null, message: string|null } }>}
+ */
+async function deliverCheckout(req, { office, aptNum, final }) {
+  const refuse = (status, code, error) => ({
+    ok: false,
+    status,
+    code,
+    error,
+    visit: null,
+    delivery: { state: 'not_delivered', code, message: error },
+  });
+  try {
+    const ctx = await tenantDb.withTenantDb(req, (pool) =>
+      visitStore.getOrthoSendContext(pool, { office, aptNum })
+    );
+    if (!ctx) return refuse(404, 'VISIT_NOT_FOUND', 'No visit has been started for this appointment yet');
+
+    const date = ctx.visit.visitDate || new Date().toISOString().slice(0, 10);
+    const built = tcHandoff.buildCheckoutIntake({ visit: ctx.visit, snapshot: ctx.snapshot, date, final });
+    if (!built.ok) return refuse(409, built.code, built.error);
+
+    const submit = req.app.get('hygCheckoutSubmit') || tcHandoff.submitCheckoutHandoff;
+    let sent;
+    try {
+      // The office is the STORED visit's, never a request's.
+      sent = await submit(req, { office: ctx.visit.office, body: built.body });
+    } catch (err) {
+      sent = { ok: false, code: 'TC_UNREACHABLE', error: (err && err.message) || 'The TC app did not respond' };
+    }
+    if (!sent.ok) {
+      await audit(req, {
+        action: final ? 'UPDATE' : 'CREATE',
+        resourceType: 'hyg_checkout_alert',
+        resourceId: aptNum,
+        result: 'ERROR',
+        office,
+        sourceRef: null,
+      });
+      console.warn(`[hygcheckout] office=${office} apt=${aptNum} final=${final} TC refused: ${sent.code}`);
+      return refuse(
+        502,
+        sent.code,
+        `The checkout alert was NOT ${final ? 'updated' : 'sent'}: ${sent.error}. ` +
+          'Nothing is lost on this visit; try again.'
+      );
+    }
+
+    // "Delivered" only once the handoff id is recorded on the visit.
+    const after = await tenantDb.withTenantDb(req, (pool) =>
+      visitStore.markCheckoutSent(pool, {
+        office,
+        aptNum,
+        handoffId: sent.handoffId,
+        actor: actorEmail(req),
+        final,
+      })
+    );
+    if (!after) {
+      return refuse(
+        409,
+        'SOURCE_KEY_CONFLICT',
+        'TC answered with a different handoff than the one this visit already points at. Nothing was changed here.'
+      );
+    }
+    await audit(req, {
+      action: final ? 'UPDATE' : 'CREATE',
+      resourceType: 'hyg_checkout_alert',
+      resourceId: aptNum,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+    console.log(`[hygcheckout] office=${office} apt=${aptNum} final=${final} handoff ${sent.handoffId}`);
+    return {
+      ok: true,
+      status: 200,
+      code: null,
+      error: null,
+      visit: after,
+      delivery: { state: 'delivered', code: null, message: null },
+    };
+  } catch (err) {
+    console.error(`[hygcheckout] office=${office} apt=${aptNum} failed:`, err && err.message);
+    return refuse(500, 'CHECKOUT_ERROR', 'The checkout alert could not be sent. Nothing is lost on this visit; try again.');
+  }
+}
+
+/** The 403 an office with the handoff switched off answers. */
+function checkoutDisabled(res, office) {
+  return res.status(403).json({
+    success: false,
+    error: 'The checkout handoff is not switched on for this office',
+    code: 'CHECKOUT_DISABLED',
+    office,
+  });
+}
+
+/**
+ * POST /api/hyg/visit/:aptNum/checkout/alert — "Alert checkout", NOW.
+ *
+ * The ortho send's shape exactly: NOTHING in the body is read; one handoff per
+ * visit (an alerted visit answers 200 `alreadySent: true` and sends nothing);
+ * two racing presses are serialised by a conditional claim; the claim goes
+ * stale after two minutes; a TC refusal releases it and answers 502.
+ */
+router.post(
+  '/:aptNum/checkout/alert',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) {
+      return res.status(400).json({
+        success: false,
+        error: 'aptNum must be a positive whole number',
+        code: 'INVALID_APT_NUM',
+        office,
+      });
+    }
+    if (parseBody(res, contract.CheckoutAlertRequestSchema, req.body ?? {}) === null) return undefined;
+    if (!(await tcCheckout.isEnabled(office))) return checkoutDisabled(res, office);
+
+    const current = await tenantDb.withTenantDb(req, (pool) =>
+      visitStore.getVisit(pool, { office, aptNum })
+    );
+    if (!current) {
+      return res.status(404).json({
+        success: false,
+        error: 'No visit has been started for this appointment yet',
+        code: 'VISIT_NOT_FOUND',
+        office,
+      });
+    }
+    // Already alerted: say so, send nothing.
+    if (current.checkoutSend) return res.json({ ...visitPayload(current), alreadySent: true });
+
+    const claimed = await tenantDb.withTenantDb(req, (pool) =>
+      visitStore.claimCheckoutSend(pool, { office, aptNum })
+    );
+    if (!claimed) {
+      const now = await tenantDb.withTenantDb(req, (pool) => visitStore.getVisit(pool, { office, aptNum }));
+      if (now && now.checkoutSend) return res.json({ ...visitPayload(now), alreadySent: true });
+      return res.status(409).json({
+        success: false,
+        error: 'Checkout is already being alerted for this visit. Wait a moment and reload.',
+        code: 'CHECKOUT_SEND_IN_PROGRESS',
+        office,
+      });
+    }
+
+    const result = await deliverCheckout(req, { office, aptNum, final: false });
+    if (!result.ok) {
+      await tenantDb.withTenantDb(req, (pool) => visitStore.releaseCheckoutClaim(pool, { office, aptNum }));
+      return res.status(result.status).json({ success: false, error: result.error, code: result.code, office });
+    }
+    return res.json({ ...visitPayload(result.visit), alreadySent: false });
+  })
+);
+
+/**
+ * POST /api/hyg/visit/:aptNum/checkout/finalize — the visit Send's checkout
+ * update, again. For when the Send's own attempt answered "not delivered":
+ * the chart writes are done and must not be re-sent, so this retries ONLY the
+ * handoff. Idempotent by TC's source key.
+ */
+router.post(
+  '/:aptNum/checkout/finalize',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) {
+      return res.status(400).json({
+        success: false,
+        error: 'aptNum must be a positive whole number',
+        code: 'INVALID_APT_NUM',
+        office,
+      });
+    }
+    if (parseBody(res, contract.CheckoutAlertRequestSchema, req.body ?? {}) === null) return undefined;
+    if (!(await tcCheckout.isEnabled(office))) return checkoutDisabled(res, office);
+
+    const result = await deliverCheckout(req, { office, aptNum, final: true });
+    if (!result.ok) {
+      return res.status(result.status).json({ success: false, error: result.error, code: result.code, office });
+    }
+    return res.json({ ...visitPayload(result.visit), alreadySent: false });
   })
 );
 

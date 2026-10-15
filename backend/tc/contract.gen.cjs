@@ -14813,10 +14813,10 @@ var require_zod = __commonJS({
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.z = void 0;
-    var z7 = __importStar(require_external());
-    exports2.z = z7;
+    var z8 = __importStar(require_external());
+    exports2.z = z8;
     __exportStar(require_external(), exports2);
-    exports2.default = z7;
+    exports2.default = z8;
   }
 });
 
@@ -14911,18 +14911,30 @@ __export(contract_entry_exports, {
   SENDABLE_MESSAGE_STATUSES: () => SENDABLE_MESSAGE_STATUSES,
   SIGNATURE_SOURCE_TEXT: () => SIGNATURE_SOURCE_TEXT,
   SignatureBlock: () => SignatureBlock,
+  TC_CHECKOUT_PRIORITY_LABELS: () => TC_CHECKOUT_PRIORITY_LABELS,
+  TC_CHECKOUT_PRIORITY_ORDER: () => TC_CHECKOUT_PRIORITY_ORDER,
+  TC_INTAKE_KIND_LABELS: () => TC_INTAKE_KIND_LABELS,
   TERMINAL_CASE_STATUSES: () => TERMINAL_CASE_STATUSES,
   TcCase: () => TcCase,
   TcCaseEvent: () => TcCaseEvent,
   TcCaseEventDetail: () => TcCaseEventDetail,
   TcCaseItem: () => TcCaseItem,
   TcCasePhase: () => TcCasePhase,
+  TcCheckoutHandoff: () => TcCheckoutHandoff,
+  TcCheckoutNextVisit: () => TcCheckoutNextVisit,
+  TcCheckoutPriority: () => TcCheckoutPriority,
+  TcCheckoutProcedure: () => TcCheckoutProcedure,
+  TcCheckoutSnapshot: () => TcCheckoutSnapshot,
+  TcCheckoutSubmit: () => TcCheckoutSubmit,
+  TcCheckoutSubmitResponse: () => TcCheckoutSubmitResponse,
   TcCommunication: () => TcCommunication,
   TcContactConsent: () => TcContactConsent,
   TcEmailTemplate: () => TcEmailTemplate,
   TcFollowup: () => TcFollowup,
   TcGalleryCase: () => TcGalleryCase,
   TcHygieneIntake: () => TcHygieneIntake,
+  TcIntakeKind: () => TcIntakeKind,
+  TcIntakeSourceKey: () => TcIntakeSourceKey,
   TcLegacyUserMapEntry: () => TcLegacyUserMapEntry,
   TcMessage: () => TcMessage,
   TcNurtureEnrollment: () => TcNurtureEnrollment,
@@ -14933,11 +14945,12 @@ __export(contract_entry_exports, {
   Urgency: () => Urgency,
   Uuid: () => Uuid,
   VoiceHandoffDetail: () => VoiceHandoffDetail,
-  ZodError: () => import_zod6.ZodError,
+  ZodError: () => import_zod7.ZodError,
   allPresetViolations: () => allPresetViolations,
   assertPresetsWithinCaps: () => assertPresetsWithinCaps,
   caseFromRows: () => caseFromRows,
   caseToRows: () => caseToRows,
+  checkoutPriorityOf: () => checkoutPriorityOf,
   communicationToRow: () => communicationToRow,
   emailBodyText: () => emailBodyText,
   escapeHtml: () => escapeHtml,
@@ -14963,7 +14976,7 @@ __export(contract_entry_exports, {
   simulationToRow: () => simulationToRow,
   templateToRow: () => templateToRow,
   userMapEntryToRow: () => userMapEntryToRow,
-  z: () => import_zod6.z
+  z: () => import_zod7.z
 });
 module.exports = __toCommonJS(contract_entry_exports);
 
@@ -17020,8 +17033,104 @@ var NurtureConfigResponse = import_zod5.z.object({
   )
 });
 
+// shared/tc/checkout.ts
+var import_zod6 = __toESM(require_zod(), 1);
+var TcIntakeKind = import_zod6.z.enum(["hygiene", "ortho", "checkout"]);
+var TC_INTAKE_KIND_LABELS = {
+  hygiene: "Treatment",
+  ortho: "Ortho screening",
+  checkout: "Checkout"
+};
+var TcIntakeSourceKey = import_zod6.z.string().min(8).max(200).regex(/^[A-Za-z0-9:_-]+$/, "a source key is letters, digits, ':', '_' and '-' only");
+var TcCheckoutPriority = import_zod6.z.enum(["urgent", "preventative", "cosmetic"]);
+var TC_CHECKOUT_PRIORITY_LABELS = {
+  urgent: "Urgent",
+  preventative: "Preventative",
+  cosmetic: "Cosmetic"
+};
+var TC_CHECKOUT_PRIORITY_ORDER = [
+  "urgent",
+  "preventative",
+  "cosmetic"
+];
+var TcCheckoutProcedure = import_zod6.z.object({
+  /** Universal tooth numbers, or "mouth" for a whole-mouth item. */
+  teeth: import_zod6.z.union([import_zod6.z.array(import_zod6.z.number().int()), import_zod6.z.literal("mouth")]),
+  code: import_zod6.z.string().min(1).max(60),
+  category: import_zod6.z.string().min(1).max(40),
+  priority: TcCheckoutPriority,
+  status: import_zod6.z.string().min(1).max(40),
+  surfaces: import_zod6.z.array(import_zod6.z.string().max(4)).max(10),
+  /** The hygienist marked this to schedule at the next visit. */
+  scheduleNext: import_zod6.z.boolean(),
+  note: import_zod6.z.string().max(500)
+}).strict();
+var TcCheckoutNextVisit = import_zod6.z.object({
+  type: import_zod6.z.string().max(120).nullable(),
+  intervalMonths: import_zod6.z.number().int().min(1).max(24).nullable(),
+  lengthMin: import_zod6.z.number().int().min(5).max(240).nullable(),
+  withDoctor: import_zod6.z.boolean(),
+  /** The note's return-to-clinic line, verbatim. */
+  rtc: import_zod6.z.string().max(4e3)
+}).strict();
+var TcCheckoutSnapshot = import_zod6.z.object({
+  procedures: import_zod6.z.array(TcCheckoutProcedure).max(100),
+  /** The highest priority among the procedures; null when there are none. */
+  priority: TcCheckoutPriority.nullable(),
+  nextVisit: TcCheckoutNextVisit,
+  /**
+   * The clinical note has not reached the chart yet. True on an early
+   * "Alert checkout" (the visit Send has not run); the visit Send's update
+   * says whether the note landed.
+   */
+  notesPending: import_zod6.z.boolean(),
+  frontDeskNote: import_zod6.z.string().max(4e3),
+  financialNote: import_zod6.z.string().max(4e3)
+}).strict();
+var TcCheckoutSubmit = import_zod6.z.object({
+  kind: import_zod6.z.literal("checkout"),
+  sourceKey: TcIntakeSourceKey,
+  final: import_zod6.z.boolean(),
+  patientName: import_zod6.z.string().min(1).max(200),
+  odPatientId: import_zod6.z.number().int().positive(),
+  provider: import_zod6.z.string().max(200),
+  providerSeen: import_zod6.z.string().max(200),
+  operatory: import_zod6.z.string().max(200),
+  visitDate: import_zod6.z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  snapshot: TcCheckoutSnapshot
+}).strict();
+var TcCheckoutHandoff = import_zod6.z.object({
+  handoffId: import_zod6.z.string().uuid(),
+  officeId: import_zod6.z.enum(["roland", "valley"]),
+  odPatientId: import_zod6.z.number().int().positive(),
+  patientName: import_zod6.z.string(),
+  provider: import_zod6.z.string(),
+  providerSeen: import_zod6.z.string(),
+  operatory: import_zod6.z.string(),
+  visitDate: import_zod6.z.string(),
+  snapshot: TcCheckoutSnapshot,
+  final: import_zod6.z.boolean(),
+  revision: import_zod6.z.number().int().positive(),
+  submittedBy: import_zod6.z.string(),
+  createdAt: import_zod6.z.string(),
+  updatedAt: import_zod6.z.string()
+});
+var TcCheckoutSubmitResponse = import_zod6.z.object({
+  success: import_zod6.z.literal(true),
+  kind: import_zod6.z.literal("checkout"),
+  handoff: TcCheckoutHandoff,
+  /** True when the key was already known and nothing new was stored. */
+  replayed: import_zod6.z.boolean()
+});
+function checkoutPriorityOf(procedures) {
+  for (const p of TC_CHECKOUT_PRIORITY_ORDER) {
+    if (procedures.some((x) => x.priority === p)) return p;
+  }
+  return null;
+}
+
 // ../backend/tc/contract.entry.ts
-var import_zod6 = __toESM(require_zod());
+var import_zod7 = __toESM(require_zod());
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   ButtonBlock,
@@ -17112,18 +17221,30 @@ var import_zod6 = __toESM(require_zod());
   SENDABLE_MESSAGE_STATUSES,
   SIGNATURE_SOURCE_TEXT,
   SignatureBlock,
+  TC_CHECKOUT_PRIORITY_LABELS,
+  TC_CHECKOUT_PRIORITY_ORDER,
+  TC_INTAKE_KIND_LABELS,
   TERMINAL_CASE_STATUSES,
   TcCase,
   TcCaseEvent,
   TcCaseEventDetail,
   TcCaseItem,
   TcCasePhase,
+  TcCheckoutHandoff,
+  TcCheckoutNextVisit,
+  TcCheckoutPriority,
+  TcCheckoutProcedure,
+  TcCheckoutSnapshot,
+  TcCheckoutSubmit,
+  TcCheckoutSubmitResponse,
   TcCommunication,
   TcContactConsent,
   TcEmailTemplate,
   TcFollowup,
   TcGalleryCase,
   TcHygieneIntake,
+  TcIntakeKind,
+  TcIntakeSourceKey,
   TcLegacyUserMapEntry,
   TcMessage,
   TcNurtureEnrollment,
@@ -17139,6 +17260,7 @@ var import_zod6 = __toESM(require_zod());
   assertPresetsWithinCaps,
   caseFromRows,
   caseToRows,
+  checkoutPriorityOf,
   communicationToRow,
   emailBodyText,
   escapeHtml,

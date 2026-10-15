@@ -11,6 +11,14 @@
  *
  * Identity: submitted_by / assigned_tc are stamped from the SSO session —
  * hygienists and TCs never self-report who they are.
+ *
+ * ITEM 49 — INTAKE KINDS AND THE SOURCE KEY. POST / takes a `kind`
+ * (shared/tc/checkout.ts): `hygiene` and `ortho` create a case exactly as
+ * before; `checkout` creates a tc_checkout_handoffs row and NO case. Every kind
+ * may carry a `sourceKey`, and a key TC has already seen answers with what it
+ * already made — a lost response plus a resend can no longer open a second
+ * case. The unique index on (office_id, source_key) is the arbiter; the read
+ * first is only the fast path.
  */
 
 const express = require('express');
@@ -22,8 +30,19 @@ const { requirePermission } = require('../../config/permissions');
 const tenantDb = require('../../platform/tenantDb');
 const registry = require('../../platform/registry');
 const store = require('./caseStore');
+const checkoutStore = require('./checkoutStore');
+const tcCheckout = require('../../config/tcCheckout');
 
-const { z, TcCase, TcHygieneIntake, Uuid, caseToRows } = contract;
+const {
+  z,
+  TcCase,
+  TcHygieneIntake,
+  Uuid,
+  caseToRows,
+  TcIntakeKind,
+  TcIntakeSourceKey,
+  TcCheckoutSubmit,
+} = contract;
 
 const router = express.Router();
 router.use(requireOffice);
@@ -63,14 +82,156 @@ const IntakeSubmit = TcHygieneIntake.omit({
     category: TcCase.shape.category,
     urgency: TcCase.shape.urgency,
     caseType: TcCase.shape.caseType.default(''),
+    // Item 49. Both optional, so a client that predates them still submits.
+    kind: TcIntakeKind.exclude(['checkout']).optional(),
+    sourceKey: TcIntakeSourceKey.optional(),
   })
   .strict();
+
+/**
+ * The case an earlier submit with this source key made, or null when the key
+ * is new.
+ */
+async function replayIntake(req, sourceKey) {
+  return tenantDb.withTenantDb(req, async (pool) => {
+    const prior = await pool.query(
+      'SELECT case_id FROM tc_hygiene_intakes WHERE office_id = $1 AND source_key = $2',
+      [req.tcOffice, sourceKey]
+    );
+    if (prior.rows.length === 0) return null;
+    return store.loadCaseAggregate(pool, req.tcOffice, prior.rows[0].case_id);
+  });
+}
+
+/**
+ * kind: 'checkout' — store (or update) the handoff. NO case is created.
+ *
+ * Off for this office → 403 CHECKOUT_DISABLED, nothing stored. A repeat key
+ * answers with the handoff it already made; a newer payload for the same key
+ * replaces the snapshot (the visit Send supersedes the early alert), except
+ * that a FINAL snapshot is never replaced by a non-final one.
+ */
+async function submitCheckout(req, res) {
+  if (!(await tcCheckout.isEnabled(req.tcOffice))) {
+    return res.status(403).json({
+      success: false,
+      error: 'The checkout handoff is not switched on for this office',
+      code: 'CHECKOUT_DISABLED',
+    });
+  }
+  const input = parseBody(res, TcCheckoutSubmit, req.body);
+  if (!input) return undefined;
+
+  const actor = actorEmail(req);
+  const office = req.tcOffice;
+  const incoming = {
+    patient_name: input.patientName,
+    provider: input.provider,
+    provider_seen: input.providerSeen,
+    operatory: input.operatory,
+    payload: input.snapshot,
+    is_final: input.final,
+    updated_by: actor,
+  };
+
+  const outcome = await tenantDb.withTenantDb(req, async (pool) => {
+    let existing = await checkoutStore.findBySourceKey(pool, office, input.sourceKey);
+    if (!existing) {
+      try {
+        await checkoutStore.insertHandoff(pool, {
+          ...incoming,
+          handoff_id: randomUUID(),
+          office_id: office,
+          source_key: input.sourceKey,
+          od_patient_id: input.odPatientId,
+          visit_date: input.visitDate,
+          revision: 1,
+          submitted_by: actor,
+        });
+        return {
+          action: 'created',
+          row: await checkoutStore.findBySourceKey(pool, office, input.sourceKey),
+        };
+      } catch (err) {
+        if (!err || err.code !== checkoutStore.PG_UNIQUE_VIOLATION) throw err;
+        // Lost the race to a submit with the same key: the winner's row stands.
+        existing = await checkoutStore.findBySourceKey(pool, office, input.sourceKey);
+        if (!existing) throw err;
+      }
+    }
+
+    // The same visit, the same patient — a key that came back carrying a
+    // different PatNum is a bug upstream, and refusing beats re-pointing.
+    if (Number(existing.od_patient_id) !== input.odPatientId) {
+      return { action: 'mismatch', row: existing };
+    }
+    if (existing.is_final === true && !input.final) {
+      return { action: 'replayed', row: existing };
+    }
+    const applied = await checkoutStore.updatePayload(pool, {
+      office,
+      handoffId: existing.handoff_id,
+      expectRevision: Number(existing.revision),
+      row: incoming,
+    });
+    const now = await checkoutStore.findBySourceKey(pool, office, input.sourceKey);
+    return { action: applied ? 'updated' : 'replayed', row: now };
+  });
+
+  if (outcome.action === 'mismatch') {
+    return res.status(409).json({
+      success: false,
+      error: 'This checkout key already belongs to a different patient. Nothing was changed.',
+      code: 'SOURCE_KEY_CONFLICT',
+    });
+  }
+  if (outcome.action !== 'replayed') {
+    await auditTc(
+      req,
+      outcome.action === 'created' ? 'CREATE' : 'UPDATE',
+      'tc_checkout_handoff',
+      String(outcome.row.handoff_id),
+      { office }
+    );
+  }
+  return res.status(outcome.action === 'created' ? 201 : 200).json({
+    success: true,
+    kind: 'checkout',
+    handoff: checkoutStore.toHandoff(outcome.row),
+    replayed: outcome.action === 'replayed',
+  });
+}
 
 router.post(
   '/',
   h(async (req, res) => {
+    if (req.body && typeof req.body === 'object' && req.body.kind === 'checkout') {
+      return submitCheckout(req, res);
+    }
     const input = parseBody(res, IntakeSubmit, req.body);
     if (!input) return;
+
+    // A declared kind must match what rides along: an ortho intake carries a
+    // screening and a treatment intake does not.
+    if (input.kind) {
+      const hasScreening = input.orthoScreening !== undefined && input.orthoScreening !== null;
+      if ((input.kind === 'ortho') !== hasScreening) {
+        return res.status(400).json({
+          success: false,
+          error:
+            input.kind === 'ortho'
+              ? 'An ortho intake must carry its screening'
+              : 'A treatment intake must not carry an ortho screening',
+          code: 'INTAKE_KIND_MISMATCH',
+        });
+      }
+    }
+
+    // Replay: this key already made a case. Answer with it; create nothing.
+    if (input.sourceKey) {
+      const prior = await replayIntake(req, input.sourceKey);
+      if (prior) return res.status(200).json({ success: true, case: prior, replayed: true });
+    }
 
     const submitter = actorEmail(req);
     const submitterName = actorName(req);
@@ -158,15 +319,32 @@ router.post(
     });
 
     const rows = caseToRows(aggregate, randomUUID);
-    const persisted = await withTenantTx(req, async (client) => {
-      await store.insertCaseRow(client, rows.caseRow);
-      for (const e of rows.eventRows) await store.insertEventRow(client, e);
-      await store.insertIntakeRow(client, rows.hygieneIntakeRow);
-      return store.loadCaseAggregate(client, req.tcOffice, caseId);
-    });
+    let persisted;
+    try {
+      persisted = await withTenantTx(req, async (client) => {
+        await store.insertCaseRow(client, rows.caseRow);
+        for (const e of rows.eventRows) await store.insertEventRow(client, e);
+        await store.insertIntakeRow(client, rows.hygieneIntakeRow);
+        if (input.sourceKey) {
+          // Inside the SAME transaction: a duplicate key raises 23505 here and
+          // the whole case rolls back, so the loser of a race leaves nothing.
+          await client.query(
+            'UPDATE tc_hygiene_intakes SET source_key = $3 WHERE office_id = $1 AND case_id = $2',
+            [req.tcOffice, caseId, input.sourceKey]
+          );
+        }
+        return store.loadCaseAggregate(client, req.tcOffice, caseId);
+      });
+    } catch (err) {
+      if (input.sourceKey && err && err.code === checkoutStore.PG_UNIQUE_VIOLATION) {
+        const prior = await replayIntake(req, input.sourceKey);
+        if (prior) return res.status(200).json({ success: true, case: prior, replayed: true });
+      }
+      throw err;
+    }
 
     await auditTc(req, 'CREATE', 'tc_hygiene_intake', caseId);
-    res.status(201).json({ success: true, case: persisted });
+    res.status(201).json({ success: true, case: persisted, replayed: false });
   })
 );
 
