@@ -577,6 +577,14 @@ export interface TcIntakeSubmit {
    */
   hygienistName?: string;
   /**
+   * Item 49. Which intake this is, and the caller's idempotency key: TC answers
+   * a key it has already seen with the case it already made, so a resend after
+   * a lost response cannot open a second case. TC's own intake form sends a
+   * fresh key per submission (`newIntakeSourceKey`).
+   */
+  kind?: "hygiene" | "ortho";
+  sourceKey?: string;
+  /**
    * The hygienist's ortho screening (item 33). Sent only by the hygiene visit's
    * own send, server-assembled; TC's intake form never sets it, and the server
    * stores null when it is absent.
@@ -671,6 +679,15 @@ interface IntakeRowBase {
   flag_urgent: boolean;
   /** jsonb (item 33). Absent from a server older than the column — read as null. */
   ortho_screening?: OrthoScreening | null;
+}
+
+/**
+ * A fresh idempotency key for ONE submission of TC's own intake form (item 49).
+ * Kept for the life of the filled-in form, so a retry of the same submission
+ * re-sends the same key; replaced after a successful submit.
+ */
+export function newIntakeSourceKey(): string {
+  return `tc-form:${crypto.randomUUID()}`;
 }
 
 export function submitHygieneIntake(

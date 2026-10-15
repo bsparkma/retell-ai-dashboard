@@ -87,6 +87,8 @@ import {
   retryStagedWrite,
   saveSlip,
   sendOrthoScreening,
+  alertCheckout,
+  finalizeCheckout,
   sendVisit,
   stageWrite,
   stepPerioSend,
@@ -105,7 +107,9 @@ import { VisitNoteFields } from "@/features/hyg/visit/VisitNoteFields";
 import { StagedWritesTray, type TrayPerio } from "@/features/hyg/visit/StagedWritesTray";
 import { TreatmentItems } from "@/features/hyg/visit/TreatmentItems";
 import { OrthoScreening } from "@/features/hyg/visit/OrthoScreening";
+import { CheckoutAlert } from "@/features/hyg/visit/CheckoutAlert";
 import type { OrthoScreening as OrthoScreeningValue } from "@shared/hyg/orthoScreening";
+import type { CheckoutDelivery } from "@shared/hyg/contract";
 import { cn } from "@/lib/utils";
 
 /** How long after the last keystroke the slip is stored. */
@@ -247,6 +251,10 @@ export default function HygVisit() {
   const [tab, setTab] = useState<"visit" | "ortho">("visit");
   const [orthoSending, setOrthoSending] = useState(false);
   const [orthoError, setOrthoError] = useState<string | null>(null);
+  /** Item 49: the checkout alert's own request, and what the last Send said about it. */
+  const [checkoutSending, setCheckoutSending] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
+  const [checkoutDelivery, setCheckoutDelivery] = useState<CheckoutDelivery | null>(null);
   /**
    * The tray, so the end of the form can point at it.
    *
@@ -501,6 +509,57 @@ export default function HygVisit() {
     }
   }, [office, aptNum, date, page, adopt]);
 
+  /**
+   * "Alert checkout", NOW (item 49).
+   *
+   * The ortho send's order, for the ortho send's reason: the server builds the
+   * snapshot from the STORED visit, so a debounced save that has not fired is
+   * stored first and one in flight is waited for. "Alerted" renders from
+   * `visit.checkoutSend`, written only after TC answered with a handoff.
+   */
+  const onCheckoutAlert = useCallback(async () => {
+    if (!isOfficeId(office) || !page) return;
+    setCheckoutSending(true);
+    setCheckoutError(null);
+    try {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      if (saveInFlight.current) await saveInFlight.current;
+      const unsaved = pendingSlip.current;
+      pendingSlip.current = null;
+      if (!page.visit) await openVisit(office, aptNum, date);
+      if (unsaved) adopt(await saveSlip(office, aptNum, unsaved));
+      adopt(await alertCheckout(office, aptNum));
+    } catch (err) {
+      setCheckoutError(
+        err instanceof HygApiError
+          ? err.message
+          : "Checkout was not alerted. Nothing is lost on this visit; try again.",
+      );
+    } finally {
+      setCheckoutSending(false);
+    }
+  }, [office, aptNum, date, page, adopt]);
+
+  /** Re-send ONLY the final checkout snapshot, after a Send whose update did not land. */
+  const onCheckoutRetryFinal = useCallback(async () => {
+    if (!isOfficeId(office)) return;
+    setCheckoutSending(true);
+    setCheckoutError(null);
+    try {
+      adopt(await finalizeCheckout(office, aptNum));
+      setCheckoutDelivery(null);
+    } catch (err) {
+      setCheckoutError(
+        err instanceof HygApiError
+          ? err.message
+          : "The front desk still did not get your final notes. Try again.",
+      );
+    } finally {
+      setCheckoutSending(false);
+    }
+  }, [office, aptNum, adopt]);
+
   const onStage = useCallback(
     async (kind: StagedWriteKind) => {
       if (!isOfficeId(office) || !page) return;
@@ -542,6 +601,8 @@ export default function HygVisit() {
       try {
         const res = await sendVisit(office, aptNum, date, confirm);
         adopt(res);
+        // Item 49: the handoff rode the Send; say what happened to it.
+        setCheckoutDelivery(res.checkout);
         // THE CHART'S FIRST STEP RAN IN THAT REQUEST. If it is still Sending, the
         // rest are ours to ask for — unless it paused, which the row now says.
         const perio = res.outcomes.find((o) => o.kind === "perio");
@@ -727,6 +788,16 @@ export default function HygVisit() {
 
       <div className="mt-4 flex flex-col gap-4 lg:flex-row">
         <div className="min-w-0 flex-1 space-y-6">
+          {page.checkoutEnabled ? (
+            <CheckoutAlert
+              sent={page.visit?.checkoutSend ?? null}
+              sending={checkoutSending}
+              error={checkoutError}
+              delivery={checkoutDelivery}
+              onAlert={() => void onCheckoutAlert()}
+              onRetryFinal={() => void onCheckoutRetryFinal()}
+            />
+          ) : null}
           <div
             role="tablist"
             aria-label="Visit sections"
