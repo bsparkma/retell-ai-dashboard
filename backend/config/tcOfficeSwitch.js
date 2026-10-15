@@ -37,9 +37,19 @@
 const registry = require('../platform/registry');
 const { OFFICES } = require('./officeAgents');
 
+/**
+ * The practice's real offices: every key of officeAgents.OFFICES except the
+ * `unknown` system bucket, which is where an unattributable call lands and is
+ * never a location a feature can be switched on for.
+ * @returns {string[]}
+ */
+function realOffices() {
+  return Object.keys(OFFICES).filter((k) => k !== 'unknown');
+}
+
 /** @param {unknown} officeKey @returns {boolean} */
 function isKnownOffice(officeKey) {
-  return typeof officeKey === 'string' && Object.prototype.hasOwnProperty.call(OFFICES, officeKey);
+  return typeof officeKey === 'string' && realOffices().includes(officeKey);
 }
 
 /** Minutes a cached read stays fresh (default 5). @returns {number} */
@@ -255,4 +265,4 @@ function createOfficeSwitch({ settingKey, envPrefix, label }) {
   });
 }
 
-module.exports = { createOfficeSwitch, isKnownOffice };
+module.exports = { createOfficeSwitch, isKnownOffice, realOffices };

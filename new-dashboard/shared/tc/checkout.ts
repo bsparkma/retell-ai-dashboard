@@ -148,6 +148,53 @@ export const TcCheckoutSubmit = z
   .strict();
 export type TcCheckoutSubmit = z.infer<typeof TcCheckoutSubmit>;
 
+/**
+ * Where a checkout handoff stands at the front desk (item 50).
+ *
+ *   open            waiting; nobody has picked it up
+ *   claimed         a TC user said "I've got this patient"
+ *   scheduled       outcome: booked — the case is in the Scheduled column
+ *   not_scheduled   outcome: left without booking — the case waits on the patient
+ *   nothing_needed  outcome: nothing to schedule — NO case
+ *   dismissed       closed by hand, with a reason (not a checkout after all)
+ *   expired         its office day ended with no outcome; closed by the system
+ *
+ * The DB CHECK (1791500000000_tc_checkout_outcome.js) carries the same seven.
+ */
+export const TcCheckoutStatus = z.enum([
+  "open",
+  "claimed",
+  "scheduled",
+  "not_scheduled",
+  "nothing_needed",
+  "dismissed",
+  "expired",
+]);
+export type TcCheckoutStatus = z.infer<typeof TcCheckoutStatus>;
+
+export const TC_CHECKOUT_STATUS_LABELS: Record<TcCheckoutStatus, string> = {
+  open: "Waiting",
+  claimed: "Claimed",
+  scheduled: "Scheduled",
+  not_scheduled: "Not scheduled",
+  nothing_needed: "Nothing needed",
+  dismissed: "Dismissed",
+  expired: "Expired",
+};
+
+/** The statuses the inbox shows as still waiting on the front desk. */
+export const TC_CHECKOUT_WAITING: readonly TcCheckoutStatus[] = ["open", "claimed"];
+
+/** The three answers a front desk gives at checkout. */
+export const TcCheckoutOutcome = z.enum(["scheduled", "not_scheduled", "nothing_needed"]);
+export type TcCheckoutOutcome = z.infer<typeof TcCheckoutOutcome>;
+
+export const TC_CHECKOUT_OUTCOME_LABELS: Record<TcCheckoutOutcome, string> = {
+  scheduled: "Scheduled",
+  not_scheduled: "Not scheduled",
+  nothing_needed: "Nothing needed",
+};
+
 /** A checkout handoff as TC reads it back. */
 export const TcCheckoutHandoff = z.object({
   handoffId: z.string().uuid(),
@@ -164,8 +211,55 @@ export const TcCheckoutHandoff = z.object({
   submittedBy: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  // Item 50 — the front desk's side. Defaulted so an item-49 reader still parses.
+  status: TcCheckoutStatus.default("open"),
+  claimedBy: z.string().nullable().default(null),
+  claimedAt: z.string().nullable().default(null),
+  dismissedReason: z.string().nullable().default(null),
+  dismissedBy: z.string().nullable().default(null),
+  dismissedAt: z.string().nullable().default(null),
+  outcomeBy: z.string().nullable().default(null),
+  outcomeAt: z.string().nullable().default(null),
+  appointmentNote: z.string().nullable().default(null),
+  caseId: z.string().uuid().nullable().default(null),
+  expiredAt: z.string().nullable().default(null),
 });
 export type TcCheckoutHandoff = z.infer<typeof TcCheckoutHandoff>;
+
+/** POST /api/tc/checkout/:id/outcome */
+export const TcCheckoutOutcomeRequest = z
+  .object({
+    outcome: TcCheckoutOutcome,
+    /** Optional, and only meaningful for "Scheduled" ("Tue 9am, Dr. chair"). */
+    appointmentNote: z.string().trim().max(500).default(""),
+  })
+  .strict();
+export type TcCheckoutOutcomeRequest = z.infer<typeof TcCheckoutOutcomeRequest>;
+
+/** POST /api/tc/checkout/:id/dismiss — a reason is required, like an opportunity's. */
+export const TcCheckoutDismissRequest = z
+  .object({ reason: z.string().trim().min(1).max(500) })
+  .strict();
+export type TcCheckoutDismissRequest = z.infer<typeof TcCheckoutDismissRequest>;
+
+/**
+ * GET /api/tc/checkout/summary — what the nav badge and the arrival toast read.
+ * `enabled: false` means the office has checkout switched off: no badge, no
+ * nav item, no toast.
+ */
+export const TcCheckoutSummary = z.object({
+  success: z.literal(true),
+  office: z.enum(["roland", "valley"]),
+  enabled: z.boolean(),
+  /** The office's own day, `YYYY-MM-DD`, that "today" means here. */
+  today: z.string().nullable(),
+  waiting: z.number().int().nonnegative(),
+  /** The newest waiting handoff — what an arrival toast names. Null when none. */
+  newest: z
+    .object({ handoffId: z.string().uuid(), patientName: z.string(), createdAt: z.string() })
+    .nullable(),
+});
+export type TcCheckoutSummary = z.infer<typeof TcCheckoutSummary>;
 
 /** The response to a checkout submit. */
 export const TcCheckoutSubmitResponse = z.object({

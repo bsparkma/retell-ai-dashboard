@@ -14911,8 +14911,11 @@ __export(contract_entry_exports, {
   SENDABLE_MESSAGE_STATUSES: () => SENDABLE_MESSAGE_STATUSES,
   SIGNATURE_SOURCE_TEXT: () => SIGNATURE_SOURCE_TEXT,
   SignatureBlock: () => SignatureBlock,
+  TC_CHECKOUT_OUTCOME_LABELS: () => TC_CHECKOUT_OUTCOME_LABELS,
   TC_CHECKOUT_PRIORITY_LABELS: () => TC_CHECKOUT_PRIORITY_LABELS,
   TC_CHECKOUT_PRIORITY_ORDER: () => TC_CHECKOUT_PRIORITY_ORDER,
+  TC_CHECKOUT_STATUS_LABELS: () => TC_CHECKOUT_STATUS_LABELS,
+  TC_CHECKOUT_WAITING: () => TC_CHECKOUT_WAITING,
   TC_INTAKE_KIND_LABELS: () => TC_INTAKE_KIND_LABELS,
   TERMINAL_CASE_STATUSES: () => TERMINAL_CASE_STATUSES,
   TcCase: () => TcCase,
@@ -14920,13 +14923,18 @@ __export(contract_entry_exports, {
   TcCaseEventDetail: () => TcCaseEventDetail,
   TcCaseItem: () => TcCaseItem,
   TcCasePhase: () => TcCasePhase,
+  TcCheckoutDismissRequest: () => TcCheckoutDismissRequest,
   TcCheckoutHandoff: () => TcCheckoutHandoff,
   TcCheckoutNextVisit: () => TcCheckoutNextVisit,
+  TcCheckoutOutcome: () => TcCheckoutOutcome,
+  TcCheckoutOutcomeRequest: () => TcCheckoutOutcomeRequest,
   TcCheckoutPriority: () => TcCheckoutPriority,
   TcCheckoutProcedure: () => TcCheckoutProcedure,
   TcCheckoutSnapshot: () => TcCheckoutSnapshot,
+  TcCheckoutStatus: () => TcCheckoutStatus,
   TcCheckoutSubmit: () => TcCheckoutSubmit,
   TcCheckoutSubmitResponse: () => TcCheckoutSubmitResponse,
+  TcCheckoutSummary: () => TcCheckoutSummary,
   TcCommunication: () => TcCommunication,
   TcContactConsent: () => TcContactConsent,
   TcEmailTemplate: () => TcEmailTemplate,
@@ -17099,6 +17107,31 @@ var TcCheckoutSubmit = import_zod6.z.object({
   visitDate: import_zod6.z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   snapshot: TcCheckoutSnapshot
 }).strict();
+var TcCheckoutStatus = import_zod6.z.enum([
+  "open",
+  "claimed",
+  "scheduled",
+  "not_scheduled",
+  "nothing_needed",
+  "dismissed",
+  "expired"
+]);
+var TC_CHECKOUT_STATUS_LABELS = {
+  open: "Waiting",
+  claimed: "Claimed",
+  scheduled: "Scheduled",
+  not_scheduled: "Not scheduled",
+  nothing_needed: "Nothing needed",
+  dismissed: "Dismissed",
+  expired: "Expired"
+};
+var TC_CHECKOUT_WAITING = ["open", "claimed"];
+var TcCheckoutOutcome = import_zod6.z.enum(["scheduled", "not_scheduled", "nothing_needed"]);
+var TC_CHECKOUT_OUTCOME_LABELS = {
+  scheduled: "Scheduled",
+  not_scheduled: "Not scheduled",
+  nothing_needed: "Nothing needed"
+};
 var TcCheckoutHandoff = import_zod6.z.object({
   handoffId: import_zod6.z.string().uuid(),
   officeId: import_zod6.z.enum(["roland", "valley"]),
@@ -17113,7 +17146,35 @@ var TcCheckoutHandoff = import_zod6.z.object({
   revision: import_zod6.z.number().int().positive(),
   submittedBy: import_zod6.z.string(),
   createdAt: import_zod6.z.string(),
-  updatedAt: import_zod6.z.string()
+  updatedAt: import_zod6.z.string(),
+  // Item 50 — the front desk's side. Defaulted so an item-49 reader still parses.
+  status: TcCheckoutStatus.default("open"),
+  claimedBy: import_zod6.z.string().nullable().default(null),
+  claimedAt: import_zod6.z.string().nullable().default(null),
+  dismissedReason: import_zod6.z.string().nullable().default(null),
+  dismissedBy: import_zod6.z.string().nullable().default(null),
+  dismissedAt: import_zod6.z.string().nullable().default(null),
+  outcomeBy: import_zod6.z.string().nullable().default(null),
+  outcomeAt: import_zod6.z.string().nullable().default(null),
+  appointmentNote: import_zod6.z.string().nullable().default(null),
+  caseId: import_zod6.z.string().uuid().nullable().default(null),
+  expiredAt: import_zod6.z.string().nullable().default(null)
+});
+var TcCheckoutOutcomeRequest = import_zod6.z.object({
+  outcome: TcCheckoutOutcome,
+  /** Optional, and only meaningful for "Scheduled" ("Tue 9am, Dr. chair"). */
+  appointmentNote: import_zod6.z.string().trim().max(500).default("")
+}).strict();
+var TcCheckoutDismissRequest = import_zod6.z.object({ reason: import_zod6.z.string().trim().min(1).max(500) }).strict();
+var TcCheckoutSummary = import_zod6.z.object({
+  success: import_zod6.z.literal(true),
+  office: import_zod6.z.enum(["roland", "valley"]),
+  enabled: import_zod6.z.boolean(),
+  /** The office's own day, `YYYY-MM-DD`, that "today" means here. */
+  today: import_zod6.z.string().nullable(),
+  waiting: import_zod6.z.number().int().nonnegative(),
+  /** The newest waiting handoff — what an arrival toast names. Null when none. */
+  newest: import_zod6.z.object({ handoffId: import_zod6.z.string().uuid(), patientName: import_zod6.z.string(), createdAt: import_zod6.z.string() }).nullable()
 });
 var TcCheckoutSubmitResponse = import_zod6.z.object({
   success: import_zod6.z.literal(true),
@@ -17221,8 +17282,11 @@ var import_zod7 = __toESM(require_zod());
   SENDABLE_MESSAGE_STATUSES,
   SIGNATURE_SOURCE_TEXT,
   SignatureBlock,
+  TC_CHECKOUT_OUTCOME_LABELS,
   TC_CHECKOUT_PRIORITY_LABELS,
   TC_CHECKOUT_PRIORITY_ORDER,
+  TC_CHECKOUT_STATUS_LABELS,
+  TC_CHECKOUT_WAITING,
   TC_INTAKE_KIND_LABELS,
   TERMINAL_CASE_STATUSES,
   TcCase,
@@ -17230,13 +17294,18 @@ var import_zod7 = __toESM(require_zod());
   TcCaseEventDetail,
   TcCaseItem,
   TcCasePhase,
+  TcCheckoutDismissRequest,
   TcCheckoutHandoff,
   TcCheckoutNextVisit,
+  TcCheckoutOutcome,
+  TcCheckoutOutcomeRequest,
   TcCheckoutPriority,
   TcCheckoutProcedure,
   TcCheckoutSnapshot,
+  TcCheckoutStatus,
   TcCheckoutSubmit,
   TcCheckoutSubmitResponse,
+  TcCheckoutSummary,
   TcCommunication,
   TcContactConsent,
   TcEmailTemplate,
