@@ -3,7 +3,8 @@
  *
  * This is DentaFlow's Settings ARRANGEMENT over the platform's existing
  * capabilities: a sticky left section nav with hash deep links
- * (/tc/settings#pricing), the same eight sections in the same order.
+ * (/tc/settings#pricing), the same eight sections in the same order — plus
+ * Notifications (item 51), which DentaFlow never had.
  *
  * What is behind each section is platform reality, not a port:
  *  - Pricing / Financing / Stages / Library reuse the existing office-library
@@ -38,6 +39,7 @@ import {
 } from "@/features/tc/settings/LibrarySections";
 import { PracticeSection } from "@/features/tc/settings/PracticeSection";
 import { TeamSection } from "@/features/tc/settings/TeamSection";
+import { NotificationsSection } from "@/features/tc/settings/NotificationsSection";
 import {
   TC_SETTINGS_SECTIONS,
   currentSectionFromLocation,
@@ -200,6 +202,8 @@ function renderStaticSection(key: TcSettingsSectionKey, office: OfficeId) {
       return <IntegrationsSection office={office} />;
     case "data":
       return <DataSection office={office} />;
+    case "notifications":
+      return <NotificationsSection office={office} />;
     default:
       return null;
   }

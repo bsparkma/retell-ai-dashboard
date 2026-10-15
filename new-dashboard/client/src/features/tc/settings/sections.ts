@@ -8,6 +8,7 @@
  * or explanatory because the platform owns that data elsewhere.
  */
 import {
+  Bell,
   BookOpen,
   Building2,
   Crown,
@@ -27,7 +28,8 @@ export type TcSettingsSectionKey =
   | "stages"
   | "library"
   | "integrations"
-  | "data";
+  | "data"
+  | "notifications";
 
 export interface TcSettingsSection {
   key: TcSettingsSectionKey;
@@ -46,6 +48,8 @@ export const TC_SETTINGS_SECTIONS: readonly TcSettingsSection[] = [
   { key: "library", label: "Library", icon: BookOpen, needsLibrary: true },
   { key: "integrations", label: "Integrations", icon: Plug, needsLibrary: false },
   { key: "data", label: "Data & Backup", icon: ShieldCheck, needsLibrary: false },
+  // Item 51: in-app alert preferences — yours, and the office default (admin).
+  { key: "notifications", label: "Notifications", icon: Bell, needsLibrary: false },
 ];
 
 export const DEFAULT_TC_SETTINGS_SECTION: TcSettingsSectionKey = "practice";

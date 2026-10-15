@@ -40,6 +40,8 @@ export * from "../../new-dashboard/shared/tc/emailRender";
 export * from "../../new-dashboard/shared/tc/nurture";
 // The checkout handoff and the intake-kind / source-key vocabulary (item 49).
 export * from "../../new-dashboard/shared/tc/checkout";
+// In-app alert preferences (item 51).
+export * from "../../new-dashboard/shared/tc/notifications";
 // The routes compose small request shapes (status-transition bodies, complete/
 // reschedule payloads) from contract pieces; export the SAME zod instance so
 // those shapes and the contract schemas share one library version.

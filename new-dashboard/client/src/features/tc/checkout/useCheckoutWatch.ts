@@ -11,8 +11,13 @@
  * not ids — is what keeps answering the top row from announcing the OLDER
  * patient beneath it as a new arrival.
  *
- * Item 51 (C3) will route the toast through per-user notification
- * preferences (silent / banner / sound + banner). Today it is always a banner.
+ * ITEM 51: the arrival alert obeys the person's notification preference for
+ * `checkout_handoff`, read each tick from /api/tc/notification-prefs:
+ *   silent        the badge updates; no banner, no sound
+ *   banner        the banner (the item-50 behaviour, and the default)
+ *   sound_banner  the banner plus a short chime
+ * A preference that cannot be read falls back to `banner` — the alert is
+ * never lost because the preference was.
  *
  * `enabled` is false until some office in scope answers that checkout is on —
  * an unknown or switched-off office shows no nav item and no badge.
@@ -23,6 +28,9 @@ import { toast } from "sonner";
 
 import { usePolling } from "@/hooks/usePolling";
 import { getCheckoutSummary } from "@/features/tc/checkout/checkoutApi";
+import { getNotificationPrefs } from "@/features/tc/notifications/notificationsApi";
+import { playChime } from "@/features/tc/notifications/chime";
+import { DEFAULT_NOTIFICATION_LEVEL, type TcNotificationLevel } from "@shared/tc/notifications";
 import type { OfficeId } from "@shared/tc/contract";
 
 export interface CheckoutWatch {
@@ -51,8 +59,12 @@ export function useCheckoutWatch(offices: readonly OfficeId[]): CheckoutWatch {
   const tick = useCallback(() => {
     if (offices.length === 0) return;
     const asked = key;
-    void Promise.allSettled(offices.map((o) => getCheckoutSummary(o))).then((results) => {
+    void Promise.all([
+      Promise.allSettled(offices.map((o) => getCheckoutSummary(o))),
+      Promise.allSettled(offices.map((o) => getNotificationPrefs(o))),
+    ]).then(([results, prefs]) => {
       if (asked !== currentKey.current) return;
+      let chime = false;
       let enabled = false;
       let waiting = 0;
       results.forEach((r, i) => {
@@ -68,12 +80,21 @@ export function useCheckoutWatch(offices: readonly OfficeId[]): CheckoutWatch {
         if (arrival > latestSeen) seen.current.set(office, arrival);
         else if (!known) seen.current.set(office, latestSeen);
         if (known && s.newest && arrival > latestSeen) {
+          const p = prefs[i];
+          const level: TcNotificationLevel =
+            p && p.status === "fulfilled"
+              ? (p.value.events.find((e) => e.event === "checkout_handoff")?.level ?? DEFAULT_NOTIFICATION_LEVEL)
+              : DEFAULT_NOTIFICATION_LEVEL;
+          if (level === "silent") return; // the badge below still updates
           const target = `/tc/checkout?office=${office}&handoff=${s.newest.handoffId}`;
           toast(`${s.newest.patientName} is headed to checkout`, {
             action: { label: "Open", onClick: () => navigate(target) },
           });
+          if (level === "sound_banner") chime = true;
         }
       });
+      // One chime per tick, however many offices had an arrival.
+      if (chime) playChime();
       setState({ enabled, waiting });
     });
     // `offices` is described by `key`.

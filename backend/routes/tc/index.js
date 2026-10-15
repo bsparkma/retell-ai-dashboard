@@ -35,6 +35,8 @@
  *                     checkout handoffs from the hygiene visit, claim / dismiss
  *                     / outcome, day-scoped expiry. Dark behind the per-office
  *                     tc_checkout_enabled switch. Postgres-only.
+ *   /notification-prefs  in-app alert preferences (item 51): the caller's own
+ *                     override and the office default (admin). Postgres-only.
  *   /od/patient-search the ONE Open Dental read hygiene holds: attach a patient
  *                     to an intake (PatNum + name + DOB, per-office client)
  *   /od               Open Dental READS (Slice 5) — patient search, treatment
@@ -89,6 +91,7 @@ router.use('/reports', tcFull, require('./reports'));
 router.use('/opportunities', tcFull, require('./opportunities'));
 router.use('/nurture', tcFull, require('./nurture'));
 router.use('/checkout', tcFull, require('./checkout'));
+router.use('/notification-prefs', tcFull, require('./notifications'));
 // MUST precede the /od mount, for the same registration-order reason as
 // /cases/from-call above: registering it first is what keeps the attach search
 // on tc.hygiene while the rest of the Open Dental family stays tc.full. Doing
