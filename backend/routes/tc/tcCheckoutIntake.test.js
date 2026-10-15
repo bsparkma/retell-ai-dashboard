@@ -302,3 +302,70 @@ test('checkout bodies are strict: an unknown field is a 400', async (t) => {
   assert.equal(res.status, 400);
   assert.equal(db.table('tc_checkout_handoffs').length, 0);
 });
+
+// ── the final update's revision swap (review round 1) ──────────────────────
+
+/**
+ * Make the next `n` revision swaps LOSE: before the UPDATE runs, a concurrent
+ * non-final writer bumps the row's revision, so `revision = $11` matches
+ * nothing — exactly what Postgres would answer after somebody else's commit.
+ */
+function loseSwaps(db, n) {
+  let left = n;
+  db.onQuery(/^UPDATE tc_checkout_handoffs SET/, (_text, params) => {
+    const rows = db.table('tc_checkout_handoffs').filter((r) => r.office_id === params[0] && r.handoff_id === params[1]);
+    if (left > 0) {
+      left -= 1;
+      for (const r of rows) r.revision = Number(r.revision) + 1; // the other writer's commit
+      return { rows: [], rowCount: 0 };
+    }
+    const hit = rows.filter((r) => Number(r.revision) === Number(params[10]));
+    for (const r of hit) {
+      r.payload = typeof params[2] === 'string' ? JSON.parse(params[2]) : params[2];
+      r.is_final = params[3];
+      r.revision = params[4];
+      r.updated_at = new Date();
+    }
+    return { rows: [], rowCount: hit.length };
+  });
+}
+
+test('a FINAL submit that loses the revision swap re-reads and still lands as final', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t, { role: 'hygiene' });
+  assert.equal((await api(baseUrl, 'POST', POST('roland'), checkoutBody())).status, 201);
+
+  loseSwaps(db, 2);
+  const final = await api(
+    baseUrl,
+    'POST',
+    POST('roland'),
+    checkoutBody({ final: true, snapshot: { ...SNAPSHOT, notesPending: false } })
+  );
+  assert.equal(final.status, 200, JSON.stringify(final.body));
+  assert.equal(final.body.replayed, false);
+  assert.equal(final.body.handoff.final, true, 'TC holds the FINAL snapshot');
+  assert.equal(final.body.handoff.snapshot.notesPending, false);
+});
+
+test('a FINAL submit that never wins the swap is REFUSED, never replayed as if final', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t, { role: 'hygiene' });
+  assert.equal((await api(baseUrl, 'POST', POST('roland'), checkoutBody())).status, 201);
+
+  loseSwaps(db, 100);
+  const final = await api(baseUrl, 'POST', POST('roland'), checkoutBody({ final: true }));
+  assert.equal(final.status, 409);
+  assert.equal(final.body.code, 'CHECKOUT_UPDATE_CONFLICT');
+  assert.equal(db.table('tc_checkout_handoffs')[0].is_final, false, 'nothing claims final');
+});
+
+test('a NON-final submit that loses the swap simply yields to the winner', async (t) => {
+  switchCheckout(t, { roland: true });
+  const { baseUrl, db } = await boot(t, { role: 'hygiene' });
+  assert.equal((await api(baseUrl, 'POST', POST('roland'), checkoutBody())).status, 201);
+  loseSwaps(db, 1);
+  const res = await api(baseUrl, 'POST', POST('roland'), checkoutBody());
+  assert.equal(res.status, 200);
+  assert.equal(res.body.replayed, true);
+});

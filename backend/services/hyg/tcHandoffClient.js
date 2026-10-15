@@ -70,6 +70,9 @@ function sourceKeyFor(visit, kind) {
   return `hyg-visit:${id}:${kind}`;
 }
 
+/** TC refusal codes this module reports as themselves rather than TC_ERROR. */
+const PASSTHROUGH_CODES = new Set(['CHECKOUT_DISABLED', 'SOURCE_KEY_CONFLICT', 'CHECKOUT_UPDATE_CONFLICT']);
+
 /** Highest first, the order TC's `checkoutPriorityOf` uses. */
 const PRIORITY_ORDER = Object.freeze(['urgent', 'preventative', 'cosmetic']);
 
@@ -500,7 +503,7 @@ async function submitHygieneIntake(req, { office, body }, { timeoutMs = DEFAULT_
 /**
  * Send a checkout handoff (item 49). NEVER THROWS, like `submitHygieneIntake`.
  *
- * @returns {Promise<{ ok: true, handoffId: string, replayed: boolean }
+ * @returns {Promise<{ ok: true, handoffId: string, replayed: boolean, final: boolean }
  *          | { ok: false, code: string, error: string }>}
  */
 async function submitCheckoutHandoff(req, { office, body }, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
@@ -515,7 +518,14 @@ async function submitCheckoutHandoff(req, { office, body }, { timeoutMs = DEFAUL
       error: 'TC accepted the checkout alert but did not return a handoff, so nothing is recorded',
     };
   }
-  return { ok: true, handoffId, replayed: payload.replayed === true };
+  return {
+    ok: true,
+    handoffId,
+    replayed: payload.replayed === true,
+    // Whether TC now holds a FINAL snapshot. A final submit must see true here
+    // before anybody may call it delivered (routes/hyg/visit.js deliverCheckout).
+    final: payload.handoff.final === true,
+  };
 }
 
 /**
@@ -561,11 +571,9 @@ async function postIntake(req, { office, body }, { timeoutMs = DEFAULT_TIMEOUT_M
     // A 403 here is TC's own entitlement or permission answer, and saying so is
     // more useful than "the handoff failed".
     // TC's own refusal code passes through when it is one this module names
-    // (CHECKOUT_DISABLED, SOURCE_KEY_CONFLICT), so the screen can say which.
-    const passthrough =
-      payload && (payload.code === 'CHECKOUT_DISABLED' || payload.code === 'SOURCE_KEY_CONFLICT')
-        ? payload.code
-        : null;
+    // (CHECKOUT_DISABLED, SOURCE_KEY_CONFLICT, CHECKOUT_UPDATE_CONFLICT), so
+    // the screen can say which.
+    const passthrough = payload && PASSTHROUGH_CODES.has(payload.code) ? payload.code : null;
     const code =
       passthrough ||
       (response.status === 403

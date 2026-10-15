@@ -81,7 +81,10 @@ export function CheckoutAlert({
             with your final notes.
           </p>
         )}
-        {!sent ? (
+        {/* After a Send whose update did not land, the ONE way forward is the
+            retry below: an early alert now would send a non-final snapshot
+            after the final one was meant to go. */}
+        {!sent && !undelivered ? (
           <button
             type="button"
             onClick={onAlert}

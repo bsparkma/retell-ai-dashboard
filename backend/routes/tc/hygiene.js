@@ -103,6 +103,9 @@ async function replayIntake(req, sourceKey) {
   });
 }
 
+/** How many times a FINAL checkout submit retries a lost revision swap. */
+const CHECKOUT_CAS_ATTEMPTS = 5;
+
 /**
  * kind: 'checkout' — store (or update) the handoff. NO case is created.
  *
@@ -165,18 +168,41 @@ async function submitCheckout(req, res) {
     if (Number(existing.od_patient_id) !== input.odPatientId) {
       return { action: 'mismatch', row: existing };
     }
-    if (existing.is_final === true && !input.final) {
-      return { action: 'replayed', row: existing };
+
+    /*
+     * Apply the snapshot, compare-and-swap on the revision. A LOST swap means
+     * somebody else updated in between: a non-final submit may simply yield
+     * (its snapshot is not the last word anyway), but a FINAL submit must end
+     * up applied — answering it with the winner's older, non-final snapshot
+     * would let the hygiene side report "final notes delivered" for notes TC
+     * does not hold. So a final submit re-reads and tries again, a bounded
+     * number of times, and is refused rather than replayed if it never lands.
+     */
+    for (let attempt = 0; attempt < CHECKOUT_CAS_ATTEMPTS; attempt += 1) {
+      if (existing.is_final === true && !input.final) {
+        return { action: 'replayed', row: existing };
+      }
+      const applied = await checkoutStore.updatePayload(pool, {
+        office,
+        handoffId: existing.handoff_id,
+        expectRevision: Number(existing.revision),
+        row: incoming,
+      });
+      const now = await checkoutStore.findBySourceKey(pool, office, input.sourceKey);
+      if (applied) return { action: 'updated', row: now };
+      if (!input.final) return { action: 'replayed', row: now };
+      existing = now;
     }
-    const applied = await checkoutStore.updatePayload(pool, {
-      office,
-      handoffId: existing.handoff_id,
-      expectRevision: Number(existing.revision),
-      row: incoming,
-    });
-    const now = await checkoutStore.findBySourceKey(pool, office, input.sourceKey);
-    return { action: applied ? 'updated' : 'replayed', row: now };
+    return { action: 'contended', row: existing };
   });
+
+  if (outcome.action === 'contended') {
+    return res.status(409).json({
+      success: false,
+      error: 'The checkout handoff kept changing while the final notes were being saved. Try again.',
+      code: 'CHECKOUT_UPDATE_CONFLICT',
+    });
+  }
 
   if (outcome.action === 'mismatch') {
     return res.status(409).json({

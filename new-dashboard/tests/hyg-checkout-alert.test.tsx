@@ -264,6 +264,9 @@ describe("CheckoutAlert states", () => {
     const banner = screen.getByTestId("checkout-undelivered");
     expect(banner.textContent).toMatch(/did not get your final notes/);
     expect(banner.textContent).toMatch(/chart writes are not affected/);
+    // The retry is the ONE way forward: an early alert now would send a
+    // non-final snapshot after the final one was meant to go.
+    expect(screen.queryByTestId("checkout-alert-button")).toBeNull();
     fireEvent.click(screen.getByTestId("checkout-retry-final"));
     await waitFor(() => expect(onRetryFinal).toHaveBeenCalledTimes(1));
   });

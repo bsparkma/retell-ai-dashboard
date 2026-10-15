@@ -120,7 +120,7 @@ function recordingTc({ delayMs = 0, fail = null } = {}) {
       calls.push({ office, body });
       if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
       if (tc.fail) return tc.fail;
-      return { ok: true, handoffId: HANDOFF_ID, replayed: calls.length > 1 };
+      return { ok: true, handoffId: HANDOFF_ID, replayed: calls.length > 1, final: body.final === true };
     },
   };
   return tc;
@@ -451,4 +451,27 @@ test('2: the captured bodies, replayed into the REAL TC intake, make ONE handoff
   assert.equal(late.body.replayed, true);
   assert.equal(tcApp.db.table('tc_checkout_handoffs')[0].revision, 2);
   assert.equal(jsonb(tcApp.db.table('tc_checkout_handoffs')[0].payload).notesPending, false);
+});
+
+// ── review round 1: a final send TC did not take as final ──────────────────
+
+test('a final update TC answers with a NON-final snapshot is not_delivered, and finalAt stays empty', async (t) => {
+  switchCheckout(t, { roland: true });
+  const tc = recordingTc();
+  // TC answered 200 with a handoff — but the snapshot it holds is not final
+  // (a concurrent non-final write won). That is not a delivery.
+  const submit = async (req, args) => {
+    const r = await tc.submit(req, args);
+    return r.ok ? { ...r, final: false } : r;
+  };
+  const app = await bootHygApp({ od: od(), checkoutSubmit: submit });
+  t.after(() => app.close());
+  await preparedVisit(app);
+
+  const sent = await sendNote(app);
+  assert.equal(sent.status, 200, JSON.stringify(sent.body));
+  assert.equal(sent.body.outcomes[0].state, 'Written');
+  assert.equal(sent.body.checkout.state, 'not_delivered');
+  assert.equal(sent.body.checkout.code, 'CHECKOUT_NOT_FINAL');
+  assert.equal(app.db.hyg_visit[0].checkout_final_at, null, 'never stamped for notes TC does not hold');
 });

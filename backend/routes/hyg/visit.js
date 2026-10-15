@@ -2131,6 +2131,27 @@ async function deliverCheckout(req, { office, aptNum, final }) {
       );
     }
 
+    // A FINAL send is delivered only if TC says it now holds a final snapshot.
+    // A 200 carrying somebody else's older snapshot is not that, and stamping
+    // checkout_final_at for it would tell the hygienist the front desk has
+    // notes it does not have.
+    if (final && sent.final !== true) {
+      await audit(req, {
+        action: 'UPDATE',
+        resourceType: 'hyg_checkout_alert',
+        resourceId: aptNum,
+        result: 'ERROR',
+        office,
+        sourceRef: null,
+      });
+      return refuse(
+        409,
+        'CHECKOUT_NOT_FINAL',
+        'The checkout alert was NOT updated: TC still holds the earlier snapshot. ' +
+          'Nothing is lost on this visit; try again.'
+      );
+    }
+
     // "Delivered" only once the handoff id is recorded on the visit.
     const after = await tenantDb.withTenantDb(req, (pool) =>
       visitStore.markCheckoutSent(pool, {
