@@ -110,7 +110,21 @@ new-dashboard $ pnpm run test     -> exit 0   Test Files 155 passed | 34 skipped
 
 ## Lane
 
-LANE_PLACEHOLDER
+**RED. Both verdicts agree.**
+
+**Orchestrator (me): RED.**
+- `classify-lane.mjs` says RED: the tenant migration, an env read in the migration's role guard, the office column, and the queue file marking itself RED.
+- By judgment it is RED on the new event/level vocabulary, the new route, the regenerated shared contract, and the one existing-test edit (`tc-settings.test.tsx` SECTION_LABELS extended).
+
+**Reviewer (fresh agent, `.claude/agents/reviewer.md`): round 1 PASS, LANE RED.**
+- The reviewer's own gates: backend 3605/3608 passed (0 failed); dashboard 2541 passed.
+- It flagged four judgment calls and no defects:
+  - (a) `admin.all` vs "the settings permission". Beau to confirm.
+  - (b) The SECTION_LABELS extension adds a check and weakens nothing.
+  - (c) The migration test's numbering assertion was a tautology. **Fixed after review:** it now asserts this file sorts after `1791500000000_tc_checkout_outcome.js` and that filename order equals numeric order.
+  - (d) The audit `prior_state` read-then-write is outside a transaction, so concurrent edits could record a slightly wrong prior level. That is an audit-only imprecision, not a correctness issue.
+
+**Final lane: RED.** Push, open the PR, send NEEDS REVIEW, stop. Beau merges.
 
 ## Staging test steps (after Beau merges)
 

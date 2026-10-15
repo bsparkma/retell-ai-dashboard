@@ -83,9 +83,13 @@ test('down() drops both tables', () => {
 });
 
 test('numbered after develop\'s newest (item 50); uniform width; unique', () => {
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => /^\d+_/.test(f));
+  const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => /^\d+_/.test(f)).sort();
   const numbers = files.map((f) => Number(f.split('_')[0]));
-  assert.ok(1791600000000 > 1791500000000);
+  // Ordered AFTER item 50's migration, in the order checkOrder applies.
+  const mine = files.indexOf('1791600000000_tc_notification_prefs.js');
+  const item50 = files.indexOf('1791500000000_tc_checkout_outcome.js');
+  assert.ok(item50 >= 0 && mine > item50, 'sorts after 1791500000000_tc_checkout_outcome.js');
+  assert.deepEqual([...numbers].sort((a, b) => a - b), numbers, 'filename order = numeric order');
   assert.equal(new Set(numbers).size, numbers.length);
   assert.ok(files.every((f) => f.split('_')[0].length === 13));
 });
