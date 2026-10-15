@@ -141,7 +141,7 @@ new-dashboard $ pnpm run test     -> exit 0   Test Files 150 passed | 32 skipped
 ```
 The reviewer's own round-2 run hit the same Node 22 flake on a different file, `routes/sendToTc.test.js`. In isolation it passes 18/18.
 
-New tests alone (after fix round 1): `hygCheckoutAlert.test.js` 13/13, `tcCheckoutIntake.test.js` 13/13,
+New tests alone (after fix round 1): `hygCheckoutAlert.test.js` 13/13, `tcCheckoutIntake.test.js` 16/16,
 `checkoutHandoffMigration.test.js` 7/7, `hyg-checkout-alert.test.tsx` 7/7.
 Screenshots: `pnpm exec vite build` → `HYG_SHOTS=1 pnpm exec vitest run tests/hyg-checkout-shots.test.tsx`
 → `node scripts/shoot-hyg.mjs` (only the six new PNGs written).
