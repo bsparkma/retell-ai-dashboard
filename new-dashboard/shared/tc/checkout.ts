@@ -1,0 +1,188 @@
+/**
+ * The checkout handoff, and the intake vocabulary it joins (queue item 49).
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THREE KINDS OF INTAKE, ONE ENDPOINT
+ * ═════════════════════════════════════════════════════════════════════════════
+ * `POST /api/tc/hygiene-intakes` is the hygiene → TC handoff. Until item 49 it
+ * knew one shape (a treatment intake, which an ortho screening rides on). It
+ * now takes a `kind`:
+ *
+ *   hygiene   the treatment handoff (the visit's `tc-handoff` staged write, and
+ *             TC's own intake form). Creates a `hygiene_review` case.
+ *   ortho     the ortho screening (item 33). Creates a `hygiene_review` case.
+ *   checkout  "this patient is on the way to the front desk, here is what was
+ *             staged". Creates NO case — a `tc_checkout_handoffs` row. Whether
+ *             a case follows is the front desk's decision at checkout (item 50:
+ *             "Nothing needed" closes the handoff with no case at all).
+ *
+ * `kind` is optional for hygiene/ortho so a client that predates it still
+ * works; the server then infers it from whether a screening rides along.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THE SOURCE KEY: A LOST RESPONSE CANNOT OPEN A SECOND CASE
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Before item 49 an intake had no idempotency at all: a resend after a lost
+ * response opened a duplicate case. Every intake may now carry a `sourceKey`
+ * — the caller's own name for "this one handoff" — and TC answers a repeat key
+ * with the case (or handoff) it already made, enforced by a unique index on
+ * (office_id, source_key). The hygiene module derives its keys from the visit
+ * id, so they are stable across retries and never carry PHI.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * A CHECKOUT IS A SNAPSHOT, NEVER A REFERENCE
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Everything the front desk sees is copied in at send time. Nothing TC renders
+ * from a handoff reads Open Dental or the hygiene visit again.
+ */
+import { z } from "zod";
+
+/** The intake kinds `POST /api/tc/hygiene-intakes` accepts. */
+export const TcIntakeKind = z.enum(["hygiene", "ortho", "checkout"]);
+export type TcIntakeKind = z.infer<typeof TcIntakeKind>;
+
+/** Labels, so no screen invents its own. */
+export const TC_INTAKE_KIND_LABELS: Record<TcIntakeKind, string> = {
+  hygiene: "Treatment",
+  ortho: "Ortho screening",
+  checkout: "Checkout",
+};
+
+/**
+ * A caller's idempotency key for one intake. Machine-shaped on purpose — it is
+ * an identifier, never a sentence, and never a name or a PatNum.
+ */
+export const TcIntakeSourceKey = z
+  .string()
+  .min(8)
+  .max(200)
+  .regex(/^[A-Za-z0-9:_-]+$/, "a source key is letters, digits, ':', '_' and '-' only");
+export type TcIntakeSourceKey = z.infer<typeof TcIntakeSourceKey>;
+
+/** The visit's treatment priority, as TC stores it on a checkout. */
+export const TcCheckoutPriority = z.enum(["urgent", "preventative", "cosmetic"]);
+export type TcCheckoutPriority = z.infer<typeof TcCheckoutPriority>;
+
+export const TC_CHECKOUT_PRIORITY_LABELS: Record<TcCheckoutPriority, string> = {
+  urgent: "Urgent",
+  preventative: "Preventative",
+  cosmetic: "Cosmetic",
+};
+
+/** Highest first — the order `checkoutPriorityOf` picks by. */
+export const TC_CHECKOUT_PRIORITY_ORDER: readonly TcCheckoutPriority[] = [
+  "urgent",
+  "preventative",
+  "cosmetic",
+];
+
+/** One staged procedure, as the hygienist left it. */
+export const TcCheckoutProcedure = z
+  .object({
+    /** Universal tooth numbers, or "mouth" for a whole-mouth item. */
+    teeth: z.union([z.array(z.number().int()), z.literal("mouth")]),
+    code: z.string().min(1).max(60),
+    category: z.string().min(1).max(40),
+    priority: TcCheckoutPriority,
+    status: z.string().min(1).max(40),
+    surfaces: z.array(z.string().max(4)).max(10),
+    /** The hygienist marked this to schedule at the next visit. */
+    scheduleNext: z.boolean(),
+    note: z.string().max(500),
+  })
+  .strict();
+export type TcCheckoutProcedure = z.infer<typeof TcCheckoutProcedure>;
+
+/** What the next visit needs, from the routing slip. Every field may be unset. */
+export const TcCheckoutNextVisit = z
+  .object({
+    type: z.string().max(120).nullable(),
+    intervalMonths: z.number().int().min(1).max(24).nullable(),
+    lengthMin: z.number().int().min(5).max(240).nullable(),
+    withDoctor: z.boolean(),
+    /** The note's return-to-clinic line, verbatim. */
+    rtc: z.string().max(4000),
+  })
+  .strict();
+export type TcCheckoutNextVisit = z.infer<typeof TcCheckoutNextVisit>;
+
+/** The whole snapshot a checkout carries. */
+export const TcCheckoutSnapshot = z
+  .object({
+    procedures: z.array(TcCheckoutProcedure).max(100),
+    /** The highest priority among the procedures; null when there are none. */
+    priority: TcCheckoutPriority.nullable(),
+    nextVisit: TcCheckoutNextVisit,
+    /**
+     * The clinical note has not reached the chart yet. True on an early
+     * "Alert checkout" (the visit Send has not run); the visit Send's update
+     * says whether the note landed.
+     */
+    notesPending: z.boolean(),
+    frontDeskNote: z.string().max(4000),
+    financialNote: z.string().max(4000),
+  })
+  .strict();
+export type TcCheckoutSnapshot = z.infer<typeof TcCheckoutSnapshot>;
+
+/**
+ * `POST /api/tc/hygiene-intakes` with `kind: "checkout"`.
+ *
+ * `final` marks the visit Send's update. A final payload is never overwritten
+ * by a non-final one, so an early alert that arrives late cannot roll back the
+ * hygienist's last word.
+ */
+export const TcCheckoutSubmit = z
+  .object({
+    kind: z.literal("checkout"),
+    sourceKey: TcIntakeSourceKey,
+    final: z.boolean(),
+    patientName: z.string().min(1).max(200),
+    odPatientId: z.number().int().positive(),
+    provider: z.string().max(200),
+    providerSeen: z.string().max(200),
+    operatory: z.string().max(200),
+    visitDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    snapshot: TcCheckoutSnapshot,
+  })
+  .strict();
+export type TcCheckoutSubmit = z.infer<typeof TcCheckoutSubmit>;
+
+/** A checkout handoff as TC reads it back. */
+export const TcCheckoutHandoff = z.object({
+  handoffId: z.string().uuid(),
+  officeId: z.enum(["roland", "valley"]),
+  odPatientId: z.number().int().positive(),
+  patientName: z.string(),
+  provider: z.string(),
+  providerSeen: z.string(),
+  operatory: z.string(),
+  visitDate: z.string(),
+  snapshot: TcCheckoutSnapshot,
+  final: z.boolean(),
+  revision: z.number().int().positive(),
+  submittedBy: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type TcCheckoutHandoff = z.infer<typeof TcCheckoutHandoff>;
+
+/** The response to a checkout submit. */
+export const TcCheckoutSubmitResponse = z.object({
+  success: z.literal(true),
+  kind: z.literal("checkout"),
+  handoff: TcCheckoutHandoff,
+  /** True when the key was already known and nothing new was stored. */
+  replayed: z.boolean(),
+});
+export type TcCheckoutSubmitResponse = z.infer<typeof TcCheckoutSubmitResponse>;
+
+/** The highest priority among procedures, or null for none. Pure. */
+export function checkoutPriorityOf(
+  procedures: readonly { priority: TcCheckoutPriority }[],
+): TcCheckoutPriority | null {
+  for (const p of TC_CHECKOUT_PRIORITY_ORDER) {
+    if (procedures.some((x) => x.priority === p)) return p;
+  }
+  return null;
+}

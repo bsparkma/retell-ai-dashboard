@@ -30,12 +30,14 @@ import {
   HygAppointmentSchema,
   HygDayIdentitiesResponseSchema,
   HygDayResponseSchema,
+  HygCheckoutAlertResponseSchema,
   HygOrthoSendResponseSchema,
   HygSendResponseSchema,
   HygVisitSchema,
   OfficeIdSchema,
   type HygDayIdentitiesResponse,
   type HygDayResponse,
+  type HygCheckoutAlertResponse,
   type HygOrthoSendResponse,
   type HygSendResponse,
   type HygSlip,
@@ -336,6 +338,11 @@ export const HygVisitPageSchema = z.object({
   handoffCategory: HandoffCategorySchema,
   /** This office's supervising doctors, for the note's exam clause. */
   doctorOptions: z.array(z.string()),
+  /**
+   * Item 49: whether this office shows "Alert checkout". Defaulted so an older
+   * server's answer still parses — as off.
+   */
+  checkoutEnabled: z.boolean().default(false),
 });
 export type HygVisitPage = z.infer<typeof HygVisitPageSchema>;
 
@@ -846,4 +853,45 @@ export async function retryStagedWrite(
     { office },
     parseVisit,
   );
+}
+
+/** Parse a checkout answer, or throw the contract mismatch in words. */
+function parseCheckout(raw: unknown): HygCheckoutAlertResponse {
+  const parsed = HygCheckoutAlertResponseSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new HygApiError(
+      "CareIN answered the checkout alert with something this page could not read",
+      0,
+      "CONTRACT_MISMATCH",
+      { issues: parsed.error.issues.slice(0, 5) },
+    );
+  }
+  return parsed.data;
+}
+
+/**
+ * "Alert checkout" — tell the front desk this patient is on the way, NOW
+ * (item 49).
+ *
+ * THE BODY IS EMPTY, ON PURPOSE, exactly like the ortho send: office, PatNum,
+ * patient, provider and procedures all come off the server's stored visit. A
+ * 200 is TC's handoff, read back onto the visit — `visit.checkoutSend` is what
+ * the button renders as "Checkout alerted", never this call's own success.
+ */
+export async function alertCheckout(
+  office: OfficeId,
+  aptNum: number,
+): Promise<HygCheckoutAlertResponse> {
+  return mutate("POST", `/visit/${aptNum}/checkout/alert`, { office }, parseCheckout, {});
+}
+
+/**
+ * Re-send the visit Send's FINAL checkout snapshot (item 49), for when the
+ * Send's own attempt answered "not delivered". Touches no chart.
+ */
+export async function finalizeCheckout(
+  office: OfficeId,
+  aptNum: number,
+): Promise<HygCheckoutAlertResponse> {
+  return mutate("POST", `/visit/${aptNum}/checkout/finalize`, { office }, parseCheckout, {});
 }

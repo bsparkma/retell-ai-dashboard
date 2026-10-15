@@ -38,6 +38,8 @@ export * from "../../new-dashboard/shared/tc/messaging";
 export * from "../../new-dashboard/shared/tc/emailRender";
 // Nurture campaigns v1 (item 47): the frozen tracks, presets, caps and copy.
 export * from "../../new-dashboard/shared/tc/nurture";
+// The checkout handoff and the intake-kind / source-key vocabulary (item 49).
+export * from "../../new-dashboard/shared/tc/checkout";
 // The routes compose small request shapes (status-transition bodies, complete/
 // reschedule payloads) from contract pieces; export the SAME zod instance so
 // those shapes and the contract schemas share one library version.

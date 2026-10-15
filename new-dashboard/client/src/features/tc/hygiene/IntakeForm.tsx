@@ -52,6 +52,7 @@ import {
   hygienistRoster,
   odAttachSearch,
   submitHygieneIntake,
+  newIntakeSourceKey,
   tcErrorMessage,
   type OdPatient,
   type TcHygienistOption,
@@ -214,6 +215,8 @@ export function IntakeForm({ office }: IntakeFormProps) {
   const [roster, setRoster] = useState<TcHygienistOption[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [lastSubmitted, setLastSubmitted] = useState<string | null>(null);
+  /** Item 49: one key per filled-in form, so a retried submit is not a second case. */
+  const [sourceKey, setSourceKey] = useState<string>(newIntakeSourceKey);
 
   // Default the attribution to the signed-in user, and load the roster the
   // datalist offers. Both are conveniences; neither blocks the form.
@@ -334,6 +337,8 @@ export function IntakeForm({ office }: IntakeFormProps) {
       flagUrgent: draft.flagUrgent,
       // Empty is fine — the server falls back to the signed-in display name.
       hygienistName: draft.hygienistName.trim(),
+      kind: "hygiene",
+      sourceKey,
     };
 
     setSubmitting(true);
@@ -346,6 +351,8 @@ export function IntakeForm({ office }: IntakeFormProps) {
       // makes people stop filling a field in.
       setDraft({ ...emptyDraft(), hygienistName: draft.hygienistName });
       setOdPatient(null);
+      // The next patient is a new submission, with a key of its own.
+      setSourceKey(newIntakeSourceKey());
     } catch (e) {
       // Keep the form values so nothing typed chairside is lost.
       toast.error(tcErrorMessage(e));
