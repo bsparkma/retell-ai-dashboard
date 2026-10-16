@@ -157,7 +157,9 @@ async function request<T>(
 
 // --- tenant user management (Roles PR B) ------------------------------------
 
-export type TenantUserRole = "admin" | "office" | "tc" | "hygiene" | "reviewer";
+// Mirrors backend TENANT_ROLES. `rcm_biller` was missing here (the picker got it
+// from the server but had no words for it); added with `doctor` in item 53.
+export type TenantUserRole = "admin" | "office" | "tc" | "hygiene" | "reviewer" | "rcm_biller" | "doctor";
 export type TenantUserStatus = "active" | "disabled";
 
 /** One row of the tenant's `app_user` table, as /api/users renders it. */

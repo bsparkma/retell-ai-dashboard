@@ -11,12 +11,25 @@
  *   GET    /settings              the two policies, what is in force and why
  *   PUT    /settings              change them — practice admin only
  *
+ *   R2 (item 53) — the referral record and its lifecycle:
+ *   GET    /                      ?caseId= | ?handoffId= | ?status= , newest first
+ *   POST   /                      start one FROM a case or a checkout (draft)
+ *   GET    /:id                   one referral, with its history
+ *   PUT    /:id                   edit a draft (only a draft)
+ *   POST   /:id/submit            draft → pending_signoff (or → approved when
+ *                                 this office does not require sign-off)
+ *   POST   /:id/withdraw          pending_signoff → draft
+ *   POST   /:id/cancel            draft | pending_signoff → cancelled
+ *   Approve / decline live in ./referralSignoff.js, behind tc.referral_signoff.
+ *
  * GUARDRAILS
  *   - DARK. `tc_referrals_enabled` off for the office → 403 REFERRALS_DISABLED
  *     on everything but /status, which answers `enabled: false` so the
  *     Settings page can hide the section without treating "off" as an error.
- *   - NOTHING SENDS. No email, no fax, no Open Dental read or write. R1 is the
- *     directory and the settings; referrals themselves arrive in R2.
+ *   - NOTHING SENDS. No email, no fax, no Open Dental read or write. `approved`
+ *     is where R2 stops; sending is a later update.
+ *   - THE PATIENT IS NEVER FROM THE REQUEST. office + PatNum + name come from
+ *     the case or checkout the referral is started from, read office-scoped.
  *   - Office from `?office=` through requireOffice, in every WHERE. A body can
  *     never name an office or an entry's owner.
  *   - Every change is audited (append-only audit_log) after it persisted, and
@@ -30,8 +43,18 @@ const tenantDb = require('../../platform/tenantDb');
 const { holdsPermission } = require('../../config/permissions');
 const tcReferrals = require('../../config/tcReferrals');
 const store = require('./referralStore');
+const checkoutStore = require('./checkoutStore');
+const { withTenantTx } = require('./tx');
+const transitions = require('./referralTransitions');
 
-const { z, TcReferralDirectoryInput, TcReferralSettingsRequest } = contract;
+const {
+  z,
+  TcReferralDirectoryInput,
+  TcReferralSettingsRequest,
+  TcReferralCreateRequest,
+  TcReferralInput,
+  TcReferralStatus,
+} = contract;
 
 const router = express.Router();
 router.use(requireOffice);
@@ -210,13 +233,202 @@ router.put(
         signoffRequired: body.signoffRequired ?? stored.signoffRequired,
         autosendOnApproval: body.autosendOnApproval ?? stored.autosendOnApproval,
       };
+      // Item 53 (carried from R1's review): auto-send with sign-off OFF would
+      // send a referral no doctor ever read the moment it is submitted. That
+      // pair is refused, not stored; sign-off back ON, or auto-send OFF.
+      if (!next.signoffRequired && next.autosendOnApproval) return { unsafe: true };
       const written = await store.upsertSettings(pool, office, next, actorEmail(req));
       if (!written) throw new Error('referral settings were not stored');
       return store.resolvePolicies(office, row);
     });
+    if (before.unsafe) {
+      return res.status(409).json({
+        success: false,
+        error:
+          'Auto-send needs the doctor\'s sign-off: with sign-off off, a referral would go out before any doctor read it. Turn sign-off on, or auto-send off.',
+        code: 'REFERRAL_POLICY_UNSAFE',
+      });
+    }
     await auditTc(req, 'UPDATE', 'tc_referral_settings', office, { office, priorState: settingsSlug(before) });
     res.json(await settingsPayload(req));
   })
 );
+
+// ── R2: the referral record ─────────────────────────────────────────────────
+
+const ReferralId = z.string().uuid();
+
+function badReferralId(res) {
+  return res.status(400).json({ success: false, error: 'Invalid referral id', code: 'INVALID_ID' });
+}
+
+/**
+ * The directory entry a referral names must be this office's, and active.
+ * Returns null when fine, else the refusal to send.
+ */
+async function directoryProblem(q, office, entryId) {
+  if (!entryId) return null;
+  const entry = await store.findEntry(q, office, entryId);
+  if (!entry) return [404, 'That specialist is not in this office\'s directory', 'DIRECTORY_ENTRY_NOT_FOUND'];
+  if (!entry.active) return [409, 'That specialist is marked inactive', 'DIRECTORY_ENTRY_INACTIVE'];
+  return null;
+}
+
+/** Rows → TcReferral[] with practice names (one extra query, no JOIN). */
+async function present(pool, office, rows) {
+  const names = await store.practiceNames(pool, office, rows);
+  return rows.map((r) => store.toReferral(r, names.get(String(r.directory_entry_id)) ?? null));
+}
+
+router.get(
+  '/',
+  h(async (req, res) => {
+    const office = req.tcOffice;
+    const caseId = req.query.caseId ? ReferralId.safeParse(req.query.caseId) : null;
+    const handoffId = req.query.handoffId ? ReferralId.safeParse(req.query.handoffId) : null;
+    const status = req.query.status ? TcReferralStatus.safeParse(req.query.status) : null;
+    if ((caseId && !caseId.success) || (handoffId && !handoffId.success) || (status && !status.success)) {
+      return res.status(400).json({ success: false, error: 'Invalid filter', code: 'INVALID_FILTER' });
+    }
+    const referrals = await tenantDb.withTenantDb(req, async (pool) => {
+      const rows = await store.listReferrals(pool, office, {
+        caseId: caseId ? caseId.data : null,
+        sourceKind: handoffId ? 'checkout' : null,
+        sourceRef: handoffId ? handoffId.data : null,
+        status: status ? status.data : null,
+      });
+      return present(pool, office, rows);
+    });
+    await auditTc(req, 'READ', 'tc_referral', null, { office });
+    return res.json({ success: true, referrals });
+  })
+);
+
+router.post(
+  '/',
+  h(async (req, res) => {
+    const body = parseBody(res, TcReferralCreateRequest, req.body);
+    if (!body) return undefined;
+    const office = req.tcOffice;
+    const actor = actorEmail(req);
+    const at = transitions.clock().toISOString();
+
+    const result = await withTenantTx(req, async (client) => {
+      // The patient, from the SOURCE, office-scoped. Never from the body.
+      let patient;
+      if ('caseId' in body.source) {
+        const c = await client.query(
+          'SELECT case_id, od_patient_id, patient_name FROM tc_cases WHERE office_id = $1 AND case_id = $2',
+          [office, body.source.caseId]
+        );
+        const row = c.rows[0];
+        if (!row) return { refusal: [404, 'Case not found', 'NOT_FOUND'] };
+        if (row.od_patient_id == null) {
+          return { refusal: [409, 'This case is not linked to an Open Dental patient yet', 'CASE_HAS_NO_PATIENT'] };
+        }
+        patient = {
+          odPatientId: Number(row.od_patient_id),
+          patientName: row.patient_name,
+          tcCaseId: String(row.case_id),
+          sourceKind: 'case',
+          sourceRef: String(row.case_id),
+        };
+      } else {
+        const h0 = await checkoutStore.findById(client, office, body.source.handoffId);
+        if (!h0) return { refusal: [404, 'Checkout not found', 'NOT_FOUND'] };
+        patient = {
+          odPatientId: Number(h0.od_patient_id),
+          patientName: h0.patient_name,
+          tcCaseId: h0.case_id ? String(h0.case_id) : null,
+          sourceKind: 'checkout',
+          sourceRef: String(h0.handoff_id),
+        };
+      }
+      const problem = await directoryProblem(client, office, body.referral.directoryEntryId);
+      if (problem) return { refusal: problem };
+
+      const row = await store.insertReferral(client, { office, ...patient, input: body.referral, actor, at });
+      if (!row) throw new Error('referral was not stored');
+      await store.insertEvent(client, {
+        office,
+        referralId: String(row.referral_id),
+        from: null,
+        to: 'draft',
+        actor,
+        at,
+        note: '',
+      });
+      // In the transaction: no referral exists without its audit row.
+      await auditTc(req, 'CREATE', 'tc_referral', String(row.referral_id), { office });
+      return { referralId: String(row.referral_id) };
+    });
+
+    if (result.refusal) {
+      const [status, error, code] = result.refusal;
+      return res.status(status).json({ success: false, error, code });
+    }
+    return res.status(201).json({ success: true, referral: await transitions.readBack(req, result.referralId) });
+  })
+);
+
+router.get(
+  '/:id',
+  h(async (req, res) => {
+    const id = ReferralId.safeParse(req.params.id);
+    if (!id.success) return badReferralId(res);
+    const referral = await transitions.readBack(req, id.data);
+    if (!referral) return res.status(404).json({ success: false, error: 'Referral not found', code: 'NOT_FOUND' });
+    await auditTc(req, 'READ', 'tc_referral', id.data, { office: req.tcOffice });
+    return res.json({ success: true, referral });
+  })
+);
+
+router.put(
+  '/:id',
+  h(async (req, res) => {
+    const id = ReferralId.safeParse(req.params.id);
+    if (!id.success) return badReferralId(res);
+    const input = parseBody(res, TcReferralInput, req.body);
+    if (!input) return undefined;
+    const office = req.tcOffice;
+
+    const result = await withTenantTx(req, async (client) => {
+      const before = await store.findReferral(client, office, id.data);
+      if (!before) return { refusal: [404, 'Referral not found', 'NOT_FOUND'] };
+      if (!contract.REFERRAL_EDITABLE_STATUSES.includes(before.status)) {
+        return {
+          refusal: [409, 'Only a draft can be edited. Withdraw it from sign-off first.', 'REFERRAL_NOT_EDITABLE'],
+        };
+      }
+      const problem = await directoryProblem(client, office, input.directoryEntryId);
+      if (problem) return { refusal: problem };
+      const after = await store.updateDraft(client, office, id.data, input);
+      if (!after) {
+        return {
+          refusal: [409, 'Only a draft can be edited. Withdraw it from sign-off first.', 'REFERRAL_NOT_EDITABLE'],
+        };
+      }
+      await auditTc(req, 'UPDATE', 'tc_referral', id.data, { office, priorState: 'draft' });
+      return { ok: true };
+    });
+    if (result.refusal) {
+      const [status, error, code] = result.refusal;
+      return res.status(status).json({ success: false, error, code });
+    }
+    return res.json({ success: true, referral: await transitions.readBack(req, id.data) });
+  })
+);
+
+for (const verb of ['submit', 'withdraw', 'cancel']) {
+  router.post(
+    `/:id/${verb}`,
+    h(async (req, res) => {
+      const id = ReferralId.safeParse(req.params.id);
+      if (!id.success) return badReferralId(res);
+      const out = await transitions.applyVerb(req, { referralId: id.data, verb });
+      return res.status(out.status).json(out.body);
+    })
+  );
+}
 
 module.exports = router;

@@ -40,6 +40,8 @@
  *   /referrals        referral foundations (item 52): the specialist directory
  *                     and the two referral policies. Nothing sends. Dark behind
  *                     the per-office tc_referrals_enabled switch. Postgres-only.
+ *   /referrals/signoff the doctor's sign-off queue (item 53): approve / decline.
+ *                     tc.referral_signoff (doctor + admin), registered first.
  *   /od/patient-search the ONE Open Dental read hygiene holds: attach a patient
  *                     to an intake (PatNum + name + DOB, per-office client)
  *   /od               Open Dental READS (Slice 5) — patient search, treatment
@@ -95,6 +97,11 @@ router.use('/opportunities', tcFull, require('./opportunities'));
 router.use('/nurture', tcFull, require('./nurture'));
 router.use('/checkout', tcFull, require('./checkout'));
 router.use('/notification-prefs', tcFull, require('./notifications'));
+// MUST precede the /referrals mount (item 53), for the same registration-order
+// reason as /cases/from-call and /od/patient-search: a `doctor` holds
+// tc.referral_signoff and NOT tc.full, so the tc.full mount would refuse the
+// sign-off queue first. Admin holds both and reaches it either way.
+router.use('/referrals/signoff', requirePermission('tc.referral_signoff'), require('./referralSignoff'));
 router.use('/referrals', tcFull, require('./referrals'));
 // MUST precede the /od mount, for the same registration-order reason as
 // /cases/from-call above: registering it first is what keeps the attach search

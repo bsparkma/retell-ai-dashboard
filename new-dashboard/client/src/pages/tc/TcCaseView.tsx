@@ -32,6 +32,7 @@ import { StatusTransitionDialog } from "@/features/tc/caseview/StatusTransitionD
 import { TreatmentTab } from "@/features/tc/caseview/TreatmentTab";
 import { NurtureCampaignBar } from "@/features/tc/nurture/NurtureCampaignBar";
 import { HygieneTreatmentPanel } from "@/features/tc/checkout/HygieneTreatmentPanel";
+import { ReferralsPanel } from "@/features/tc/referrals/ReferralsPanel";
 
 export default function TcCaseView() {
   const office = useTcOffice();
@@ -205,6 +206,10 @@ function CaseViewInner({ office }: { office: OfficeId }) {
           per-item "entered in Open Dental" marks. Renders nothing without a
           checkout on this case or with checkout switched off. */}
       <HygieneTreatmentPanel office={office} caseId={tcCase.caseId} />
+
+      {/* Item 53: this case's referrals, and New referral. Dark while
+          referrals is off for the office. */}
+      <ReferralsPanel office={office} source={{ caseId: tcCase.caseId }} />
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>

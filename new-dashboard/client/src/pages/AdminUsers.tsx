@@ -39,9 +39,11 @@ const ROLE_BLURB: Record<TenantUserRole, string> = {
   tc: "Treatment Coordinator + read-only calls",
   hygiene: "Hygiene intake, submissions and inbox only",
   reviewer: "Read and work the RCM queue — cannot confirm a match or post",
+  rcm_biller: "RCM end to end, except posting to a chart and the shadow-gate switch",
+  doctor: "Sign off referrals — the Awaiting sign-off queue only",
 };
 
-const ROLE_ORDER: TenantUserRole[] = ["admin", "office", "tc", "hygiene", "reviewer"];
+const ROLE_ORDER: TenantUserRole[] = ["admin", "office", "tc", "hygiene", "reviewer", "rcm_biller", "doctor"];
 
 function formatLastLogin(iso: string | null): string {
   if (!iso) return "Never";

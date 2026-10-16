@@ -28,6 +28,8 @@ export const ACTIONS = [
   "rcm.write",
   "tc.full",
   "tc.hygiene",
+  "tc.notification_defaults",
+  "tc.referral_signoff",
   "voice.chart_write",
   "voice.read",
   "voice.send_to_tc",
@@ -69,6 +71,8 @@ export const ROLE_HOME: Record<TenantRole, string> = {
   hygiene: "/hyg/day",
   reviewer: "/rcm/remittances",
   rcm_biller: "/rcm/remittances",
+  // Item 53: a doctor holds exactly one surface, the referral sign-off queue.
+  doctor: "/tc/referrals/signoff",
 };
 
 /** The fallback home for a user whose role we could not resolve. */
@@ -108,6 +112,9 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionAction> = {
   "/tc": "tc.full",
   // The three Hygiene-nav pages are the ONLY /tc routes a hygienist may see.
   "/tc/hygiene": "tc.hygiene",
+  // Item 53: the sign-off queue is the doctor's whole TC surface. Longest
+  // prefix wins, so this beats "/tc" (tc.full) for exactly this page.
+  "/tc/referrals/signoff": "tc.referral_signoff",
   // RCM is read-gated at the route. Its tiers (rcm.read / rcm.queue / rcm.write,
   // decision D-9, plus rcm.post and rcm.settings from the shadow gate) are
   // enforced server-side per route; a page renders the same for a reviewer, a

@@ -228,9 +228,18 @@ test('2: defaults are sign-off ON and auto-send OFF; an admin change persists an
   s = await api(baseUrl, 'GET', SETTINGS('roland'));
   assert.deepEqual(s.body.signoffRequired, { value: false, source: 'office' });
 
-  await api(baseUrl, 'PUT', SETTINGS('roland'), { autosendOnApproval: true });
+  // Item 53: auto-send with sign-off OFF is refused, not stored — a referral
+  // would go out before any doctor read it.
+  const unsafe = await api(baseUrl, 'PUT', SETTINGS('roland'), { autosendOnApproval: true });
+  assert.equal(unsafe.status, 409);
+  assert.equal(unsafe.body.code, 'REFERRAL_POLICY_UNSAFE');
   s = await api(baseUrl, 'GET', SETTINGS('roland'));
-  assert.deepEqual([s.body.signoffRequired.value, s.body.autosendOnApproval.value], [false, true]);
+  assert.deepEqual([s.body.signoffRequired.value, s.body.autosendOnApproval.value], [false, false]);
+
+  // Auto-send together with sign-off is fine.
+  await api(baseUrl, 'PUT', SETTINGS('roland'), { signoffRequired: true, autosendOnApproval: true });
+  s = await api(baseUrl, 'GET', SETTINGS('roland'));
+  assert.deepEqual([s.body.signoffRequired.value, s.body.autosendOnApproval.value], [true, true]);
 
   const audits = auditRows(db).filter((a) => a.resource_type === 'tc_referral_settings');
   assert.deepEqual(audits.map((a) => [a.action, a.resource_id, a.prior_state]), [
@@ -273,7 +282,9 @@ test('2: an empty or unknown change is refused', async (t) => {
 test('2: env safety pins only push toward safe: sign-off ON, auto-send OFF', async (t) => {
   switchReferrals(t, { roland: true });
   const { baseUrl } = await boot(t);
-  await api(baseUrl, 'PUT', SETTINGS('roland'), { signoffRequired: false, autosendOnApproval: true });
+  // The office stores auto-send ON (allowed alongside sign-off ON, item 53), so
+  // the auto-send pin below is seen overriding a stored TRUE.
+  assert.equal((await api(baseUrl, 'PUT', SETTINGS('roland'), { signoffRequired: true, autosendOnApproval: true })).status, 200);
 
   process.env.REFERRAL_SIGNOFF_REQUIRED_ROLAND = 'true';
   process.env.REFERRAL_AUTOSEND_ON_APPROVAL_ROLAND = 'false';
