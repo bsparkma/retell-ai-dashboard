@@ -83,6 +83,9 @@ const POSTABLE: ReadonlySet<PostingQueueStatus> = new Set<PostingQueueStatus>([
   "failed",
   "partially_posted",
   "blocked",
+  // W-21: drainable on the server, so pressable here — the press is what
+  // re-reads Open Dental and settles the write nobody could confirm.
+  "outcome_unknown",
 ]);
 
 type State =
@@ -222,6 +225,9 @@ export default function PostThisCheck({
   const earlierRun =
     plan.status === "failed" ||
     plan.status === "blocked" ||
+    // W-21: a check number on an unsettled plan is real, and its amount is not
+    // a measurement. Same card as the others: the number, no figure.
+    plan.status === "outcome_unknown" ||
     (plan.status === "approved" && plan.attemptCount > 0);
 
   /*
@@ -313,10 +319,12 @@ export default function PostThisCheck({
       {/*
         S6 — A STOPPED OR SWEPT RUN KEEPS THE CHECK NUMBER AND LOSES THE AMOUNT.
 
-        The drain crashes to `failed` at `office_writeoffs` and `confirm_patient`
-        AFTER the check exists; it keeps `od_claim_payment_num` and zeroes
-        `posted_total_cents`. The startup sweep re-queues an interrupted run as
-        `approved` the same way. So this block printed "Open Dental check #N
+        A run that stops AFTER the check exists keeps `od_claim_payment_num` and
+        may not carry a measured `posted_total_cents`. Until W-21 the drain
+        crashed to `failed` at `office_writeoffs` and `confirm_patient` in exactly
+        that state; it now ends `partially_posted` or `outcome_unknown` there, and
+        an `outcome_unknown` card gets this treatment too. The startup sweep can
+        still re-queue an interrupted run as `approved` with a check behind it. So this block printed "Open Dental check #N
         $0.00" — a figure nobody measured, on a check that holds the whole
         payment. The number is the do-not-re-enter evidence and stays; no amount
         of any kind is printed on either card. (PM ruling, 2026-09-10.)
@@ -432,6 +440,9 @@ export default function PostThisCheck({
         plan.status !== "partially_posted" &&
         plan.status !== "failed" &&
         plan.status !== "blocked" &&
+        // W-21: the run's own text is an exception message, not a fact about
+        // the chart — and the state's copy already says what is known.
+        plan.status !== "outcome_unknown" &&
         // A swept run is `approved` again but WAS tried against Open Dental —
         // a stopped run like the others, so its text is not echoed either.
         !(plan.status === "approved" && plan.attemptCount > 0) && (
