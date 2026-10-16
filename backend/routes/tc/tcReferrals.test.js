@@ -282,8 +282,9 @@ test('2: an empty or unknown change is refused', async (t) => {
 test('2: env safety pins only push toward safe: sign-off ON, auto-send OFF', async (t) => {
   switchReferrals(t, { roland: true });
   const { baseUrl } = await boot(t);
-  // The office chose sign-off OFF (auto-send on WITH it off is refused, item 53).
-  assert.equal((await api(baseUrl, 'PUT', SETTINGS('roland'), { signoffRequired: false })).status, 200);
+  // The office stores auto-send ON (allowed alongside sign-off ON, item 53), so
+  // the auto-send pin below is seen overriding a stored TRUE.
+  assert.equal((await api(baseUrl, 'PUT', SETTINGS('roland'), { signoffRequired: true, autosendOnApproval: true })).status, 200);
 
   process.env.REFERRAL_SIGNOFF_REQUIRED_ROLAND = 'true';
   process.env.REFERRAL_AUTOSEND_ON_APPROVAL_ROLAND = 'false';

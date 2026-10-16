@@ -37,7 +37,7 @@ every surface says "Ready to send — sending ships in a later update."
 1. `referralNextStatus` in the shared contract is THE transition table. Illegal moves get 409 `REFERRAL_TRANSITION_NOT_ALLOWED`, which names the current status.
 2. The move is **conditional** on the status just read, so two approvals cannot both win. The reviewer saw 1×200 / 3×409 on real Postgres.
 3. The move is written to `tc_referral_events` (from, to, actor, when, note).
-4. The **audit_log row is written inside the transaction, so a failed audit rolls the move back.** Proven on real Postgres with the audit grant revoked: 500, still a draft, no event.
+4. The **audit_log row is written before the transaction commits** (on its own connection), **so a failed audit rolls the move back.** Proven on real Postgres with the audit grant revoked: 500, still a draft, no event. See judgment call 3 for the one over-recording edge.
 5. The referral is read back, and that is what the caller is told.
 
 ### The roles change (PM ruling 2026-10-14 + PM addition 2026-10-15)
@@ -140,6 +140,9 @@ call) are in the vocabulary now, so R3 needs no further vocabulary change for th
    patient was still seen.
 6. **The ⌘K case search shows for a doctor on TC pages**, and every search is refused. Cosmetic;
    it can be hidden when needed.
+7. **An office that already stored sign-off OFF + auto-send ON before R2** (possible only on
+   staging, between #247 and this) keeps that pair. The refusal applies to new changes. Nothing
+   sends yet; whichever slice adds sending must re-check the effective pair before it sends.
 
 ## Files
 | File | Change |
@@ -167,10 +170,34 @@ backend $ node --test             -> (final run below)
 new-dashboard $ pnpm run check    -> exit 0
 new-dashboard $ pnpm run test     -> (final run below)
 ```
-GATES_PLACEHOLDER
+Final run, commit a9caaff + the test tightening:
+```
+backend $ node --test             -> # tests 3702  # pass 3698  # fail 1  # skipped 3
+  routes\platform.test.js  'Unable to deserialize cloned data' (known Node 22 flake;
+  isolated 20/20; the next full run was clean)
+new-dashboard $ pnpm run test     -> Test Files 162 passed | 34 skipped; Tests 2599 passed | 198 skipped
+```
 
 ## Lane
-LANE_PLACEHOLDER
+**RED. Both verdicts agree.** The classifier says RED, the queue file says RED, and by
+judgment it is RED: a new role, new actions, a migration, existing-test edits and new routes.
+
+The reviewer (a fresh agent following `.claude/agents/reviewer.md`):
+- **Round 1: FAIL**, with two defects:
+  - the report was missing (row 7, and the carried auto-send decision was unstated);
+  - the `role-nav.test.tsx` office mock still granted the sign-off.
+
+  On real postgres:17 it otherwise proved everything:
+  - migrations up, down 2, up;
+  - 4 concurrent approves → 1×200 + 3×409;
+  - with the audit grant revoked, the move rolls back;
+  - case delete → 409;
+  - the source CHECKs;
+  - every non-signoff role → 403;
+  - a doctor reaches nothing but the queue.
+- **Round 2: PASS, LANE RED, no new defects.** Both defects were fixed, plus four judgment
+  items. The reviewer judged the R1 settings test edit "honest, not a weakening". Its optional
+  tightening of the env-pin test (pin over a stored auto-send TRUE) was taken.
 
 ## Staging test steps (after Beau merges)
 1. **Users page:** give a test account the **Doctor** role.
