@@ -110,10 +110,31 @@ on a roland referral, or an attachment id under the wrong referral, all return 4
 No existing test's assertions changed.
 
 ## Gates
-GATES_PLACEHOLDER
+Final commit c99beae + docs:
+```
+backend $ node --check server.js  -> OK
+backend $ node --test             -> # tests 3748  # pass 3745  # fail 0  # skipped 3
+new-dashboard $ pnpm run check    -> exit 0
+new-dashboard $ pnpm run test     -> Test Files 164 passed | 34 skipped; Tests 2617 passed | 200 skipped
+```
+In round 1, the reviewer's full run hit the known Node 22 deserialize flake in
+`services/onDemandTranscription.test.js`; it passed 24/24 in isolation. Round 2 had no flakes.
 
 ## Lane / review
-LANE_PLACEHOLDER
+**RED. Both verdicts agree**: the classifier, the queue file, and judgment.
+
+The reviewer is a fresh agent following `.claude/agents/reviewer.md`.
+
+**Round 1: FAIL**, on one functional defect: with sign-off off, the chairside and call flows submitted before uploading, so the referral was approved and its X-ray then refused. All four acceptance rows already held on real postgres:17 (28 checks). The round also raised six non-blocking items: the list was not audited, exactly 10 MB was refused, UTF-8 names were mangled, the status was read before the lock, a refusal still bumped `updated_at`, and some hygiene error codes were missing from the closed list.
+
+**Round 2: PASS, LANE RED, no remaining defects.** Everything was fixed and re-proven on real Postgres (35/35 checks):
+- with sign-off off, an approved referral carries its file, and a later upload is still refused;
+- exactly 10 MB is accepted;
+- UTF-8 filenames are kept;
+- a refused upload leaves `updated_at` byte-identical;
+- the list is audited, and refused when the audit fails;
+- the concurrent count limit holds;
+- cross-office access is refused, and drafts stay closed to the doctor.
 
 ## Staging test steps (after Beau merges AND the container exists)
 1. **On a test case (12827): New referral.** Snip an X-ray with Win+Shift+S, paste it into the zone, then **Save & submit**. The row shows the file. **View** opens it, and an audit row is written each time.
