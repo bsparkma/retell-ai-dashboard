@@ -16453,7 +16453,12 @@ var HYG_VISIT_ERROR_CODES = [
   "SOURCE_KEY_CONFLICT",
   "CHECKOUT_NOT_FINAL",
   "CHECKOUT_UPDATE_CONFLICT",
-  "CHECKOUT_ERROR"
+  "CHECKOUT_ERROR",
+  // Item 54: a referral from the chair (the shared TC producer's refusals).
+  "MODULE_NOT_ENTITLED",
+  "REFERRALS_DISABLED",
+  "DIRECTORY_ENTRY_NOT_FOUND",
+  "DIRECTORY_ENTRY_INACTIVE"
 ];
 
 // shared/hyg/records.ts

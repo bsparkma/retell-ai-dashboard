@@ -40,7 +40,32 @@ class CompositeDb extends FakeHygDb {
 
   async query(sql, params = []) {
     const text = String(sql).trim();
-    if (/^(BEGIN|COMMIT|ROLLBACK)$/i.test(text) || /\btc_(referral|cases)/i.test(text)) {
+    // A test can fail ONLY the sign-off move's audit row (action UPDATE on a
+    // referral), to prove create + submit commit or roll back together.
+    if (
+      this.failMoveAudit &&
+      /INSERT INTO audit_log/i.test(text) &&
+      params.includes('UPDATE') &&
+      params.includes('tc_referral')
+    ) {
+      throw new Error('simulated audit outage on the submit');
+    }
+    if (/^BEGIN$/i.test(text)) {
+      // Postgres semantics for the TC side: remember, so ROLLBACK can restore.
+      this.snapshot = new Map([...this.tc.tables].map(([k, rows]) => [k, rows.map((r) => ({ ...r }))]));
+      return { rows: [], rowCount: 0 };
+    }
+    if (/^ROLLBACK$/i.test(text)) {
+      // Every table the transaction touched — including one first created
+      // after BEGIN, which the snapshot does not name and must come back empty.
+      for (const [k, live] of this.tc.tables) {
+        const before = (this.snapshot && this.snapshot.get(k)) || [];
+        live.length = 0;
+        live.push(...before);
+      }
+      return { rows: [], rowCount: 0 };
+    }
+    if (/^COMMIT$/i.test(text) || /\btc_(referral|cases)/i.test(text)) {
       return this.tc.query(sql, params);
     }
     return super.query(sql, params);
@@ -201,4 +226,20 @@ test('a hygienist can name a specialist; another office\'s specialist is refused
   const ok = await api(app.baseUrl, 'POST', REF, { body: { ...BODY, directoryEntryId: mine } });
   assert.equal(ok.status, 201, JSON.stringify(ok.body));
   assert.equal(ok.body.referral.practiceName, 'River Periodontics');
+});
+
+test('create and submit are ONE transaction: a failed sign-off move leaves no stray draft', async (t) => {
+  switchReferrals(t, { roland: true });
+  const app = await boot(t);
+  await openVisit(app);
+  app.db.failMoveAudit = true;
+  const r = await api(app.baseUrl, 'POST', REF, { body: BODY });
+  assert.equal(r.status, 500);
+  assert.equal(app.db.tc.table('tc_referrals').length, 0, 'no draft a hygienist could never finish');
+  assert.equal(app.db.tc.table('tc_referral_events').length, 0);
+  // ... and a retry, once the outage passes, creates exactly one.
+  app.db.failMoveAudit = false;
+  const again = await api(app.baseUrl, 'POST', REF, { body: BODY });
+  assert.equal(again.status, 201, JSON.stringify(again.body));
+  assert.equal(app.db.tc.table('tc_referrals').length, 1);
 });

@@ -2320,7 +2320,7 @@ async function referralPatient(req, office, aptNum) {
   const patientName = ctx.snapshot && typeof ctx.snapshot.patientName === 'string' ? ctx.snapshot.patientName.trim() : '';
   const odPatientId = Number(ctx.visit.patNum);
   if (!Number.isFinite(odPatientId) || odPatientId <= 0) {
-    return { refusal: [409, { success: false, error: 'This visit has no patient yet', code: 'NO_PATIENT', office }] };
+    return { refusal: [409, { success: false, error: 'This visit has no patient yet', code: 'APPOINTMENT_HAS_NO_PATIENT', office }] };
   }
   if (!patientName) {
     return {

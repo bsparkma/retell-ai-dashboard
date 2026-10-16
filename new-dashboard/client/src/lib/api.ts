@@ -1464,7 +1464,7 @@ export const api = {
    */
   async startCallReferral(
     id: string,
-    body: { referral: unknown; office_id?: string },
+    body: { referral: unknown; office_id?: string; submit?: boolean },
   ): Promise<{ success: boolean; referral: unknown }> {
     return request(`/unified-calls/${encodeURIComponent(id)}/referral`, {
       method: "POST",

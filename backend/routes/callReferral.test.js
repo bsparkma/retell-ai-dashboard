@@ -201,3 +201,27 @@ test('voice.send_to_tc only: a tc user (read-only voice) is refused', async () =
   assert.equal(r.status, 403);
   assert.equal(db.table('tc_referrals').length, 0);
 });
+
+test('Save & submit: created AND submitted in one request', async () => {
+  seedCall('call-submit');
+  const r = await post('call-submit', { referral: REFERRAL, submit: true });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.equal(r.body.referral.status, 'pending_signoff');
+  assert.deepEqual(r.body.referral.events.map((e) => e.toStatus), ['draft', 'pending_signoff']);
+});
+
+test('entitlement first, as Send to TC: no TC → 403 even with a mismatched office_id, and no audit row', async () => {
+  seedCall('call-order');
+  tenantModules = ['voice'];
+  const r = await post('call-order', { referral: REFERRAL, office_id: 'valley' });
+  assert.equal(r.status, 403);
+  assert.equal(r.body.code, 'MODULE_NOT_ENTITLED');
+  assert.equal(auditRows(db).length, 0);
+});
+
+test('a malformed stored case id is treated as no case, never put to the database', async () => {
+  seedCall('call-badcase', { tc_case_id: 'p001' });
+  const r = await post('call-badcase', { referral: REFERRAL });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.equal(r.body.referral.tcCaseId, null);
+});

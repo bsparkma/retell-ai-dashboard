@@ -1814,8 +1814,9 @@ router.post('/:id/send-to-tc', canSendToTc, async (req, res) => {
  * id) on its own row, and the call detail finds it with
  * GET /api/tc/referrals?callId=. Nothing here touches normalizeCall.
  *
- * Creates a DRAFT (the TC side submits it), linked to the case the call was
- * sent to when that case is this office's. Zero Open Dental. Nothing sends.
+ * Creates a DRAFT — or, with `submit: true`, creates AND submits it in one
+ * transaction — linked to the case the call was sent to when that case is
+ * this office's. Zero Open Dental. Nothing sends.
  */
 router.post('/:id/referral', canSendToTc, async (req, res) => {
   try {
@@ -1826,8 +1827,18 @@ router.post('/:id/referral', canSendToTc, async (req, res) => {
     }
     const officeKey = getOfficeForCall(call);
 
+    // Send-to-TC's order (CLAUDE.md §2.7): entitlement before anything else, so
+    // a tenant without TC hears 403 whatever the body asserts.
+    const notEntitled = referralCreate.entitlementGate(req);
+    if (notEntitled) return res.status(notEntitled[0]).json(notEntitled[1]);
+
     const Body = tcContract.z
-      .object({ referral: tcContract.TcReferralInput, office_id: tcContract.z.string().optional() })
+      .object({
+        referral: tcContract.TcReferralInput,
+        office_id: tcContract.z.string().optional(),
+        // "Save & submit": submitted in the SAME transaction as the create.
+        submit: tcContract.z.boolean().optional(),
+      })
       .strict();
     const parsed = Body.safeParse(req.body || {});
     if (!parsed.success) {
@@ -1889,9 +1900,10 @@ router.post('/:id/referral', canSendToTc, async (req, res) => {
       });
     }
 
-    // The case this call was sent to, only if it is this office's.
+    // The case this call was sent to, only if it is this office's (and only a
+    // well-formed case id is ever put to the database).
     let tcCaseId = null;
-    if (call.tc_case_id) {
+    if (tcContract.z.string().uuid().safeParse(call.tc_case_id).success) {
       const found = await tenantDb.withTenantDb(req, (pool) =>
         pool.query('SELECT case_id FROM tc_cases WHERE office_id = $1 AND case_id = $2', [officeKey, call.tc_case_id])
       );
@@ -1902,7 +1914,7 @@ router.post('/:id/referral', canSendToTc, async (req, res) => {
       office: officeKey,
       patient: { odPatientId: patientId, patientName, tcCaseId, sourceKind: 'call', sourceRef: String(id) },
       input: parsed.data.referral,
-      submit: false,
+      submit: parsed.data.submit === true,
     });
     return res.status(out.status).json(out.body);
   } catch (error) {

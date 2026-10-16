@@ -13,8 +13,10 @@
  *   2. inserts the draft;
  *   3. writes its creating event (null → draft);
  *   4. writes the audit row (a failed audit rolls the referral back).
- * `startReferral` adds the optional submit (the transition engine, its own
- * transaction) and answers with the referral as stored.
+ * `startReferral` adds the optional submit IN THE SAME transaction (item 54
+ * review: a submit that failed after a committed create left a chairside draft
+ * nobody without tc.full could finish), and answers with the referral as
+ * stored.
  *
  * Gating every caller must have passed first: the practice is entitled to
  * `tc`, and referrals is switched on for THIS office. `referralsGate` checks
@@ -30,23 +32,28 @@ const tcReferrals = require('../../config/tcReferrals');
 const store = require('./referralStore');
 const transitions = require('./referralTransitions');
 
+/** Entitled to TC? null when fine, else the refusal as [status, body]. */
+function entitlementGate(req) {
+  if (isEntitledModule(req, 'tc')) return null;
+  return [
+    403,
+    {
+      success: false,
+      error: 'MODULE_NOT_ENTITLED',
+      code: 'MODULE_NOT_ENTITLED',
+      module: 'tc',
+      message: "This account is not entitled to the 'tc' module.",
+    },
+  ];
+}
+
 /**
  * Entitled to TC, and referrals on for `office`? null when fine, else the
  * refusal as [status, body].
  */
 async function referralsGate(req, office) {
-  if (!isEntitledModule(req, 'tc')) {
-    return [
-      403,
-      {
-        success: false,
-        error: 'MODULE_NOT_ENTITLED',
-        code: 'MODULE_NOT_ENTITLED',
-        module: 'tc',
-        message: "This account is not entitled to the 'tc' module.",
-      },
-    ];
-  }
+  const notEntitled = entitlementGate(req);
+  if (notEntitled) return notEntitled;
   if (!(await tcReferrals.isEnabled(office))) {
     return [
       403,
@@ -96,17 +103,20 @@ async function createDraft(req, client, { office, patient, input, at }) {
  */
 async function startReferral(req, { office, patient, input, submit }) {
   const at = transitions.clock().toISOString();
-  const created = await withTenantTx(req, (client) => createDraft(req, client, { office, patient, input, at }));
+  const created = await withTenantTx(req, async (client) => {
+    const draft = await createDraft(req, client, { office, patient, input, at });
+    if (draft.refusal || !submit) return draft;
+    const moved = await transitions.moveInTx(req, client, { office, referralId: draft.referralId, verb: 'submit' });
+    // A brand-new draft that cannot be submitted is a bug, not a state to keep:
+    // throwing rolls the draft, its event and its audit row back together.
+    if (!moved.moved) throw new Error('a new referral could not be submitted');
+    return draft;
+  });
   if (created.refusal) {
     const [status, error, code] = created.refusal;
     return { status, body: { success: false, error, code } };
   }
-  if (submit) {
-    const moved = await transitions.applyVerb(req, { referralId: created.referralId, verb: 'submit', office });
-    if (moved.status !== 200) return moved;
-    return { status: 201, body: moved.body };
-  }
   return { status: 201, body: { success: true, referral: await transitions.readBack(req, created.referralId, office) } };
 }
 
-module.exports = { referralsGate, directoryProblem, createDraft, startReferral };
+module.exports = { entitlementGate, referralsGate, directoryProblem, createDraft, startReferral };

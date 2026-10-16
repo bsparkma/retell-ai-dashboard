@@ -4,8 +4,8 @@
  * match) and the office (the call's) itself; the client sends only the
  * referral's own words plus an `office_id` ASSERTION that can only refuse.
  *
- * It creates a DRAFT; "Save & submit" then submits it through TC's own route
- * (the person holds tc.full), so the doctor's sign-off queue gets it.
+ * It creates a DRAFT; "Save & submit" asks the server to create AND submit it
+ * in one transaction, so a failure never leaves a stray draft behind.
  * Shows the referrals already started from this call.
  *
  * Renders nothing unless: the practice has TC, this user may hand calls to TC
@@ -22,7 +22,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { api, ApiError } from "@/lib/api";
 import { hasModule } from "@/lib/modules";
 import { can } from "@/lib/permissions";
-import { getReferralsStatus, listDirectory, listReferrals, referralVerb } from "@/features/tc/referrals/referralsApi";
+import { getReferralsStatus, listDirectory, listReferrals } from "@/features/tc/referrals/referralsApi";
 import { ReferralDialog, ReferralStatusBadge } from "@/features/tc/referrals/ReferralsPanel";
 import { TcReferral, type TcReferralInput } from "@shared/tc/referrals";
 import type { OfficeId } from "@shared/tc/contract";
@@ -68,12 +68,13 @@ export function CallReferralButton({ call }: { call: CallReferralCall }) {
     if (!office) return;
     setSaving(true);
     try {
-      const res = await api.startCallReferral(call.id, { referral: input, office_id: office });
+      const res = await api.startCallReferral(call.id, { referral: input, office_id: office, submit });
       const parsed = TcReferral.safeParse(res.referral);
       if (!parsed.success) throw new Error("The referral answer could not be read");
       if (submit) {
-        const moved = await referralVerb(office, parsed.data.referralId, "submit");
-        toast.success(moved.status === "approved" ? "Referral approved (sign-off not required)" : "Sent for the doctor's sign-off");
+        toast.success(
+          parsed.data.status === "approved" ? "Referral approved (sign-off not required)" : "Sent for the doctor's sign-off",
+        );
       } else {
         toast.success("Referral saved as a draft — finish it in TC");
       }

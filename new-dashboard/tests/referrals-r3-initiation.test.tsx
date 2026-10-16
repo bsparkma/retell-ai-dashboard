@@ -174,20 +174,23 @@ describe("Start referral on a call", () => {
     expect(id).toBe("call-1");
     expect(body.office_id).toBe("roland");
     expect(body.referral).toMatchObject({ reason: "Fractured cusp" });
-    expect(Object.keys(body).sort()).toEqual(["office_id", "referral"]);
+    expect(Object.keys(body).sort()).toEqual(["office_id", "referral", "submit"]);
+    expect(body.submit).toBe(false);
     expect(ref.referralVerb).not.toHaveBeenCalled();
     expect(ref.listReferrals).toHaveBeenCalledWith("roland", { callId: "call-1" });
   });
 
-  it("Save & submit submits the new draft through TC", async () => {
-    voice.startCallReferral.mockResolvedValue({ success: true, referral: referral({ status: "draft", sourceKind: "call", sourceRef: "call-1" }) });
-    ref.referralVerb.mockResolvedValue(referral());
+  it("Save & submit is ONE request (create + submit together, so no stray draft)", async () => {
+    voice.startCallReferral.mockResolvedValue({ success: true, referral: referral({ status: "pending_signoff", sourceKind: "call", sourceRef: "call-1" }) });
     render(<CallReferralButton call={CALL} />);
     fireEvent.click(await screen.findByRole("button", { name: /Start referral/ }));
     const dialog = await screen.findByTestId("tc-referral-dialog");
     fireEvent.change(within(dialog).getByLabelText(/Reason/), { target: { value: "Fractured cusp" } });
     fireEvent.click(within(dialog).getByRole("button", { name: /Save & submit/ }));
-    await waitFor(() => expect(ref.referralVerb).toHaveBeenCalledWith("roland", referral().referralId, "submit"));
+    await waitFor(() => expect(voice.startCallReferral).toHaveBeenCalledTimes(1));
+    expect(voice.startCallReferral.mock.calls[0][1].submit).toBe(true);
+    expect(ref.referralVerb).not.toHaveBeenCalled();
+    expect(toastMock.success).toHaveBeenCalledWith("Sent for the doctor's sign-off");
   });
 
   it("is absent without TC, without voice.send_to_tc, without a matched patient, or with referrals off", async () => {

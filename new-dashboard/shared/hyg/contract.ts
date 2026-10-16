@@ -1337,5 +1337,10 @@ export const HYG_VISIT_ERROR_CODES = [
   "CHECKOUT_NOT_FINAL",
   "CHECKOUT_UPDATE_CONFLICT",
   "CHECKOUT_ERROR",
+  // Item 54: a referral from the chair (the shared TC producer's refusals).
+  "MODULE_NOT_ENTITLED",
+  "REFERRALS_DISABLED",
+  "DIRECTORY_ENTRY_NOT_FOUND",
+  "DIRECTORY_ENTRY_INACTIVE",
 ] as const;
 export type HygVisitErrorCode = (typeof HYG_VISIT_ERROR_CODES)[number];
