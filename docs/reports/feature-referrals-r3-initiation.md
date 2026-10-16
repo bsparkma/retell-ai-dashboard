@@ -70,7 +70,12 @@ Then:
 ## Judgment calls for Beau
 1. **A call matched to the other office's patient is refused**, rather than starting the referral at the patient's office. The cross-office chart rule lets a call be linked across offices, but a referral is filed under one office's directory and doctor, so it fails closed. Say if it should follow the patient instead.
 2. **No per-user office lock in hygiene** (this predates R3). Any hygienist can name either office with `?office=`, as on every hygiene route.
-3. **Audit timing** (inherited from R2): the audit row is written before COMMIT, on its own connection. A failed audit always rolls back. A COMMIT that fails after the audit succeeded would leave an extra audit row; it over-records, never under-records.
+3. **Audit timing** (inherited from R2): `auditTc` writes on its own connection, before COMMIT. A failed
+   audit always rolls the change back. But now that create + submit is one transaction, a failed
+   SUBMIT leaves the CREATE's audit row standing for a referral that was rolled back. The reviewer
+   measured this on real Postgres: referrals and events unchanged, one extra audit row. The trail
+   over-records and never under-records, so fail-closed holds. Making it exact means writing the
+   audit through the transaction client, a platform change to `audit()` that I'd scope separately.
 
 ## Files
 | File | Change |
@@ -90,10 +95,32 @@ Then:
 No existing test's assertions changed.
 
 ## Gates
-GATES_PLACEHOLDER
+Final commit 0677dbf + docs:
+```
+backend $ node --check server.js  -> OK
+backend $ node --test             -> # tests 3723  # pass 3720  # fail 0  # skipped 3
+new-dashboard $ pnpm run check    -> exit 0
+new-dashboard $ pnpm run test     -> Test Files 163 passed | 34 skipped; Tests 2605 passed | 199 skipped
+```
+Earlier runs on this branch hit known flakes only. Each passed in isolation:
+- `routes/sendToTc.test.js` and `routes/platform.test.js` (the Node 22 deserialize flake): 18/18 and 20/20;
+- `rcm-ui-s3` "k goes the other way" (the reviewer's run).
 
 ## Lane / review
-LANE_PLACEHOLDER
+**RED. Both verdicts agree.**
+- The classifier says RED: office/PatNum derivation, new machine routes, new slugs and codes.
+- My judgment agrees: the queue allows GREEN only with no new vocabulary.
+
+The reviewer, a fresh agent following `.claude/agents/reviewer.md`, ran two rounds.
+
+**Round 1: FAIL.** It found five defects:
+- the report was missing;
+- a failed submit left a chairside draft nobody without tc.full could finish (proven on real Postgres with a temporary CHECK);
+- the hygiene codes were missing from `HYG_VISIT_ERROR_CODES`;
+- a non-uuid stored case id gave a 500;
+- the call route checked OFFICE_MISMATCH before entitlement.
+
+**Round 2: PASS, LANE RED.** All five are fixed. Re-proven on postgres:17: a failed submit leaves 0 new referrals and 0 new events on BOTH paths, and a retry creates exactly one. Its one remaining note is judgment call 3.
 
 ## Staging test steps (after Beau merges)
 1. **Chairside:** on a roland test visit (12827) with referrals on, press **Start referral** beside the
