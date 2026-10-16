@@ -243,3 +243,103 @@ test('create and submit are ONE transaction: a failed sign-off move leaves no st
   assert.equal(again.status, 201, JSON.stringify(again.body));
   assert.equal(app.db.tc.table('tc_referrals').length, 1);
 });
+
+// ── R4 (item 55): the X-ray snipped chairside ───────────────────────────────
+
+const blob = require('../../services/tc/referralAttachmentStore');
+const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32, 1)]);
+
+function memoryBlob(t) {
+  const saved = { isConfigured: blob.isConfigured, putAttachment: blob.putAttachment };
+  const objects = new Map();
+  blob.isConfigured = () => true;
+  blob.putAttachment = async ({ tenantSlug, data, contentType }) => {
+    const key = blob.buildKey({ tenantSlug, contentType });
+    objects.set(key, data);
+    return { key, bytes: data.length };
+  };
+  t.after(() => Object.assign(blob, saved));
+  return objects;
+}
+
+async function attach(app, referralId, data = PNG) {
+  const form = new FormData();
+  form.append('file', new Blob([data], { type: 'image/png' }), 'xray.png');
+  const res = await fetch(`${app.baseUrl}/api/hyg/visit/900001/referrals/${referralId}/attachments?office=roland`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer test-token' }, // as hygTestUtils.api
+    body: form,
+  });
+  return { status: res.status, body: await res.json() };
+}
+
+test('R4: the hygienist attaches the X-ray to the referral THIS visit started', async (t) => {
+  switchReferrals(t, { roland: true });
+  const objects = memoryBlob(t);
+  const app = await boot(t);
+  await openVisit(app);
+  const ref = (await api(app.baseUrl, 'POST', REF, { body: BODY })).body.referral;
+  const r = await attach(app, ref.referralId);
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.equal(r.body.attachment.contentType, 'image/png');
+  assert.equal(r.body.attachment.uploadedBy, 'hygienist@carein.ai');
+  assert.equal(objects.size, 1);
+  assert.equal(app.db.tc.table('tc_referral_attachments').length, 1);
+});
+
+test("R4: not onto a referral this visit did not start (another visit's, or TC's)", async (t) => {
+  switchReferrals(t, { roland: true });
+  memoryBlob(t);
+  const app = await boot(t);
+  await openVisit(app);
+  const other = randomUUID();
+  app.db.tc.table('tc_referrals').push({
+    referral_id: other,
+    office_id: 'roland',
+    od_patient_id: 12827,
+    patient_name: 'Test 2, Stedi',
+    source_kind: 'case',
+    source_ref: randomUUID(),
+    teeth: '[]',
+    status: 'draft',
+  });
+  const r = await attach(app, other);
+  assert.equal(r.status, 404);
+  assert.equal(app.db.tc.table('tc_referral_attachments').length, 0);
+});
+
+test('R4: referrals off → refused before the file is read', async (t) => {
+  switchReferrals(t, null);
+  memoryBlob(t);
+  const app = await boot(t);
+  const r = await attach(app, randomUUID());
+  assert.equal(r.status, 403);
+  assert.equal(r.body.code, 'REFERRALS_DISABLED');
+});
+
+test('R4 round 2: sign-off OFF — the X-ray lands on the draft, THEN it is approved (it arrives with its file)', async (t) => {
+  switchReferrals(t, { roland: true });
+  memoryBlob(t);
+  const app = await boot(t);
+  app.db.tc.table('tc_referral_settings').push({ office_id: 'roland', signoff_required: false, autosend_on_approval: false, updated_by: 'boss@carein.ai' });
+  await openVisit(app);
+  const draft = await api(app.baseUrl, 'POST', `${REF}&submit=false`, { body: BODY });
+  assert.equal(draft.status, 201, JSON.stringify(draft.body));
+  assert.equal(draft.body.referral.status, 'draft');
+  assert.equal((await attach(app, draft.body.referral.referralId)).status, 201);
+  const sent = await api(app.baseUrl, 'POST', `/api/hyg/visit/900001/referrals/${draft.body.referral.referralId}/submit?office=roland`);
+  assert.equal(sent.status, 200, JSON.stringify(sent.body));
+  assert.equal(sent.body.referral.status, 'approved');
+  assert.equal(app.db.tc.table('tc_referral_attachments').length, 1, 'the approved referral carries its X-ray');
+});
+
+test("R4 round 2: the chairside submit route only sends this visit's own drafts", async (t) => {
+  switchReferrals(t, { roland: true });
+  const app = await boot(t);
+  await openVisit(app);
+  const other = randomUUID();
+  app.db.tc.table('tc_referrals').push({ referral_id: other, office_id: 'roland', od_patient_id: 12827, patient_name: 'Test 2, Stedi', source_kind: 'case', source_ref: randomUUID(), teeth: '[]', status: 'draft' });
+  const r = await api(app.baseUrl, 'POST', `/api/hyg/visit/900001/referrals/${other}/submit?office=roland`);
+  assert.equal(r.status, 404);
+  assert.equal(app.db.tc.table('tc_referrals')[0].status, 'draft');
+});

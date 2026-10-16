@@ -191,6 +191,70 @@ export async function tcRequest<T>(path: string, options: TcRequestOptions): Pro
   return parsed as T;
 }
 
+/**
+ * Item 55: one file, multipart, through TC's transport (office in the query,
+ * the same auth, the same typed refusals). No Content-Type header: the browser
+ * writes the multipart boundary itself.
+ */
+export async function tcUpload<T>(path: string, office: OfficeId, file: File): Promise<T> {
+  const url = new URL(`${BASE}${path.startsWith("/") ? "" : "/"}${path}`, window.location.origin);
+  url.searchParams.set("office", office);
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const res = await fetch(url.toString(), {
+    method: "POST",
+    credentials: "include",
+    headers: DASHBOARD_TOKEN ? { Authorization: `Bearer ${DASHBOARD_TOKEN}` } : {},
+    body: form,
+  });
+  if (res.status === 401) handleUnauthorized();
+  let parsed: unknown = null;
+  try {
+    parsed = await res.json();
+  } catch {
+    parsed = null;
+  }
+  if (!res.ok) {
+    const obj = (parsed ?? {}) as { error?: unknown; code?: unknown };
+    throw new TcApiError(
+      typeof obj.error === "string" ? obj.error : `HTTP ${res.status}`,
+      res.status,
+      typeof obj.code === "string" ? obj.code : null,
+      null,
+      [],
+    );
+  }
+  return parsed as T;
+}
+
+/**
+ * Item 55: a protected file's bytes, as an object URL the caller opens and
+ * later revokes. Fetched (not linked) so the bearer mode works too; every call
+ * is a server-side audited view.
+ */
+export async function tcFetchObjectUrl(path: string, office: OfficeId): Promise<string> {
+  const url = new URL(`${BASE}${path.startsWith("/") ? "" : "/"}${path}`, window.location.origin);
+  url.searchParams.set("office", office);
+  const res = await fetch(url.toString(), {
+    credentials: "include",
+    headers: DASHBOARD_TOKEN ? { Authorization: `Bearer ${DASHBOARD_TOKEN}` } : {},
+  });
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) {
+    let code: string | null = null;
+    let message = `HTTP ${res.status}`;
+    try {
+      const obj = (await res.json()) as { error?: unknown; code?: unknown };
+      if (typeof obj.error === "string") message = obj.error;
+      if (typeof obj.code === "string") code = obj.code;
+    } catch {
+      /* not JSON */
+    }
+    throw new TcApiError(message, res.status, code, null, []);
+  }
+  return URL.createObjectURL(await res.blob());
+}
+
 // ── Cases ───────────────────────────────────────────────────────────────────
 
 /** GET /cases list item — TcCase scalars (no children) + timestamps. */

@@ -11,14 +11,24 @@
  * Renders nothing while referrals is off for the office or the practice has no
  * TC (the list read answers 403 then). Nothing is sent to the specialist; no
  * Open Dental write.
+ *
+ * Item 55: the form takes X-rays (drag, pick, or paste the Win+Shift+S snip).
+ * They upload onto the referral once it exists; each file's result is said.
  */
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Send } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { fetchVisitReferralDirectory, fetchVisitReferrals, HygApiError, startVisitReferral } from "@/features/hyg/api";
-import { ReferralDialog, ReferralStatusBadge } from "@/features/tc/referrals/ReferralsPanel";
+import {
+  fetchVisitReferralDirectory,
+  fetchVisitReferrals,
+  HygApiError,
+  startVisitReferral,
+  submitVisitReferral,
+  uploadVisitReferralAttachment,
+} from "@/features/hyg/api";
+import { ReferralDialog, ReferralStatusBadge, reportFailedUploads, uploadAll } from "@/features/tc/referrals/ReferralsPanel";
 import type { OfficeId } from "@shared/tc/contract";
 import type { TcReferral, TcReferralInput } from "@shared/tc/referrals";
 
@@ -41,11 +51,32 @@ export function VisitReferral({ office, aptNum }: { office: OfficeId; aptNum: nu
     load();
   }, [load]);
 
-  async function save(input: TcReferralInput) {
+  async function send(referralId: string) {
+    const r = await submitVisitReferral(office, aptNum, referralId);
+    toast.success(r.status === "approved" ? "Referral approved (sign-off not required)" : "Sent for the doctor's sign-off");
+  }
+
+  async function save(input: TcReferralInput, files: File[]) {
     setSaving(true);
     try {
-      const r = await startVisitReferral(office, aptNum, input);
-      toast.success(r.status === "approved" ? "Referral approved (sign-off not required)" : "Sent for the doctor's sign-off");
+      if (files.length === 0) {
+        // No files: create and submit in one transaction.
+        const r = await startVisitReferral(office, aptNum, input);
+        toast.success(r.status === "approved" ? "Referral approved (sign-off not required)" : "Sent for the doctor's sign-off");
+      } else {
+        // Item 55: the X-rays land on the DRAFT, then it is submitted — so the
+        // doctor sees them, and an office without sign-off does not approve it
+        // before they arrive. A file that did not land keeps it a draft (with a
+        // Send button below), so nothing goes out missing an X-ray.
+        const draft = await startVisitReferral(office, aptNum, input, false);
+        const { failed } = await uploadAll(files, (f) => uploadVisitReferralAttachment(office, aptNum, draft.referralId, f));
+        if (failed.length > 0) {
+          reportFailedUploads(failed);
+          toast.error("Kept as a draft so the missing file can be added — press Send for sign-off when ready");
+        } else {
+          await send(draft.referralId);
+        }
+      }
       setOpen(false);
       load();
     } catch (e) {
@@ -58,6 +89,17 @@ export function VisitReferral({ office, aptNum }: { office: OfficeId; aptNum: nu
   if (!available) return null;
 
   const latest = referrals[0];
+  const drafts = referrals.filter((r) => r.status === "draft");
+
+  async function retry(referralId: string) {
+    try {
+      await send(referralId);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "It was not sent");
+    } finally {
+      load();
+    }
+  }
   return (
     <div className="inline-flex items-center gap-2" data-testid="hyg-visit-referral">
       <Button variant="outline" className="min-h-11 gap-1.5" onClick={() => setOpen(true)}>
@@ -69,6 +111,18 @@ export function VisitReferral({ office, aptNum }: { office: OfficeId; aptNum: nu
           <ReferralStatusBadge status={latest.status} />
         </span>
       )}
+      {drafts.map((d) => (
+        <Button
+          key={d.referralId}
+          size="sm"
+          variant="outline"
+          className="min-h-11"
+          onClick={() => void retry(d.referralId)}
+          data-testid="hyg-visit-referral-send"
+        >
+          Send for sign-off{drafts.length > 1 ? ` (${d.reason.slice(0, 24)})` : ""}
+        </Button>
+      ))}
       <ReferralDialog
         open={open}
         editing={null}
@@ -77,7 +131,7 @@ export function VisitReferral({ office, aptNum }: { office: OfficeId; aptNum: nu
         sourceLabel="this visit"
         loadDirectory={() => fetchVisitReferralDirectory(office, aptNum)}
         onClose={() => setOpen(false)}
-        onSave={(input) => void save(input)}
+        onSave={(input, _submit, files) => void save(input, files)}
       />
     </div>
   );

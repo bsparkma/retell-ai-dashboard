@@ -14905,6 +14905,7 @@ __export(contract_entry_exports, {
   PerioStatus: () => PerioStatus,
   PreauthStatus: () => PreauthStatus,
   PreauthType: () => PreauthType,
+  REFERRAL_ATTACHMENT_HINT: () => REFERRAL_ATTACHMENT_HINT,
   REFERRAL_EDITABLE_STATUSES: () => REFERRAL_EDITABLE_STATUSES,
   REFERRAL_READY_TO_SEND_COPY: () => REFERRAL_READY_TO_SEND_COPY,
   Radiograph: () => Radiograph,
@@ -14971,6 +14972,7 @@ __export(contract_entry_exports, {
   TcObjection: () => TcObjection,
   TcPreauthCase: () => TcPreauthCase,
   TcReferral: () => TcReferral,
+  TcReferralAttachment: () => TcReferralAttachment,
   TcReferralCreateRequest: () => TcReferralCreateRequest,
   TcReferralDeclineRequest: () => TcReferralDeclineRequest,
   TcReferralDirectoryEntry: () => TcReferralDirectoryEntry,
@@ -14995,6 +14997,7 @@ __export(contract_entry_exports, {
   ZodError: () => import_zod9.ZodError,
   allPresetViolations: () => allPresetViolations,
   assertPresetsWithinCaps: () => assertPresetsWithinCaps,
+  attachmentProblem: () => attachmentProblem,
   caseFromRows: () => caseFromRows,
   caseToRows: () => caseToRows,
   checkoutItemKey: () => checkoutItemKey,
@@ -17499,6 +17502,29 @@ var TcReferralSignoffSummary = import_zod8.z.object({
   waiting: import_zod8.z.number().int().nonnegative(),
   newest: import_zod8.z.object({ referralId: import_zod8.z.string().uuid(), patientName: import_zod8.z.string(), at: import_zod8.z.string() }).nullable()
 });
+var TcReferralAttachment = import_zod8.z.object({
+  attachmentId: import_zod8.z.string().uuid(),
+  referralId: import_zod8.z.string().uuid(),
+  fileName: import_zod8.z.string(),
+  contentType: import_zod8.z.enum(TC_REFERRAL_ATTACHMENT_TYPES),
+  sizeBytes: import_zod8.z.number().int().positive(),
+  uploadedBy: import_zod8.z.string(),
+  uploadedAt: import_zod8.z.string()
+});
+var REFERRAL_ATTACHMENT_HINT = "Press Win+Shift+S to snip the X-ray, then drag it here.";
+function attachmentProblem(file, alreadyChosen) {
+  if (alreadyChosen >= TC_REFERRAL_ATTACHMENT_MAX_FILES) {
+    return `A referral can carry at most ${TC_REFERRAL_ATTACHMENT_MAX_FILES} files.`;
+  }
+  if (!TC_REFERRAL_ATTACHMENT_TYPES.includes(file.type)) {
+    return `${file.name || "That file"} isn't an image or a PDF.`;
+  }
+  if (file.size <= 0) return `${file.name || "That file"} is empty.`;
+  if (file.size > TC_REFERRAL_ATTACHMENT_MAX_BYTES) {
+    return `${file.name || "That file"} is larger than ${TC_REFERRAL_ATTACHMENT_MAX_BYTES / 1024 / 1024} MB.`;
+  }
+  return null;
+}
 
 // ../backend/tc/contract.entry.ts
 var import_zod9 = __toESM(require_zod());
@@ -17586,6 +17612,7 @@ var import_zod9 = __toESM(require_zod());
   PerioStatus,
   PreauthStatus,
   PreauthType,
+  REFERRAL_ATTACHMENT_HINT,
   REFERRAL_EDITABLE_STATUSES,
   REFERRAL_READY_TO_SEND_COPY,
   Radiograph,
@@ -17652,6 +17679,7 @@ var import_zod9 = __toESM(require_zod());
   TcObjection,
   TcPreauthCase,
   TcReferral,
+  TcReferralAttachment,
   TcReferralCreateRequest,
   TcReferralDeclineRequest,
   TcReferralDirectoryEntry,
@@ -17676,6 +17704,7 @@ var import_zod9 = __toESM(require_zod());
   ZodError,
   allPresetViolations,
   assertPresetsWithinCaps,
+  attachmentProblem,
   caseFromRows,
   caseToRows,
   checkoutItemKey,

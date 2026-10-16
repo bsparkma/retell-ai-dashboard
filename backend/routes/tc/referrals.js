@@ -22,6 +22,11 @@
  *   POST   /:id/cancel            draft | pending_signoff → cancelled
  *   Approve / decline live in ./referralSignoff.js, behind tc.referral_signoff.
  *
+ *   R4 (item 55) — attachments (./referralAttachments.js):
+ *   POST   /:id/attachments       one image or PDF (multipart "file"), ≤10 MB, ≤5
+ *   GET    /:id/attachments       the referral's files (metadata)
+ *   GET    /:id/attachments/:aid  the bytes — audited on every view
+ *
  * GUARDRAILS
  *   - DARK. `tc_referrals_enabled` off for the office → 403 REFERRALS_DISABLED
  *     on everything but /status, which answers `enabled: false` so the
@@ -47,6 +52,7 @@ const checkoutStore = require('./checkoutStore');
 const { withTenantTx } = require('./tx');
 const transitions = require('./referralTransitions');
 const { createDraft, directoryProblem } = require('./referralCreate');
+const attachments = require('./referralAttachments');
 
 const {
   z,
@@ -398,6 +404,13 @@ router.put(
     return res.json({ success: true, referral: await transitions.readBack(req, id.data) });
   })
 );
+
+// ── R4: attachments ─────────────────────────────────────────────────────────
+
+const tcAttachmentOpts = { officeOf: (req) => req.tcOffice, referralIdOf: (req) => req.params.id };
+router.post('/:id/attachments', attachments.receiveFile, h(attachments.uploadHandler(tcAttachmentOpts)));
+router.get('/:id/attachments', h(attachments.listHandler(tcAttachmentOpts)));
+router.get('/:id/attachments/:attachmentId', h(attachments.viewHandler(tcAttachmentOpts)));
 
 for (const verb of ['submit', 'withdraw', 'cancel']) {
   router.post(

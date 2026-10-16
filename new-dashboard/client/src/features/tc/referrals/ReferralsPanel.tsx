@@ -17,7 +17,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Loader2, Plus, Send } from "lucide-react";
+import { Loader2, Paperclip, Plus, Send } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -37,10 +37,14 @@ import {
   createReferral,
   getReferralsStatus,
   listDirectory,
+  listReferralAttachments,
   listReferrals,
+  openReferralAttachment,
   referralVerb,
   updateReferral,
+  uploadReferralAttachment,
 } from "@/features/tc/referrals/referralsApi";
+import { AttachmentZone } from "@/features/tc/referrals/AttachmentZone";
 import type { OfficeId } from "@shared/tc/contract";
 import {
   REFERRAL_READY_TO_SEND_COPY,
@@ -51,6 +55,7 @@ import {
   TcReferralUrgency,
   referralChipFor,
   type TcReferral,
+  type TcReferralAttachment,
   type TcReferralDirectoryEntry,
   type TcReferralStatus,
   type TcReferralTeeth,
@@ -77,6 +82,75 @@ export function ReferralStatusBadge({ status }: { status: TcReferralStatus }) {
 export function teethLabel(t: TcReferralTeeth): string {
   if (t === "mouth") return "Whole mouth";
   return t.length ? `#${t.join(", #")}` : "";
+}
+
+// ── Attachments (item 55) ───────────────────────────────────────────────────
+
+/**
+ * Upload chosen files one by one onto a saved referral. Every file's own
+ * result is kept: what landed, and what did not and why — never "uploaded"
+ * for a file the server did not store.
+ */
+export async function uploadAll(
+  files: readonly File[],
+  uploadOne: (file: File) => Promise<TcReferralAttachment>,
+): Promise<{ stored: TcReferralAttachment[]; failed: { name: string; message: string }[] }> {
+  const stored: TcReferralAttachment[] = [];
+  const failed: { name: string; message: string }[] = [];
+  for (const f of files) {
+    try {
+      stored.push(await uploadOne(f));
+    } catch (e) {
+      failed.push({ name: f.name, message: tcErrorMessage(e) });
+    }
+  }
+  return { stored, failed };
+}
+
+/** Say what did not attach, file by file. */
+export function reportFailedUploads(failed: { name: string; message: string }[]) {
+  for (const f of failed) toast.error(`${f.name} was not attached: ${f.message}`);
+}
+
+/** Open a file (an audited view on the server) in a new tab. */
+export async function viewAttachment(open: () => Promise<string>) {
+  try {
+    const url = await open();
+    window.open(url, "_blank", "noopener");
+    // The tab has its own copy once it loads; the URL itself is not kept.
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  } catch (e) {
+    toast.error(tcErrorMessage(e));
+  }
+}
+
+/** A referral's files, each a View button. */
+export function AttachmentList({
+  attachments,
+  onView,
+}: {
+  attachments: readonly TcReferralAttachment[];
+  onView: (a: TcReferralAttachment) => void;
+}) {
+  if (attachments.length === 0) return null;
+  return (
+    <ul className="flex flex-wrap gap-1.5" data-testid="referral-attachments">
+      {attachments.map((a) => (
+        <li key={a.attachmentId}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1 text-xs"
+            onClick={() => onView(a)}
+            aria-label={`View ${a.fileName}`}
+          >
+            <Paperclip className="w-3 h-3" /> {a.fileName}
+          </Button>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 // ── The form ────────────────────────────────────────────────────────────────
@@ -117,8 +191,10 @@ export interface ReferralDialogProps {
   open: boolean;
   editing: TcReferral | null;
   onClose: () => void;
-  onSave: (input: TcReferralInput, submit: boolean) => void;
+  onSave: (input: TcReferralInput, submit: boolean, files: File[]) => void;
   saving: boolean;
+  /** Files the referral already carries (count toward the 5). */
+  alreadyAttached?: number;
   /** The office's active specialists, from whichever surface may read them. */
   loadDirectory: () => Promise<TcReferralDirectoryEntry[]>;
   /**
@@ -143,14 +219,17 @@ export function ReferralDialog({
   loadDirectory,
   submitOnly = false,
   sourceLabel,
+  alreadyAttached = 0,
 }: ReferralDialogProps) {
   const [d, setD] = useState<Draft>(draftOf(null));
+  const [files, setFiles] = useState<File[]>([]);
   const [entries, setEntries] = useState<TcReferralDirectoryEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setD(draftOf(editing));
+    setFiles([]);
     setError(null);
     loadDirectory()
       .then(setEntries)
@@ -187,7 +266,7 @@ export function ReferralDialog({
       setError(parsed.error.issues[0]?.message ?? "Check the form");
       return;
     }
-    onSave(parsed.data, submit);
+    onSave(parsed.data, submit, files);
   }
 
   return (
@@ -262,6 +341,10 @@ export function ReferralDialog({
             <Label htmlFor="rf-narrative">Notes for the specialist</Label>
             <Textarea id="rf-narrative" rows={3} value={d.narrative} onChange={(e) => set("narrative", e.target.value)} />
           </div>
+          <div className="sm:col-span-2 space-y-1">
+            <Label>X-rays and files</Label>
+            <AttachmentZone files={files} onChange={setFiles} alreadyAttached={alreadyAttached} disabled={saving} />
+          </div>
         </div>
         {error && <p className="text-sm text-destructive">{error}</p>}
         <DialogFooter className="gap-2">
@@ -300,15 +383,32 @@ export function ReferralsPanel({ office, source, compact = false }: ReferralsPan
   const [editing, setEditing] = useState<TcReferral | null>(null);
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  const [files, setFiles] = useState<Record<string, TcReferralAttachment[]>>({});
   const sourceKey = "caseId" in source ? `case:${source.caseId}` : `checkout:${source.handoffId}`;
 
   const load = useCallback(() => {
     setError(null);
     listReferrals(office, source)
-      .then(setReferrals)
+      .then(async (list) => {
+        setReferrals(list);
+        if (compact) return;
+        // Each referral's files (item 55). A list that cannot be read shows none.
+        const entries = await Promise.all(
+          list.map(
+            async (r) =>
+              [
+                r.referralId,
+                await Promise.resolve()
+                  .then(() => listReferralAttachments(office, r.referralId))
+                  .catch((): TcReferralAttachment[] => []),
+              ] as const,
+          ),
+        );
+        setFiles(Object.fromEntries(entries));
+      })
       .catch((e: unknown) => setError(tcErrorMessage(e)));
     // `source` is described by sourceKey.
-  }, [office, sourceKey]);
+  }, [office, sourceKey, compact]);
 
   useEffect(() => {
     let cancelled = false;
@@ -326,12 +426,24 @@ export function ReferralsPanel({ office, source, compact = false }: ReferralsPan
     };
   }, [office, load]);
 
-  async function save(input: TcReferralInput, submit: boolean) {
+  async function save(input: TcReferralInput, submit: boolean, chosen: File[]) {
     setSaving(true);
     try {
       const saved = editing
         ? await updateReferral(office, editing.referralId, input)
         : await createReferral(office, source, input);
+      // Files BEFORE the submit, so the doctor sees them at sign-off. A file
+      // that did not land keeps the referral a draft: nothing goes to the
+      // doctor missing an X-ray someone meant to attach.
+      const { failed } = await uploadAll(chosen, (f) => uploadReferralAttachment(office, saved.referralId, f));
+      if (failed.length > 0) {
+        reportFailedUploads(failed);
+        if (submit) toast.error("Kept as a draft so the missing file can be added before sign-off");
+        setDialogOpen(false);
+        setEditing(null);
+        load();
+        return;
+      }
       if (submit) {
         const moved = await referralVerb(office, saved.referralId, "submit");
         toast.success(moved.status === "approved" ? "Referral approved (sign-off not required)" : "Sent for the doctor's sign-off");
@@ -373,7 +485,8 @@ export function ReferralsPanel({ office, source, compact = false }: ReferralsPan
         setDialogOpen(false);
         setEditing(null);
       }}
-      onSave={(input, submit) => void save(input, submit)}
+      alreadyAttached={editing ? (files[editing.referralId]?.length ?? 0) : 0}
+      onSave={(input, submit, chosen) => void save(input, submit, chosen)}
     />
   );
 
@@ -436,6 +549,10 @@ export function ReferralsPanel({ office, source, compact = false }: ReferralsPan
             {[r.specialty, teethLabel(r.teeth), TC_REFERRAL_URGENCY_LABELS[r.urgency]].filter(Boolean).join(" · ")}
           </p>
           <p className="text-sm text-foreground">{r.reason}</p>
+          <AttachmentList
+            attachments={files[r.referralId] ?? []}
+            onView={(a) => void viewAttachment(() => openReferralAttachment(office, r.referralId, a.attachmentId))}
+          />
           {r.status === "approved" && (
             <p className="text-xs font-medium text-emerald-700 dark:text-emerald-400">{REFERRAL_READY_TO_SEND_COPY}</p>
           )}

@@ -90,6 +90,8 @@ const contract = require('../../hyg/contract.gen.cjs');
 const tcContract = require('../../tc/contract.gen.cjs');
 const referralCreate = require('../tc/referralCreate');
 const referralStore = require('../tc/referralStore');
+const referralAttachments = require('../tc/referralAttachments');
+const transitions = require('../tc/referralTransitions');
 
 const router = express.Router();
 
@@ -2370,12 +2372,46 @@ router.post(
     const who = await referralPatient(req, office, aptNum);
     if (who.refusal) return res.status(who.refusal[0]).json(who.refusal[1]);
     // The office is the STORED visit's, never a request's.
+    // `?submit=false` (item 55): the form has X-rays to attach, so the draft is
+    // created, the files land on it, and THEN it is submitted (below) — files
+    // are only taken before a decision, and an office without sign-off would
+    // otherwise approve it before its X-ray arrived. Default: create + submit,
+    // in one transaction.
     const out = await referralCreate.startReferral(req, {
       office: who.ctx.visit.office,
       patient: who.patient,
       input,
-      submit: true,
+      submit: String(req.query.submit ?? 'true') !== 'false',
     });
+    return res.status(out.status).json(out.body);
+  })
+);
+
+/**
+ * POST /api/hyg/visit/:aptNum/referrals/:referralId/submit — send a draft THIS
+ * visit started for the doctor's sign-off (item 55): after its X-rays are
+ * attached, or to retry a submit that failed. The shared transition engine.
+ */
+router.post(
+  '/:aptNum/referrals/:referralId/submit',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumOr400(req, res, office);
+    if (aptNum === null) return undefined;
+    const gate = await referralCreate.referralsGate(req, office);
+    if (gate) return res.status(gate[0]).json(gate[1]);
+    const referralId = tcContract.z.string().uuid().safeParse(req.params.referralId);
+    if (!referralId.success) {
+      return res.status(400).json({ success: false, error: 'Invalid referral id', code: 'INVALID_ID', office });
+    }
+    const ctx = await tenantDb.withTenantDb(req, (pool) => visitStore.getOrthoSendContext(pool, { office, aptNum }));
+    const ref = ctx
+      ? await tenantDb.withTenantDb(req, (pool) => referralStore.findReferral(pool, office, referralId.data))
+      : null;
+    if (!ref || ref.source_kind !== 'hyg_visit' || String(ref.source_ref) !== String(ctx.visit.visitId)) {
+      return res.status(404).json({ success: false, error: 'Referral not found', code: 'NOT_FOUND', office });
+    }
+    const out = await transitions.applyVerb(req, { referralId: referralId.data, verb: 'submit', office });
     return res.status(out.status).json(out.body);
   })
 );
@@ -2422,6 +2458,41 @@ router.get(
     );
     return res.json({ success: true, entries: rows.map(referralStore.toEntry) });
   })
+);
+
+/**
+ * POST /api/hyg/visit/:aptNum/referrals/:referralId/attachments — the X-ray
+ * snipped chairside (R4). ONLY onto a referral THIS visit started; the shared
+ * handler does the rest (bytes sniffed, ≤10 MB, ≤5, stored before the row,
+ * fail closed, audited). The gate runs before the body is read.
+ */
+router.post(
+  '/:aptNum/referrals/:referralId/attachments',
+  async (req, res, next) => {
+    try {
+      const gate = await referralCreate.referralsGate(req, req.hygOffice);
+      if (gate) return res.status(gate[0]).json(gate[1]);
+      return next();
+    } catch (err) {
+      return next(err);
+    }
+  },
+  referralAttachments.receiveFile,
+  h(
+    referralAttachments.uploadHandler({
+      officeOf: (req) => req.hygOffice,
+      referralIdOf: (req) => req.params.referralId,
+      guard: async (req, ref) => {
+        const aptNum = aptNumFrom(req);
+        if (aptNum === null) return [400, 'aptNum must be a positive whole number', 'INVALID_APT_NUM'];
+        const ctx = await tenantDb.withTenantDb(req, (pool) =>
+          visitStore.getOrthoSendContext(pool, { office: req.hygOffice, aptNum })
+        );
+        const mine = ctx && ref.source_kind === 'hyg_visit' && String(ref.source_ref) === String(ctx.visit.visitId);
+        return mine ? null : [404, 'Referral not found', 'NOT_FOUND'];
+      },
+    })
+  )
 );
 
 module.exports = router;

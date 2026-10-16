@@ -22,8 +22,14 @@ import { useAuth } from "@/contexts/AuthContext";
 import { api, ApiError } from "@/lib/api";
 import { hasModule } from "@/lib/modules";
 import { can } from "@/lib/permissions";
-import { getReferralsStatus, listDirectory, listReferrals } from "@/features/tc/referrals/referralsApi";
-import { ReferralDialog, ReferralStatusBadge } from "@/features/tc/referrals/ReferralsPanel";
+import {
+  getReferralsStatus,
+  listDirectory,
+  listReferrals,
+  referralVerb,
+  uploadReferralAttachment,
+} from "@/features/tc/referrals/referralsApi";
+import { ReferralDialog, ReferralStatusBadge, reportFailedUploads, uploadAll } from "@/features/tc/referrals/ReferralsPanel";
 import { TcReferral, type TcReferralInput } from "@shared/tc/referrals";
 import type { OfficeId } from "@shared/tc/contract";
 
@@ -64,20 +70,33 @@ export function CallReferralButton({ call }: { call: CallReferralCall }) {
     load();
   }, [load]);
 
-  async function save(input: TcReferralInput, submit: boolean) {
+  async function save(input: TcReferralInput, submit: boolean, files: File[]) {
     if (!office) return;
     setSaving(true);
     try {
-      const res = await api.startCallReferral(call.id, { referral: input, office_id: office, submit });
+      // With files (item 55): create the DRAFT, attach, THEN submit — files are
+      // taken only before a decision, so they must land first. Without files,
+      // Save & submit stays one atomic request.
+      const atomic = submit && files.length === 0;
+      const res = await api.startCallReferral(call.id, { referral: input, office_id: office, submit: atomic });
       const parsed = TcReferral.safeParse(res.referral);
       if (!parsed.success) throw new Error("The referral answer could not be read");
-      if (submit) {
-        toast.success(
-          parsed.data.status === "approved" ? "Referral approved (sign-off not required)" : "Sent for the doctor's sign-off",
-        );
-      } else {
-        toast.success("Referral saved as a draft — finish it in TC");
+      const { failed } = await uploadAll(files, (f) => uploadReferralAttachment(office, parsed.data.referralId, f));
+      reportFailedUploads(failed);
+      let final = parsed.data;
+      if (submit && !atomic) {
+        if (failed.length > 0) {
+          toast.error("Kept as a draft so the missing file can be added before sign-off — finish it in TC");
+        } else {
+          final = await referralVerb(office, parsed.data.referralId, "submit");
+        }
       }
+      if (!submit) {
+        toast.success("Referral saved as a draft — finish it in TC");
+      } else if (final.status !== "draft") {
+        toast.success(final.status === "approved" ? "Referral approved (sign-off not required)" : "Sent for the doctor's sign-off");
+      }
+      // (A submit kept as a draft because a file failed was reported above.)
       setOpen(false);
       load();
     } catch (e) {
@@ -107,7 +126,7 @@ export function CallReferralButton({ call }: { call: CallReferralCall }) {
         sourceLabel="this call's matched patient"
         loadDirectory={() => listDirectory(office, false)}
         onClose={() => setOpen(false)}
-        onSave={(input, submit) => void save(input, submit)}
+        onSave={(input, submit, files) => void save(input, submit, files)}
       />
     </div>
   );
