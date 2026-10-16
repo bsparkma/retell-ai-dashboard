@@ -87,6 +87,9 @@ const tcHandoff = require('../../services/hyg/tcHandoffClient');
 const tcCheckout = require('../../config/tcCheckout');
 const { snapshotFromAppointment } = require('../../services/hyg/appointmentSnapshot');
 const contract = require('../../hyg/contract.gen.cjs');
+const tcContract = require('../../tc/contract.gen.cjs');
+const referralCreate = require('../tc/referralCreate');
+const referralStore = require('../tc/referralStore');
 
 const router = express.Router();
 
@@ -2290,6 +2293,134 @@ router.post(
       return res.status(result.status).json({ success: false, error: result.error, code: result.code, office });
     }
     return res.json({ ...visitPayload(result.visit), alreadySent: false });
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Referrals from the chair (queue item 54, R3)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The hygienist drafts a referral beside the visit and it goes straight to the
+// doctor's sign-off (or to approved, when this office does not require one).
+// ONE producer with TC (routes/tc/referralCreate.js): the same record, the same
+// event + audit, the same transition engine.
+//
+// THE PATIENT IS THE VISIT'S: office + PatNum from the stored visit row, the
+// name from its stored appointment snapshot. Nothing in the body names a
+// patient or an office (the body schema is strict). Zero Open Dental: no OD
+// read happens here. Dark unless the practice has TC and referrals is on for
+// the office.
+
+/** The stored visit and the patient it is for, or the refusal to send. */
+async function referralPatient(req, office, aptNum) {
+  const ctx = await tenantDb.withTenantDb(req, (pool) => visitStore.getOrthoSendContext(pool, { office, aptNum }));
+  if (!ctx) {
+    return { refusal: [404, { success: false, error: 'No visit has been started for this appointment yet', code: 'VISIT_NOT_FOUND', office }] };
+  }
+  const patientName = ctx.snapshot && typeof ctx.snapshot.patientName === 'string' ? ctx.snapshot.patientName.trim() : '';
+  const odPatientId = Number(ctx.visit.patNum);
+  if (!Number.isFinite(odPatientId) || odPatientId <= 0) {
+    return { refusal: [409, { success: false, error: 'This visit has no patient yet', code: 'APPOINTMENT_HAS_NO_PATIENT', office }] };
+  }
+  if (!patientName) {
+    return {
+      refusal: [
+        409,
+        {
+          success: false,
+          error: "Open Dental has not given this visit's patient a name yet — reload the visit and try again",
+          code: 'PATIENT_NAME_UNAVAILABLE',
+          office,
+        },
+      ],
+    };
+  }
+  return {
+    ctx,
+    patient: {
+      odPatientId,
+      patientName,
+      tcCaseId: null,
+      sourceKind: 'hyg_visit',
+      sourceRef: String(ctx.visit.visitId),
+    },
+  };
+}
+
+/** The usual :aptNum refusal, or the number. */
+function aptNumOr400(req, res, office) {
+  const aptNum = aptNumFrom(req);
+  if (aptNum === null) {
+    res.status(400).json({ success: false, error: 'aptNum must be a positive whole number', code: 'INVALID_APT_NUM', office });
+  }
+  return aptNum;
+}
+
+/** POST /api/hyg/visit/:aptNum/referral — draft it here, straight to sign-off. */
+router.post(
+  '/:aptNum/referral',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumOr400(req, res, office);
+    if (aptNum === null) return undefined;
+    const input = parseBody(res, tcContract.TcReferralInput, req.body ?? {});
+    if (input === null) return undefined;
+    const gate = await referralCreate.referralsGate(req, office);
+    if (gate) return res.status(gate[0]).json(gate[1]);
+    const who = await referralPatient(req, office, aptNum);
+    if (who.refusal) return res.status(who.refusal[0]).json(who.refusal[1]);
+    // The office is the STORED visit's, never a request's.
+    const out = await referralCreate.startReferral(req, {
+      office: who.ctx.visit.office,
+      patient: who.patient,
+      input,
+      submit: true,
+    });
+    return res.status(out.status).json(out.body);
+  })
+);
+
+/** GET /api/hyg/visit/:aptNum/referrals — the referrals started from this visit. */
+router.get(
+  '/:aptNum/referrals',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumOr400(req, res, office);
+    if (aptNum === null) return undefined;
+    const gate = await referralCreate.referralsGate(req, office);
+    if (gate) return res.status(gate[0]).json(gate[1]);
+    const ctx = await tenantDb.withTenantDb(req, (pool) => visitStore.getOrthoSendContext(pool, { office, aptNum }));
+    if (!ctx) return res.json({ success: true, referrals: [] });
+    const referrals = await tenantDb.withTenantDb(req, async (pool) => {
+      const rows = await referralStore.listReferrals(pool, office, {
+        sourceKind: 'hyg_visit',
+        sourceRef: String(ctx.visit.visitId),
+      });
+      const names = await referralStore.practiceNames(pool, office, rows);
+      return rows.map((r) => referralStore.toReferral(r, names.get(String(r.directory_entry_id)) ?? null));
+    });
+    await audit(req, { action: 'READ', resourceType: 'tc_referral', resourceId: null, result: 'SUCCESS', office, sourceRef: `hyg_visit:${aptNum}` });
+    return res.json({ success: true, referrals });
+  })
+);
+
+/**
+ * GET /api/hyg/visit/:aptNum/referral-directory — the office's ACTIVE
+ * specialists, for the chairside form's picker. Non-PHI office configuration;
+ * a hygienist holds no TC action, so this is the read they get.
+ */
+router.get(
+  '/:aptNum/referral-directory',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumOr400(req, res, office);
+    if (aptNum === null) return undefined;
+    const gate = await referralCreate.referralsGate(req, office);
+    if (gate) return res.status(gate[0]).json(gate[1]);
+    const rows = await tenantDb.withTenantDb(req, (pool) =>
+      referralStore.listDirectory(pool, office, { includeInactive: false })
+    );
+    return res.json({ success: true, entries: rows.map(referralStore.toEntry) });
   })
 );
 

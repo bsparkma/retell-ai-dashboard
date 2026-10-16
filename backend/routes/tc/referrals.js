@@ -12,7 +12,7 @@
  *   PUT    /settings              change them — practice admin only
  *
  *   R2 (item 53) — the referral record and its lifecycle:
- *   GET    /                      ?caseId= | ?handoffId= | ?status= , newest first
+ *   GET    /                      ?caseId= | ?handoffId= | ?callId= | ?status= , newest first
  *   POST   /                      start one FROM a case or a checkout (draft)
  *   GET    /:id                   one referral, with its history
  *   PUT    /:id                   edit a draft (only a draft)
@@ -46,6 +46,7 @@ const store = require('./referralStore');
 const checkoutStore = require('./checkoutStore');
 const { withTenantTx } = require('./tx');
 const transitions = require('./referralTransitions');
+const { createDraft, directoryProblem } = require('./referralCreate');
 
 const {
   z,
@@ -262,18 +263,6 @@ function badReferralId(res) {
   return res.status(400).json({ success: false, error: 'Invalid referral id', code: 'INVALID_ID' });
 }
 
-/**
- * The directory entry a referral names must be this office's, and active.
- * Returns null when fine, else the refusal to send.
- */
-async function directoryProblem(q, office, entryId) {
-  if (!entryId) return null;
-  const entry = await store.findEntry(q, office, entryId);
-  if (!entry) return [404, 'That specialist is not in this office\'s directory', 'DIRECTORY_ENTRY_NOT_FOUND'];
-  if (!entry.active) return [409, 'That specialist is marked inactive', 'DIRECTORY_ENTRY_INACTIVE'];
-  return null;
-}
-
 /** Rows → TcReferral[] with practice names (one extra query, no JOIN). */
 async function present(pool, office, rows) {
   const names = await store.practiceNames(pool, office, rows);
@@ -287,14 +276,22 @@ router.get(
     const caseId = req.query.caseId ? ReferralId.safeParse(req.query.caseId) : null;
     const handoffId = req.query.handoffId ? ReferralId.safeParse(req.query.handoffId) : null;
     const status = req.query.status ? TcReferralStatus.safeParse(req.query.status) : null;
-    if ((caseId && !caseId.success) || (handoffId && !handoffId.success) || (status && !status.success)) {
+    // R3 (item 54): the referrals started from one call. A call id is not a
+    // uuid (Mango and Retell ids differ), so it is a bounded opaque string.
+    const callId = req.query.callId ? z.string().min(1).max(200).safeParse(String(req.query.callId)) : null;
+    if (
+      (caseId && !caseId.success) ||
+      (handoffId && !handoffId.success) ||
+      (status && !status.success) ||
+      (callId && !callId.success)
+    ) {
       return res.status(400).json({ success: false, error: 'Invalid filter', code: 'INVALID_FILTER' });
     }
     const referrals = await tenantDb.withTenantDb(req, async (pool) => {
       const rows = await store.listReferrals(pool, office, {
         caseId: caseId ? caseId.data : null,
-        sourceKind: handoffId ? 'checkout' : null,
-        sourceRef: handoffId ? handoffId.data : null,
+        sourceKind: handoffId ? 'checkout' : callId ? 'call' : null,
+        sourceRef: handoffId ? handoffId.data : callId ? callId.data : null,
         status: status ? status.data : null,
       });
       return present(pool, office, rows);
@@ -310,7 +307,6 @@ router.post(
     const body = parseBody(res, TcReferralCreateRequest, req.body);
     if (!body) return undefined;
     const office = req.tcOffice;
-    const actor = actorEmail(req);
     const at = transitions.clock().toISOString();
 
     const result = await withTenantTx(req, async (client) => {
@@ -344,23 +340,7 @@ router.post(
           sourceRef: String(h0.handoff_id),
         };
       }
-      const problem = await directoryProblem(client, office, body.referral.directoryEntryId);
-      if (problem) return { refusal: problem };
-
-      const row = await store.insertReferral(client, { office, ...patient, input: body.referral, actor, at });
-      if (!row) throw new Error('referral was not stored');
-      await store.insertEvent(client, {
-        office,
-        referralId: String(row.referral_id),
-        from: null,
-        to: 'draft',
-        actor,
-        at,
-        note: '',
-      });
-      // In the transaction: no referral exists without its audit row.
-      await auditTc(req, 'CREATE', 'tc_referral', String(row.referral_id), { office });
-      return { referralId: String(row.referral_id) };
+      return createDraft(req, client, { office, patient, input: body.referral, at });
     });
 
     if (result.refusal) {

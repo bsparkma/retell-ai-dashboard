@@ -57,55 +57,65 @@ function refusal(row, verb) {
 /**
  * Apply `verb` to one referral.
  *
- * @param {import('express').Request} req   req.tcOffice is the office
- * @param {{ referralId: string, verb: string, note?: string }} args
+ * @param {import('express').Request} req
+ * @param {{ referralId: string, verb: string, note?: string, office?: string }} args
+ *        `office` defaults to req.tcOffice (the TC routes); a caller outside
+ *        TC (the hygiene visit, a call) passes the office IT derived.
  * @returns {Promise<{ status: number, body: object }>}
  */
-async function applyVerb(req, { referralId, verb, note = '' }) {
-  const office = req.tcOffice;
+async function applyVerb(req, { referralId, verb, note = '', office = req.tcOffice }) {
+  const outcome = await withTenantTx(req, (client) => moveInTx(req, client, { office, referralId, verb, note }));
+  return answer(req, outcome, { referralId, verb, office });
+}
+
+/**
+ * Steps 1–5 of the header, INSIDE a caller's transaction, so a producer can
+ * create and submit atomically (item 54). Returns { missing } | { refused: row }
+ * | { moved: true }; the caller decides what a refusal does to its transaction.
+ */
+async function moveInTx(req, client, { office, referralId, verb, note = '' }) {
   const actor = actorEmail(req);
   const at = clock().toISOString();
-
-  const outcome = await withTenantTx(req, async (client) => {
-    const row = await store.findReferral(client, office, referralId);
-    if (!row) return { missing: true };
-    const policies = await store.effectivePolicies(client, office);
-    const to = contract.referralNextStatus(row.status, verb, {
-      signoffRequired: policies.signoffRequired.value,
-    });
-    if (!to) return { refused: row };
-
-    const moved = await store.casStatus(client, { office, referralId, from: row.status, to, actor, at });
-    if (!moved) {
-      const now = await store.findReferral(client, office, referralId);
-      return now ? { refused: now } : { missing: true };
-    }
-    const autoApproved = verb === 'submit' && to === 'approved';
-    await store.insertEvent(client, {
-      office,
-      referralId,
-      from: row.status,
-      to,
-      actor,
-      at,
-      note: autoApproved ? "Sign-off isn't required for this office" : note,
-    });
-    // Inside the transaction ON PURPOSE: a failed audit write throws, and the
-    // throw rolls the status change and its event back.
-    await auditTc(req, 'UPDATE', 'tc_referral', referralId, { office, priorState: row.status });
-    return { moved: true };
+  const row = await store.findReferral(client, office, referralId);
+  if (!row) return { missing: true };
+  const policies = await store.effectivePolicies(client, office);
+  const to = contract.referralNextStatus(row.status, verb, {
+    signoffRequired: policies.signoffRequired.value,
   });
+  if (!to) return { refused: row };
 
+  const moved = await store.casStatus(client, { office, referralId, from: row.status, to, actor, at });
+  if (!moved) {
+    const now = await store.findReferral(client, office, referralId);
+    return now ? { refused: now } : { missing: true };
+  }
+  const autoApproved = verb === 'submit' && to === 'approved';
+  await store.insertEvent(client, {
+    office,
+    referralId,
+    from: row.status,
+    to,
+    actor,
+    at,
+    note: autoApproved ? "Sign-off isn't required for this office" : note,
+  });
+  // Inside the transaction ON PURPOSE: a failed audit write throws, and the
+  // throw rolls the status change and its event back.
+  await auditTc(req, 'UPDATE', 'tc_referral', referralId, { office, priorState: row.status });
+  return { moved: true };
+}
+
+/** A move's outcome as a route answer, the referral read back after commit. */
+async function answer(req, outcome, { referralId, verb, office }) {
   if (outcome.missing) {
     return { status: 404, body: { success: false, error: 'Referral not found', code: 'NOT_FOUND' } };
   }
   if (outcome.refused) return refusal(outcome.refused, verb);
-  return { status: 200, body: { success: true, referral: await readBack(req, referralId) } };
+  return { status: 200, body: { success: true, referral: await readBack(req, referralId, office) } };
 }
 
 /** The referral as stored now, with its practice name and its history. */
-async function readBack(req, referralId) {
-  const office = req.tcOffice;
+async function readBack(req, referralId, office = req.tcOffice) {
   return tenantDb.withTenantDb(req, async (pool) => {
     const row = await store.findReferral(pool, office, referralId);
     if (!row) return null;
@@ -115,4 +125,4 @@ async function readBack(req, referralId) {
   });
 }
 
-module.exports = { applyVerb, readBack, setClockForTests, clock: () => clock() };
+module.exports = { applyVerb, moveInTx, readBack, setClockForTests, clock: () => clock() };
