@@ -103,6 +103,8 @@ kebab-case; the app reads the env keys.
 | `TC_REFERRALS_ENABLED_<OFFICE>` | Referrals switch (item 52), per office. Same precedence as checkout: `false` always forces that office OFF; `true` only when `platform_setting['tc_referrals_enabled']` does not name the office. Floor is OFF. See `backend/config/tcReferrals.js`.
 | `REFERRAL_SIGNOFF_REQUIRED_<OFFICE>` | Safety pin (item 52). Only `true` is honored: it forces Dr. sign-off ON for that office regardless of the stored setting. Any other value is ignored. See `backend/routes/tc/referralStore.js`.
 | `REFERRAL_AUTOSEND_ON_APPROVAL_<OFFICE>` | Safety pin (item 52). Only `false` is honored: it forces auto-send OFF for that office. Any other value is ignored.
+| `TC_BLOB_ACCOUNT_URL` | TC's storage account URL (no key: access is by managed identity, `AZURE_USE_MANAGED_IDENTITY`). Already used by TC media; referral attachments (item 55) reuse it. Absent ⇒ attachment upload/view answer 503 `REFERRAL_STORAGE_UNAVAILABLE` and nothing is stored. |
+| `TC_REFERRAL_BLOB_CONTAINER` | Container for referral attachments, default `tc-referrals`. Private, no SAS. It must exist (create it in the account) — until then uploads fail closed with the same honest 503. The app's managed identity needs Storage Blob Data Contributor on it. |
 | `TC_SWITCH_REFRESH_MINUTES` | How long a per-office TC switch (`config/tcOfficeSwitch.js`) trusts its cached read before re-reading `platform_setting`. Default 5.
 | `TC_EMAIL_REFRESH_MINUTES` | How often the kill switch is re-read (default 5). The adapter also re-reads it before every send. |
 

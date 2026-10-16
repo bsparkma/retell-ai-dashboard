@@ -90,6 +90,7 @@ const contract = require('../../hyg/contract.gen.cjs');
 const tcContract = require('../../tc/contract.gen.cjs');
 const referralCreate = require('../tc/referralCreate');
 const referralStore = require('../tc/referralStore');
+const referralAttachments = require('../tc/referralAttachments');
 
 const router = express.Router();
 
@@ -2422,6 +2423,41 @@ router.get(
     );
     return res.json({ success: true, entries: rows.map(referralStore.toEntry) });
   })
+);
+
+/**
+ * POST /api/hyg/visit/:aptNum/referrals/:referralId/attachments — the X-ray
+ * snipped chairside (R4). ONLY onto a referral THIS visit started; the shared
+ * handler does the rest (bytes sniffed, ≤10 MB, ≤5, stored before the row,
+ * fail closed, audited). The gate runs before the body is read.
+ */
+router.post(
+  '/:aptNum/referrals/:referralId/attachments',
+  async (req, res, next) => {
+    try {
+      const gate = await referralCreate.referralsGate(req, req.hygOffice);
+      if (gate) return res.status(gate[0]).json(gate[1]);
+      return next();
+    } catch (err) {
+      return next(err);
+    }
+  },
+  referralAttachments.receiveFile,
+  h(
+    referralAttachments.uploadHandler({
+      officeOf: (req) => req.hygOffice,
+      referralIdOf: (req) => req.params.referralId,
+      guard: async (req, ref) => {
+        const aptNum = aptNumFrom(req);
+        if (aptNum === null) return [400, 'aptNum must be a positive whole number', 'INVALID_APT_NUM'];
+        const ctx = await tenantDb.withTenantDb(req, (pool) =>
+          visitStore.getOrthoSendContext(pool, { office: req.hygOffice, aptNum })
+        );
+        const mine = ctx && ref.source_kind === 'hyg_visit' && String(ref.source_ref) === String(ctx.visit.visitId);
+        return mine ? null : [404, 'Referral not found', 'NOT_FOUND'];
+      },
+    })
+  )
 );
 
 module.exports = router;

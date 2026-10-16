@@ -5,13 +5,14 @@
  */
 import { z } from "zod";
 
-import { tcRequest, TcApiError } from "@/features/tc/api";
+import { tcFetchObjectUrl, tcRequest, tcUpload, TcApiError } from "@/features/tc/api";
 import {
   TcReferralDirectoryEntry,
   TcReferralSettingsResponse,
   TcReferralsStatus,
   TcReferral,
   TcReferralSignoffSummary,
+  TcReferralAttachment,
   type TcReferralDirectoryInput,
   type TcReferralInput,
 } from "@shared/tc/referrals";
@@ -166,4 +167,41 @@ export async function declineReferral(office: OfficeId, referralId: string, reas
       body: { reason },
     }),
   ).referral;
+}
+
+// ── R4 (item 55): attachments ───────────────────────────────────────────────
+
+const AttachmentResponse = z.object({ success: z.literal(true), attachment: TcReferralAttachment });
+const AttachmentListResponse = z.object({ success: z.literal(true), attachments: z.array(TcReferralAttachment) });
+
+/** One file onto a referral (TC side). The server decides the type from the bytes. */
+export async function uploadReferralAttachment(
+  office: OfficeId,
+  referralId: string,
+  file: File,
+): Promise<TcReferralAttachment> {
+  return parse(AttachmentResponse, await tcUpload<unknown>(`/tc/referrals/${referralId}/attachments`, office, file))
+    .attachment;
+}
+
+/** A referral's files. `signoff` reads them through the doctor's route. */
+export async function listReferralAttachments(
+  office: OfficeId,
+  referralId: string,
+  signoff = false,
+): Promise<TcReferralAttachment[]> {
+  const base = signoff ? "/tc/referrals/signoff" : "/tc/referrals";
+  return parse(AttachmentListResponse, await tcRequest<unknown>(`${base}/${referralId}/attachments`, { office }))
+    .attachments;
+}
+
+/** Open one file (an audited view on the server) as an object URL. */
+export async function openReferralAttachment(
+  office: OfficeId,
+  referralId: string,
+  attachmentId: string,
+  signoff = false,
+): Promise<string> {
+  const base = signoff ? "/tc/referrals/signoff" : "/tc/referrals";
+  return tcFetchObjectUrl(`${base}/${referralId}/attachments/${attachmentId}`, office);
 }

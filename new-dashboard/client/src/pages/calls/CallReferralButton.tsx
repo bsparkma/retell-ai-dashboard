@@ -22,8 +22,13 @@ import { useAuth } from "@/contexts/AuthContext";
 import { api, ApiError } from "@/lib/api";
 import { hasModule } from "@/lib/modules";
 import { can } from "@/lib/permissions";
-import { getReferralsStatus, listDirectory, listReferrals } from "@/features/tc/referrals/referralsApi";
-import { ReferralDialog, ReferralStatusBadge } from "@/features/tc/referrals/ReferralsPanel";
+import {
+  getReferralsStatus,
+  listDirectory,
+  listReferrals,
+  uploadReferralAttachment,
+} from "@/features/tc/referrals/referralsApi";
+import { ReferralDialog, ReferralStatusBadge, reportFailedUploads, uploadAll } from "@/features/tc/referrals/ReferralsPanel";
 import { TcReferral, type TcReferralInput } from "@shared/tc/referrals";
 import type { OfficeId } from "@shared/tc/contract";
 
@@ -64,13 +69,16 @@ export function CallReferralButton({ call }: { call: CallReferralCall }) {
     load();
   }, [load]);
 
-  async function save(input: TcReferralInput, submit: boolean) {
+  async function save(input: TcReferralInput, submit: boolean, files: File[]) {
     if (!office) return;
     setSaving(true);
     try {
       const res = await api.startCallReferral(call.id, { referral: input, office_id: office, submit });
       const parsed = TcReferral.safeParse(res.referral);
       if (!parsed.success) throw new Error("The referral answer could not be read");
+      // Item 55: the files, onto the referral just stored; each result said.
+      const { failed } = await uploadAll(files, (f) => uploadReferralAttachment(office, parsed.data.referralId, f));
+      reportFailedUploads(failed);
       if (submit) {
         toast.success(
           parsed.data.status === "approved" ? "Referral approved (sign-off not required)" : "Sent for the doctor's sign-off",
@@ -107,7 +115,7 @@ export function CallReferralButton({ call }: { call: CallReferralCall }) {
         sourceLabel="this call's matched patient"
         loadDirectory={() => listDirectory(office, false)}
         onClose={() => setOpen(false)}
-        onSave={(input, submit) => void save(input, submit)}
+        onSave={(input, submit, files) => void save(input, submit, files)}
       />
     </div>
   );

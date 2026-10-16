@@ -14,6 +14,9 @@
  *   GET  /:id            one referral, with its history (what the doctor reads)
  *   POST /:id/approve    pending_signoff → approved
  *   POST /:id/decline    pending_signoff → declined, with a reason
+ *   GET  /:id/attachments[/:aid]   the referral's files, so the doctor can
+ *                        look at the X-ray they are signing off (R4; every
+ *                        view audited)
  *
  * The minimum for a doctor, on purpose: they can read only referrals and
  * only from here. What else a doctor may see is not decided in this slice.
@@ -28,6 +31,7 @@ const tenantDb = require('../../platform/tenantDb');
 const tcReferrals = require('../../config/tcReferrals');
 const store = require('./referralStore');
 const transitions = require('./referralTransitions');
+const attachments = require('./referralAttachments');
 
 const { z, TcReferralDeclineRequest } = contract;
 
@@ -115,6 +119,16 @@ router.get(
     return res.json({ success: true, referral });
   })
 );
+
+// R4: the files of a referral the doctor may open (the same SIGNOFF_READABLE rule).
+const signoffAttachmentOpts = {
+  officeOf: (req) => req.tcOffice,
+  referralIdOf: (req) => req.params.id,
+  guard: (_req, ref) =>
+    SIGNOFF_READABLE.includes(ref.status) ? null : [404, 'Referral not found', 'NOT_FOUND'],
+};
+router.get('/:id/attachments', h(attachments.listHandler(signoffAttachmentOpts)));
+router.get('/:id/attachments/:attachmentId', h(attachments.viewHandler(signoffAttachmentOpts)));
 
 router.post(
   '/:id/approve',

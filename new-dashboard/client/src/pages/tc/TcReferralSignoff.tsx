@@ -30,15 +30,23 @@ import {
   approveReferral,
   declineReferral,
   getSignoffReferral,
+  listReferralAttachments,
   listSignoffQueue,
+  openReferralAttachment,
 } from "@/features/tc/referrals/referralsApi";
-import { ReferralStatusBadge, teethLabel } from "@/features/tc/referrals/ReferralsPanel";
+import {
+  AttachmentList,
+  ReferralStatusBadge,
+  teethLabel,
+  viewAttachment,
+} from "@/features/tc/referrals/ReferralsPanel";
 import type { OfficeId } from "@shared/tc/contract";
 import {
   REFERRAL_READY_TO_SEND_COPY,
   TC_REFERRAL_STATUS_LABELS,
   TC_REFERRAL_URGENCY_LABELS,
   type TcReferral,
+  type TcReferralAttachment,
 } from "@shared/tc/referrals";
 
 function when(iso: string): string {
@@ -66,6 +74,7 @@ export function SignoffInner({ office }: { office: OfficeId }) {
   const [declining, setDeclining] = useState(false);
   const [reason, setReason] = useState("");
   const [done, setDone] = useState<TcReferral | null>(null);
+  const [openFiles, setOpenFiles] = useState<TcReferralAttachment[]>([]);
 
   const load = useCallback(() => {
     setError(null);
@@ -80,8 +89,11 @@ export function SignoffInner({ office }: { office: OfficeId }) {
 
   async function openOne(r: TcReferral) {
     setDone(null);
+    setOpenFiles([]);
     try {
       setOpen(await getSignoffReferral(office, r.referralId));
+      // The X-rays the TC or hygienist attached (item 55). Each view is audited.
+      setOpenFiles(await listReferralAttachments(office, r.referralId, true).catch(() => []));
     } catch (e) {
       toast.error(tcErrorMessage(e));
     }
@@ -201,6 +213,12 @@ export function SignoffInner({ office }: { office: OfficeId }) {
                 <dt className="text-muted-foreground">Notes</dt>
                 <dd className="whitespace-pre-wrap">{open.narrative || "—"}</dd>
               </dl>
+              <AttachmentList
+                attachments={openFiles}
+                onView={(a) =>
+                  void viewAttachment(() => openReferralAttachment(office, open.referralId, a.attachmentId, true))
+                }
+              />
               {open.events && open.events.length > 0 && (
                 <ol className="text-xs text-muted-foreground space-y-0.5 border-t border-border pt-2">
                   {open.events.map((e) => (

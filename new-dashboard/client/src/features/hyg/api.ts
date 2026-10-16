@@ -25,6 +25,7 @@ import { z } from "zod";
 import { handleUnauthorized } from "@/lib/api";
 import {
   TcReferral,
+  TcReferralAttachment,
   TcReferralDirectoryEntry,
   type TcReferralInput,
 } from "@shared/tc/referrals";
@@ -928,4 +929,33 @@ export async function fetchVisitReferralDirectory(office: OfficeId, aptNum: numb
 /** Draft it here; it goes straight to the doctor's sign-off. The server takes the patient from the visit. */
 export async function startVisitReferral(office: OfficeId, aptNum: number, referral: TcReferralInput): Promise<TcReferral> {
   return (await mutate("POST", `/visit/${aptNum}/referral`, { office }, parseWith(VisitReferralResponse), referral)).referral;
+}
+
+/**
+ * Item 55: the X-ray snipped chairside, onto a referral THIS visit started.
+ * The server decides the type from the bytes; ≤10 MB; ≤5 a referral.
+ */
+export async function uploadVisitReferralAttachment(
+  office: OfficeId,
+  aptNum: number,
+  referralId: string,
+  file: File,
+): Promise<TcReferralAttachment> {
+  const qs = new URLSearchParams({ office }).toString();
+  const form = new FormData();
+  form.append("file", file, file.name);
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/hyg/visit/${aptNum}/referrals/${referralId}/attachments?${qs}`, {
+      method: "POST",
+      credentials: "include",
+      body: form,
+    });
+  } catch (err) {
+    throw new HygApiError(err instanceof Error ? err.message : "Could not reach CareIN", 0, "NETWORK");
+  }
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) throw await toError(res);
+  return parseWith(z.object({ success: z.literal(true), attachment: TcReferralAttachment }))((await res.json()) as unknown)
+    .attachment;
 }

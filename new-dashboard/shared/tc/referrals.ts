@@ -338,3 +338,41 @@ export const TcReferralSignoffSummary = z.object({
     .nullable(),
 });
 export type TcReferralSignoffSummary = z.infer<typeof TcReferralSignoffSummary>;
+
+// ── R4 (item 55): attachments ───────────────────────────────────────────────
+
+/** One attached file, as the API returns it. The storage key never leaves the server. */
+export const TcReferralAttachment = z.object({
+  attachmentId: z.string().uuid(),
+  referralId: z.string().uuid(),
+  fileName: z.string(),
+  contentType: z.enum(TC_REFERRAL_ATTACHMENT_TYPES),
+  sizeBytes: z.number().int().positive(),
+  uploadedBy: z.string(),
+  uploadedAt: z.string(),
+});
+export type TcReferralAttachment = z.infer<typeof TcReferralAttachment>;
+
+/** The helper text under the upload zone — exactly as the PM specified. */
+export const REFERRAL_ATTACHMENT_HINT = "Press Win+Shift+S to snip the X-ray, then drag it here.";
+
+/**
+ * The client's courtesy pre-check — the SERVER decides (by the bytes). Says
+ * why a file will not be accepted, or null. Pure.
+ */
+export function attachmentProblem(
+  file: { type: string; size: number; name: string },
+  alreadyChosen: number,
+): string | null {
+  if (alreadyChosen >= TC_REFERRAL_ATTACHMENT_MAX_FILES) {
+    return `A referral can carry at most ${TC_REFERRAL_ATTACHMENT_MAX_FILES} files.`;
+  }
+  if (!(TC_REFERRAL_ATTACHMENT_TYPES as readonly string[]).includes(file.type)) {
+    return `${file.name || "That file"} isn't an image or a PDF.`;
+  }
+  if (file.size <= 0) return `${file.name || "That file"} is empty.`;
+  if (file.size > TC_REFERRAL_ATTACHMENT_MAX_BYTES) {
+    return `${file.name || "That file"} is larger than ${TC_REFERRAL_ATTACHMENT_MAX_BYTES / 1024 / 1024} MB.`;
+  }
+  return null;
+}

@@ -11,14 +11,23 @@
  * Renders nothing while referrals is off for the office or the practice has no
  * TC (the list read answers 403 then). Nothing is sent to the specialist; no
  * Open Dental write.
+ *
+ * Item 55: the form takes X-rays (drag, pick, or paste the Win+Shift+S snip).
+ * They upload onto the referral once it exists; each file's result is said.
  */
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Send } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { fetchVisitReferralDirectory, fetchVisitReferrals, HygApiError, startVisitReferral } from "@/features/hyg/api";
-import { ReferralDialog, ReferralStatusBadge } from "@/features/tc/referrals/ReferralsPanel";
+import {
+  fetchVisitReferralDirectory,
+  fetchVisitReferrals,
+  HygApiError,
+  startVisitReferral,
+  uploadVisitReferralAttachment,
+} from "@/features/hyg/api";
+import { ReferralDialog, ReferralStatusBadge, reportFailedUploads, uploadAll } from "@/features/tc/referrals/ReferralsPanel";
 import type { OfficeId } from "@shared/tc/contract";
 import type { TcReferral, TcReferralInput } from "@shared/tc/referrals";
 
@@ -41,11 +50,15 @@ export function VisitReferral({ office, aptNum }: { office: OfficeId; aptNum: nu
     load();
   }, [load]);
 
-  async function save(input: TcReferralInput) {
+  async function save(input: TcReferralInput, files: File[]) {
     setSaving(true);
     try {
       const r = await startVisitReferral(office, aptNum, input);
       toast.success(r.status === "approved" ? "Referral approved (sign-off not required)" : "Sent for the doctor's sign-off");
+      // The snipped X-rays, onto the referral this visit just started (item 55).
+      // Each file's result is reported; a file that did not land says so.
+      const { failed } = await uploadAll(files, (f) => uploadVisitReferralAttachment(office, aptNum, r.referralId, f));
+      reportFailedUploads(failed);
       setOpen(false);
       load();
     } catch (e) {
@@ -77,7 +90,7 @@ export function VisitReferral({ office, aptNum }: { office: OfficeId; aptNum: nu
         sourceLabel="this visit"
         loadDirectory={() => fetchVisitReferralDirectory(office, aptNum)}
         onClose={() => setOpen(false)}
-        onSave={(input) => void save(input)}
+        onSave={(input, _submit, files) => void save(input, files)}
       />
     </div>
   );
