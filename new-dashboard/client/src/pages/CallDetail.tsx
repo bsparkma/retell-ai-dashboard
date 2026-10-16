@@ -33,6 +33,7 @@ import { toast } from "sonner";
 import { PickPatientModal } from "./calls/PickPatientModal";
 import { SendToChartDialog } from "./calls/SendToChartDialog";
 import { SendToTcButton, type SendToTcResult } from "./calls/SendToTcButton";
+import { CallReferralButton } from "./calls/CallReferralButton";
 
 type PatientMatchSource = "id" | "phone" | "none";
 
@@ -183,6 +184,9 @@ function CallPatientPanel({
             write, so it is offered whether or not the note has been sent, and it
             renders nothing at all unless this tenant has the TC module. */}
         <SendToTcButton call={call} onSent={onSentToTc} variant="panel" />
+        {/* Item 54: start a referral from this call (same producer shape as
+            Send to TC; renders nothing unless referrals is on here). */}
+        <CallReferralButton call={call} />
 
         {loading ? (
           <div className="space-y-2" aria-label="Loading patient record">

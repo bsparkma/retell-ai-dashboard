@@ -24,6 +24,11 @@ import { z } from "zod";
 
 import { handleUnauthorized } from "@/lib/api";
 import {
+  TcReferral,
+  TcReferralDirectoryEntry,
+  type TcReferralInput,
+} from "@shared/tc/referrals";
+import {
   type HygDayScope,
   FlagSourceSchema,
   HandoffCategorySchema,
@@ -894,4 +899,33 @@ export async function finalizeCheckout(
   aptNum: number,
 ): Promise<HygCheckoutAlertResponse> {
   return mutate("POST", `/visit/${aptNum}/checkout/finalize`, { office }, parseCheckout, {});
+}
+
+// ── Referrals from the chair (queue item 54) ────────────────────────────────
+
+const VisitReferralResponse = z.object({ success: z.literal(true), referral: TcReferral });
+const VisitReferralsResponse = z.object({ success: z.literal(true), referrals: z.array(TcReferral) });
+const VisitDirectoryResponse = z.object({ success: z.literal(true), entries: z.array(TcReferralDirectoryEntry) });
+
+function parseWith<T>(schema: z.ZodType<T>): (raw: unknown) => T {
+  return (raw) => {
+    const parsed = schema.safeParse(raw);
+    if (!parsed.success) throw new HygApiError("The referral answer could not be read", 0, "CONTRACT_MISMATCH");
+    return parsed.data;
+  };
+}
+
+/** The referrals started from this visit. Refused (REFERRALS_DISABLED) while referrals is off. */
+export async function fetchVisitReferrals(office: OfficeId, aptNum: number): Promise<TcReferral[]> {
+  return (await get(`/visit/${aptNum}/referrals`, { office }, parseWith(VisitReferralsResponse))).referrals;
+}
+
+/** The office's active specialists, for the chairside picker. */
+export async function fetchVisitReferralDirectory(office: OfficeId, aptNum: number): Promise<TcReferralDirectoryEntry[]> {
+  return (await get(`/visit/${aptNum}/referral-directory`, { office }, parseWith(VisitDirectoryResponse))).entries;
+}
+
+/** Draft it here; it goes straight to the doctor's sign-off. The server takes the patient from the visit. */
+export async function startVisitReferral(office: OfficeId, aptNum: number, referral: TcReferralInput): Promise<TcReferral> {
+  return (await mutate("POST", `/visit/${aptNum}/referral`, { office }, parseWith(VisitReferralResponse), referral)).referral;
 }

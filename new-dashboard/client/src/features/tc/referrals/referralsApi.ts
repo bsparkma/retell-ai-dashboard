@@ -94,7 +94,7 @@ const ReferralListResponse = z.object({ success: z.literal(true), referrals: z.a
 /** A case's referrals, or a checkout's. Newest first. */
 export async function listReferrals(
   office: OfficeId,
-  filter: { caseId: string } | { handoffId: string },
+  filter: { caseId: string } | { handoffId: string } | { callId: string },
 ): Promise<TcReferral[]> {
   const res = parse(ReferralListResponse, await tcRequest<unknown>("/tc/referrals", { office, params: filter }));
   return res.referrals;

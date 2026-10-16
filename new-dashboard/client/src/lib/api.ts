@@ -1457,6 +1457,21 @@ export const api = {
     });
   },
 
+  /**
+   * Start a referral from a call (item 54). The server takes the patient and
+   * the office from the stored call; `office_id` is only an assertion. Answers
+   * the referral as stored (a draft) — parsed by the caller.
+   */
+  async startCallReferral(
+    id: string,
+    body: { referral: unknown; office_id?: string },
+  ): Promise<{ success: boolean; referral: unknown }> {
+    return request(`/unified-calls/${encodeURIComponent(id)}/referral`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
   /** Office roster for the global office selector (agent→office config + odConnected). */
   async getOffices(): Promise<OfficeConfig[]> {
     const data = await request<{ offices?: OfficeConfig[] }>("/unified-calls/offices");

@@ -113,21 +113,37 @@ function parseTeeth(text: string): number[] | null {
   return nums;
 }
 
-function ReferralDialog({
-  office,
-  open,
-  editing,
-  onClose,
-  onSave,
-  saving,
-}: {
-  office: OfficeId;
+export interface ReferralDialogProps {
   open: boolean;
   editing: TcReferral | null;
   onClose: () => void;
   onSave: (input: TcReferralInput, submit: boolean) => void;
   saving: boolean;
-}) {
+  /** The office's active specialists, from whichever surface may read them. */
+  loadDirectory: () => Promise<TcReferralDirectoryEntry[]>;
+  /**
+   * Chairside (item 54): one button, "Send for Dr. sign-off" — the hygienist
+   * does not keep drafts. Otherwise Save draft / Save & submit.
+   */
+  submitOnly?: boolean;
+  /** "this case", "this call", "this visit" — where the patient comes from. */
+  sourceLabel?: string;
+}
+
+/**
+ * The referral form, shared by TC (case + checkout), the hygiene visit and the
+ * call detail (items 53/54). It never asks for the patient.
+ */
+export function ReferralDialog({
+  open,
+  editing,
+  onClose,
+  onSave,
+  saving,
+  loadDirectory,
+  submitOnly = false,
+  sourceLabel,
+}: ReferralDialogProps) {
   const [d, setD] = useState<Draft>(draftOf(null));
   const [entries, setEntries] = useState<TcReferralDirectoryEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -136,10 +152,11 @@ function ReferralDialog({
     if (!open) return;
     setD(draftOf(editing));
     setError(null);
-    listDirectory(office, false)
+    loadDirectory()
       .then(setEntries)
       .catch(() => setEntries([]));
-  }, [open, editing, office]);
+    // loadDirectory is a fresh closure each render; `open` is the trigger.
+  }, [open, editing]);
 
   function set<K extends keyof Draft>(k: K, v: Draft[K]) {
     setD((x) => ({ ...x, [k]: v }));
@@ -179,7 +196,8 @@ function ReferralDialog({
         <DialogHeader>
           <DialogTitle>{editing ? "Edit referral" : "New referral"}</DialogTitle>
           <DialogDescription>
-            The patient comes from this {editing?.sourceKind === "checkout" ? "checkout" : "record"}. Nothing is sent from here.
+            The patient comes from {sourceLabel ?? (editing?.sourceKind === "checkout" ? "this checkout" : "this record")}. Nothing
+            is sent to the specialist from here.
           </DialogDescription>
         </DialogHeader>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -250,12 +268,14 @@ function ReferralDialog({
           <Button variant="outline" onClick={onClose} disabled={saving}>
             Cancel
           </Button>
-          <Button variant="outline" onClick={() => save(false)} disabled={saving}>
-            Save draft
-          </Button>
+          {!submitOnly && (
+            <Button variant="outline" onClick={() => save(false)} disabled={saving}>
+              Save draft
+            </Button>
+          )}
           <Button onClick={() => save(true)} disabled={saving}>
             {saving && <Loader2 className="w-4 h-4 animate-spin" />}
-            Save &amp; submit
+            {submitOnly ? "Send for Dr. sign-off" : "Save & submit"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -344,7 +364,8 @@ export function ReferralsPanel({ office, source, compact = false }: ReferralsPan
 
   const dialog = (
     <ReferralDialog
-      office={office}
+      loadDirectory={() => listDirectory(office, false)}
+      sourceLabel={"caseId" in source ? "this case" : "this checkout"}
       open={dialogOpen}
       editing={editing}
       saving={saving}

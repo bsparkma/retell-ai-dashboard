@@ -24,6 +24,9 @@ const mangoConfig = require('../config/mango');
 const { isEntitledModule } = require('../middleware/tenantContext');
 const { requirePermission, roleHasPermission, isMachineCaller, holdsPermission } = require('../config/permissions');
 const tcCaseClient = require('../services/tcCaseClient');
+const tcContract = require('../tc/contract.gen.cjs');
+const tenantDb = require('../platform/tenantDb');
+const referralCreate = require('./tc/referralCreate');
 const {
   DISPOSITIONS, NOTE_MAX_LENGTH, isDisposition, canDeleteNote,
 } = require('../utils/callDispositions');
@@ -1790,6 +1793,121 @@ router.post('/:id/send-to-tc', canSendToTc, async (req, res) => {
   } catch (error) {
     console.error('Error sending call to TC:', error);
     res.status(500).json({ success: false, error: 'Failed to send this call to TC', code: 'SEND_TO_TC_FAILED' });
+  }
+});
+
+/**
+ * POST /api/unified-calls/:id/referral — start a referral from a call
+ * (queue item 54, R3).
+ *
+ * Send-to-TC's producer shape exactly, with the same permission
+ * (voice.send_to_tc): the patient and the office come from the STORED call —
+ * the office from getOfficeForCall, the PatNum and name from the stored match
+ * — and `office_id` in the body is an assertion that can only cause a refusal.
+ * The body carries only the referral's own words (TcReferralInput, strict).
+ *
+ * One more refusal than Send-to-TC: a stored match whose od_patient_office is
+ * NOT the call's office is refused (PatNums restart per office, so that PatNum
+ * names a different chart in this office).
+ *
+ * NO new call-store field: the referral records its source (`call` + the call
+ * id) on its own row, and the call detail finds it with
+ * GET /api/tc/referrals?callId=. Nothing here touches normalizeCall.
+ *
+ * Creates a DRAFT (the TC side submits it), linked to the case the call was
+ * sent to when that case is this office's. Zero Open Dental. Nothing sends.
+ */
+router.post('/:id/referral', canSendToTc, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const call = unifiedCallStore.getCall(id);
+    if (!call) {
+      return res.status(404).json({ success: false, error: 'Call not found', code: 'CALL_NOT_FOUND' });
+    }
+    const officeKey = getOfficeForCall(call);
+
+    const Body = tcContract.z
+      .object({ referral: tcContract.TcReferralInput, office_id: tcContract.z.string().optional() })
+      .strict();
+    const parsed = Body.safeParse(req.body || {});
+    if (!parsed.success) {
+      return res.status(400).json({
+        success: false,
+        error: parsed.error.issues[0] ? parsed.error.issues[0].message : 'Invalid referral',
+        code: 'VALIDATION_ERROR',
+      });
+    }
+
+    if (parsed.data.office_id && parsed.data.office_id !== officeKey) {
+      console.error(
+        `[unifiedCalls] BLOCKED cross-office referral on call ${id}: client claimed ` +
+        `office '${parsed.data.office_id}' but the call belongs to '${officeKey}'`
+      );
+      await audit.audit(req, {
+        action: 'CREATE', resourceType: 'tc_referral', resourceId: null, office: officeKey, result: 'UNAUTHORIZED', sourceRef: `call:${id}`,
+      });
+      return res.status(409).json({
+        success: false,
+        error: 'This call belongs to a different office — refusing to start a referral there',
+        code: 'OFFICE_MISMATCH',
+        office: odOffices.describeOffice(officeKey),
+      });
+    }
+    if (!officeKey || officeKey === 'unknown') {
+      return res.status(409).json({
+        success: false,
+        error: "This call's office is unknown — map its line before starting a referral",
+        code: 'OFFICE_UNKNOWN',
+        office: odOffices.describeOffice(officeKey),
+      });
+    }
+
+    const gate = await referralCreate.referralsGate(req, officeKey);
+    if (gate) return res.status(gate[0]).json(gate[1]);
+
+    const patientId = Number(call.od_patient_id);
+    if (!call.od_patient_id || !Number.isFinite(patientId) || patientId <= 0) {
+      return res.status(409).json({
+        success: false,
+        error: 'This call has no matched patient — match it before starting a referral',
+        code: 'NO_MATCHED_PATIENT',
+      });
+    }
+    if (call.od_patient_office && call.od_patient_office !== officeKey) {
+      return res.status(409).json({
+        success: false,
+        error: "The call's matched patient belongs to another office — re-match it in this office first",
+        code: 'PATIENT_OFFICE_MISMATCH',
+      });
+    }
+    const patientName = typeof call.od_patient_name === 'string' ? call.od_patient_name.trim() : '';
+    if (!patientName) {
+      return res.status(409).json({
+        success: false,
+        error: "The matched patient's name is unavailable — re-match the call before starting a referral",
+        code: 'PATIENT_NAME_UNAVAILABLE',
+      });
+    }
+
+    // The case this call was sent to, only if it is this office's.
+    let tcCaseId = null;
+    if (call.tc_case_id) {
+      const found = await tenantDb.withTenantDb(req, (pool) =>
+        pool.query('SELECT case_id FROM tc_cases WHERE office_id = $1 AND case_id = $2', [officeKey, call.tc_case_id])
+      );
+      tcCaseId = found.rows[0] ? String(found.rows[0].case_id) : null;
+    }
+
+    const out = await referralCreate.startReferral(req, {
+      office: officeKey,
+      patient: { odPatientId: patientId, patientName, tcCaseId, sourceKind: 'call', sourceRef: String(id) },
+      input: parsed.data.referral,
+      submit: false,
+    });
+    return res.status(out.status).json(out.body);
+  } catch (error) {
+    console.error('Error starting a referral from a call:', error && error.message ? error.message : error);
+    return res.status(500).json({ success: false, error: 'Failed to start the referral', code: 'REFERRAL_FAILED' });
   }
 });
 

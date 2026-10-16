@@ -111,6 +111,7 @@ import { CheckoutAlert } from "@/features/hyg/visit/CheckoutAlert";
 import type { OrthoScreening as OrthoScreeningValue } from "@shared/hyg/orthoScreening";
 import type { CheckoutDelivery } from "@shared/hyg/contract";
 import { cn } from "@/lib/utils";
+import { VisitReferral } from "@/features/hyg/visit/VisitReferral";
 
 /** How long after the last keystroke the slip is stored. */
 const SAVE_DEBOUNCE_MS = 800;
@@ -798,6 +799,7 @@ export default function HygVisit() {
               onRetryFinal={() => void onCheckoutRetryFinal()}
             />
           ) : null}
+          <div className="flex flex-wrap items-center gap-3">
           <div
             role="tablist"
             aria-label="Visit sections"
@@ -828,6 +830,10 @@ export default function HygVisit() {
                 {id === "ortho" && page.visit?.orthoSend ? " · Sent" : ""}
               </button>
             ))}
+          </div>
+          {/* Item 54: start a referral chairside. Renders nothing while
+              referrals is off for the office, or before the visit is open. */}
+          {isOfficeId(office) && page.visit ? <VisitReferral office={office} aptNum={aptNum} /> : null}
           </div>
 
           {tab === "ortho" ? (

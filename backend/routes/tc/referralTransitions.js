@@ -57,12 +57,13 @@ function refusal(row, verb) {
 /**
  * Apply `verb` to one referral.
  *
- * @param {import('express').Request} req   req.tcOffice is the office
- * @param {{ referralId: string, verb: string, note?: string }} args
+ * @param {import('express').Request} req
+ * @param {{ referralId: string, verb: string, note?: string, office?: string }} args
+ *        `office` defaults to req.tcOffice (the TC routes); a caller outside
+ *        TC (the hygiene visit, a call) passes the office IT derived.
  * @returns {Promise<{ status: number, body: object }>}
  */
-async function applyVerb(req, { referralId, verb, note = '' }) {
-  const office = req.tcOffice;
+async function applyVerb(req, { referralId, verb, note = '', office = req.tcOffice }) {
   const actor = actorEmail(req);
   const at = clock().toISOString();
 
@@ -100,12 +101,11 @@ async function applyVerb(req, { referralId, verb, note = '' }) {
     return { status: 404, body: { success: false, error: 'Referral not found', code: 'NOT_FOUND' } };
   }
   if (outcome.refused) return refusal(outcome.refused, verb);
-  return { status: 200, body: { success: true, referral: await readBack(req, referralId) } };
+  return { status: 200, body: { success: true, referral: await readBack(req, referralId, office) } };
 }
 
 /** The referral as stored now, with its practice name and its history. */
-async function readBack(req, referralId) {
-  const office = req.tcOffice;
+async function readBack(req, referralId, office = req.tcOffice) {
   return tenantDb.withTenantDb(req, async (pool) => {
     const row = await store.findReferral(pool, office, referralId);
     if (!row) return null;
