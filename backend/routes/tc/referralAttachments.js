@@ -14,6 +14,7 @@
  *   - images + PDF only, decided by the BYTES (magic numbers), never by the
  *     client's declared type or filename;
  *   - 10 MB a file (multer refuses beyond it, before the body is buffered on);
+ *     exactly 10 MB is allowed;
  *   - at most 5 a referral, counted under a row lock on the referral so two
  *     uploads at the fifth slot cannot both land;
  *   - the filename is sanitized (no path, no control or quote characters);
@@ -63,7 +64,15 @@ const ATTACHMENT_COLS = [
   'uploaded_at',
 ];
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_BYTES, files: 1 } });
+// `fileSize` is a cut-off busboy trips on REACHING it, so +1 lets a file of
+// exactly 10 MB through (the client's pre-check and the DB CHECK both allow
+// ≤ 10 MB). `defParamCharset: 'utf8'`: a filename like "röntgen 🦷.png" is
+// stored as typed, not as latin1 mojibake.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_BYTES + 1, files: 1 },
+  defParamCharset: 'utf8',
+});
 
 /** multer's own errors, in the module's shape. */
 function receiveFile(req, res, next) {
@@ -165,28 +174,32 @@ function uploadHandler({ officeOf, referralIdOf, guard }) {
     const fileName = sanitizeFilename(file.originalname, contentType);
     const actor = actorEmail(req);
 
+    // A refusal THROWS this, so the transaction rolls back and a refused
+    // attempt leaves the referral exactly as it was (not even updated_at).
+    const refusal = (status, error, code) => Object.assign(new Error(code), { refusal: [status, error, code] });
+
     let outcome;
     try {
       outcome = await withTenantTx(req, async (client) => {
-        const ref = await store.findReferral(client, office, referralId);
-        if (!ref) return { refusal: [404, 'Referral not found', 'NOT_FOUND'] };
-        if (guard) {
-          const g = await guard(req, ref);
-          if (g) return { refusal: g };
-        }
-        if (!ATTACHABLE_STATUSES.includes(ref.status)) {
-          return {
-            refusal: [409, 'Files can be added only while a referral is a draft or awaiting sign-off.', 'REFERRAL_LOCKED'],
-          };
-        }
-        // Row-lock the referral (an UPDATE takes it), so the count below holds.
+        // Row-lock the referral FIRST (an UPDATE takes it), so the status read
+        // and the count below cannot be overtaken by a submit, an approval or
+        // another upload committing in between.
         await client.query('UPDATE tc_referrals SET updated_at = now() WHERE office_id = $1 AND referral_id = $2', [
           office,
           referralId,
         ]);
+        const ref = await store.findReferral(client, office, referralId);
+        if (!ref) throw refusal(404, 'Referral not found', 'NOT_FOUND');
+        if (guard) {
+          const g = await guard(req, ref);
+          if (g) throw refusal(...g);
+        }
+        if (!ATTACHABLE_STATUSES.includes(ref.status)) {
+          throw refusal(409, 'Files can be added only while a referral is a draft or awaiting sign-off.', 'REFERRAL_LOCKED');
+        }
         const existing = await listRows(client, office, referralId);
         if (existing.length >= MAX_FILES) {
-          return { refusal: [409, `A referral can carry at most ${MAX_FILES} files.`, 'ATTACHMENT_LIMIT'] };
+          throw refusal(409, `A referral can carry at most ${MAX_FILES} files.`, 'ATTACHMENT_LIMIT');
         }
         // The bytes first; the row only once storage confirmed them.
         const stored = await blob.putAttachment({ tenantSlug, data: file.buffer, contentType });
@@ -201,13 +214,13 @@ function uploadHandler({ officeOf, referralIdOf, guard }) {
         return { row };
       });
     } catch (err) {
+      if (err && err.refusal) return refuse(res, ...err.refusal);
       if (err && err.code === 'REFERRAL_STORAGE_UNAVAILABLE') {
         console.error(`[tc/referralAttachments] office=${office} storage unavailable: ${err.message}`);
         return refuse(res, 503, "Attachment storage isn't set up here yet. Nothing was saved.", 'REFERRAL_STORAGE_UNAVAILABLE');
       }
       throw err;
     }
-    if (outcome.refusal) return refuse(res, ...outcome.refusal);
     return res.status(201).json({ success: true, attachment: toAttachment(outcome.row) });
   };
 }
@@ -230,6 +243,9 @@ function listHandler({ officeOf, referralIdOf, guard }) {
       return { rows: await listRows(pool, office, referralId) };
     });
     if (out.refusal) return refuse(res, ...out.refusal);
+    // File names can carry PHI (a scan named after the patient): the list is a
+    // read, and is audited like every other referral read.
+    await auditTc(req, 'READ', 'tc_referral_attachment', null, { office, sourceRef: `referral:${referralId}` });
     return res.json({ success: true, attachments: out.rows.map(toAttachment) });
   };
 }

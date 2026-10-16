@@ -926,9 +926,26 @@ export async function fetchVisitReferralDirectory(office: OfficeId, aptNum: numb
   return (await get(`/visit/${aptNum}/referral-directory`, { office }, parseWith(VisitDirectoryResponse))).entries;
 }
 
-/** Draft it here; it goes straight to the doctor's sign-off. The server takes the patient from the visit. */
-export async function startVisitReferral(office: OfficeId, aptNum: number, referral: TcReferralInput): Promise<TcReferral> {
-  return (await mutate("POST", `/visit/${aptNum}/referral`, { office }, parseWith(VisitReferralResponse), referral)).referral;
+/**
+ * Draft it here; it goes straight to the doctor's sign-off. The server takes
+ * the patient from the visit. `submit: false` (item 55) keeps it a draft so its
+ * X-rays can land before `submitVisitReferral` sends it.
+ */
+export async function startVisitReferral(
+  office: OfficeId,
+  aptNum: number,
+  referral: TcReferralInput,
+  submit = true,
+): Promise<TcReferral> {
+  const params: Record<string, string> = submit ? { office } : { office, submit: "false" };
+  return (await mutate("POST", `/visit/${aptNum}/referral`, params, parseWith(VisitReferralResponse), referral)).referral;
+}
+
+/** Send a draft THIS visit started for sign-off (after its files, or as a retry). */
+export async function submitVisitReferral(office: OfficeId, aptNum: number, referralId: string): Promise<TcReferral> {
+  return (
+    await mutate("POST", `/visit/${aptNum}/referrals/${referralId}/submit`, { office }, parseWith(VisitReferralResponse))
+  ).referral;
 }
 
 /**

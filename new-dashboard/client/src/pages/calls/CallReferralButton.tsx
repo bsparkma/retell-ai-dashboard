@@ -26,6 +26,7 @@ import {
   getReferralsStatus,
   listDirectory,
   listReferrals,
+  referralVerb,
   uploadReferralAttachment,
 } from "@/features/tc/referrals/referralsApi";
 import { ReferralDialog, ReferralStatusBadge, reportFailedUploads, uploadAll } from "@/features/tc/referrals/ReferralsPanel";
@@ -73,19 +74,29 @@ export function CallReferralButton({ call }: { call: CallReferralCall }) {
     if (!office) return;
     setSaving(true);
     try {
-      const res = await api.startCallReferral(call.id, { referral: input, office_id: office, submit });
+      // With files (item 55): create the DRAFT, attach, THEN submit — files are
+      // taken only before a decision, so they must land first. Without files,
+      // Save & submit stays one atomic request.
+      const atomic = submit && files.length === 0;
+      const res = await api.startCallReferral(call.id, { referral: input, office_id: office, submit: atomic });
       const parsed = TcReferral.safeParse(res.referral);
       if (!parsed.success) throw new Error("The referral answer could not be read");
-      // Item 55: the files, onto the referral just stored; each result said.
       const { failed } = await uploadAll(files, (f) => uploadReferralAttachment(office, parsed.data.referralId, f));
       reportFailedUploads(failed);
-      if (submit) {
-        toast.success(
-          parsed.data.status === "approved" ? "Referral approved (sign-off not required)" : "Sent for the doctor's sign-off",
-        );
-      } else {
-        toast.success("Referral saved as a draft — finish it in TC");
+      let final = parsed.data;
+      if (submit && !atomic) {
+        if (failed.length > 0) {
+          toast.error("Kept as a draft so the missing file can be added before sign-off — finish it in TC");
+        } else {
+          final = await referralVerb(office, parsed.data.referralId, "submit");
+        }
       }
+      if (!submit) {
+        toast.success("Referral saved as a draft — finish it in TC");
+      } else if (final.status !== "draft") {
+        toast.success(final.status === "approved" ? "Referral approved (sign-off not required)" : "Sent for the doctor's sign-off");
+      }
+      // (A submit kept as a draft because a file failed was reported above.)
       setOpen(false);
       load();
     } catch (e) {

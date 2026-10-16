@@ -22,7 +22,14 @@ import type { TcReferral, TcReferralAttachment } from "@shared/tc/referrals";
 
 (globalThis as Record<string, unknown>).React = React;
 
-const { toastMock, ref } = vi.hoisted(() => ({
+const { toastMock, ref, hyg } = vi.hoisted(() => ({
+  hyg: {
+    fetchVisitReferrals: vi.fn(),
+    fetchVisitReferralDirectory: vi.fn(),
+    startVisitReferral: vi.fn(),
+    submitVisitReferral: vi.fn(),
+    uploadVisitReferralAttachment: vi.fn(),
+  },
   toastMock: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }),
   ref: {
     getReferralsStatus: vi.fn(),
@@ -43,10 +50,15 @@ const { toastMock, ref } = vi.hoisted(() => ({
 
 vi.mock("sonner", () => ({ toast: toastMock }));
 vi.mock("@/features/tc/referrals/referralsApi", () => ref);
+vi.mock("@/features/hyg/api", async (orig) => ({
+  ...(await orig<typeof import("@/features/hyg/api")>()),
+  ...hyg,
+}));
 
 import { AttachmentZone } from "@/features/tc/referrals/AttachmentZone";
 import { ReferralsPanel } from "@/features/tc/referrals/ReferralsPanel";
 import { SignoffInner } from "@/pages/tc/TcReferralSignoff";
+import { VisitReferral } from "@/features/hyg/visit/VisitReferral";
 
 const CASE_ID = "6f9619ff-8b86-4d01-b42d-00cf4fc964ff";
 
@@ -227,6 +239,57 @@ describe("the doctor sees the X-ray at sign-off", () => {
       expect(ref.openReferralAttachment).toHaveBeenCalledWith("roland", pending.referralId, attachment().attachmentId, true),
     );
     open.mockRestore();
+  });
+});
+
+describe("chairside with an X-ray: draft, file, THEN submit (round 2)", () => {
+  async function startWithFile() {
+    render(<VisitReferral office="roland" aptNum={900001} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Start referral/ }));
+    const dialog = await screen.findByTestId("tc-referral-dialog");
+    fireEvent.change(within(dialog).getByLabelText(/Reason/), { target: { value: "Deep pockets #30" } });
+    drop(within(dialog).getByRole("button", { name: /Attach files/ }), [file("snip.png", "image/png")]);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Send for Dr. sign-off" }));
+  }
+
+  beforeEach(() => {
+    hyg.fetchVisitReferrals.mockResolvedValue([]);
+    hyg.fetchVisitReferralDirectory.mockResolvedValue([]);
+  });
+
+  it("creates a draft, attaches the snip, then submits — in that order", async () => {
+    hyg.startVisitReferral.mockResolvedValue(referral({ sourceKind: "hyg_visit" }));
+    hyg.uploadVisitReferralAttachment.mockResolvedValue(attachment());
+    hyg.submitVisitReferral.mockResolvedValue(referral({ status: "approved" }));
+    await startWithFile();
+    await waitFor(() => expect(hyg.submitVisitReferral).toHaveBeenCalledWith("roland", 900001, referral().referralId));
+    expect(hyg.startVisitReferral).toHaveBeenCalledWith("roland", 900001, expect.anything(), false);
+    expect(hyg.uploadVisitReferralAttachment.mock.invocationCallOrder[0]).toBeLessThan(
+      hyg.submitVisitReferral.mock.invocationCallOrder[0],
+    );
+    expect(toastMock.success).toHaveBeenCalledWith("Referral approved (sign-off not required)");
+  });
+
+  it("a snip that did not land keeps it a draft, says so, and offers Send for sign-off", async () => {
+    hyg.startVisitReferral.mockResolvedValue(referral({ sourceKind: "hyg_visit" }));
+    hyg.uploadVisitReferralAttachment.mockRejectedValue(new Error("Attachment storage isn't set up here yet. Nothing was saved."));
+    hyg.fetchVisitReferrals.mockResolvedValueOnce([]).mockResolvedValue([referral({ sourceKind: "hyg_visit" })]);
+    await startWithFile();
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith(expect.stringMatching(/^snip\.png was not attached/)));
+    expect(hyg.submitVisitReferral).not.toHaveBeenCalled();
+    expect(await screen.findByTestId("hyg-visit-referral-send")).toBeTruthy();
+  });
+
+  it("no files: one atomic create-and-submit, as before", async () => {
+    hyg.startVisitReferral.mockResolvedValue(referral({ status: "pending_signoff" }));
+    render(<VisitReferral office="roland" aptNum={900001} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Start referral/ }));
+    const dialog = await screen.findByTestId("tc-referral-dialog");
+    fireEvent.change(within(dialog).getByLabelText(/Reason/), { target: { value: "Ortho consult" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Send for Dr. sign-off" }));
+    await waitFor(() => expect(hyg.startVisitReferral).toHaveBeenCalledTimes(1));
+    expect(hyg.startVisitReferral.mock.calls[0][3]).toBeUndefined();
+    expect(hyg.submitVisitReferral).not.toHaveBeenCalled();
   });
 });
 

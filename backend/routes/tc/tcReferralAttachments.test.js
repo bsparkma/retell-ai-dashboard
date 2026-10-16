@@ -325,3 +325,79 @@ test("the doctor opens the files of a referral they may read — not a draft's",
   assert.equal((await view(doc.baseUrl, 'roland', pending.referral_id, pa.attachmentId)).status, 403);
   assert.equal(attachAudits(tc.db).filter((x) => x.action === 'READ').length, 1, 'the one view that served bytes');
 });
+
+// ── round 2 ────────────────────────────────────────────────────────────────
+
+test('a file of EXACTLY 10 MB is accepted (the limit is inclusive, as the client and the DB say)', async (t) => {
+  switchReferrals(t);
+  fakeStore(t);
+  const { baseUrl, db } = await boot(t);
+  const ref = seedReferral(db);
+  const exact = Buffer.concat([PNG, Buffer.alloc(10 * 1024 * 1024 - PNG.length, 0)]);
+  const r = await upload(baseUrl, 'roland', ref.referral_id, exact);
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.equal(r.body.attachment.sizeBytes, 10 * 1024 * 1024);
+});
+
+test('a UTF-8 filename is kept as typed, not latin1 mojibake', async (t) => {
+  switchReferrals(t);
+  fakeStore(t);
+  const { baseUrl, db } = await boot(t);
+  const ref = seedReferral(db);
+  const r = await upload(baseUrl, 'roland', ref.referral_id, PNG, 'röntgen 🦷.png');
+  assert.equal(r.body.attachment.fileName, 'röntgen 🦷.png');
+});
+
+test('the list is a read: audited', async (t) => {
+  switchReferrals(t);
+  fakeStore(t);
+  const { baseUrl, db } = await boot(t);
+  const ref = seedReferral(db);
+  await fetch(`${baseUrl}/api/tc/referrals/${ref.referral_id}/attachments?office=roland`);
+  const reads = attachAudits(db).filter((a) => a.action === 'READ');
+  assert.deepEqual(reads.map((a) => [a.resource_id, a.source_ref]), [[null, `referral:${ref.referral_id}`]]);
+});
+
+test('the referral is row-locked BEFORE its status is read', async (t) => {
+  switchReferrals(t);
+  fakeStore(t);
+  const { baseUrl, db } = await boot(t);
+  const ref = seedReferral(db);
+  const order = [];
+  db.onQuery(/^UPDATE tc_referrals SET updated_at = now\(\)/, () => {
+    order.push('lock');
+    return { rows: [], rowCount: 1 };
+  });
+  db.onQuery(/^SELECT .* FROM tc_referrals WHERE office_id = \$1 AND referral_id = \$2$/, (_t, params) => {
+    order.push('read');
+    return { rows: db.table('tc_referrals').filter((r) => r.referral_id === params[1]) };
+  });
+  assert.equal((await upload(baseUrl, 'roland', ref.referral_id, PNG)).status, 201);
+  assert.deepEqual(order.slice(0, 2), ['lock', 'read']);
+});
+
+test('a refused attempt rolls back — the referral is not touched (not even updated_at)', async (t) => {
+  switchReferrals(t);
+  fakeStore(t);
+  const { baseUrl, db } = await boot(t);
+  const before = new Date('2026-10-16T09:00:00Z');
+  const ref = seedReferral(db, { status: 'approved', updated_at: before });
+  // Postgres semantics for this test: ROLLBACK restores what BEGIN saw.
+  let snapshot = null;
+  db.onQuery(/^BEGIN$/, () => {
+    snapshot = new Map([...db.tables].map(([k, rows]) => [k, rows.map((r) => ({ ...r }))]));
+    return { rows: [], rowCount: 0 };
+  });
+  db.onQuery(/^ROLLBACK$/, () => {
+    for (const [k, live] of db.tables) {
+      const was = (snapshot && snapshot.get(k)) || [];
+      live.length = 0;
+      live.push(...was);
+    }
+    return { rows: [], rowCount: 0 };
+  });
+  const r = await upload(baseUrl, 'roland', ref.referral_id, PNG);
+  assert.equal(r.status, 409);
+  assert.equal(r.body.code, 'REFERRAL_LOCKED');
+  assert.equal(db.table('tc_referrals')[0].updated_at.toISOString(), before.toISOString());
+});

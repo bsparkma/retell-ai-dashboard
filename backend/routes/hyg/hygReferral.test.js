@@ -316,3 +316,30 @@ test('R4: referrals off → refused before the file is read', async (t) => {
   assert.equal(r.status, 403);
   assert.equal(r.body.code, 'REFERRALS_DISABLED');
 });
+
+test('R4 round 2: sign-off OFF — the X-ray lands on the draft, THEN it is approved (it arrives with its file)', async (t) => {
+  switchReferrals(t, { roland: true });
+  memoryBlob(t);
+  const app = await boot(t);
+  app.db.tc.table('tc_referral_settings').push({ office_id: 'roland', signoff_required: false, autosend_on_approval: false, updated_by: 'boss@carein.ai' });
+  await openVisit(app);
+  const draft = await api(app.baseUrl, 'POST', `${REF}&submit=false`, { body: BODY });
+  assert.equal(draft.status, 201, JSON.stringify(draft.body));
+  assert.equal(draft.body.referral.status, 'draft');
+  assert.equal((await attach(app, draft.body.referral.referralId)).status, 201);
+  const sent = await api(app.baseUrl, 'POST', `/api/hyg/visit/900001/referrals/${draft.body.referral.referralId}/submit?office=roland`);
+  assert.equal(sent.status, 200, JSON.stringify(sent.body));
+  assert.equal(sent.body.referral.status, 'approved');
+  assert.equal(app.db.tc.table('tc_referral_attachments').length, 1, 'the approved referral carries its X-ray');
+});
+
+test("R4 round 2: the chairside submit route only sends this visit's own drafts", async (t) => {
+  switchReferrals(t, { roland: true });
+  const app = await boot(t);
+  await openVisit(app);
+  const other = randomUUID();
+  app.db.tc.table('tc_referrals').push({ referral_id: other, office_id: 'roland', od_patient_id: 12827, patient_name: 'Test 2, Stedi', source_kind: 'case', source_ref: randomUUID(), teeth: '[]', status: 'draft' });
+  const r = await api(app.baseUrl, 'POST', `/api/hyg/visit/900001/referrals/${other}/submit?office=roland`);
+  assert.equal(r.status, 404);
+  assert.equal(app.db.tc.table('tc_referrals')[0].status, 'draft');
+});
