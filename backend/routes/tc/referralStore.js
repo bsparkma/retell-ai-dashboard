@@ -8,7 +8,7 @@
 
 const { randomUUID } = require('node:crypto');
 
-const { iso } = require('./helpers');
+const { iso, contract } = require('./helpers');
 
 const DIRECTORY_COLS = [
   'entry_id',
@@ -211,9 +211,11 @@ const REFERRAL_COLS = [
   'created_by',
   'created_at',
   'updated_at',
+  // R6 (item 56, 1792000000000)
+  'doctor_note',
 ];
 
-const EVENT_COLS = ['event_id', 'office_id', 'referral_id', 'from_status', 'to_status', 'actor', 'at', 'note'];
+const EVENT_COLS = ['event_id', 'office_id', 'referral_id', 'from_status', 'to_status', 'actor', 'at', 'note', 'verb'];
 
 /** jsonb teeth: pg returns the value; a fake may hold the JSON text. */
 function teethOf(v) {
@@ -251,8 +253,12 @@ function toReferral(r, practiceName = null, events = undefined) {
     createdBy: r.created_by,
     createdAt: iso(r.created_at),
     updatedAt: iso(r.updated_at),
+    doctorNote: r.doctor_note ?? null,
   };
-  if (events) out.events = events;
+  if (events) {
+    out.events = events;
+    out.returned = contract.referralLastReturn(events);
+  }
   return out;
 }
 
@@ -264,6 +270,7 @@ function toEvent(e) {
     actor: e.actor,
     at: iso(e.at),
     note: e.note ?? '',
+    verb: e.verb ?? null,
   };
 }
 
@@ -406,11 +413,112 @@ async function casStatus(q, { office, referralId, from, to, actor, at }) {
   return res.rows[0] || null;
 }
 
-async function insertEvent(q, { office, referralId, from, to, actor, at, note }) {
+async function insertEvent(q, { office, referralId, from, to, actor, at, note, verb = null }) {
   await q.query(
-    `INSERT INTO tc_referral_events (event_id, office_id, referral_id, from_status, to_status, actor, at, note) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [randomUUID(), office, referralId, from, to, actor, at, note || '']
+    `INSERT INTO tc_referral_events (event_id, office_id, referral_id, from_status, to_status, actor, at, note, verb) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [randomUUID(), office, referralId, from, to, actor, at, note || '', verb]
   );
+}
+
+// ── R6 (item 56): field edits, the hub ──────────────────────────────────────
+
+/** The fields the two R6 edit surfaces may change → their columns. */
+const FIELD_COLUMNS = [
+  ['directoryEntryId', 'directory_entry_id'],
+  ['urgency', 'urgency'],
+  ['reason', 'reason'],
+  ['teeth', 'teeth'],
+  ['doctorNote', 'doctor_note'],
+];
+
+/**
+ * Change some of a referral's fields, CONDITIONAL on its status still being
+ * `status` — an edit cannot race a transition (the loser of the race gets
+ * null and a 409). Only the fields present in `fields` are written.
+ */
+async function updateFields(q, { office, referralId, status, fields }) {
+  const sets = [];
+  const values = [office, referralId, status];
+  for (const [key, col] of FIELD_COLUMNS) {
+    if (fields[key] === undefined) continue;
+    values.push(key === 'teeth' ? JSON.stringify(fields[key]) : fields[key]);
+    sets.push(`${col} = $${values.length}`);
+  }
+  if (sets.length === 0) throw new Error('updateFields: nothing to write');
+  const res = await q.query(
+    `UPDATE tc_referrals SET ${sets.join(', ')}, updated_at = now() WHERE office_id = $1 AND referral_id = $2 AND status = $3 RETURNING ${REFERRAL_COLS.join(', ')}`,
+    values
+  );
+  return res.rows[0] || null;
+}
+
+/**
+ * The hub: every referral for the office, newest status change first,
+ * narrowed by any of status / specialist / source / "sat at least N days".
+ * Every filter is a parameter. `before` is an ISO instant (now − N days).
+ */
+async function listHub(q, office, { status = null, directoryEntryId = null, sourceKind = null, before = null } = {}) {
+  const where = ['office_id = $1'];
+  const values = [office];
+  if (status) {
+    values.push(status);
+    where.push(`status = $${values.length}`);
+  }
+  if (directoryEntryId) {
+    values.push(directoryEntryId);
+    where.push(`directory_entry_id = $${values.length}`);
+  }
+  if (sourceKind) {
+    values.push(sourceKind);
+    where.push(`source_kind = $${values.length}`);
+  }
+  if (before) {
+    values.push(before);
+    where.push(`status_changed_at <= $${values.length}`);
+  }
+  const res = await q.query(
+    `SELECT ${REFERRAL_COLS.join(', ')} FROM tc_referrals WHERE ${where.join(' AND ')} ORDER BY status_changed_at DESC LIMIT 500`,
+    values
+  );
+  return res.rows;
+}
+
+/** referral id → how many files it carries (one query, counted here; no GROUP BY). */
+async function attachmentCounts(q, office, referralIds) {
+  const ids = [...new Set(referralIds.map(String))];
+  if (ids.length === 0) return new Map();
+  const res = await q.query(
+    'SELECT referral_id FROM tc_referral_attachments WHERE office_id = $1 AND referral_id = ANY($2)',
+    [office, ids]
+  );
+  const out = new Map();
+  for (const r of res.rows) out.set(String(r.referral_id), (out.get(String(r.referral_id)) || 0) + 1);
+  return out;
+}
+
+/**
+ * referral id → the doctor's open question, for the DRAFTS among `rows` (only
+ * a draft can carry one). One query over their events, oldest first.
+ */
+async function openReturns(q, office, rows) {
+  const ids = rows.filter((r) => r.status === 'draft').map((r) => String(r.referral_id));
+  if (ids.length === 0) return new Map();
+  const res = await q.query(
+    `SELECT ${EVENT_COLS.join(', ')} FROM tc_referral_events WHERE office_id = $1 AND referral_id = ANY($2) ORDER BY at ASC`,
+    [office, ids]
+  );
+  const byId = new Map();
+  for (const e of res.rows) {
+    const k = String(e.referral_id);
+    if (!byId.has(k)) byId.set(k, []);
+    byId.get(k).push(toEvent(e));
+  }
+  const out = new Map();
+  for (const [k, events] of byId) {
+    const ret = contract.referralLastReturn(events);
+    if (ret) out.set(k, ret);
+  }
+  return out;
 }
 
 module.exports = {
@@ -438,4 +546,9 @@ module.exports = {
   updateDraft,
   casStatus,
   insertEvent,
+  FIELD_COLUMNS,
+  updateFields,
+  listHub,
+  attachmentCounts,
+  openReturns,
 };

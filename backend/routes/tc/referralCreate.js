@@ -91,7 +91,7 @@ async function createDraft(req, client, { office, patient, input, at }) {
   const row = await store.insertReferral(client, { office, ...patient, input, actor, at });
   if (!row) throw new Error('referral was not stored');
   const referralId = String(row.referral_id);
-  await store.insertEvent(client, { office, referralId, from: null, to: 'draft', actor, at, note: '' });
+  await store.insertEvent(client, { office, referralId, from: null, to: 'draft', actor, at, note: '', verb: 'create' });
   // In the transaction: no referral exists without its audit row.
   await auditTc(req, 'CREATE', 'tc_referral', referralId, { office, sourceRef: `${patient.sourceKind}:${patient.sourceRef}` });
   return { referralId };

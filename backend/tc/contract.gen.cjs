@@ -14906,7 +14906,10 @@ __export(contract_entry_exports, {
   PreauthStatus: () => PreauthStatus,
   PreauthType: () => PreauthType,
   REFERRAL_ATTACHMENT_HINT: () => REFERRAL_ATTACHMENT_HINT,
+  REFERRAL_DOCTOR_EDITABLE_STATUSES: () => REFERRAL_DOCTOR_EDITABLE_STATUSES,
   REFERRAL_EDITABLE_STATUSES: () => REFERRAL_EDITABLE_STATUSES,
+  REFERRAL_FIELD_EDITABLE_STATUSES: () => REFERRAL_FIELD_EDITABLE_STATUSES,
+  REFERRAL_MARK_LABELS: () => REFERRAL_MARK_LABELS,
   REFERRAL_READY_TO_SEND_COPY: () => REFERRAL_READY_TO_SEND_COPY,
   Radiograph: () => Radiograph,
   RecallType: () => RecallType,
@@ -14929,6 +14932,9 @@ __export(contract_entry_exports, {
   TC_REFERRAL_ATTACHMENT_MAX_FILES: () => TC_REFERRAL_ATTACHMENT_MAX_FILES,
   TC_REFERRAL_ATTACHMENT_TYPES: () => TC_REFERRAL_ATTACHMENT_TYPES,
   TC_REFERRAL_CHIP_LABELS: () => TC_REFERRAL_CHIP_LABELS,
+  TC_REFERRAL_DOCTOR_NOTE_MAX: () => TC_REFERRAL_DOCTOR_NOTE_MAX,
+  TC_REFERRAL_EVENT_VERBS: () => TC_REFERRAL_EVENT_VERBS,
+  TC_REFERRAL_HUB_GROUPS: () => TC_REFERRAL_HUB_GROUPS,
   TC_REFERRAL_STATUS_LABELS: () => TC_REFERRAL_STATUS_LABELS,
   TC_REFERRAL_URGENCY_LABELS: () => TC_REFERRAL_URGENCY_LABELS,
   TERMINAL_CASE_STATUSES: () => TERMINAL_CASE_STATUSES,
@@ -14977,9 +14983,17 @@ __export(contract_entry_exports, {
   TcReferralDeclineRequest: () => TcReferralDeclineRequest,
   TcReferralDirectoryEntry: () => TcReferralDirectoryEntry,
   TcReferralDirectoryInput: () => TcReferralDirectoryInput,
+  TcReferralDoctorEdit: () => TcReferralDoctorEdit,
   TcReferralEvent: () => TcReferralEvent,
+  TcReferralEventVerb: () => TcReferralEventVerb,
+  TcReferralFieldsEdit: () => TcReferralFieldsEdit,
+  TcReferralHubQuery: () => TcReferralHubQuery,
   TcReferralInput: () => TcReferralInput,
+  TcReferralMarkRequest: () => TcReferralMarkRequest,
+  TcReferralMarkSentRequest: () => TcReferralMarkSentRequest,
   TcReferralPolicy: () => TcReferralPolicy,
+  TcReferralReopenRequest: () => TcReferralReopenRequest,
+  TcReferralReturnRequest: () => TcReferralReturnRequest,
   TcReferralSettingsRequest: () => TcReferralSettingsRequest,
   TcReferralSettingsResponse: () => TcReferralSettingsResponse,
   TcReferralSignoffSummary: () => TcReferralSignoffSummary,
@@ -15025,7 +15039,12 @@ __export(contract_entry_exports, {
   readBlock: () => readBlock,
   readBlocks: () => readBlocks,
   referralChipFor: () => referralChipFor,
+  referralEditSummary: () => referralEditSummary,
+  referralHubGroup: () => referralHubGroup,
+  referralLastReturn: () => referralLastReturn,
   referralNextStatus: () => referralNextStatus,
+  referralReturnedLine: () => referralReturnedLine,
+  referralStatusAge: () => referralStatusAge,
   renderEmail: () => renderEmail,
   resolveNotificationLevel: () => resolveNotificationLevel,
   safeUrl: () => safeUrl,
@@ -17428,13 +17447,32 @@ var TcReferralCreateRequest = import_zod8.z.object({
   referral: TcReferralInput
 }).strict();
 var TcReferralDeclineRequest = import_zod8.z.object({ reason: import_zod8.z.string().trim().min(1, "Say why").max(500) }).strict();
+var TC_REFERRAL_EVENT_VERBS = [
+  "create",
+  "edit",
+  "doctor_edit",
+  "submit",
+  "withdraw",
+  "cancel",
+  "approve",
+  "decline",
+  "reopen",
+  "return",
+  "mark_sent",
+  "mark_acknowledged",
+  "mark_patient_seen",
+  "close"
+];
+var TcReferralEventVerb = import_zod8.z.enum(TC_REFERRAL_EVENT_VERBS);
 var TcReferralEvent = import_zod8.z.object({
   eventId: import_zod8.z.string().uuid(),
   fromStatus: TcReferralStatus.nullable(),
   toStatus: TcReferralStatus,
   actor: import_zod8.z.string(),
   at: import_zod8.z.string(),
-  note: import_zod8.z.string()
+  note: import_zod8.z.string(),
+  /** R6: what happened. null on rows written before R6. */
+  verb: TcReferralEventVerb.nullable().optional()
 });
 var TcReferral = import_zod8.z.object({
   referralId: import_zod8.z.string().uuid(),
@@ -17460,9 +17498,30 @@ var TcReferral = import_zod8.z.object({
   createdAt: import_zod8.z.string(),
   updatedAt: import_zod8.z.string(),
   /** Only on the detail read. */
-  events: import_zod8.z.array(TcReferralEvent).optional()
+  events: import_zod8.z.array(TcReferralEvent).optional(),
+  /** R6: the doctor's own note, written at sign-off. null when none. */
+  doctorNote: import_zod8.z.string().nullable().optional(),
+  /** R6: only on the hub list — how many files are attached. */
+  attachmentCount: import_zod8.z.number().int().nonnegative().optional(),
+  /**
+   * R6: set while a draft's latest STATUS MOVE is the doctor's `return` — the
+   * question the submitter must answer. null otherwise. On list and detail reads.
+   */
+  returned: import_zod8.z.object({ note: import_zod8.z.string(), actor: import_zod8.z.string(), at: import_zod8.z.string() }).nullable().optional()
 });
-var TcReferralVerb = import_zod8.z.enum(["submit", "withdraw", "cancel", "approve", "decline"]);
+var TcReferralVerb = import_zod8.z.enum([
+  "submit",
+  "withdraw",
+  "cancel",
+  "approve",
+  "decline",
+  "reopen",
+  "return",
+  "mark_sent",
+  "mark_acknowledged",
+  "mark_patient_seen",
+  "close"
+]);
 function referralNextStatus(from, verb, opts) {
   switch (verb) {
     case "submit":
@@ -17475,9 +17534,105 @@ function referralNextStatus(from, verb, opts) {
       return from === "pending_signoff" ? "approved" : null;
     case "decline":
       return from === "pending_signoff" ? "declined" : null;
+    // Back to sign-off even when this office does not require it: an approved
+    // referral that changes is re-read by a doctor before it goes anywhere.
+    case "reopen":
+      return from === "approved" ? "pending_signoff" : null;
+    case "return":
+      return from === "pending_signoff" ? "draft" : null;
+    case "mark_sent":
+      return from === "approved" ? "sent" : null;
+    case "mark_acknowledged":
+      return from === "sent" ? "acknowledged" : null;
+    case "mark_patient_seen":
+      return from === "acknowledged" ? "patient_seen" : null;
+    case "close":
+      return from === "patient_seen" ? "closed" : null;
   }
 }
 var REFERRAL_EDITABLE_STATUSES = ["draft"];
+var REFERRAL_FIELD_EDITABLE_STATUSES = ["draft", "pending_signoff"];
+var REFERRAL_DOCTOR_EDITABLE_STATUSES = ["pending_signoff"];
+var TC_REFERRAL_DOCTOR_NOTE_MAX = 4e3;
+var fieldShape = {
+  directoryEntryId: import_zod8.z.string().uuid().nullable().optional(),
+  urgency: TcReferralUrgency.optional(),
+  reason: import_zod8.z.string().trim().min(1, "Say why you are referring").max(2e3).optional(),
+  teeth: TcReferralTeeth.optional()
+};
+var hasAnyField = (v) => Object.values(v).some((x) => x !== void 0);
+var TcReferralFieldsEdit = import_zod8.z.object(fieldShape).strict().refine(hasAnyField, "Nothing to change");
+var TcReferralDoctorEdit = import_zod8.z.object({
+  ...fieldShape,
+  doctorNote: import_zod8.z.string().trim().max(TC_REFERRAL_DOCTOR_NOTE_MAX).nullable().optional()
+}).strict().refine(hasAnyField, "Nothing to change");
+var TcReferralReopenRequest = import_zod8.z.object({ fields: TcReferralFieldsEdit.optional() }).strict();
+var TcReferralReturnRequest = import_zod8.z.object({ comment: import_zod8.z.string().trim().min(1, "Say what you need").max(1e3) }).strict();
+var TcReferralMarkSentRequest = import_zod8.z.object({ how: import_zod8.z.string().trim().min(1, "Say how it was sent").max(300) }).strict();
+var TcReferralMarkRequest = import_zod8.z.object({ note: import_zod8.z.string().trim().max(300).optional() }).strict();
+var TC_REFERRAL_HUB_GROUPS = [
+  { key: "drafts", label: "Drafts", statuses: ["draft"] },
+  { key: "signoff", label: "Awaiting sign-off", statuses: ["pending_signoff"] },
+  { key: "ready", label: "Ready to send", statuses: ["approved"] },
+  { key: "sent", label: "Sent", statuses: ["sent", "acknowledged"] },
+  { key: "seen", label: "Patient seen", statuses: ["patient_seen"] },
+  { key: "done", label: "Closed / declined / cancelled", statuses: ["closed", "declined", "cancelled"] }
+];
+function referralHubGroup(status) {
+  const g = TC_REFERRAL_HUB_GROUPS.find((x) => x.statuses.includes(status));
+  return g ? g.key : "done";
+}
+var TcReferralHubQuery = import_zod8.z.object({
+  status: TcReferralStatus.optional(),
+  directoryEntryId: import_zod8.z.string().uuid().optional(),
+  sourceKind: TcReferralSourceKind.optional(),
+  /** Only referrals that have sat in their status at least this many days. */
+  minAgeDays: import_zod8.z.coerce.number().int().min(0).max(3650).optional()
+}).strict();
+function referralStatusAge(status, statusChangedAt, now) {
+  const ms = now.getTime() - new Date(statusChangedAt).getTime();
+  const days = Math.max(0, Math.floor(ms / 864e5));
+  const where = {
+    draft: "draft",
+    pending_signoff: "in sign-off",
+    approved: "ready",
+    sent: "sent",
+    acknowledged: "acknowledged",
+    patient_seen: "seen",
+    closed: "closed",
+    declined: "declined",
+    cancelled: "cancelled"
+  };
+  return `${where[status]} ${days < 1 ? "<1d" : `${days}d`}`;
+}
+var REFERRAL_MARK_LABELS = {
+  mark_sent: "Mark sent outside the app",
+  mark_acknowledged: "Specialist acknowledged (outside the app)",
+  mark_patient_seen: "Patient seen by specialist",
+  close: "Close referral"
+};
+function referralLastReturn(events) {
+  const moves = (events ?? []).filter((e) => e.verb !== "edit" && e.verb !== "doctor_edit" && e.verb !== "create");
+  const last = moves[moves.length - 1];
+  if (!last || last.verb !== "return") return null;
+  return { note: last.note, actor: last.actor, at: last.at };
+}
+function referralReturnedLine(returned) {
+  return returned ? `Returned by Dr. \u2014 ${returned.note}` : null;
+}
+function referralEditSummary(before, change) {
+  const out = [];
+  if (change.directoryEntryId !== void 0 && change.directoryEntryId !== before.directoryEntryId) out.push("specialist");
+  if (change.urgency !== void 0 && change.urgency !== before.urgency) {
+    out.push(`how soon (${TC_REFERRAL_URGENCY_LABELS[before.urgency]} \u2192 ${TC_REFERRAL_URGENCY_LABELS[change.urgency]})`);
+  }
+  if (change.reason !== void 0 && change.reason !== before.reason) out.push("reason");
+  if (change.teeth !== void 0 && JSON.stringify(change.teeth) !== JSON.stringify(before.teeth)) out.push("teeth");
+  if (change.doctorNote !== void 0 && (change.doctorNote || null) !== (before.doctorNote ?? null)) {
+    out.push("doctor's note");
+  }
+  return out;
+}
 var TC_REFERRAL_CHIP_LABELS = {
   none: "None",
   staged: "Staged",
@@ -17613,7 +17768,10 @@ var import_zod9 = __toESM(require_zod());
   PreauthStatus,
   PreauthType,
   REFERRAL_ATTACHMENT_HINT,
+  REFERRAL_DOCTOR_EDITABLE_STATUSES,
   REFERRAL_EDITABLE_STATUSES,
+  REFERRAL_FIELD_EDITABLE_STATUSES,
+  REFERRAL_MARK_LABELS,
   REFERRAL_READY_TO_SEND_COPY,
   Radiograph,
   RecallType,
@@ -17636,6 +17794,9 @@ var import_zod9 = __toESM(require_zod());
   TC_REFERRAL_ATTACHMENT_MAX_FILES,
   TC_REFERRAL_ATTACHMENT_TYPES,
   TC_REFERRAL_CHIP_LABELS,
+  TC_REFERRAL_DOCTOR_NOTE_MAX,
+  TC_REFERRAL_EVENT_VERBS,
+  TC_REFERRAL_HUB_GROUPS,
   TC_REFERRAL_STATUS_LABELS,
   TC_REFERRAL_URGENCY_LABELS,
   TERMINAL_CASE_STATUSES,
@@ -17684,9 +17845,17 @@ var import_zod9 = __toESM(require_zod());
   TcReferralDeclineRequest,
   TcReferralDirectoryEntry,
   TcReferralDirectoryInput,
+  TcReferralDoctorEdit,
   TcReferralEvent,
+  TcReferralEventVerb,
+  TcReferralFieldsEdit,
+  TcReferralHubQuery,
   TcReferralInput,
+  TcReferralMarkRequest,
+  TcReferralMarkSentRequest,
   TcReferralPolicy,
+  TcReferralReopenRequest,
+  TcReferralReturnRequest,
   TcReferralSettingsRequest,
   TcReferralSettingsResponse,
   TcReferralSignoffSummary,
@@ -17732,7 +17901,12 @@ var import_zod9 = __toESM(require_zod());
   readBlock,
   readBlocks,
   referralChipFor,
+  referralEditSummary,
+  referralHubGroup,
+  referralLastReturn,
   referralNextStatus,
+  referralReturnedLine,
+  referralStatusAge,
   renderEmail,
   resolveNotificationLevel,
   safeUrl,

@@ -22,6 +22,19 @@
  *   POST   /:id/cancel            draft | pending_signoff → cancelled
  *   Approve / decline live in ./referralSignoff.js, behind tc.referral_signoff.
  *
+ *   R6 (item 56) — the hub and staff edits (NOTHING SENDS, still):
+ *   GET    /hub                   every referral for the office, ?status= &
+ *                                 ?directoryEntryId= & ?sourceKind= & ?minAgeDays=
+ *                                 (audited: a list read is a PHI read)
+ *   PATCH  /:id/fields            specialist / urgency / reason / teeth, on a
+ *                                 draft or one awaiting sign-off; CAS on status
+ *   POST   /:id/reopen            approved → pending_signoff, with the edit in
+ *                                 the same transaction ("Edit (re-approval needed)")
+ *   POST   /:id/mark-sent         approved → sent, with how / where (required)  ┐ human
+ *   POST   /:id/mark-acknowledged sent → acknowledged                          │ attestations;
+ *   POST   /:id/mark-patient-seen acknowledged → patient_seen                  │ they send
+ *   POST   /:id/close             patient_seen → closed                        ┘ nothing
+ *
  *   R4 (item 55) — attachments (./referralAttachments.js):
  *   POST   /:id/attachments       one image or PDF (multipart "file"), ≤10 MB, ≤5
  *   GET    /:id/attachments       the referral's files (metadata)
@@ -61,6 +74,11 @@ const {
   TcReferralCreateRequest,
   TcReferralInput,
   TcReferralStatus,
+  TcReferralHubQuery,
+  TcReferralFieldsEdit,
+  TcReferralReopenRequest,
+  TcReferralMarkSentRequest,
+  TcReferralMarkRequest,
 } = contract;
 
 const router = express.Router();
@@ -269,10 +287,22 @@ function badReferralId(res) {
   return res.status(400).json({ success: false, error: 'Invalid referral id', code: 'INVALID_ID' });
 }
 
-/** Rows → TcReferral[] with practice names (one extra query, no JOIN). */
-async function present(pool, office, rows) {
+/**
+ * Rows → TcReferral[] with practice names and, for a draft the doctor sent
+ * back, the open question (R6). A few extra queries, no JOIN.
+ */
+async function present(pool, office, rows, { withAttachmentCounts = false } = {}) {
   const names = await store.practiceNames(pool, office, rows);
-  return rows.map((r) => store.toReferral(r, names.get(String(r.directory_entry_id)) ?? null));
+  const returns = await store.openReturns(pool, office, rows);
+  const counts = withAttachmentCounts
+    ? await store.attachmentCounts(pool, office, rows.map((r) => r.referral_id))
+    : null;
+  return rows.map((r) => {
+    const out = store.toReferral(r, names.get(String(r.directory_entry_id)) ?? null);
+    out.returned = returns.get(String(r.referral_id)) ?? null;
+    if (counts) out.attachmentCount = counts.get(String(r.referral_id)) ?? 0;
+    return out;
+  });
 }
 
 router.get(
@@ -357,6 +387,35 @@ router.post(
   })
 );
 
+// ── R6: the hub ─────────────────────────────────────────────────────────────
+
+router.get(
+  '/hub',
+  h(async (req, res) => {
+    const office = req.tcOffice;
+    // `office` is requireOffice's; every OTHER query key must be a known filter.
+    const { office: _office, ...filters } = req.query;
+    const q = TcReferralHubQuery.safeParse(filters);
+    if (!q.success) return res.status(400).json({ success: false, error: 'Invalid filter', code: 'INVALID_FILTER' });
+    const before =
+      q.data.minAgeDays !== undefined
+        ? new Date(transitions.clock().getTime() - q.data.minAgeDays * 86_400_000).toISOString()
+        : null;
+    const referrals = await tenantDb.withTenantDb(req, async (pool) => {
+      const rows = await store.listHub(pool, office, {
+        status: q.data.status ?? null,
+        directoryEntryId: q.data.directoryEntryId ?? null,
+        sourceKind: q.data.sourceKind ?? null,
+        before,
+      });
+      return present(pool, office, rows, { withAttachmentCounts: true });
+    });
+    // A list of patients is a PHI read: audited like every other list (R4).
+    await auditTc(req, 'READ', 'tc_referral', null, { office, sourceRef: 'referral_hub' });
+    return res.json({ success: true, referrals });
+  })
+);
+
 router.get(
   '/:id',
   h(async (req, res) => {
@@ -411,6 +470,57 @@ const tcAttachmentOpts = { officeOf: (req) => req.tcOffice, referralIdOf: (req) 
 router.post('/:id/attachments', attachments.receiveFile, h(attachments.uploadHandler(tcAttachmentOpts)));
 router.get('/:id/attachments', h(attachments.listHandler(tcAttachmentOpts)));
 router.get('/:id/attachments/:attachmentId', h(attachments.viewHandler(tcAttachmentOpts)));
+
+// ── R6: staff edits, reopen, and the manual marks ──────────────────────────
+
+router.patch(
+  '/:id/fields',
+  h(async (req, res) => {
+    const id = ReferralId.safeParse(req.params.id);
+    if (!id.success) return badReferralId(res);
+    const fields = parseBody(res, TcReferralFieldsEdit, req.body);
+    if (!fields) return undefined;
+    const out = await transitions.editFields(req, { referralId: id.data, fields, kind: 'edit' });
+    return res.status(out.status).json(out.body);
+  })
+);
+
+router.post(
+  '/:id/reopen',
+  h(async (req, res) => {
+    const id = ReferralId.safeParse(req.params.id);
+    if (!id.success) return badReferralId(res);
+    const body = parseBody(res, TcReferralReopenRequest, req.body ?? {});
+    if (!body) return undefined;
+    const out = await transitions.reopen(req, { referralId: id.data, fields: body.fields });
+    return res.status(out.status).json(out.body);
+  })
+);
+
+/**
+ * The manual marks: what a PERSON says happened outside the app. Each moves
+ * one status through the shared table and writes the history line; none of
+ * them sends, queues or schedules anything.
+ */
+const MARKS = [
+  { path: 'mark-sent', verb: 'mark_sent', schema: TcReferralMarkSentRequest, note: (b) => `Sent outside the app: ${b.how}` },
+  { path: 'mark-acknowledged', verb: 'mark_acknowledged', schema: TcReferralMarkRequest, note: (b) => b.note || '' },
+  { path: 'mark-patient-seen', verb: 'mark_patient_seen', schema: TcReferralMarkRequest, note: (b) => b.note || '' },
+  { path: 'close', verb: 'close', schema: TcReferralMarkRequest, note: (b) => b.note || '' },
+];
+for (const mark of MARKS) {
+  router.post(
+    `/:id/${mark.path}`,
+    h(async (req, res) => {
+      const id = ReferralId.safeParse(req.params.id);
+      if (!id.success) return badReferralId(res);
+      const body = parseBody(res, mark.schema, req.body ?? {});
+      if (!body) return undefined;
+      const out = await transitions.applyVerb(req, { referralId: id.data, verb: mark.verb, note: mark.note(body) });
+      return res.status(out.status).json(out.body);
+    })
+  );
+}
 
 for (const verb of ['submit', 'withdraw', 'cancel']) {
   router.post(

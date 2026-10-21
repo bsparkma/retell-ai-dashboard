@@ -18,6 +18,15 @@
  *                        look at the X-ray they are signing off (R4; every
  *                        view audited)
  *
+ *   R6 (item 56):
+ *   GET   /directory     the office's ACTIVE specialists — the doctor may pick
+ *                        a different one; the directory itself stays tc.full
+ *   PATCH /:id/fields    the doctor edits specialist / urgency / reason / teeth
+ *                        and their own note, while it awaits sign-off
+ *   POST  /:id/return    pending_signoff → draft, with the doctor's question
+ *                        (required) — shown to the submitter as
+ *                        "Returned by Dr. — <comment>"
+ *
  * The minimum for a doctor, on purpose: they can read only referrals and
  * only from here. What else a doctor may see is not decided in this slice.
  *
@@ -33,7 +42,7 @@ const store = require('./referralStore');
 const transitions = require('./referralTransitions');
 const attachments = require('./referralAttachments');
 
-const { z, TcReferralDeclineRequest } = contract;
+const { z, TcReferralDeclineRequest, TcReferralDoctorEdit, TcReferralReturnRequest } = contract;
 
 const router = express.Router();
 router.use(requireOffice);
@@ -106,6 +115,17 @@ router.get(
   })
 );
 
+// R6: who the doctor may send it to instead. Not PHI; read-only; active only.
+router.get(
+  '/directory',
+  h(async (req, res) => {
+    const rows = await tenantDb.withTenantDb(req, (pool) =>
+      store.listDirectory(pool, req.tcOffice, { includeInactive: false })
+    );
+    res.json({ success: true, entries: rows.map(store.toEntry) });
+  })
+);
+
 router.get(
   '/:id',
   h(async (req, res) => {
@@ -148,6 +168,30 @@ router.post(
     const body = parseBody(res, TcReferralDeclineRequest, req.body);
     if (!body) return undefined;
     const out = await transitions.applyVerb(req, { referralId: id.data, verb: 'decline', note: body.reason });
+    return res.status(out.status).json(out.body);
+  })
+);
+
+router.patch(
+  '/:id/fields',
+  h(async (req, res) => {
+    const id = ReferralId.safeParse(req.params.id);
+    if (!id.success) return res.status(400).json({ success: false, error: 'Invalid referral id', code: 'INVALID_ID' });
+    const fields = parseBody(res, TcReferralDoctorEdit, req.body);
+    if (!fields) return undefined;
+    const out = await transitions.editFields(req, { referralId: id.data, fields, kind: 'doctor_edit' });
+    return res.status(out.status).json(out.body);
+  })
+);
+
+router.post(
+  '/:id/return',
+  h(async (req, res) => {
+    const id = ReferralId.safeParse(req.params.id);
+    if (!id.success) return res.status(400).json({ success: false, error: 'Invalid referral id', code: 'INVALID_ID' });
+    const body = parseBody(res, TcReferralReturnRequest, req.body);
+    if (!body) return undefined;
+    const out = await transitions.applyVerb(req, { referralId: id.data, verb: 'return', note: body.comment });
     return res.status(out.status).json(out.body);
   })
 );
