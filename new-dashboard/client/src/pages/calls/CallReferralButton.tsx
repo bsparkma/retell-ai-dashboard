@@ -30,7 +30,7 @@ import {
   uploadReferralAttachment,
 } from "@/features/tc/referrals/referralsApi";
 import { ReferralDialog, ReferralStatusBadge, reportFailedUploads, uploadAll } from "@/features/tc/referrals/ReferralsPanel";
-import { TcReferral, type TcReferralInput } from "@shared/tc/referrals";
+import { TcReferral, referralReturnedLine, type TcReferralInput } from "@shared/tc/referrals";
 import type { OfficeId } from "@shared/tc/contract";
 
 export interface CallReferralCall {
@@ -114,9 +114,16 @@ export function CallReferralButton({ call }: { call: CallReferralCall }) {
         <Send size={12} /> Start referral
       </Button>
       {referrals.map((r) => (
-        <div key={r.referralId} className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground" data-testid="call-referral-row">
-          <span className="truncate">{r.practiceName ?? r.specialty ?? "Referral"}</span>
-          <ReferralStatusBadge status={r.status} />
+        <div key={r.referralId} className="space-y-0.5" data-testid="call-referral-row">
+          <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+            <span className="truncate">{r.practiceName ?? r.specialty ?? "Referral"}</span>
+            <ReferralStatusBadge status={r.status} />
+          </div>
+          {referralReturnedLine(r.returned) && (
+            <p className="text-[11px] font-medium text-amber-800 dark:text-amber-300" data-testid="call-referral-returned">
+              {referralReturnedLine(r.returned)}
+            </p>
+          )}
         </div>
       ))}
       <ReferralDialog

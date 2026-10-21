@@ -153,6 +153,35 @@ test('1: a chairside referral lands pending_signoff, for the VISIT\'s patient an
   assert.deepEqual(list.body.referrals.map((x) => x.referralId), [ref.referralId]);
 });
 
+test("R6: a referral the doctor sent back carries the doctor's question on the visit's list", async (t) => {
+  switchReferrals(t, { roland: true });
+  const app = await boot(t);
+  await openVisit(app);
+  const ref = (await api(app.baseUrl, 'POST', REF, { body: BODY })).body.referral;
+  // The doctor's return, as referralTransitions writes it (the route itself is
+  // pinned in routes/tc/tcReferralHub.test.js).
+  const row = app.db.tc.table('tc_referrals').find((r) => r.referral_id === ref.referralId);
+  row.status = 'draft';
+  app.db.tc.table('tc_referral_events').push({
+    event_id: randomUUID(),
+    office_id: 'roland',
+    referral_id: ref.referralId,
+    from_status: 'pending_signoff',
+    to_status: 'draft',
+    actor: 'doctor@carein.ai',
+    at: '2099-01-01T00:00:00.000Z',
+    note: 'Which tooth — 30 or 31?',
+    verb: 'return',
+  });
+  const list = await api(app.baseUrl, 'GET', '/api/hyg/visit/900001/referrals?office=roland');
+  assert.equal(list.status, 200, JSON.stringify(list.body));
+  assert.deepEqual(list.body.referrals[0].returned, {
+    note: 'Which tooth — 30 or 31?',
+    actor: 'doctor@carein.ai',
+    at: '2099-01-01T00:00:00.000Z',
+  });
+});
+
 test('1: when the office does not require sign-off, it lands approved', async (t) => {
   switchReferrals(t, { roland: true });
   const app = await boot(t);

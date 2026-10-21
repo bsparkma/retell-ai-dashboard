@@ -2433,7 +2433,12 @@ router.get(
         sourceRef: String(ctx.visit.visitId),
       });
       const names = await referralStore.practiceNames(pool, office, rows);
-      return rows.map((r) => referralStore.toReferral(r, names.get(String(r.directory_entry_id)) ?? null));
+      // R6: a draft the doctor sent back carries the question, for the hygienist.
+      const returns = await referralStore.openReturns(pool, office, rows);
+      return rows.map((r) => ({
+        ...referralStore.toReferral(r, names.get(String(r.directory_entry_id)) ?? null),
+        returned: returns.get(String(r.referral_id)) ?? null,
+      }));
     });
     await audit(req, { action: 'READ', resourceType: 'tc_referral', resourceId: null, result: 'SUCCESS', office, sourceRef: `hyg_visit:${aptNum}` });
     return res.json({ success: true, referrals });

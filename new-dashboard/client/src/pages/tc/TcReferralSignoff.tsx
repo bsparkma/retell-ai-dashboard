@@ -8,10 +8,15 @@
  *
  * NOTHING SENDS. Approving says so honestly: "Ready to send — sending ships in
  * a later update." Every state shown is the server's answer after the change.
+ *
+ * R6 (item 56): the doctor may EDIT what they are signing — specialist, how
+ * soon, reason, teeth — and add their own note, and may SEND IT BACK with a
+ * question instead of approving or declining. The submitter sees
+ * "Returned by Dr. — <question>". Approve's rules are unchanged.
  */
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Check, Loader2, RefreshCw, X } from "lucide-react";
+import { Check, CornerUpLeft, Loader2, Pencil, RefreshCw, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -29,11 +34,16 @@ import { TcOfficeGate, TcPageHeader, useTcOffice } from "@/features/tc/component
 import {
   approveReferral,
   declineReferral,
+  doctorEditReferral,
   getSignoffReferral,
   listReferralAttachments,
+  listSignoffDirectory,
   listSignoffQueue,
   openReferralAttachment,
+  returnReferral,
 } from "@/features/tc/referrals/referralsApi";
+import { ReferralFieldsForm, type ReferralFieldsChange } from "@/features/tc/referrals/ReferralFieldsForm";
+import { referralEventLabel } from "@/features/tc/referrals/ReferralTimeline";
 import {
   AttachmentList,
   ReferralStatusBadge,
@@ -47,6 +57,7 @@ import {
   TC_REFERRAL_URGENCY_LABELS,
   type TcReferral,
   type TcReferralAttachment,
+  type TcReferralDirectoryEntry,
 } from "@shared/tc/referrals";
 
 function when(iso: string): string {
@@ -75,6 +86,12 @@ export function SignoffInner({ office }: { office: OfficeId }) {
   const [reason, setReason] = useState("");
   const [done, setDone] = useState<TcReferral | null>(null);
   const [openFiles, setOpenFiles] = useState<TcReferralAttachment[]>([]);
+  // R6: the doctor's edit, and "send back with a question".
+  const [editing, setEditing] = useState(false);
+  const [entries, setEntries] = useState<TcReferralDirectoryEntry[]>([]);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [returning, setReturning] = useState(false);
+  const [question, setQuestion] = useState("");
 
   const load = useCallback(() => {
     setError(null);
@@ -87,9 +104,19 @@ export function SignoffInner({ office }: { office: OfficeId }) {
     load();
   }, [load]);
 
+  function resetPanel() {
+    setDeclining(false);
+    setReason("");
+    setEditing(false);
+    setEditError(null);
+    setReturning(false);
+    setQuestion("");
+  }
+
   async function openOne(r: TcReferral) {
     setDone(null);
     setOpenFiles([]);
+    resetPanel();
     try {
       setOpen(await getSignoffReferral(office, r.referralId));
       // The X-rays the TC or hygienist attached (item 55). Each view is audited.
@@ -134,6 +161,50 @@ export function SignoffInner({ office }: { office: OfficeId }) {
     }
   }
 
+  function startEdit() {
+    if (!open) return;
+    setEditError(null);
+    setEditing(true);
+    listSignoffDirectory(office)
+      .then(setEntries)
+      .catch(() => setEntries([]));
+  }
+
+  /** The doctor's edit. The card shows what the server stored, nothing sooner. */
+  async function saveEdit(change: ReferralFieldsChange) {
+    if (!open) return;
+    setBusy(true);
+    setEditError(null);
+    try {
+      const r = await doctorEditReferral(office, open.referralId, change);
+      setOpen(r);
+      setEditing(false);
+      toast.success("Changes saved — still awaiting your sign-off");
+    } catch (e) {
+      setEditError(tcErrorMessage(e));
+    } finally {
+      setBusy(false);
+      load();
+    }
+  }
+
+  async function sendBack() {
+    if (!open || !question.trim()) return;
+    setBusy(true);
+    try {
+      const r = await returnReferral(office, open.referralId, question.trim());
+      setDone(r);
+      setOpen(null);
+      resetPanel();
+      toast.success("Sent back with your question");
+    } catch (e) {
+      toast.error(tcErrorMessage(e));
+    } finally {
+      setBusy(false);
+      load();
+    }
+  }
+
   return (
     <div className="p-6 space-y-4">
       <TcPageHeader title="Awaiting sign-off" subtitle="Referrals waiting for the doctor. Nothing is sent from here yet." />
@@ -144,7 +215,9 @@ export function SignoffInner({ office }: { office: OfficeId }) {
           data-testid="tc-signoff-done"
         >
           <span>
-            {done.patientName}: {TC_REFERRAL_STATUS_LABELS[done.status].toLowerCase()}.
+            {done.status === "draft"
+              ? `${done.patientName}: sent back with your question.`
+              : `${done.patientName}: ${TC_REFERRAL_STATUS_LABELS[done.status].toLowerCase()}.`}
             {done.status === "approved" ? ` ${REFERRAL_READY_TO_SEND_COPY}` : ""}
           </span>
           <ReferralStatusBadge status={done.status} />
@@ -212,7 +285,31 @@ export function SignoffInner({ office }: { office: OfficeId }) {
                 <dd>{open.referringProvider || "—"}</dd>
                 <dt className="text-muted-foreground">Notes</dt>
                 <dd className="whitespace-pre-wrap">{open.narrative || "—"}</dd>
+                {open.doctorNote && (
+                  <>
+                    <dt className="text-muted-foreground">Your note</dt>
+                    <dd className="whitespace-pre-wrap" data-testid="tc-signoff-doctor-note">
+                      {open.doctorNote}
+                    </dd>
+                  </>
+                )}
               </dl>
+              {editing && (
+                <ReferralFieldsForm
+                  referral={open}
+                  entries={entries}
+                  withDoctorNote
+                  saving={busy}
+                  serverError={editError}
+                  saveLabel="Save changes"
+                  hint="Your changes are saved to the referral and recorded in its history. It still waits for your sign-off."
+                  onSave={(c) => void saveEdit(c)}
+                  onCancel={() => {
+                    setEditing(false);
+                    setEditError(null);
+                  }}
+                />
+              )}
               <AttachmentList
                 attachments={openFiles}
                 onView={(a) =>
@@ -223,7 +320,7 @@ export function SignoffInner({ office }: { office: OfficeId }) {
                 <ol className="text-xs text-muted-foreground space-y-0.5 border-t border-border pt-2">
                   {open.events.map((e) => (
                     <li key={e.eventId}>
-                      {when(e.at)} · {TC_REFERRAL_STATUS_LABELS[e.toStatus]} · {e.actor}
+                      {when(e.at)} · {referralEventLabel(e)} · {e.actor}
                       {e.note ? ` · ${e.note}` : ""}
                     </li>
                   ))}
@@ -235,8 +332,33 @@ export function SignoffInner({ office }: { office: OfficeId }) {
                   <Textarea id="so-reason" rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />
                 </div>
               ) : null}
-              <DialogFooter className="gap-2">
-                {declining ? (
+              {returning ? (
+                <div className="space-y-1">
+                  <Label htmlFor="so-question">What do you need from them?</Label>
+                  <Textarea
+                    id="so-question"
+                    rows={2}
+                    maxLength={1000}
+                    value={question}
+                    onChange={(e) => setQuestion(e.target.value)}
+                    placeholder="e.g. Which tooth — 3 or 14? Please attach the PA."
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    It goes back to whoever submitted it as a draft, with your question.
+                  </p>
+                </div>
+              ) : null}
+              <DialogFooter className="gap-2 flex-wrap">
+                {returning ? (
+                  <>
+                    <Button variant="outline" onClick={() => setReturning(false)} disabled={busy}>
+                      Back
+                    </Button>
+                    <Button onClick={() => void sendBack()} disabled={busy || !question.trim()}>
+                      Send back
+                    </Button>
+                  </>
+                ) : declining ? (
                   <>
                     <Button variant="outline" onClick={() => setDeclining(false)} disabled={busy}>
                       Back
@@ -247,10 +369,20 @@ export function SignoffInner({ office }: { office: OfficeId }) {
                   </>
                 ) : (
                   <>
-                    <Button variant="outline" onClick={() => setDeclining(true)} disabled={busy}>
+                    {!editing && (
+                      <>
+                        <Button variant="ghost" onClick={startEdit} disabled={busy}>
+                          <Pencil className="w-4 h-4" /> Edit
+                        </Button>
+                        <Button variant="outline" onClick={() => setReturning(true)} disabled={busy}>
+                          <CornerUpLeft className="w-4 h-4" /> Send back with a question
+                        </Button>
+                      </>
+                    )}
+                    <Button variant="outline" onClick={() => setDeclining(true)} disabled={busy || editing}>
                       <X className="w-4 h-4" /> Decline
                     </Button>
-                    <Button onClick={() => void approve()} disabled={busy}>
+                    <Button onClick={() => void approve()} disabled={busy || editing}>
                       {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />} Approve
                     </Button>
                   </>

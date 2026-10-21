@@ -52,6 +52,7 @@ import {
   MessageSquare,
   DoorOpen,
   Stamp,
+  Forward,
 } from "lucide-react";
 import { api, isRateLimited } from "@/lib/api";
 import { usePolling } from "@/hooks/usePolling";
@@ -63,6 +64,7 @@ import { isTcSharedRoute, resolveTcOfficeScope } from "@/features/tc/officeScope
 import { getUnseenTotal } from "@/features/tc/messaging/messagingApi";
 import { useCheckoutWatch } from "@/features/tc/checkout/useCheckoutWatch";
 import { useSignoffWatch } from "@/features/tc/referrals/useSignoffWatch";
+import { useReferralsOn } from "@/features/tc/referrals/useReferralsOn";
 import type { OfficeId } from "@shared/tc/contract";
 import { TcGlobalSearch } from "@/features/tc/search/TcGlobalSearch";
 import { can, canVisit } from "@/lib/permissions";
@@ -203,6 +205,10 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
         // in scope (see `signoff.enabled` below), with a waiting-count badge.
         // For a `doctor` it is the whole TC nav.
         { path: "/tc/referrals/signoff", label: "Awaiting sign-off", icon: Stamp },
+        // Item 56: the Referrals hub. tc.full through ROUTE_PERMISSIONS ("/tc"),
+        // so a `doctor` never sees it; shown only while referrals is on for an
+        // office in scope (see `referralsOn` below).
+        { path: "/tc/referrals", label: "Referrals", icon: Forward },
         { path: "/tc/preauth", label: "Pre-Auth", icon: ShieldCheck },
       ],
     },
@@ -457,6 +463,8 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
       ? resolveTcOfficeScope({ selection: office, roster: offices }).offices
       : [];
   const signoff = useSignoffWatch(signoffInScope, can(permissionsForTexts, "tc.full"));
+  /** Item 56: the hub nav item, for tc.full holders while referrals is on somewhere in scope. */
+  const referralsOn = useReferralsOn(tcTextsInScope);
 
   const handleNavClick = () => {
     setSidebarOpen(false);
@@ -502,6 +510,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
       .map((g) => ({ ...g, items: g.items.filter((i) => i.path !== "/tc/checkout" || checkout.enabled) }))
       // Referrals ships dark per office too: no office on ⇒ no sign-off item.
       .map((g) => ({ ...g, items: g.items.filter((i) => i.path !== "/tc/referrals/signoff" || signoff.enabled) }))
+      .map((g) => ({ ...g, items: g.items.filter((i) => i.path !== "/tc/referrals" || referralsOn) }))
       .filter((g) => g.items.length > 0),
     ...(isSuperAdmin ? [PLATFORM_GROUP] : []),
   ];

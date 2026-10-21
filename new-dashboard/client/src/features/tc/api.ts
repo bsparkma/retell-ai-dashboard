@@ -120,7 +120,7 @@ export function tcErrorMessage(err: unknown): string {
 // ── Core request ────────────────────────────────────────────────────────────
 
 export interface TcRequestOptions {
-  method?: "GET" | "POST" | "PUT" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   office: OfficeId;
   params?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
