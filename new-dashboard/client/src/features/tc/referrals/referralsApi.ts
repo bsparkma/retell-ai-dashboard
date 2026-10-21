@@ -14,6 +14,9 @@ import {
   TcReferralSignoffSummary,
   TcReferralAttachment,
   type TcReferralDirectoryInput,
+  type TcReferralDoctorEdit,
+  type TcReferralFieldsEdit,
+  type TcReferralHubQuery,
   type TcReferralInput,
 } from "@shared/tc/referrals";
 import type { OfficeId } from "@shared/tc/contract";
@@ -165,6 +168,94 @@ export async function declineReferral(office: OfficeId, referralId: string, reas
       office,
       method: "POST",
       body: { reason },
+    }),
+  ).referral;
+}
+
+// ── R6 (item 56): the hub, edits, return, the manual marks ──────────────────
+
+/** Every referral for the office (tc.full), narrowed by the hub's filters. Audited. */
+export async function listHub(office: OfficeId, filter: TcReferralHubQuery = {}): Promise<TcReferral[]> {
+  const params: Record<string, string> = {};
+  for (const [k, v] of Object.entries(filter)) if (v !== undefined && v !== "") params[k] = String(v);
+  return parse(ReferralListResponse, await tcRequest<unknown>("/tc/referrals/hub", { office, params })).referrals;
+}
+
+/** Staff field edit — a draft or one awaiting sign-off. */
+export async function editReferralFields(
+  office: OfficeId,
+  referralId: string,
+  fields: TcReferralFieldsEdit,
+): Promise<TcReferral> {
+  return parse(
+    ReferralResponse,
+    await tcRequest<unknown>(`/tc/referrals/${referralId}/fields`, { office, method: "PATCH", body: fields }),
+  ).referral;
+}
+
+/** Approved → back to sign-off, with the edit in the same step. */
+export async function reopenReferral(
+  office: OfficeId,
+  referralId: string,
+  fields?: TcReferralFieldsEdit,
+): Promise<TcReferral> {
+  return parse(
+    ReferralResponse,
+    await tcRequest<unknown>(`/tc/referrals/${referralId}/reopen`, {
+      office,
+      method: "POST",
+      body: fields ? { fields } : {},
+    }),
+  ).referral;
+}
+
+/** The marks: a person's record of what happened OUTSIDE the app. They send nothing. */
+export type ReferralMark = "mark_sent" | "mark_acknowledged" | "mark_patient_seen" | "close";
+const MARK_PATHS: Record<ReferralMark, string> = {
+  mark_sent: "mark-sent",
+  mark_acknowledged: "mark-acknowledged",
+  mark_patient_seen: "mark-patient-seen",
+  close: "close",
+};
+
+export async function markReferral(
+  office: OfficeId,
+  referralId: string,
+  mark: ReferralMark,
+  text: string,
+): Promise<TcReferral> {
+  const body = mark === "mark_sent" ? { how: text } : text.trim() ? { note: text } : {};
+  return parse(
+    ReferralResponse,
+    await tcRequest<unknown>(`/tc/referrals/${referralId}/${MARK_PATHS[mark]}`, { office, method: "POST", body }),
+  ).referral;
+}
+
+/** The doctor's view of the office's active specialists (the directory itself is tc.full). */
+export async function listSignoffDirectory(office: OfficeId): Promise<TcReferralDirectoryEntry[]> {
+  return parse(ListResponse, await tcRequest<unknown>("/tc/referrals/signoff/directory", { office })).entries;
+}
+
+/** The doctor edits at sign-off. */
+export async function doctorEditReferral(
+  office: OfficeId,
+  referralId: string,
+  fields: TcReferralDoctorEdit,
+): Promise<TcReferral> {
+  return parse(
+    ReferralResponse,
+    await tcRequest<unknown>(`/tc/referrals/signoff/${referralId}/fields`, { office, method: "PATCH", body: fields }),
+  ).referral;
+}
+
+/** Send it back to the submitter with a question (required). */
+export async function returnReferral(office: OfficeId, referralId: string, comment: string): Promise<TcReferral> {
+  return parse(
+    ReferralResponse,
+    await tcRequest<unknown>(`/tc/referrals/signoff/${referralId}/return`, {
+      office,
+      method: "POST",
+      body: { comment },
     }),
   ).referral;
 }

@@ -214,7 +214,36 @@ export const TcReferralDeclineRequest = z
   .strict();
 export type TcReferralDeclineRequest = z.infer<typeof TcReferralDeclineRequest>;
 
-/** One transition, as the referral's history shows it. */
+/**
+ * What an event row records (R6, item 56). The DB CHECK on
+ * tc_referral_events.verb (1792000000000) carries exactly these; a migration
+ * test pins them equal. NULL on rows written before R6.
+ *
+ *   create        the referral was started (from_status NULL)
+ *   edit          staff changed fields; the status did not move (from = to)
+ *   doctor_edit   the doctor changed fields at sign-off (from = to)
+ *   …and every TcReferralVerb below, for a status move.
+ */
+export const TC_REFERRAL_EVENT_VERBS = [
+  "create",
+  "edit",
+  "doctor_edit",
+  "submit",
+  "withdraw",
+  "cancel",
+  "approve",
+  "decline",
+  "reopen",
+  "return",
+  "mark_sent",
+  "mark_acknowledged",
+  "mark_patient_seen",
+  "close",
+] as const;
+export const TcReferralEventVerb = z.enum(TC_REFERRAL_EVENT_VERBS);
+export type TcReferralEventVerb = z.infer<typeof TcReferralEventVerb>;
+
+/** One transition (or, since R6, one edit), as the referral's history shows it. */
 export const TcReferralEvent = z.object({
   eventId: z.string().uuid(),
   fromStatus: TcReferralStatus.nullable(),
@@ -222,6 +251,8 @@ export const TcReferralEvent = z.object({
   actor: z.string(),
   at: z.string(),
   note: z.string(),
+  /** R6: what happened. null on rows written before R6. */
+  verb: TcReferralEventVerb.nullable().optional(),
 });
 export type TcReferralEvent = z.infer<typeof TcReferralEvent>;
 
@@ -251,6 +282,15 @@ export const TcReferral = z.object({
   updatedAt: z.string(),
   /** Only on the detail read. */
   events: z.array(TcReferralEvent).optional(),
+  /** R6: the doctor's own note, written at sign-off. null when none. */
+  doctorNote: z.string().nullable().optional(),
+  /** R6: only on the hub list — how many files are attached. */
+  attachmentCount: z.number().int().nonnegative().optional(),
+  /**
+   * R6: set while a draft's latest STATUS MOVE is the doctor's `return` — the
+   * question the submitter must answer. null otherwise. On list and detail reads.
+   */
+  returned: z.object({ note: z.string(), actor: z.string(), at: z.string() }).nullable().optional(),
 });
 export type TcReferral = z.infer<typeof TcReferral>;
 
@@ -263,10 +303,33 @@ export type TcReferral = z.infer<typeof TcReferral>;
  *   approve   pending_signoff → approved                (tc.referral_signoff)
  *   decline   pending_signoff → declined, with a reason (tc.referral_signoff)
  *
- * NOTHING SENDS. `approved`, `declined` and `cancelled` are terminal in R2;
- * sent / acknowledged / patient_seen / closed arrive with sending (R5).
+ * R6 (item 56) adds:
+ *   reopen             approved → pending_signoff, to edit before it goes out;
+ *                      it needs the doctor's sign-off again           (tc.full)
+ *   return             pending_signoff → draft, with the doctor's question
+ *                      (a comment is required)             (tc.referral_signoff)
+ *   mark_sent          approved → sent          ┐ HUMAN ATTESTATIONS of things
+ *   mark_acknowledged  sent → acknowledged      │ that happened OUTSIDE the app,
+ *   mark_patient_seen  acknowledged → patient_seen │ for the world before
+ *   close              patient_seen → closed    ┘ sending exists     (tc.full)
+ *
+ * NOTHING SENDS. The four marks record what a person says happened; none of
+ * them emails, faxes or triggers anything, and `autosend_on_approval` stays
+ * consumed by nothing. They are the ONLY way into sent and beyond.
  */
-export const TcReferralVerb = z.enum(["submit", "withdraw", "cancel", "approve", "decline"]);
+export const TcReferralVerb = z.enum([
+  "submit",
+  "withdraw",
+  "cancel",
+  "approve",
+  "decline",
+  "reopen",
+  "return",
+  "mark_sent",
+  "mark_acknowledged",
+  "mark_patient_seen",
+  "close",
+]);
 export type TcReferralVerb = z.infer<typeof TcReferralVerb>;
 
 /**
@@ -289,11 +352,179 @@ export function referralNextStatus(
       return from === "pending_signoff" ? "approved" : null;
     case "decline":
       return from === "pending_signoff" ? "declined" : null;
+    // Back to sign-off even when this office does not require it: an approved
+    // referral that changes is re-read by a doctor before it goes anywhere.
+    case "reopen":
+      return from === "approved" ? "pending_signoff" : null;
+    case "return":
+      return from === "pending_signoff" ? "draft" : null;
+    case "mark_sent":
+      return from === "approved" ? "sent" : null;
+    case "mark_acknowledged":
+      return from === "sent" ? "acknowledged" : null;
+    case "mark_patient_seen":
+      return from === "acknowledged" ? "patient_seen" : null;
+    case "close":
+      return from === "patient_seen" ? "closed" : null;
   }
 }
 
-/** Only a draft can be edited: a doctor signs off what they read. */
+/** Only a draft can be edited through the full form (PUT): a doctor signs off what they read. */
 export const REFERRAL_EDITABLE_STATUSES: readonly TcReferralStatus[] = ["draft"];
+
+// ── R6 (item 56): the hub, field edits, the doctor's edits, the marks ──────
+
+/**
+ * Where staff may change the four sign-off fields without moving the status
+ * (PATCH /:id/fields). Approved needs `reopen` first; sent and beyond never.
+ */
+export const REFERRAL_FIELD_EDITABLE_STATUSES: readonly TcReferralStatus[] = ["draft", "pending_signoff"];
+
+/** Where the doctor may edit at sign-off (PATCH /signoff/:id/fields). */
+export const REFERRAL_DOCTOR_EDITABLE_STATUSES: readonly TcReferralStatus[] = ["pending_signoff"];
+
+export const TC_REFERRAL_DOCTOR_NOTE_MAX = 4000;
+
+/** The four fields both edit surfaces share. At least one must be present. */
+const fieldShape = {
+  directoryEntryId: z.string().uuid().nullable().optional(),
+  urgency: TcReferralUrgency.optional(),
+  reason: z.string().trim().min(1, "Say why you are referring").max(2000).optional(),
+  teeth: TcReferralTeeth.optional(),
+};
+const hasAnyField = (v: Record<string, unknown>) => Object.values(v).some((x) => x !== undefined);
+
+/** PATCH /api/tc/referrals/:id/fields — staff (tc.full), draft or awaiting sign-off. */
+export const TcReferralFieldsEdit = z.object(fieldShape).strict().refine(hasAnyField, "Nothing to change");
+export type TcReferralFieldsEdit = z.infer<typeof TcReferralFieldsEdit>;
+
+/** PATCH /api/tc/referrals/signoff/:id/fields — the doctor, at sign-off. */
+export const TcReferralDoctorEdit = z
+  .object({
+    ...fieldShape,
+    doctorNote: z.string().trim().max(TC_REFERRAL_DOCTOR_NOTE_MAX).nullable().optional(),
+  })
+  .strict()
+  .refine(hasAnyField, "Nothing to change");
+export type TcReferralDoctorEdit = z.infer<typeof TcReferralDoctorEdit>;
+
+/** POST /api/tc/referrals/:id/reopen — back to sign-off, with the edit in the same step. */
+export const TcReferralReopenRequest = z
+  .object({ fields: TcReferralFieldsEdit.optional() })
+  .strict();
+export type TcReferralReopenRequest = z.infer<typeof TcReferralReopenRequest>;
+
+/** POST /api/tc/referrals/signoff/:id/return — the doctor's question is required. */
+export const TcReferralReturnRequest = z
+  .object({ comment: z.string().trim().min(1, "Say what you need").max(1000) })
+  .strict();
+export type TcReferralReturnRequest = z.infer<typeof TcReferralReturnRequest>;
+
+/** POST /api/tc/referrals/:id/mark-sent — how / where it went, in a few words. */
+export const TcReferralMarkSentRequest = z
+  .object({ how: z.string().trim().min(1, "Say how it was sent").max(300) })
+  .strict();
+export type TcReferralMarkSentRequest = z.infer<typeof TcReferralMarkSentRequest>;
+
+/** POST mark-acknowledged / mark-patient-seen / close — an optional note. */
+export const TcReferralMarkRequest = z.object({ note: z.string().trim().max(300).optional() }).strict();
+export type TcReferralMarkRequest = z.infer<typeof TcReferralMarkRequest>;
+
+/** The hub's groups, in the order the page draws them. */
+export type TcReferralHubGroup = "drafts" | "signoff" | "ready" | "sent" | "seen" | "done";
+
+export const TC_REFERRAL_HUB_GROUPS: readonly { key: TcReferralHubGroup; label: string; statuses: readonly TcReferralStatus[] }[] = [
+  { key: "drafts", label: "Drafts", statuses: ["draft"] },
+  { key: "signoff", label: "Awaiting sign-off", statuses: ["pending_signoff"] },
+  { key: "ready", label: "Ready to send", statuses: ["approved"] },
+  { key: "sent", label: "Sent", statuses: ["sent", "acknowledged"] },
+  { key: "seen", label: "Patient seen", statuses: ["patient_seen"] },
+  { key: "done", label: "Closed / declined / cancelled", statuses: ["closed", "declined", "cancelled"] },
+];
+
+/** Which hub group a status belongs to. Pure. */
+export function referralHubGroup(status: TcReferralStatus): TcReferralHubGroup {
+  const g = TC_REFERRAL_HUB_GROUPS.find((x) => x.statuses.includes(status));
+  return g ? g.key : "done";
+}
+
+/** GET /api/tc/referrals/hub — query filters (all optional). */
+export const TcReferralHubQuery = z
+  .object({
+    status: TcReferralStatus.optional(),
+    directoryEntryId: z.string().uuid().optional(),
+    sourceKind: TcReferralSourceKind.optional(),
+    /** Only referrals that have sat in their status at least this many days. */
+    minAgeDays: z.coerce.number().int().min(0).max(3650).optional(),
+  })
+  .strict();
+export type TcReferralHubQuery = z.infer<typeof TcReferralHubQuery>;
+
+/** "in sign-off 3d" — how long a referral has sat where it is. Pure. */
+export function referralStatusAge(status: TcReferralStatus, statusChangedAt: string, now: Date): string {
+  const ms = now.getTime() - new Date(statusChangedAt).getTime();
+  const days = Math.max(0, Math.floor(ms / 86_400_000));
+  const where: Record<TcReferralStatus, string> = {
+    draft: "draft",
+    pending_signoff: "in sign-off",
+    approved: "ready",
+    sent: "sent",
+    acknowledged: "acknowledged",
+    patient_seen: "seen",
+    closed: "closed",
+    declined: "declined",
+    cancelled: "cancelled",
+  };
+  return `${where[status]} ${days < 1 ? "<1d" : `${days}d`}`;
+}
+
+/**
+ * The manual marks' honest labels — these record what a person says happened
+ * outside the app; they send nothing.
+ */
+export const REFERRAL_MARK_LABELS = {
+  mark_sent: "Mark sent outside the app",
+  mark_acknowledged: "Specialist acknowledged (outside the app)",
+  mark_patient_seen: "Patient seen by specialist",
+  close: "Close referral",
+} as const;
+
+/**
+ * The doctor's open question on a referral they sent back: present while the
+ * latest STATUS MOVE is the return (edits since then do not hide it; a
+ * resubmit, withdraw or cancel does). Events are oldest first. Pure.
+ */
+export function referralLastReturn(
+  events: readonly TcReferralEvent[] | undefined,
+): { note: string; actor: string; at: string } | null {
+  const moves = (events ?? []).filter((e) => e.verb !== "edit" && e.verb !== "doctor_edit" && e.verb !== "create");
+  const last = moves[moves.length - 1];
+  if (!last || last.verb !== "return") return null;
+  return { note: last.note, actor: last.actor, at: last.at };
+}
+
+/** The submitter's line for a referral the doctor sent back. Pure. */
+export function referralReturnedLine(returned: { note: string } | null | undefined): string | null {
+  return returned ? `Returned by Dr. — ${returned.note}` : null;
+}
+
+/** The fields an edit changed, in words for the history ("specialist, how soon"). Pure. */
+export function referralEditSummary(
+  before: { directoryEntryId: string | null; urgency: TcReferralUrgency; reason: string; teeth: TcReferralTeeth; doctorNote?: string | null },
+  change: { directoryEntryId?: string | null; urgency?: TcReferralUrgency; reason?: string; teeth?: TcReferralTeeth; doctorNote?: string | null },
+): string[] {
+  const out: string[] = [];
+  if (change.directoryEntryId !== undefined && change.directoryEntryId !== before.directoryEntryId) out.push("specialist");
+  if (change.urgency !== undefined && change.urgency !== before.urgency) {
+    out.push(`how soon (${TC_REFERRAL_URGENCY_LABELS[before.urgency]} → ${TC_REFERRAL_URGENCY_LABELS[change.urgency]})`);
+  }
+  if (change.reason !== undefined && change.reason !== before.reason) out.push("reason");
+  if (change.teeth !== undefined && JSON.stringify(change.teeth) !== JSON.stringify(before.teeth)) out.push("teeth");
+  if (change.doctorNote !== undefined && (change.doctorNote || null) !== (before.doctorNote ?? null)) {
+    out.push("doctor's note");
+  }
+  return out;
+}
 
 /**
  * The checkout sidebar's chip (item 50's placeholder goes live): what this

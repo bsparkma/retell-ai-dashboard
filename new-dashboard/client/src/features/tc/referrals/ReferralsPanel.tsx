@@ -54,6 +54,7 @@ import {
   TcReferralInput,
   TcReferralUrgency,
   referralChipFor,
+  referralReturnedLine,
   type TcReferral,
   type TcReferralAttachment,
   type TcReferralDirectoryEntry,
@@ -68,6 +69,10 @@ const STATUS_TONE: Partial<Record<TcReferralStatus, string>> = {
   pending_signoff: "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-300",
   approved: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
   declined: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
+  // R6: reachable now through the manual marks.
+  sent: "bg-sky-100 text-sky-900 dark:bg-sky-950 dark:text-sky-300",
+  acknowledged: "bg-sky-100 text-sky-900 dark:bg-sky-950 dark:text-sky-300",
+  patient_seen: "bg-violet-100 text-violet-900 dark:bg-violet-950 dark:text-violet-300",
 };
 
 export function ReferralStatusBadge({ status }: { status: TcReferralStatus }) {
@@ -549,6 +554,14 @@ export function ReferralsPanel({ office, source, compact = false }: ReferralsPan
             {[r.specialty, teethLabel(r.teeth), TC_REFERRAL_URGENCY_LABELS[r.urgency]].filter(Boolean).join(" · ")}
           </p>
           <p className="text-sm text-foreground">{r.reason}</p>
+          {referralReturnedLine(r.returned) && (
+            <p
+              className="rounded-md bg-amber-50 px-2 py-1 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+              data-testid="tc-referral-returned"
+            >
+              {referralReturnedLine(r.returned)}
+            </p>
+          )}
           <AttachmentList
             attachments={files[r.referralId] ?? []}
             onView={(a) => void viewAttachment(() => openReferralAttachment(office, r.referralId, a.attachmentId))}

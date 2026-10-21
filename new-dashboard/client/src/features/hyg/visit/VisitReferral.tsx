@@ -30,7 +30,7 @@ import {
 } from "@/features/hyg/api";
 import { ReferralDialog, ReferralStatusBadge, reportFailedUploads, uploadAll } from "@/features/tc/referrals/ReferralsPanel";
 import type { OfficeId } from "@shared/tc/contract";
-import type { TcReferral, TcReferralInput } from "@shared/tc/referrals";
+import { referralReturnedLine, type TcReferral, type TcReferralInput } from "@shared/tc/referrals";
 
 export function VisitReferral({ office, aptNum }: { office: OfficeId; aptNum: number }) {
   const [available, setAvailable] = useState(false);
@@ -110,6 +110,13 @@ export function VisitReferral({ office, aptNum }: { office: OfficeId; aptNum: nu
           {referrals.length === 1 ? "1 referral" : `${referrals.length} referrals`}
           <ReferralStatusBadge status={latest.status} />
         </span>
+      )}
+      {drafts.map((d) =>
+        referralReturnedLine(d.returned) ? (
+          <span key={`${d.referralId}:q`} className="text-xs font-medium text-amber-800 dark:text-amber-300" data-testid="hyg-visit-referral-returned">
+            {referralReturnedLine(d.returned)}
+          </span>
+        ) : null,
       )}
       {drafts.map((d) => (
         <Button
