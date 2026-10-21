@@ -439,6 +439,13 @@ describe("the submitter sees the doctor's question", () => {
 
 // ── screenshot dumps ────────────────────────────────────────────────────────
 
+/** jsdom keeps a select's choice as a property; write it into the markup so the shot shows it. */
+function freezeSelects() {
+  for (const sel of Array.from(document.querySelectorAll("select"))) {
+    for (const o of Array.from(sel.options)) o.toggleAttribute("selected", o.value === sel.value);
+  }
+}
+
 const SHOOT = process.env.TC_SHOTS === "1";
 describe.skipIf(!SHOOT)("referrals R6 screenshot dumps", () => {
   const out = resolve(import.meta.dirname, ".shots");
@@ -450,6 +457,7 @@ describe.skipIf(!SHOOT)("referrals R6 screenshot dumps", () => {
     );
     await screen.findByTestId("tc-hub-group-drafts");
     await waitFor(() => expect(screen.getByLabelText("Specialist").querySelectorAll("option").length).toBe(3));
+    freezeSelects();
     mkdirSync(out, { recursive: true });
     writeFileSync(resolve(out, "tccheckout-11-referrals-hub@1280x900.html"), document.body.innerHTML, "utf8");
   });
@@ -469,7 +477,9 @@ describe.skipIf(!SHOOT)("referrals R6 screenshot dumps", () => {
     await act(async () => {
       fireEvent.change(within(form).getByLabelText("Doctor's note"), { target: { value: "Please see within the week; patient is symptomatic." } });
       fireEvent.change(within(form).getByLabelText("How soon"), { target: { value: "urgent" } });
+      fireEvent.change(within(form).getByLabelText("Specialist"), { target: { value: ENTRY2 } });
     });
+    freezeSelects();
     mkdirSync(out, { recursive: true });
     writeFileSync(resolve(out, "tccheckout-12-signoff-doctor-edit@1280x1100.html"), document.body.innerHTML, "utf8");
   });

@@ -186,8 +186,9 @@ export function ReferralFieldsForm({
         </div>
         <div className="space-y-1">
           <Label htmlFor="rff-teeth">Teeth</Label>
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
             <Input
+              className="min-w-0 flex-1"
               id="rff-teeth"
               value={s.teeth}
               disabled={s.wholeMouth || saving}
