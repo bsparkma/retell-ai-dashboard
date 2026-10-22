@@ -82,6 +82,7 @@ test('the replay found the tables the drain reads', () => {
     'rcm_posting_queue',
     'rcm_posting_queue_line',
     'rcm_payment_batches',
+    'rcm_posting_intent',
   ]) {
     assert.ok(SCHEMA.has(t), `${t} missing from the replayed schema — the replay is broken`);
   }
@@ -93,6 +94,16 @@ const COLUMN_LISTS = [
   ['rcm_posting_queue', postingDrain.QUEUE_COLUMNS],
   ['rcm_posting_queue_line', postingDrain.LINE_COLUMNS],
   ['rcm_claims', postingDrain.CLAIM_COLUMNS],
+  // W-21: the write-ahead log. INTENT_COLUMNS is the SELECT list; the INSERT's
+  // own column list is parsed out of its text so it cannot drift either.
+  ['rcm_posting_intent', require('../services/rcm/postingIntent').INTENT_COLUMNS],
+  [
+    'rcm_posting_intent',
+    require('../services/rcm/postingIntent')
+      .INTENT_QUERIES.insert.match(/\(([^)]+)\) VALUES/)[1]
+      .split(',')
+      .map((c) => c.trim()),
+  ],
 ];
 
 for (const [table, columns] of COLUMN_LISTS) {

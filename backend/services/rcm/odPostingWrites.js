@@ -92,6 +92,7 @@
 
 const odOffices = require('../../config/odOffices');
 const odPacer = require('./odPacer');
+const postingIntent = require('./postingIntent');
 
 /** Per-OD-call timeout. Same default and reasoning as the RCM read layer. */
 const OD_CALL_TIMEOUT_MS = 30000;
@@ -201,6 +202,57 @@ class OdWriteError extends Error {
     this.retryable =
       extra.retryable !== undefined ? extra.retryable : !(this.status >= 400 && this.status < 500);
     this.detail = extra.detail || '';
+  }
+}
+
+// ─── W-21: no write without a committed intent ───────────────────────────────
+
+/**
+ * The refusal codes that mean OPEN DENTAL ANSWERED NO to the write itself.
+ *
+ * Only these, with a 4xx status, let a caller settle an intent as `refused`.
+ * Every other throw out of a write function — a dead socket, a 5xx, a 201 with
+ * no id, a read-back that could not be read — leaves the write's outcome
+ * genuinely unknown, and the intent stays `pending` until a re-read settles it.
+ */
+const WRITE_REFUSAL_CODES = Object.freeze([
+  'OD_CLAIMPROC_WRITE_REFUSED',
+  'OD_CLAIM_WRITE_REFUSED',
+  'OD_CHECK_WRITE_REFUSED',
+  'OD_ADJUSTMENT_WRITE_REFUSED',
+  'OD_SUPPLEMENTAL_WRITE_REFUSED',
+  'OD_DOCUMENT_WRITE_REFUSED',
+]);
+
+/** Did Open Dental refuse this write outright, so nothing of it can be in the chart? */
+function isWriteRefusal(err) {
+  return (
+    err instanceof OdWriteError &&
+    WRITE_REFUSAL_CODES.includes(err.code) &&
+    err.status >= 400 &&
+    err.status < 500
+  );
+}
+
+/**
+ * REFUSE TO WRITE WITHOUT A RECEIPT.
+ *
+ * `postingIntent.recordIntent` hands one back only after its INSERT has
+ * committed. Checked here, at the top of every write function and before the
+ * transport is touched, so a caller that forgets the intent gets a loud
+ * refusal and Open Dental gets nothing — rather than a write nobody can account
+ * for after a crash. A plain object shaped like a receipt is not one.
+ *
+ * @param {unknown} intent
+ * @param {string} writeKind
+ */
+function assertIntent(intent, writeKind) {
+  if (!postingIntent.isReceiptFor(intent, writeKind)) {
+    throw new OdWriteError(
+      `refusing a ${writeKind} write with no committed intent (W-21)`,
+      'OD_WRITE_WITHOUT_INTENT',
+      { status: 0, retryable: false }
+    );
   }
 }
 
@@ -472,7 +524,8 @@ function compareClaim(sent, read) {
  * @returns {Promise<{ verdict: object, claimProcs: Record<string,unknown>[] }>}
  * @throws {OdWriteError} on a transport failure or an Open Dental refusal
  */
-async function writeClaimProcReceived(od, line) {
+async function writeClaimProcReceived(od, line, intent) {
+  assertIntent(intent, postingIntent.WRITE_KINDS.CLAIMPROC_RECEIVED);
   const sent = {
     Status: 'Received',
     InsPayAmt: centsToDollars(line.insPayAmtCents),
@@ -586,7 +639,8 @@ function appendClaimNote(existing, line, queueId) {
  * @param {{ claimNum: number, dateReceived: string, note: string|null }} claim
  * @returns {Promise<{ verdict: object, claim: Record<string,unknown> }>}
  */
-async function writeClaimReceived(od, claim) {
+async function writeClaimReceived(od, claim, intent) {
+  assertIntent(intent, postingIntent.WRITE_KINDS.CLAIM_RECEIVED);
   /** @type {Record<string, unknown>} */
   const sent = { ClaimStatus: 'R', DateReceived: claim.dateReceived };
   // Only sent when there is something to add — see appendClaimNote. A PUT that
@@ -670,7 +724,8 @@ function attachedCheckNum(row) {
  *           carrierName: string|null, note: string }} check
  * @returns {Promise<{ claimPaymentNum: number, raw: Record<string, unknown> }>}
  */
-async function writeClaimPayment(od, check) {
+async function writeClaimPayment(od, check, intent) {
+  assertIntent(intent, postingIntent.WRITE_KINDS.CLAIM_PAYMENT);
   const amount = centsToDollars(check.checkAmtCents);
 
   /** @type {Record<string, unknown>} */
@@ -838,7 +893,12 @@ function reconcileCheck(attached, planned) {
  *           adjDate: string, note: string, odProcNum: number|null }} adj
  * @returns {Promise<{ adjNum: number, verdict: object }>}
  */
-async function writeRecoupmentAdjustment(od, adj) {
+async function writeRecoupmentAdjustment(od, adj, intent) {
+  // One function, two intents: the takeback and the office's own write-off both
+  // book `POST /adjustments`, and each records which one it is.
+  if (!postingIntent.isReceiptFor(intent, postingIntent.WRITE_KINDS.WRITEOFF_ADJUSTMENT)) {
+    assertIntent(intent, postingIntent.WRITE_KINDS.RECOUPMENT_ADJUSTMENT);
+  }
   // Negative: this is money leaving the practice. `centsToDollars` carries the
   // sign through untouched, and the caller has already proven the type agrees.
   const amount = centsToDollars(adj.amountCents);
@@ -961,7 +1021,8 @@ async function readAdjustmentsForPatient(od, odPatientId) {
  *           note: string }} sup
  * @returns {Promise<{ claimProcNum: number|null, verdict: object }>}
  */
-async function writeRecoupmentSupplemental(od, sup) {
+async function writeRecoupmentSupplemental(od, sup, intent) {
+  assertIntent(intent, postingIntent.WRITE_KINDS.RECOUPMENT_SUPPLEMENTAL);
   const amount = centsToDollars(sup.insPayAmtCents);
 
   /** @type {Record<string, unknown>} */
@@ -1061,7 +1122,8 @@ async function writeRecoupmentSupplemental(od, sup) {
  *           base64: string, extension: string, dateCreated: string }} doc
  * @returns {Promise<{ docNum: number, verdict: object }>}
  */
-async function writeDocumentUpload(od, doc) {
+async function writeDocumentUpload(od, doc, intent) {
+  assertIntent(intent, postingIntent.WRITE_KINDS.DOCUMENT_UPLOAD);
   /** @type {Record<string, unknown>} */
   const sent = {
     PatNum: doc.odPatientId,
@@ -1160,6 +1222,9 @@ function buildDocumentDescription(ctx) {
 
 module.exports = {
   STEPS,
+  WRITE_REFUSAL_CODES,
+  isWriteRefusal,
+  assertIntent,
   OD_CALL_TIMEOUT_MS,
   OD_DOCUMENT_TIMEOUT_MS,
   CLAIMPROC_VERIFY_FIELDS,

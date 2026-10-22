@@ -301,6 +301,8 @@ const TERMINAL_QUEUE_STATUSES = Object.freeze([
   'partially_posted',
   'failed',
   'blocked',
+  // W-21: a drain has had it, and may have written. It takes no more claims.
+  'outcome_unknown',
 ]);
 
 /**
@@ -348,6 +350,7 @@ const PLAN_STATUS_WORDS = Object.freeze({
   partially_posted: 'stopped part-way',
   failed: 'failed',
   blocked: 'blocked',
+  outcome_unknown: 'stopped mid-write, not yet confirmed either way',
 });
 
 /**
@@ -456,6 +459,18 @@ function alreadyRanMessage(status) {
       'The posting run for this remittance has already put money in Open Dental and stopped ' +
       'part-way, so this claim cannot join it. Resolve that run on the Posting screen first; ' +
       'this claim posts by hand in Open Dental.'
+    );
+  }
+  if (status === 'outcome_unknown') {
+    /*
+     * W-21. A write was sent and nothing has read the chart since, so this
+     * cannot say money moved and must not say it did not.
+     */
+    return (
+      'The posting run for this remittance stopped while sending a write to Open Dental, and ' +
+      'whether it landed is not confirmed yet, so this claim cannot join it. Press Post on the ' +
+      'Posting screen first — it re-reads Open Dental before anything else. Do not enter that ' +
+      "remittance's payment by hand; this claim posts by hand in Open Dental."
     );
   }
   // `failed` and `blocked`: a drain has had the plan and it is not accepting

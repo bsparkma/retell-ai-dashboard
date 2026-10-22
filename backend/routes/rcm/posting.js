@@ -826,7 +826,12 @@ router.post(
             'queue disagree with Open Dental — reverse it in Open Dental instead.'
           : outcome.status === 'posting'
             ? 'A run holds this plan right now. Wait for it to finish.'
-            : `A plan in '${outcome.status}' cannot be retired.`,
+            : outcome.status === 'outcome_unknown'
+              ? // W-21: it may have put money in the chart, and nothing has read
+                // the chart since. Retiring it would hide that possibility.
+                'This plan sent a write to Open Dental that has not been confirmed either way. ' +
+                'Press Post first — it re-reads Open Dental and settles what landed.'
+              : `A plan in '${outcome.status}' cannot be retired.`,
         code: 'WITHDRAW_NOT_ALLOWED',
         status: outcome.status,
       });
@@ -1068,6 +1073,21 @@ router.post(
     }
 
     const status = String(plan.queue.status);
+    if (status === 'outcome_unknown') {
+      /*
+       * W-21: "Nothing has been posted" would be false here — something may
+       * have been, and that is the whole meaning of the state. Its own code,
+       * so nothing that switches on `NOTHING_POSTED_YET` reads it as that.
+       */
+      return res.status(409).json({
+        success: false,
+        error:
+          'Whether this check reached Open Dental is not settled yet. Press Post — it re-reads ' +
+          'Open Dental and settles what landed before anything else happens.',
+        code: 'OUTCOME_NOT_SETTLED',
+        status,
+      });
+    }
     if (status !== 'posted' && status !== 'partially_posted') {
       return res.status(409).json({
         success: false,

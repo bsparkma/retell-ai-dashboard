@@ -1974,6 +1974,13 @@ export const POSTING_QUEUE_STATUSES = [
    * a ClaimNum is never reissued. A withdrawn plan cannot be pressed at all.
    */
   "withdrawn",
+  /**
+   * W-21. A write was sent to Open Dental and nothing has read the chart since,
+   * so whether it landed is not known. Never `failed` (that would say nothing
+   * moved) and never `posted`. Drainable: the next press re-reads Open Dental
+   * and settles it before anything is retried.
+   */
+  "outcome_unknown",
 ] as const;
 export type PostingQueueStatus = (typeof POSTING_QUEUE_STATUSES)[number];
 
@@ -1985,7 +1992,8 @@ export type PostingQueueLabel =
   | "partially_posted"
   | "failed"
   | "blocked"
-  | "withdrawn";
+  | "withdrawn"
+  | "outcome_unknown";
 
 /**
  * The per-line vocabulary. `skipped_already_posted` is resume's word: Open
@@ -2035,6 +2043,13 @@ export const POSTING_STEPS = [
   "office_writeoffs",
   "recoupment",
   "confirm_patient",
+  /*
+   * W-21 / W-16. The step a plan records when it STOPPED during
+   * `confirm_patient` without finishing the measurement. Its own slug so that
+   * `confirm_patient` keeps meaning exactly "the measurement completed" — which
+   * is what `stuckKind` reads (PM ruling, 2026-10-12).
+   */
+  "confirm_patient_interrupted",
   "document_attach",
 ] as const;
 export type PostingStep = (typeof POSTING_STEPS)[number];
@@ -2414,7 +2429,8 @@ export function approveRecoupment(
  *
  * Refuses with 409 `NOTHING_POSTED_YET` on a plan that has not posted: there is
  * nothing in the chart to read back, and a confirmation over that would be a
- * projection wearing a confirmation's words.
+ * projection wearing a confirmation's words. An `outcome_unknown` plan gets its
+ * own 409, `OUTCOME_NOT_SETTLED` (W-21): "nothing posted" would be false there.
  */
 export function recheckPosting(
   office: RcmOfficeId,

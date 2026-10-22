@@ -375,6 +375,8 @@ describe("post, one assertion per PostingQueueLabel", () => {
     // instruction; this one is a full stop, and a plan that can never post must
     // not sit on a worklist forever.
     withdrawn: "unavailable",
+    // W-21: an obligation, like `failed` — somebody presses Post to settle it.
+    outcome_unknown: "blocked",
   };
 
   it("covers every stored status the server can label", () => {

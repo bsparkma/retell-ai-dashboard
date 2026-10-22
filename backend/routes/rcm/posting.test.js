@@ -925,6 +925,27 @@ test('a plan that already put money in a chart cannot be retired', async () => {
   }
 });
 
+test('W-21: a plan whose write is unconfirmed cannot be retired, and is told why', async () => {
+  const db = seedQueue(new FakeRcmDb());
+  queueRow(db).status = 'outcome_unknown';
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    const res = await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/posting/queue/${queueRow(db).queue_id}/withdraw?office=roland`,
+      { body: JSON.stringify({ note: 'retire it' }), json: true }
+    );
+    assert.equal(res.status, 409);
+    assert.equal(res.body.code, 'WITHDRAW_NOT_ALLOWED');
+    assert.equal(res.body.status, 'outcome_unknown');
+    assert.match(res.body.error, /not been confirmed either way/);
+    assert.equal(queueRow(db).status, 'outcome_unknown');
+  } finally {
+    await app.close();
+  }
+});
+
 test('the queue read carries the withdrawal, so a screen can account for it', async () => {
   const db = seedQueue(new FakeRcmDb());
   const app = await bootRcmApp({ db, od: readOnlyOd() });

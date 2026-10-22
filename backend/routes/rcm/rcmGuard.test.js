@@ -399,10 +399,34 @@ test('entitled → 200, summary is zero-filled over the whole status vocabulary'
       error: 0,
     });
     assert.deepEqual(res.body.queue, {
-      byStatus: { approved: 0, posting: 0, posted: 0, failed: 0, partially_posted: 0 },
+      byStatus: {
+        approved: 0,
+        posting: 0,
+        posted: 0,
+        failed: 0,
+        partially_posted: 0,
+        // W-21: the eighth word. A screen adding these up must see it.
+        outcome_unknown: 0,
+      },
       total: 0,
       depth: 0,
     });
+  } finally {
+    await close();
+  }
+});
+
+test('W-21: a plan whose outcome is unknown is counted, and counts as work still owed', async () => {
+  const { baseUrl, db, close } = await bootRcmApp();
+  db.seed('rcm_posting_queue', [
+    { office_id: 'roland', status: 'outcome_unknown' },
+    { office_id: 'roland', status: 'posted' },
+  ]);
+  try {
+    const res = await api(baseUrl, 'GET', '/api/rcm/summary?office=roland');
+    assert.equal(res.status, 200);
+    assert.equal(res.body.queue.byStatus.outcome_unknown, 1);
+    assert.equal(res.body.queue.depth, 1, 'unknown is open work; posted is not');
   } finally {
     await close();
   }
