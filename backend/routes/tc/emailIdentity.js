@@ -7,7 +7,8 @@
  *                    field, where it comes from, and the (read-only) From address
  *   PUT  /?office=   save the office's whole identity  { replyTo, practiceName,
  *                    practicePhone }, each a string or null (null = clear, back
- *                    to the app setting)
+ *                    to the app setting), and optionally (R6.3) referralBcc —
+ *                    the referral copy inbox: absent = unchanged, null = no copy
  *
  * WHO: `tc.notification_defaults` (admin + office), for reading AND saving —
  * the same people who run the office's alert defaults run what its email says.
@@ -48,6 +49,8 @@ const FIELD_SLUG = Object.freeze({
   replyTo: 'reply_to',
   practiceName: 'practice_name',
   practicePhone: 'practice_phone',
+  // R6.3: the referral copy inbox (1792400000000 adds the slug to the CHECK).
+  referralBcc: 'referral_bcc',
 });
 
 const router = express.Router();
@@ -68,6 +71,8 @@ function stateOf(office) {
     success: true,
     office,
     fields: acsConfig.identityStateFor(office),
+    // R6.3: saved here or not at all; there is no app-setting fallback.
+    referralBcc: emailIdentity.referralBccFor(office),
     from: {
       patientEmail: acsConfig.fromAddressFor(office),
       referral: acsConfig.ownFromAddressFor(office),
@@ -92,10 +97,16 @@ router.put(
     const office = req.tcOffice;
     const actor = String(actorEmail(req)).trim().toLowerCase();
 
-    /** @type {Record<string, string|null>} */
+    /** @type {Record<string, string|null|undefined>} */
     const next = {};
-    for (const field of emailIdentity.FIELD_NAMES) {
+    for (const field of emailIdentity.STORED_FIELDS) {
       const raw = body[field];
+      // Only the optional copy inbox may be absent: absent = leave it as saved
+      // (resolved from `prior` below), so a client that predates it cannot clear it.
+      if (raw === undefined) {
+        next[field] = undefined;
+        continue;
+      }
       if (raw === null) {
         next[field] = null;
         continue;
@@ -119,7 +130,11 @@ router.put(
       });
     }
 
-    const changed = emailIdentity.FIELD_NAMES.filter((f) => prior[f] !== next[f]);
+    for (const field of emailIdentity.STORED_FIELDS) {
+      if (next[field] === undefined) next[field] = prior[field];
+    }
+
+    const changed = emailIdentity.STORED_FIELDS.filter((f) => prior[f] !== next[f]);
     if (changed.length === 0) return res.json(stateOf(office));
 
     try {
