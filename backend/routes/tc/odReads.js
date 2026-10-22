@@ -1292,6 +1292,8 @@ module.exports = {
   // reads
   searchPatients,
   getPatient,
+  // R6.2: the statuses the search hides, so a by-PatNum read can refuse the same ones.
+  EXCLUDED_PAT_STATUS,
   getTreatmentPlan,
   findUnaccepted,
   getCobProcedures,
