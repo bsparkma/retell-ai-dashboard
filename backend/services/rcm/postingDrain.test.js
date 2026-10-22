@@ -3985,3 +3985,140 @@ test('W-21: settledStep records the interrupted slug for confirm_patient ONLY', 
     assert.equal(postingDrain.settledStep(s), s);
   }
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// W-21b — honest endings: a block after a write carries its check, and a
+// claim deleted under an unsettled plan says so
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * A MIXED plan — one paid line, one takeback — in a practice whose Category-1
+ * list has NO recoupment adjustment type. The check is written first, then the
+ * takeback refuses `no_adj_type`: the one block that fires after money landed.
+ */
+function seedMixedPlanNoAdjType() {
+  const db = seedPlan(new FakeRcmDb(), {
+    queue: { is_recoupment: true, intended_total_cents: 15000 - 1500 },
+    claim: { od_patient_id: 12827 },
+  });
+  db.seed('rcm_posting_queue_line', [
+    {
+      ...db.table('rcm_posting_queue_line')[0],
+      queue_line_id: 'aa11bb22-cc33-4d44-8e55-ff6677889900',
+      position: 2,
+      od_claim_proc_num: 533931,
+      intended_ins_pay_amt_cents: -1500,
+      intended_write_off_cents: 0,
+      is_supplemental: true,
+      recoupment_path: 'adjustment',
+    },
+  ]);
+  return db;
+}
+
+/** The chart around that plan. ROLAND_DEFINITIONS carries no DefNum 477. */
+function mixedOd(overrides = {}) {
+  const od = odFixture(overrides);
+  od.rows.patients = [{ PatNum: 12827, LName: 'Test 2', FName: 'Stedi' }];
+  od.rows.claimProcs.push({
+    ClaimProcNum: 533931,
+    ClaimNum: 53648,
+    Status: 'Received',
+    InsPayAmt: 15.0,
+    WriteOff: 0,
+    DedApplied: 0,
+    ClaimPaymentNum: 21399,
+  });
+  return od;
+}
+
+test('W-21b: no_adj_type after a check this run CREATED — blocked, and the row carries the check', async () => {
+  const db = seedMixedPlanNoAdjType();
+  const od = mixedOd();
+
+  const result = await postingDrain.drainOffice(ctxFor(db, od, { loadRemittancePdf: async () => null }));
+  assert.equal(result.outcomes[0].status, 'blocked', JSON.stringify(result.outcomes[0]));
+  assert.deepEqual(od.writesIssued(), ['PUT /claimprocs/533930', 'PUT /claims/53648', 'POST /claimpayments']);
+
+  const row = db.table('rcm_posting_queue')[0];
+  assert.equal(row.status, 'blocked');
+  assert.equal(row.blocked_reason, postingDrain.BLOCK_REASONS.NO_ADJ_TYPE);
+  const check = Number(od.rows.claimProcs.find((r) => Number(r.ClaimProcNum) === 533930).ClaimPaymentNum);
+  assert.ok(check > 0 && check !== 21399, 'the check exists in the chart');
+  assert.equal(Number(row.od_claim_payment_num), check, 'and the blocked row names it');
+  const intent = db.table('rcm_posting_intent').find((i) => i.write_kind === 'claim_payment');
+  assert.equal(intent.outcome, 'landed', 'the evidence the screens key on: a landed check');
+});
+
+test('W-21b: no_adj_type after a check this run ADOPTED — the blocked row still carries the check', async () => {
+  /*
+   * The case the created-check path hides. Attempt 1's check landed and its
+   * answer was lost; attempt 2 settles that intent by re-reading, ADOPTS the
+   * check off our own lines, and then the takeback refuses. Until W-21b the
+   * adopted number lived only in a local variable — `finalizeRow` would have
+   * written it, and a block never reaches `finalizeRow` — so the row read
+   * `blocked` with no check over a payment that is in the chart.
+   */
+  const db = seedMixedPlanNoAdjType();
+  const dying = mixedOd({ dieOnLandedWrite: 3 }); // claimproc PUT, claim PUT, then the check
+  const first = await postingDrain.drainOffice(ctxFor(db, dying, { loadRemittancePdf: async () => null }));
+  assert.equal(first.outcomes[0].status, 'outcome_unknown', JSON.stringify(first.outcomes[0]));
+  assert.equal(db.table('rcm_posting_queue')[0].od_claim_payment_num, null, 'the answer was lost');
+
+  const revived = revive(dying);
+  const second = await postingDrain.drainOffice(ctxFor(db, revived, { loadRemittancePdf: async () => null }));
+  assert.equal(second.outcomes[0].status, 'blocked', JSON.stringify(second.outcomes[0]));
+  assert.deepEqual(revived.writesIssued(), [], 'the resume adopted the check; it wrote nothing');
+
+  const row = db.table('rcm_posting_queue')[0];
+  assert.equal(row.blocked_reason, postingDrain.BLOCK_REASONS.NO_ADJ_TYPE);
+  const check = Number(dying.rows.claimProcs.find((r) => Number(r.ClaimProcNum) === 533930).ClaimPaymentNum);
+  assert.ok(check > 0);
+  assert.equal(Number(row.od_claim_payment_num), check, 'the ADOPTED check is on the blocked row');
+  const intent = db.table('rcm_posting_intent').find((i) => i.write_kind === 'claim_payment');
+  assert.equal(intent.outcome, 'landed');
+});
+
+test('W-21b: a block with NO landed write is byte-identical — no check number appears', async () => {
+  // A pure takeback: no positive side, so no check, and nothing was written.
+  const db = seedTakeback(new FakeRcmDb(), 'adjustment');
+  const od = takebackFixture();
+  od.rows.definitions = od.rows.definitions.filter((d) => Number(d.DefNum) !== 477);
+  await postingDrain.drainOffice(ctxFor(db, od, { loadRemittancePdf: async () => null }));
+  const row = db.table('rcm_posting_queue')[0];
+  assert.equal(row.status, 'blocked');
+  assert.equal(row.od_claim_payment_num, null);
+  assert.deepEqual(od.writesIssued(), []);
+});
+
+test('W-21b: outcome_unknown whose claim was DELETED records the claim-gone step, writes nothing, stays drainable', async () => {
+  const db = fullSequencePlan();
+  const dying = odFixture({ dieOnLandedWrite: 1 }); // the claimproc PUT lands, its answer is lost
+  const first = await postingDrain.drainOffice(ctxFor(db, dying));
+  assert.equal(first.outcomes[0].status, 'outcome_unknown', JSON.stringify(first.outcomes[0]));
+
+  // Somebody deletes the claim in Open Dental. A ClaimNum is never reissued.
+  dying.rows.claims = [];
+
+  for (const attempt of [2, 3]) {
+    const revived = revive(dying);
+    const res = await postingDrain.drainOffice(ctxFor(db, revived));
+    assert.equal(res.outcomes[0].status, 'outcome_unknown', `press ${attempt}: ${JSON.stringify(res.outcomes[0])}`);
+    assert.deepEqual(revived.writesIssued(), [], `press ${attempt}: nothing is retried`);
+    const row = db.table('rcm_posting_queue')[0];
+    assert.equal(row.status, 'outcome_unknown', 'no new status — D-15 stands');
+    assert.equal(row.drain_step, postingDrain.CLAIM_GONE_STEP, 'the step says WHY no press can settle it');
+    assert.equal(row.withdrawn_reason, null, 'not retired: a write may be in a chart');
+  }
+  assert.ok(postingDrain.DRAINABLE_STATUSES.includes('outcome_unknown'));
+  assert.ok(
+    db.table('rcm_posting_intent').some((i) => i.outcome === 'pending'),
+    'and nothing auto-settled the intent'
+  );
+});
+
+test('W-21b: the claim-gone slug is its own word, and settledStep leaves it alone', () => {
+  assert.equal(postingDrain.CLAIM_GONE_STEP, 'read_od_truth_claim_gone');
+  assert.equal(postingDrain.settledStep(postingDrain.CLAIM_GONE_STEP), postingDrain.CLAIM_GONE_STEP);
+  assert.ok(!FULL_STEPS.includes(postingDrain.CLAIM_GONE_STEP));
+});

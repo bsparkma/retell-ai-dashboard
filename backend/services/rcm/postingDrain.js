@@ -274,6 +274,25 @@ const QUEUE_STATUS_LABEL = Object.freeze({
  */
 const CONFIRM_INTERRUPTED_STEP = 'confirm_patient_interrupted';
 
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * W-21b: THE STEP A PLAN RECORDS WHEN ITS CLAIM IS GONE AND IT CANNOT RETIRE
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `read_od_truth` 404s on a claim, and the plan has evidence it may already
+ * have written (a pending intent, or proof). It is not withdrawn — that would
+ * say "this never happened" — so it ends `outcome_unknown` or
+ * `partially_posted`. But the press those states invite can never change the
+ * answer: Open Dental never reissues a ClaimNum, so every re-press reads the
+ * same 404 and settles the same ending.
+ *
+ * The status stays what the evidence says (D-15: `outcome_unknown` is legal and
+ * drainable). What changes is that the screens can SEE why it cannot settle —
+ * the same structural trick as `CONFIRM_INTERRUPTED_STEP`: the step names the
+ * ending, so no new status and no new column. The screens stop offering Post as
+ * the way out of a row carrying this step.
+ */
+const CLAIM_GONE_STEP = 'read_od_truth_claim_gone';
+
 /** @param {string|null} step */
 function settledStep(step) {
   return step === 'confirm_patient' ? CONFIRM_INTERRUPTED_STEP : step;
@@ -1740,7 +1759,28 @@ async function persistLine(pool, queueLineId, patch) {
  * and the next move is a human's. Leaving it null would render as "still
  * running" on a screen whose whole job is to be honest about that.
  */
-async function blockRow(pool, queueId, reason, detail, step) {
+async function blockRow(pool, queueId, reason, detail, step, odClaimPaymentNum = null) {
+  /*
+   * W-21b: A BLOCK AFTER THE CHECK EXISTS CARRIES THE CHECK.
+   *
+   * `no_adj_type` refuses a takeback AFTER this plan's check is in the chart. A
+   * check this run CREATED is already on the row (persisted the instant it
+   * landed); one it ADOPTED — an earlier attempt's, found on our own lines — is
+   * not, until `finalizeRow`, which a block never reaches. Without it here the
+   * row reads `blocked` with no check: "nothing was attempted" over a payment
+   * that is in the chart. Assigned only when known, exactly as `finalizeRow`
+   * does — a null would erase proof a resume adopts.
+   */
+  if (odClaimPaymentNum != null) {
+    await pool.query(
+      `UPDATE rcm_posting_queue
+          SET status = 'blocked', blocked_reason = $2, last_error = $3, drain_step = $4,
+              od_claim_payment_num = $5, finished_at = now(), updated_at = now()
+        WHERE queue_id = $1`,
+      [queueId, reason, detail ? String(detail).slice(0, 1000) : null, step, odClaimPaymentNum]
+    );
+    return;
+  }
   await pool.query(
     `UPDATE rcm_posting_queue
         SET status = 'blocked', blocked_reason = $2, last_error = $3, drain_step = $4,
@@ -2195,9 +2235,11 @@ async function settleEnding(ctx, plan, step, detail, extra = {}) {
  * @param {object} config this office's resolved posting configuration
  * @param {Map<string, object>} claimById claims on the plan, by claimId
  * @param {string} note the posting note
+ * @param {number|null} [claimPaymentNum] this plan's check, created or adopted,
+ *   when it has one — carried onto a block so the row keeps its proof (W-21b)
  * @returns {Promise<{ recoupedCents: number, permanentWrites: number }>}
  */
-async function drainTakebacks(ctx, plan, takebackLines, config, claimById, note) {
+async function drainTakebacks(ctx, plan, takebackLines, config, claimById, note, claimPaymentNum = null) {
   const { pool, req, office, od } = ctx;
   let recoupedCents = 0;
   let permanentWrites = 0;
@@ -2261,7 +2303,9 @@ async function drainTakebacks(ctx, plan, takebackLines, config, claimById, note)
           "This practice's Open Dental has no adjustment type named 'Insurance deductions " +
             "from previous payments' (definitions Category 1), so a reversible takeback " +
             'cannot be written here. Nothing was sent for this line.',
-          'recoupment'
+          'recoupment',
+          // W-21b: the check is already in the chart; the blocked row says so.
+          claimPaymentNum
         );
         /*
          * `alreadyBlocked` — THE ROW IS ALREADY IN ITS HONEST FINAL STATE.
@@ -3177,7 +3221,8 @@ async function drainRow(ctx, queueId) {
               'already written to a chart on a previous attempt. It is NOT retired — a human ' +
               'has to decide what happened to the part that posted.';
             console.error(`[rcm/drain] ${office} plan ${queueId}: ${detail}`);
-            const ending = await settleEnding(ctx, plan, step, detail);
+            // W-21b: the step names WHY no press can settle it. See CLAIM_GONE_STEP.
+            const ending = await settleEnding(ctx, plan, CLAIM_GONE_STEP, detail);
             return { queueId, status: ending.status, detail };
           }
 
@@ -4049,7 +4094,15 @@ async function drainRow(ctx, queueId) {
     if (takebackLines.length > 0) {
       step = 'recoupment';
       await persistStep(pool, queueId, step);
-      const takeback = await drainTakebacks(ctx, plan, takebackLines, config, claimById, note);
+      const takeback = await drainTakebacks(
+        ctx,
+        plan,
+        takebackLines,
+        config,
+        claimById,
+        note,
+        claimPaymentNum
+      );
       recoupedCents = takeback.recoupedCents;
     }
 
@@ -4678,6 +4731,7 @@ module.exports = {
   CHART_TOUCHED_LINE_STATUSES,
   chartTouchedBy,
   CONFIRM_INTERRUPTED_STEP,
+  CLAIM_GONE_STEP,
   settledStep,
   classifyPlanEvidence,
   settlePendingIntents,
