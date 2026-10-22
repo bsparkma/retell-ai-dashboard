@@ -293,6 +293,14 @@ const CONFIRM_INTERRUPTED_STEP = 'confirm_patient_interrupted';
  */
 const CLAIM_GONE_STEP = 'read_od_truth_claim_gone';
 
+/**
+ * W-21c: the two endings the claim-gone branch can settle into (`failed` goes
+ * on to the withdrawal instead). A row in either, at `CLAIM_GONE_STEP`, is one
+ * no press can settle — the screens neither offer Post on it nor count it as
+ * waiting to post. Statuses are unchanged and still drainable (D-15).
+ */
+const CLAIM_GONE_STATUSES = Object.freeze(['outcome_unknown', 'partially_posted']);
+
 /** @param {string|null} step */
 function settledStep(step) {
   return step === 'confirm_patient' ? CONFIRM_INTERRUPTED_STEP : step;
@@ -2181,6 +2189,53 @@ async function settleEnding(ctx, plan, step, detail, extra = {}) {
   return ending;
 }
 
+/** `no_pay_type`'s sentence — one copy, for the preflight and the in-run net. */
+function noPayTypeDetail(method) {
+  return (
+    `This practice's Open Dental has no insurance payment type named for '${method}' ` +
+    `(definitions Category 32). No check was created.`
+  );
+}
+
+/** `no_adj_type`'s sentence — one copy, for the preflight and the in-run net. */
+const NO_ADJ_TYPE_DETAIL =
+  "This practice's Open Dental has no adjustment type named 'Insurance deductions " +
+  "from previous payments' (definitions Category 1), so a reversible takeback " +
+  'cannot be written here. Nothing was sent for this line.';
+
+/**
+ * W-21c — A DEFINITION REFUSAL THAT MAY COME AFTER A WRITE.
+ *
+ * The preflight refuses a missing payment or recoupment type while nothing has
+ * been written. These lookups also stay where the types are used, as the safety
+ * net for a run the preflight let through (a resume carrying an earlier write).
+ * There, `blocked` — "nothing was attempted" — may be false, so the ending is
+ * read from the evidence:
+ *
+ *   a check is in the chart   `blocked` + the check number: W-21b's proof block
+ *   nothing was written       `blocked`, exactly as before
+ *   anything else             the ending the intents prove (`settleEnding`)
+ *
+ * @returns {Promise<{ status: string }>}
+ */
+async function refuseFromEvidence(ctx, plan, reason, detail, step, claimPaymentNum) {
+  const { pool } = ctx;
+  const queueId = plan.queue.queueId;
+  if (claimPaymentNum != null) {
+    await blockRow(pool, queueId, reason, detail, step, claimPaymentNum);
+    return { status: 'blocked' };
+  }
+  const intents = await postingIntent.listIntents(pool, ctx.office, queueId);
+  if (classifyPlanEvidence(plan, intents).nothingWritten) {
+    await blockRow(pool, queueId, reason, detail, step);
+    return { status: 'blocked' };
+  }
+  const ending = await settleEnding(ctx, plan, step, detail, {
+    postedTotalCents: plan.queue.postedTotalCents,
+  });
+  return { status: ending.status };
+}
+
 // ─── The row sequence ────────────────────────────────────────────────────────
 
 /**
@@ -2296,15 +2351,19 @@ async function drainTakebacks(ctx, plan, takebackLines, config, claimById, note,
          * offering the reversible path is that a practice which cannot express
          * it gets told, not quietly given the permanent one instead.
          */
-        await blockRow(
-          pool,
-          plan.queue.queueId,
+        /*
+         * W-21c: THE SAFETY NET behind the preflight. Classified from evidence:
+         * `blocked` when nothing was written, `blocked` + the check number when
+         * the check is in the chart (W-21b's proof block), and otherwise the
+         * ending the intents prove — never a bare "nothing attempted" over a
+         * write (an earlier takeback line's supplemental, say).
+         */
+        const ended = await refuseFromEvidence(
+          ctx,
+          plan,
           BLOCK_REASONS.NO_ADJ_TYPE,
-          "This practice's Open Dental has no adjustment type named 'Insurance deductions " +
-            "from previous payments' (definitions Category 1), so a reversible takeback " +
-            'cannot be written here. Nothing was sent for this line.',
+          NO_ADJ_TYPE_DETAIL,
           'recoupment',
-          // W-21b: the check is already in the chart; the blocked row says so.
           claimPaymentNum
         );
         /*
@@ -2335,6 +2394,8 @@ async function drainTakebacks(ctx, plan, takebackLines, config, claimById, note,
          * would put a drain concern in an Open Dental type.
          */
         refusal.alreadyBlocked = true;
+        // W-21c: the status `refuseFromEvidence` settled, for the catch to report.
+        refusal.endedStatus = ended.status;
         throw refusal;
       }
 
@@ -3084,6 +3145,57 @@ async function drainRow(ctx, queueId) {
        * lines changed underneath the gate must not post against a stale shape.
        */
       const requiresCheck = ordinaryLines.length > 0;
+
+      /*
+       * ── W-21c: EVERY DEFINITION THE PLAN WILL NEED, BEFORE THE FIRST WRITE ──
+       *
+       * The payment type (for the check) and the recoupment adjustment type (for
+       * a reversible takeback) used to be looked up where they are used — the
+       * `check` step and the `recoupment` step — which is AFTER the claimprocs
+       * are written and the claims received. A missing one then `blocked` a plan
+       * whose lines were already Received in the chart: "nothing was attempted"
+       * over work that was, with no check number to carry as proof.
+       *
+       * Both come from `config`, already resolved above, so asking here costs no
+       * Open Dental call at all. A refusal here is the same reason and the same
+       * sentence the in-run lookup writes, recorded while nothing has been
+       * written — so `blocked` means exactly what it has always meant.
+       *
+       * ONLY WHEN THE EVIDENCE SAYS NOTHING HAS BEEN WRITTEN. A plan carrying an
+       * earlier attempt's write (stored proof, or any intent) is a RESUME: its
+       * pending intents must be settled by re-reading the chart, and a check it
+       * may already hold needs no payment type at all. Blocking it here would
+       * hide that write behind `blocked`. It goes on to the sequence, and the
+       * in-run lookups — kept as the safety net — classify any refusal from the
+       * evidence (`refuseFromEvidence`).
+       */
+      const priorEvidence = classifyPlanEvidence(
+        plan,
+        await postingIntent.listIntents(pool, office, queueId)
+      );
+      if (priorEvidence.nothingWritten) {
+        if (requiresCheck && plan.queue.odClaimPaymentNum == null) {
+          const method = plan.batch && plan.batch.paymentMethod === 'eft' ? 'eft' : 'check';
+          if (!odOfficeConfig.pickPayType(config, method)) {
+            const detail = noPayTypeDetail(method);
+            await blockRow(pool, queueId, BLOCK_REASONS.NO_PAY_TYPE, detail, step);
+            return DONE({ queueId, status: 'blocked', reason: BLOCK_REASONS.NO_PAY_TYPE, detail });
+          }
+        }
+        const needsRecoupmentType = takebackLines.some(
+          (l) => l.recoupmentPath === 'adjustment' && !l.odAdjustmentNum
+        );
+        if (needsRecoupmentType && !odOfficeConfig.pickAdjType(config, 'recoupment')) {
+          await blockRow(pool, queueId, BLOCK_REASONS.NO_ADJ_TYPE, NO_ADJ_TYPE_DETAIL, step);
+          return DONE({
+            queueId,
+            status: 'blocked',
+            reason: BLOCK_REASONS.NO_ADJ_TYPE,
+            detail: NO_ADJ_TYPE_DETAIL,
+          });
+        }
+      }
+
       await pool.query(
         'UPDATE rcm_posting_queue SET requires_check = $2, updated_at = now() WHERE queue_id = $1',
         [queueId, requiresCheck]
@@ -3769,15 +3881,21 @@ async function drainRow(ctx, queueId) {
       const method = plan.batch && plan.batch.paymentMethod === 'eft' ? 'eft' : 'check';
       const payType = odOfficeConfig.pickPayType(config, method);
       if (!payType) {
-        await blockRow(
-          pool,
-          queueId,
+        /*
+         * W-21c: THE SAFETY NET. The preflight refused this before any write for
+         * a plan with nothing written, so reaching here means writes may exist
+         * (a resume, or definitions that changed under the run). The ending is
+         * classified from the evidence — `blocked` only if nothing was written.
+         */
+        const ended = await refuseFromEvidence(
+          ctx,
+          plan,
           BLOCK_REASONS.NO_PAY_TYPE,
-          `This practice's Open Dental has no insurance payment type named for '${method}' ` +
-            `(definitions Category 32). No check was created.`,
-          step
+          noPayTypeDetail(method),
+          step,
+          null
         );
-        return { queueId, status: 'blocked', reason: BLOCK_REASONS.NO_PAY_TYPE };
+        return { queueId, status: ended.status, reason: BLOCK_REASONS.NO_PAY_TYPE };
       }
 
       const endpoint = odOfficeConfig.resolveCheckEndpoint(config, grouped.length);
@@ -4264,7 +4382,12 @@ async function drainRow(ctx, queueId) {
      */
     if (err && err.alreadyBlocked === true) {
       console.error(`[rcm/drain] ${office} plan ${queueId} blocked at ${step}: ${err.message}`);
-      return { queueId, status: 'blocked', reason: BLOCK_REASONS.NO_ADJ_TYPE, detail: err.message };
+      return {
+        queueId,
+        status: err.endedStatus || 'blocked',
+        reason: BLOCK_REASONS.NO_ADJ_TYPE,
+        detail: err.message,
+      };
     }
 
     /*
@@ -4732,6 +4855,7 @@ module.exports = {
   chartTouchedBy,
   CONFIRM_INTERRUPTED_STEP,
   CLAIM_GONE_STEP,
+  CLAIM_GONE_STATUSES,
   settledStep,
   classifyPlanEvidence,
   settlePendingIntents,
