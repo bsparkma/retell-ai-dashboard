@@ -133,6 +133,16 @@ router.put(
         }
         // Last inside the transaction: if the control-plane write (or its
         // read-back) fails, the history rows roll back with it.
+        //
+        // The reverse is NOT covered. The identity lives in the control-plane
+        // database and the history in the tenant database, so this is two
+        // stores, not one transaction. persist() has already committed by the
+        // time withTenantTx issues the tenant COMMIT; if that COMMIT fails, the
+        // new identity is in force but its history rows are rolled back. The
+        // audit_log rows below are skipped too (the throw exits first). The
+        // window is one COMMIT wide, and the next GET re-reads the control
+        // plane so the page shows what is in force, but the history (and
+        // audit trail) can miss that change.
         await emailIdentity.persist(office, next, actor);
       });
     } catch (err) {
