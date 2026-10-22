@@ -108,6 +108,8 @@ import type {
 import { matchStatusLabel, money } from "@/features/rcm/format";
 import {
   blockedCopy,
+  CLAIM_GONE_COPY,
+  claimGone,
   OUTCOME_UNKNOWN_COPY,
   stoppedWhile,
   POST_AGAIN_SAFE,
@@ -1087,8 +1089,12 @@ export function postStepFor(row: PostingQueueRow): StepView {
        * W-21: neither "it landed" nor "it did not" — and never the run's own
        * text. An obligation like the two around it: somebody presses Post, and
        * the press reads the chart before it does anything else.
+       *
+       * W-21b: EXCEPT over a deleted claim, where no press can ever settle it.
+       * The rail's sentence is the disabled CTA's reason too, so it must not
+       * name Post as the way out.
        */
-      return view("post", "blocked", OUTCOME_UNKNOWN_COPY, here);
+      return view("post", "blocked", claimGone(row) ? CLAIM_GONE_COPY : OUTCOME_UNKNOWN_COPY, here);
     case "failed":
       /*
        * S5 round 1: where it stopped, and why pressing again is safe — never

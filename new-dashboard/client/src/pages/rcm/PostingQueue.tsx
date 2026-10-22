@@ -88,6 +88,7 @@ import {
 import { day, money, officeDay, ordinal, OFFICE_TIME_NOTE } from "@/features/rcm/format";
 import {
   blockedCopy,
+  claimGone,
   withdrawnCopy,
   LINE_STATE_COPY,
   POSTING_RUNNING_COPY,
@@ -102,6 +103,7 @@ import {
 import { planFlow, remittanceHref } from "@/features/rcm/flow";
 import RcmStepper from "@/components/rcm/RcmStepper";
 import DisabledReason from "@/components/rcm/DisabledReason";
+import { EarlierCheckProof } from "@/components/rcm/EarlierCheckProof";
 import Explainer from "@/components/rcm/Explainer";
 import CopyChip from "@/components/rcm/CopyChip";
 
@@ -603,6 +605,14 @@ function WithdrawPanel({
    */
   const eligible = ["approved", "failed", "blocked"].includes(row.status);
   if (!eligible) return null;
+  /*
+   * W-21b: a check on record is money that moved. A `blocked` takeback can stop
+   * AFTER its check landed, and retiring that plan would say "this will never
+   * post" over a payment in the chart — the database refuses it outright
+   * (`rcm_posting_queue_withdrawn_no_money_check`), so the control is a dead
+   * press as well as a false one.
+   */
+  if (row.odClaimPaymentNum != null) return null;
 
   const submit = () => {
     if (busy || note.trim().length < 3) return;
@@ -907,6 +917,22 @@ function PlanCard({
             onWithdrawn={onWithdrawn}
           />
 
+          {/*
+            W-21b — BLOCKED AFTER A WRITE. `blocked` promises nothing was
+            attempted, and the takeback refusal (`no_adj_type`) breaks that
+            promise: it fires after this plan's check is in the chart. Such a row
+            carries the check number, and gets the same proof block the check's
+            own page shows — number, do-not-re-enter, no amount, no fix — ahead
+            of the reason, so the warning is read first. A blocked row with no
+            check renders exactly as before.
+          */}
+          {row.status === "blocked" && row.odClaimPaymentNum != null && (
+            <EarlierCheckProof
+              checkNum={row.odClaimPaymentNum}
+              testId={`posting-earlier-check-${row.queueId}`}
+            />
+          )}
+
           {blocked && (
             <div
               className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-sm dark:border-amber-900/50 dark:bg-amber-950/30"
@@ -1032,6 +1058,26 @@ function waitingToPost(page: PostingQueuePage): number {
  * the chart first. No figure, no fix, and never the run's own error text.
  */
 function OutcomeUnknown({ row }: { row: PostingQueueRow }) {
+  /*
+   * W-21b: THE CLAIM IS GONE, so no press can settle this. The row's hint
+   * (`queueHint` → `CLAIM_GONE_COPY`) names the situation and the hand action;
+   * this panel keeps only what is on record — and drops "press Post again",
+   * which here would be a dead press offered as the way out.
+   */
+  if (claimGone(row)) {
+    return (
+      <div
+        className="mt-2 rounded-md border border-border bg-muted/40 p-2 text-sm"
+        data-testid={`posting-claim-gone-${row.queueId}`}
+      >
+        <p className="text-foreground">
+          {row.odClaimPaymentNum != null
+            ? `Open Dental already holds check #${row.odClaimPaymentNum} from an earlier posting run — do not enter the payment by hand.`
+            : "Part of this payment may already be in Open Dental."}
+        </p>
+      </div>
+    );
+  }
   return (
     <div
       className="mt-2 rounded-md border border-border bg-muted/40 p-2 text-sm"
