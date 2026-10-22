@@ -29,6 +29,13 @@
  *     stored on the referral's history row (tc_referral_events), and
  *     recordUnsubscribeLink resolves it there.
  *
+ * R6.3 — THE COPY INBOX. When the office saved one in Settings -> Email
+ * identity, the letter is BLIND-copied to it: the same ONE message, with the
+ * address in ACS's `bcc` recipients, so the specialist never sees it and no
+ * second email is sent. Only a referral letter carries `bccAddress`; patient
+ * email never sets it. Not set = no copy.
+ *
+
  * PHI: the address, letter and attachments travel only in the request. No log
  * line here carries any of them; errors are the adapter's scrubbed sentences.
  */
@@ -44,6 +51,7 @@ const { normalizeEmail } = require('./address');
 const acsConfig = require('../../config/acsEmail');
 const tcEmail = require('../../config/tcEmail');
 const odOffices = require('../../config/odOffices');
+const emailIdentity = require('../../config/emailIdentity');
 
 /** @param {string} office */
 function suffix(office) {
@@ -184,12 +192,28 @@ function mintUnsubscribe() {
 }
 
 /**
- * The AdapterMessage for a letter (attachments optional).
+ * (R6.3) The inbox this letter is blind-copied to, or null for none: the
+ * office's saved copy inbox when it is one usable address and is not the
+ * recipient itself (that would be the same mailbox twice).
+ * @param {string} office
+ * @param {string} recipient
+ * @returns {string|null}
+ */
+function bccFor(office, recipient) {
+  const v = normalizeEmail(emailIdentity.referralBccFor(office));
+  if (!v || !acsConfig.isEmailAddress(v)) return null;
+  return v === normalizeEmail(recipient) ? null : v;
+}
+
+/**
+ * The AdapterMessage for a letter (attachments optional; `bccAddress`, R6.3,
+ * optional — see bccFor).
  * @param {{ office: string, attemptId: string, toAddress: string,
  *           rendered: { subject: string, html: string, text: string },
- *           unsubscribeUrl: string, attachments?: Array<{ name: string, contentType: string, contentInBase64: string }> }} input
+ *           unsubscribeUrl: string, attachments?: Array<{ name: string, contentType: string, contentInBase64: string }>,
+ *           bccAddress?: string|null }} input
  */
-function messageOf({ office, attemptId, toAddress, rendered, unsubscribeUrl, attachments = [] }) {
+function messageOf({ office, attemptId, toAddress, rendered, unsubscribeUrl, attachments = [], bccAddress = null }) {
   return {
     messageId: attemptId,
     officeId: office,
@@ -202,6 +226,7 @@ function messageOf({ office, attemptId, toAddress, rendered, unsubscribeUrl, att
     html: rendered.html,
     unsubscribeUrl,
     ...(attachments.length ? { attachments } : {}),
+    ...(bccAddress ? { bccAddress } : {}),
   };
 }
 
@@ -253,6 +278,7 @@ module.exports = {
   recipientOf,
   assertMayEmail,
   mintUnsubscribe,
+  bccFor,
   messageOf,
   render,
   requestBytes,

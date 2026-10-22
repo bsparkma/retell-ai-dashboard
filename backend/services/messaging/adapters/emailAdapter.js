@@ -103,15 +103,19 @@ function attachmentsOf(raw) {
 
 /**
  * THE request body, built in one place for send() and requestBytes().
- * @param {import('./index').AdapterMessage & { attachments?: unknown }} message
+ * @param {import('./index').AdapterMessage & { attachments?: unknown, bccAddress?: unknown }} message
  * @param {string} from
  * @param {string|null} replyTo
  */
 function payloadFor(message, from, replyTo) {
   const attachments = attachmentsOf(message.attachments);
+  // (R6.3) A blind copy rides the SAME request — one message, never a second
+  // send. Only the referral letter sets bccAddress (services/messaging/
+  // referralLetter.js); patient email never does. An unusable value is dropped.
+  const bcc = typeof message.bccAddress === 'string' && acsConfig.isEmailAddress(message.bccAddress) ? message.bccAddress : null;
   return {
     senderAddress: from,
-    recipients: { to: [{ address: message.toAddress }] },
+    recipients: { to: [{ address: message.toAddress }], ...(bcc ? { bcc: [{ address: bcc }] } : {}) },
     content: { subject: message.subject, plainText: message.body, html: message.html },
     ...(replyTo ? { replyTo: [{ address: replyTo }] } : {}),
     headers: {

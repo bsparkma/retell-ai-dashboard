@@ -29,6 +29,10 @@
  *      does not fit are NOT dropped silently — the letter lists them as
  *      "additional images available on request".
  *   6. hand it to the email adapter. It resolves only once ACS accepted it.
+ *      (R6.3) When the office saved a copy inbox, the SAME message carries it
+ *      as a BCC recipient — one request, one message; the specialist never
+ *      sees it. The history row says so either way; the copy never changes
+ *      what the send reports.
  *   7. THEN, in one transaction: approved → sent (conditional on still
  *      approved AND still this attempt's claim), the `send` history row with
  *      ACS's message id and the recipient, and the audit row (a PHI
@@ -158,7 +162,7 @@ function officeDetails(office) {
  * Measured with the transport's own payload builder, so the size is the size
  * of what would go out.
  */
-function composeAndPack({ office, row, entry, files, attemptId, recipient, unsubscribeUrl, at }) {
+function composeAndPack({ office, row, entry, files, attemptId, recipient, unsubscribeUrl, at, bcc = null }) {
   const details = officeDetails(office);
   // The stored row, with teeth read the way every referral read reads them.
   const referral = { ...row, teeth: store.toReferral(row).teeth };
@@ -180,7 +184,15 @@ function composeAndPack({ office, row, entry, files, attemptId, recipient, unsub
       });
     }
     const rendered = referralLetter.render({ office, subject: composed.subject, text: composed.text, unsubscribeUrl });
-    const message = referralLetter.messageOf({ office, attemptId, toAddress: recipient, rendered, unsubscribeUrl, attachments: attached });
+    const message = referralLetter.messageOf({
+      office,
+      attemptId,
+      toAddress: recipient,
+      rendered,
+      unsubscribeUrl,
+      attachments: attached,
+      bccAddress: bcc,
+    });
     if (referralLetter.requestBytes(message, office) <= PACKING_BUDGET_BYTES) {
       return { message, attached: attached.length, onRequest: onRequest.length };
     }
@@ -188,6 +200,19 @@ function composeAndPack({ office, row, entry, files, attemptId, recipient, unsub
   throw new MessagingError('SEND_FAILED', 'The referral letter is larger than the email service accepts, so it was not sent.', {
     providerCode: 'EMAIL_TOO_LARGE',
   });
+}
+
+/**
+ * (R6.3) The history's words for the blind copy, or '' when there is none.
+ * Honest about what is known: ACS accepting the message is accepting it WITH
+ * the BCC recipient on it; whether either copy is later delivered is not
+ * something ACS's accept tells us, for the copy or for the specialist.
+ * @param {string|null} bcc
+ * @param {'sent'|'failed'} outcome
+ */
+function copyPhrase(bcc, outcome) {
+  if (!bcc) return '';
+  return outcome === 'sent' ? ` A blind copy (BCC) to ${bcc} was on the same message.` : ' No blind copy went out either.';
 }
 
 /** "2 files attached; 1 listed as available on request" */
@@ -215,7 +240,7 @@ function failureOf(err) {
  * write the visible `send_failed` row. Bookkeeping only — nothing was sent —
  * so a failure here is logged, not thrown over the real cause.
  */
-async function recordFailure(req, { office, referralId, attemptId, auto, failure }) {
+async function recordFailure(req, { office, referralId, attemptId, auto, failure, bcc = null }) {
   try {
     const status = await tenantDb.withTenantDb(req, async (pool) => {
       if (attemptId) await store.releaseSendClaim(pool, { office, referralId, attemptId });
@@ -230,7 +255,7 @@ async function recordFailure(req, { office, referralId, attemptId, auto, failure
         to: current,
         actor: actorEmail(req),
         at: transitions.clock().toISOString(),
-        note: `${auto ? 'Not sent automatically' : 'Not sent'}: ${failure.message}`,
+        note: `${auto ? 'Not sent automatically' : 'Not sent'}: ${failure.message}${copyPhrase(bcc, 'failed')}`,
         verb: 'send_failed',
       });
       return current;
@@ -256,7 +281,7 @@ async function recordFailure(req, { office, referralId, attemptId, auto, failure
  * record: release the claim and write `send_conflict` with the same ACS id,
  * recipient and unsubscribe hash a `send` row would carry.
  */
-async function recordConflict(req, { office, referralId, attemptId, accepted, recipient, unsubscribeHash, why }) {
+async function recordConflict(req, { office, referralId, attemptId, accepted, recipient, unsubscribeHash, why, bcc = null }) {
   try {
     await tenantDb.withTenantDb(req, async (pool) => {
       await store.releaseSendClaim(pool, { office, referralId, attemptId });
@@ -269,7 +294,7 @@ async function recordConflict(req, { office, referralId, attemptId, accepted, re
         to: status,
         actor: actorEmail(req),
         at: transitions.clock().toISOString(),
-        note: `Emailed to ${recipient} (the email service accepted it), but the referral could not be marked sent: ${why} Check with the specialist's office, then mark it sent.`,
+        note: `Emailed to ${recipient} (the email service accepted it), but the referral could not be marked sent: ${why} Check with the specialist's office, then mark it sent.${copyPhrase(bcc, 'sent')}`,
         verb: 'send_conflict',
         acsMessageId: accepted.providerMessageId,
         recipientAddress: recipient,
@@ -337,9 +362,12 @@ async function sendReferral(req, { office, referralId, trigger }) {
   // auto-send, every such failure is recorded; for a click, from the claim on.
   /** @type {string|null} */
   let attemptId = null;
+  /** (R6.3) The office's copy inbox for THIS send, read once; null = no copy. */
+  /** @type {string|null} */
+  let bcc = null;
   const fail = async (err) => {
     const failure = failureOf(err);
-    if (auto || attemptId) await recordFailure(req, { office, referralId, attemptId, auto, failure });
+    if (auto || attemptId) await recordFailure(req, { office, referralId, attemptId, auto, failure, bcc });
     return refusal(failure.status, failure.code, failure.message, failure.extra);
   };
 
@@ -359,6 +387,7 @@ async function sendReferral(req, { office, referralId, trigger }) {
     await referralLetter.refreshTransportSwitch();
     referralLetter.assertAvailable(office);
     await tenantDb.withTenantDb(req, (pool) => referralLetter.assertMayEmail(pool, { office, address: recipient }));
+    bcc = referralLetter.bccFor(office, recipient);
   } catch (err) {
     return fail(err);
   }
@@ -409,6 +438,7 @@ async function sendReferral(req, { office, referralId, trigger }) {
       recipient,
       unsubscribeUrl: unsubscribe.url,
       at: now,
+      bcc,
     });
     accepted = await referralLetter.transport(packed.message, office);
   } catch (err) {
@@ -418,7 +448,7 @@ async function sendReferral(req, { office, referralId, trigger }) {
   // ACS accepted it. Only now may the referral read as sent.
   const at = transitions.clock().toISOString();
   const actor = actorEmail(req);
-  const note = `Emailed to ${recipient}${auto ? ' automatically on approval' : ''} — ${filesPhrase(packed.attached, packed.onRequest)}. The email service accepted it.`;
+  const note = `Emailed to ${recipient}${auto ? ' automatically on approval' : ''} — ${filesPhrase(packed.attached, packed.onRequest)}. The email service accepted it.${copyPhrase(bcc, 'sent')}`;
   let moved = null;
   let why = 'it changed while the email was going out.';
   try {
@@ -461,6 +491,7 @@ async function sendReferral(req, { office, referralId, trigger }) {
       recipient,
       unsubscribeHash: unsubscribe.hash,
       why,
+      bcc,
     });
     const message = `The email went out (the email service accepted it), but the referral could not be marked sent: ${why} It is in the history; check with the specialist's office, then mark it sent.`;
     return {
