@@ -110,6 +110,24 @@ test('server.js: the email unsubscribe mount (item 40) is unguarded, inside the 
   );
 });
 
+test('server.js: the referral link mount (R5b) is unguarded, inside the /webhooks exemption, ahead of /api/webhooks, and rate-limits itself', () => {
+  const line = mountLine('/api/webhooks/referral-link');
+  // A specialist's or patient's browser carries no user: a module or
+  // permission guard would refuse every click. The token authenticates it, and
+  // the router resolves its own tenant (TC_EMAIL_TENANT_SLUG).
+  assert.ok(
+    !/requireModule|voiceModule|requirePermission|requireReadWrite|requireSuperAdmin/.test(line),
+    `/api/webhooks/referral-link must carry no module or permission guard: ${line}`
+  );
+  assert.ok(
+    serverSrc.indexOf("app.use('/api/webhooks/referral-link'") < serverSrc.indexOf("app.use('/api/webhooks', webhooksRouter)"),
+    '/api/webhooks/referral-link must be mounted before /api/webhooks'
+  );
+  // The app-wide limiter exempts /api/webhooks, so the router must carry its own.
+  const routerSrc = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'routes', 'referralLinkWebhooks.js'), 'utf8');
+  assert.match(routerSrc, /router\.use\(\s*rateLimit\(/);
+});
+
 test('server.js: every tenant-scoped voice mount carries the voice module guard', () => {
   const guarded = [
     '/api/calls',

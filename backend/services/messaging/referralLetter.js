@@ -35,7 +35,18 @@
  * second email is sent. Only a referral letter carries `bccAddress`; patient
  * email never sets it. Not set = no copy.
  *
-
+ * R5b — CLOSING THE LOOP. Two more things travel the same way out:
+ *   - the LINKS: the letter's "We received this referral" / "The patient is
+ *     scheduled" and the patient's "I've scheduled my appointment". Each is a
+ *     fresh 32-byte random token in a URL on TC_EMAIL_PUBLIC_BASE_URL
+ *     (routes/referralLinkWebhooks.js); only its SHA-256 is stored, with a
+ *     60-day expiry (LINK_TTL_MS). Same scheme as the unsubscribe link.
+ *   - the PATIENT'S NOTICE: a second message per send, to the patient's own
+ *     address (read from the office's Open Dental by the caller, never from a
+ *     request). It passes the same gates as patient email — the kill switch,
+ *     the consent opt-out — carries its own unsubscribe link, and NEVER a BCC.
+ * Whether either is sent is still decided in routes/tc/referralSend.js.
+ *
  * PHI: the address, letter and attachments travel only in the request. No log
  * line here carries any of them; errors are the adapter's scrubbed sentences.
  */
@@ -191,6 +202,65 @@ function mintUnsubscribe() {
   return { hash, url };
 }
 
+/** (R5b) How long a link in a referral email works. */
+const LINK_TTL_MS = 60 * 24 * 60 * 60 * 1000;
+
+/** (R5b) The public path a link resolves at (routes/referralLinkWebhooks.js, mounted in server.js). */
+const LINK_PATH = '/api/webhooks/referral-link/r';
+
+/**
+ * (R5b) Fresh one-time links, one per purpose: the token (in the URL only),
+ * its hash (the only thing stored) and the URL. Nothing about the referral,
+ * the office or the person is in the URL.
+ * @param {Array<'received'|'scheduled'>} purposes
+ * @returns {Array<{ purpose: 'received'|'scheduled', hash: string, url: string }>}
+ */
+function mintLinks(purposes) {
+  const base = acsConfig.publicBaseUrl();
+  if (!base) {
+    // accountConfigured() said the base URL is set; this only fails closed.
+    throw new MessagingError('FEATURE_DISABLED', 'Email sending is not connected yet. Nothing was sent.', {
+      feature: 'tc_referral_email',
+      reason: 'not_configured',
+    });
+  }
+  return purposes.map((purpose) => {
+    const token = crypto.randomBytes(32).toString('base64url');
+    return {
+      purpose,
+      hash: hashLinkToken(token),
+      url: `${base}${LINK_PATH}?t=${encodeURIComponent(token)}`,
+    };
+  });
+}
+
+/** SHA-256 hex of a link token — how a link is looked up. @param {string} token */
+function hashLinkToken(token) {
+  return crypto.createHash('sha256').update(String(token), 'utf8').digest('hex');
+}
+
+/**
+ * (R5b) Consent rule 1 for the PATIENT's address: may the notice go? Unlike
+ * the specialist's gate this does not throw — an opted-out patient is a
+ * skip with a reason, and the letter has already gone.
+ * @param {{ query: Function }} q
+ * @param {{ office: string, address: string }} input
+ * @returns {Promise<boolean>}
+ */
+async function patientMayEmail(q, { office, address }) {
+  const decision = await consent.canMessage(q, { office, channel: 'email', address });
+  return decision.allowed === true;
+}
+
+/**
+ * (R5b) Render the patient's notice (patient footer, its one button).
+ * @param {{ office: string, subject: string, text: string, unsubscribeUrl: string,
+ *           actions: Array<{ label: string, href: string }> }} input
+ */
+function renderPatientNotice(input) {
+  return emailContent.renderReferralPatientNotice(input);
+}
+
 /**
  * (R6.3) The inbox this letter is blind-copied to, or null for none: the
  * office's saved copy inbox when it is one usable address and is not the
@@ -231,8 +301,10 @@ function messageOf({ office, attemptId, toAddress, rendered, unsubscribeUrl, att
 }
 
 /**
- * Render the composed letter through the shared renderer.
- * @param {{ office: string, subject: string, text: string, unsubscribeUrl: string }} input
+ * Render the composed letter through the shared renderer. (R5b) `actions`
+ * are its two link buttons.
+ * @param {{ office: string, subject: string, text: string, unsubscribeUrl: string,
+ *           actions?: Array<{ label: string, href: string }> }} input
  */
 function render(input) {
   return emailContent.renderReferralLetter(input);
@@ -278,6 +350,12 @@ module.exports = {
   recipientOf,
   assertMayEmail,
   mintUnsubscribe,
+  LINK_TTL_MS,
+  LINK_PATH,
+  mintLinks,
+  hashLinkToken,
+  patientMayEmail,
+  renderPatientNotice,
   bccFor,
   messageOf,
   render,

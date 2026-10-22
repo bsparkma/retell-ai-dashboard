@@ -133,18 +133,48 @@ function renderRow(row, office, unsubscribeUrl) {
  *
  * The text is composed by the caller (routes/tc/referralLetterText.js); no
  * merge token is filled here.
- * @param {{ office: string, subject: string, text: string, unsubscribeUrl: string|null }} input
+ * (R5b) `actions` are the letter's two link buttons, drawn under the text.
+ * @param {{ office: string, subject: string, text: string, unsubscribeUrl: string|null,
+ *           actions?: Array<{ label: string, href: string }> }} input
  * @returns {{ subject: string, html: string, text: string }}
  */
-function renderReferralLetter({ office, subject, text, unsubscribeUrl }) {
+function renderReferralLetter({ office, subject, text, unsubscribeUrl, actions = [] }) {
   const footer = footerFor(office, unsubscribeUrl);
   return contract.renderEmail({
     subject,
     preheader: '',
-    content: { kind: 'text', body: text, maxChars: contract.EMAIL_TEXT_BODY_CEILING, literal: true },
+    content: { kind: 'text', body: text, maxChars: contract.EMAIL_TEXT_BODY_CEILING, literal: true, actions },
     values: {},
     footer: { ...footer, audience: 'referral' },
   });
 }
 
-module.exports = { mergeValues, practiceValues, practiceNameOf, footerFor, snapshotTemplate, renderRow, renderReferralLetter };
+/**
+ * (R5b) The patient's notice that they were referred: the same renderer with
+ * the PATIENT footer ("you are a patient of …"), the default text limit, and
+ * its one button. Composed by the caller (routes/tc/referralLetterText.js);
+ * no merge token is filled.
+ * @param {{ office: string, subject: string, text: string, unsubscribeUrl: string|null,
+ *           actions: Array<{ label: string, href: string }> }} input
+ * @returns {{ subject: string, html: string, text: string }}
+ */
+function renderReferralPatientNotice({ office, subject, text, unsubscribeUrl, actions }) {
+  return contract.renderEmail({
+    subject,
+    preheader: '',
+    content: { kind: 'text', body: text, literal: true, actions },
+    values: {},
+    footer: footerFor(office, unsubscribeUrl),
+  });
+}
+
+module.exports = {
+  mergeValues,
+  practiceValues,
+  practiceNameOf,
+  footerFor,
+  snapshotTemplate,
+  renderRow,
+  renderReferralLetter,
+  renderReferralPatientNotice,
+};

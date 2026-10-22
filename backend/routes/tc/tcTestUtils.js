@@ -135,6 +135,12 @@ class FakeTenantDb {
         const [, col, idx] = m;
         return (r) => r[col] != null && String(r[col]) < String(params[idx - 1]);
       }
+      // Strict `>`, for a link token's expiry (`expires_at > $3`). ISO
+      // instants order like instants as strings.
+      if ((m = term.match(/^(\w+) > \$(\d+)$/))) {
+        const [, col, idx] = m;
+        return (r) => r[col] != null && String(r[col] instanceof Date ? r[col].toISOString() : r[col]) > String(params[idx - 1]);
+      }
       if ((m = term.match(/^(\w+) <= \$(\d+)$/))) {
         const [, col, idx] = m;
         return (r) => String(r[col]) <= String(params[idx - 1]);

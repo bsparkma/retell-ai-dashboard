@@ -45,7 +45,7 @@ const blob = require('../../services/tc/referralAttachmentStore');
 const transitions = require('./referralTransitions');
 const referralSend = require('./referralSend');
 const letterText = require('./referralLetterText');
-const { bootEmailApp, resetEmailHarness, apiJson, ACS_ENDPOINT, PUBLIC_BASE } = require('../emailTestUtils');
+const { bootEmailApp, resetEmailHarness, apiJson, messagesByRecipient, ACS_ENDPOINT, PUBLIC_BASE } = require('../emailTestUtils');
 const { auditRows } = require('./tcTestUtils');
 
 const NOW = new Date('2026-10-21T15:00:00.000Z');
@@ -238,12 +238,17 @@ test('T: `send` is the one new move — approved → sent, from nowhere else; th
   }
   assert.equal(contract.TcReferralVerb.options.includes('send'), false, 'not a verb a route body or a mark can name');
   assert.equal(contract.TcReferralSendVerb.value, 'send');
-  // The event verbs: R6's, then the three R5 adds.
+  // The event verbs: R6's, then the three R5 adds, then (R5b) the four the
+  // links and the patient's notice add — none of which is a move.
   assert.deepEqual([...contract.TcReferralEventVerb.options], [
     ...contract.TC_REFERRAL_EVENT_VERBS,
     'send',
     'send_failed',
     'send_conflict',
+    'patient_scheduled',
+    'patient_email_sent',
+    'patient_email_skipped',
+    'patient_email_failed',
   ]);
 });
 
@@ -348,7 +353,11 @@ test('S: one email to the directory address from the office sender; THEN approve
   assert.equal(r.body.outcome.status, 'sent');
   assert.match(r.body.outcome.message, /River Endodontics \(referrals@endo\.example\.test\)/);
 
-  assert.equal(posts(acsCalls).length, 1, 'exactly one email');
+  // (R5b) Exactly one message per recipient class: one letter to the
+  // specialist; no patient notice here, because this file's offices have no
+  // Open Dental connection, so the patient's email cannot be looked up (the
+  // notice itself is pinned in tcReferralLinks.test.js).
+  assert.deepEqual(messagesByRecipient(acsCalls), { [SPECIALIST]: 1 }, 'one letter, to the specialist');
   const p = posts(acsCalls)[0].body;
   assert.equal(p.senderAddress, 'donotreply@roland.example.test', "the office's OWN sender");
   assert.deepEqual(p.recipients, { to: [{ address: SPECIALIST }] }, 'the directory address, lowercased');
@@ -381,7 +390,19 @@ test('S: one email to the directory address from the office sender; THEN approve
     assert.ok(text.includes(line), `letter has: ${line}`);
   }
   assert.doesNotMatch(text, /available on request:/, 'everything fit');
-  assert.doesNotMatch(p.content.html, /<a [^>]*>(?!Unsubscribe)/, 'no link or button but the unsubscribe link');
+  // (R5b) The links: exactly the two buttons, each a one-time link on the
+  // public base, then the unsubscribe link — nothing else is a link.
+  const anchors = [...p.content.html.matchAll(/<a href="([^"]+)"[^>]*>([^<]+)<\/a>/g)].map((m) => [m[2], m[1]]);
+  assert.deepEqual(anchors.map(([label]) => label), [
+    'We received this referral',
+    'The patient is scheduled',
+    'Unsubscribe from these emails',
+  ]);
+  for (const [, href] of anchors.slice(0, 2)) {
+    assert.match(href, new RegExp(`^${PUBLIC_BASE}/api/webhooks/referral-link/r\\?t=[A-Za-z0-9_-]{43}$`));
+  }
+  assert.notEqual(anchors[0][1], anchors[1][1], 'a link per purpose');
+  assert.ok(text.includes(letterText.LINKS_PARAGRAPH), 'the letter says the buttons are there');
   assert.match(p.content.html, /\{\{keep\}\}/, "the doctor's note verbatim, tokens and all");
 
   const sendEvent = eventsOf(db, id).find((e) => e.verb === 'send');
@@ -420,7 +441,11 @@ test('S: the hub and the detail read carry the specialist email and the history 
   assert.equal(card.sendProblem, null);
   assert.equal((await send(baseUrl, id)).status, 200);
   const detail = await apiJson(baseUrl, 'GET', REF(`/${id}`));
-  assert.equal(detail.body.referral.events.at(-1).verb, 'send');
+  // (R5b) The last MOVE is the send; the patient-notice row (skipped here: no
+  // Open Dental in this file) comes after it and moves nothing.
+  const moves = detail.body.referral.events.filter((e) => !String(e.verb).startsWith('patient_'));
+  assert.equal(moves.at(-1).verb, 'send');
+  assert.equal(detail.body.referral.events.at(-1).verb, 'patient_email_skipped');
   assert.ok(contract.TcReferral.safeParse(detail.body.referral).success, 'the answer parses as the contract');
 });
 
@@ -765,12 +790,16 @@ test('A: approval with auto-send ON emails it and answers sent; the approval and
   assert.equal(a.status, 200, JSON.stringify(a.body));
   assert.equal(a.body.autoSend.status, 'sent');
   assert.equal(a.body.referral.status, 'sent');
-  assert.equal(posts(acsCalls).length, 1);
-  assert.deepEqual(eventsOf(db, id).slice(-2).map((e) => [e.verb, e.from_status, e.to_status]), [
+  assert.deepEqual(messagesByRecipient(acsCalls), { [SPECIALIST]: 1 });
+  // (R5b) The two MOVES; the patient-notice row (skipped: no Open Dental in
+  // this file) follows them and moves nothing.
+  const rows = eventsOf(db, id).filter((e) => !String(e.verb).startsWith('patient_'));
+  assert.deepEqual(rows.slice(-2).map((e) => [e.verb, e.from_status, e.to_status]), [
     ['approve', 'pending_signoff', 'approved'],
     ['send', 'approved', 'sent'],
   ]);
-  assert.match(eventsOf(db, id).at(-1).note, /automatically on approval/);
+  assert.match(rows.at(-1).note, /automatically on approval/);
+  assert.deepEqual(eventsOf(db, id).at(-1).verb, 'patient_email_skipped');
 });
 
 test('A: a failed auto-send never fails the approval — approved, a visible send_failed row, and a retry that works', async (t) => {

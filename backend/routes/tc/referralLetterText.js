@@ -15,7 +15,15 @@
  *              signature: Dr. {referring provider}, office, phone, reply-to.
  *
  * PLAIN TEXT ONLY. The shared renderer turns blank lines into paragraphs and
- * escapes everything; nothing here can become a link or a button.
+ * escapes everything; nothing here can become a link or a button. (R5b) The
+ * letter's two buttons, and the patient notice's one, are separate `actions`
+ * the renderer draws under the text from the labels below; the text only
+ * says they are there.
+ *
+ * R5b — THE PATIENT'S NOTICE (composePatientNotice): who they are referred
+ * to, the specialist's phone, and a button to say they scheduled. Minimum
+ * necessary: the patient's FIRST name, the practice and specialist names and
+ * phones. Never the reason, teeth, urgency, notes, DOB or files.
  *
  * DOB: the referral row does not carry one, and this slice reads nothing from
  * Open Dental, so the letter says the date of birth is available on request
@@ -33,6 +41,19 @@ const FINDINGS_PARAGRAPH =
 
 /** How the "files that did not fit" line reads, exactly as approved. */
 const ON_REQUEST_LEAD = 'Additional images available on request';
+
+/** (R5b) The letter's two buttons, exactly as the brief named them. */
+const SPECIALIST_LINK_LABELS = Object.freeze({
+  received: 'We received this referral',
+  scheduled: 'The patient is scheduled',
+});
+
+/** (R5b) The line above the letter's buttons. */
+const LINKS_PARAGRAPH =
+  'One click lets us know where things stand: use the buttons below to tell us you received this referral, and again once the patient is scheduled. No sign-in is needed.';
+
+/** (R5b) The patient notice's one button. */
+const PATIENT_LINK_LABEL = "I've scheduled my appointment";
 
 /** One line: no CR/LF, collapsed spaces. @param {unknown} v */
 function oneLine(v) {
@@ -115,10 +136,11 @@ function letterDate(at, timeZone) {
  *   onRequest: string[],       file names that did not fit, in upload order
  *   at: Date,
  *   timeZone: string,
+ *   withLinks?: boolean,       (R5b) say the buttons are below
  * }} input
  * @returns {{ subject: string, text: string }}
  */
-function composeReferralLetter({ referral, entry, office, attached, onRequest, at, timeZone }) {
+function composeReferralLetter({ referral, entry, office, attached, onRequest, at, timeZone, withLinks = false }) {
   const patient = nameParts(referral.patient_name);
   const initial = patient.last ? `${patient.last[0].toUpperCase()}.` : '';
   const who = oneLine(`${patient.first} ${initial}`);
@@ -162,6 +184,39 @@ function composeReferralLetter({ referral, entry, office, attached, onRequest, a
     files.join('\n'),
     FINDINGS_PARAGRAPH,
     signature,
+    ...(withLinks ? [LINKS_PARAGRAPH] : []),
+  ];
+  return { subject, text: paragraphs.join('\n\n') };
+}
+
+/**
+ * (R5b) The patient's notice: subject and plain-text body.
+ *
+ * @param {{
+ *   patientName: string,       the referral's stored name; only the first name is used
+ *   entry: { practice_name?: string|null, specialist_name?: string|null, phone?: string|null },
+ *   office: { name: string, phone: string|null },
+ * }} input
+ * @returns {{ subject: string, text: string }}
+ */
+function composePatientNotice({ patientName, entry, office }) {
+  const first = nameParts(patientName).first;
+  const practice = oneLine(entry.practice_name);
+  const specialist = oneLine(entry.specialist_name);
+  const phone = oneLine(entry.phone);
+  const to = specialist && practice ? `${specialist} at ${practice}` : specialist || practice || 'a specialist';
+  const where = practice || specialist || "the specialist's office";
+
+  const subject = oneLine(`Your referral from ${office.name}${practice ? ` to ${practice}` : ''}`);
+  const paragraphs = [
+    first ? `Hi ${first},` : 'Hello,',
+    `${office.name} has referred you to ${to}. We have sent them your referral.`,
+    phone
+      ? `Please call ${where} to schedule your appointment: ${phone}`
+      : `Please call ${where} to schedule your appointment.${office.phone ? ` If you need their number, call us at ${office.phone}.` : ''}`,
+    'Once you have an appointment, tap the button below to let us know. You can add the date if you have it.',
+    ...(office.phone ? [`Questions? Call us at ${office.phone}.`] : []),
+    office.name,
   ];
   return { subject, text: paragraphs.join('\n\n') };
 }
@@ -170,6 +225,10 @@ module.exports = {
   DOB_LINE,
   FINDINGS_PARAGRAPH,
   ON_REQUEST_LEAD,
+  SPECIALIST_LINK_LABELS,
+  LINKS_PARAGRAPH,
+  PATIENT_LINK_LABEL,
+  composePatientNotice,
   nameParts,
   specialistLastName,
   shortReason,

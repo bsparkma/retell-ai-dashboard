@@ -838,7 +838,8 @@ async function recordUnsubscribeLink(req, token) {
 /**
  * (R5) The referral email a token's hash names, shaped like the tc_messages
  * row recordUnsubscribeLink reads, or null. Only the rows that record an
- * email that went out (send, send_conflict) carry a hash.
+ * email that went out (send, send_conflict, and R5b's patient_email_sent —
+ * the patient's notice) carry a hash.
  * @param {{ query: Function }} q
  * @param {string} hash
  */
@@ -846,7 +847,7 @@ async function referralEmailByToken(q, hash) {
   const res = await q.query(
     `SELECT event_id, office_id, recipient_address FROM tc_referral_events
       WHERE unsubscribe_token_hash = $1 AND verb = ANY($2)`,
-    [hash, ['send', 'send_conflict']]
+    [hash, ['send', 'send_conflict', 'patient_email_sent']]
   );
   if (res.rows.length !== 1) return null;
   const e = res.rows[0];

@@ -5,7 +5,8 @@
  *
  * Boots, over one ephemeral HTTP server and one FakeTenantDb, exactly what
  * server.js mounts for email: the body parsers (raw capture on both), the
- * PUBLIC unsubscribe router at /api/webhooks/email, then the signed-in /api/tc
+ * PUBLIC unsubscribe router at /api/webhooks/email, (R5b) the PUBLIC referral
+ * link router at /api/webhooks/referral-link, then the signed-in /api/tc
  * stack (tenantContext + requireModule('tc')). The registry is stubbed and ACS
  * is a FAKE transport that records every request; nothing reaches a network.
  *
@@ -67,9 +68,12 @@ function applyEnv(env) {
 
 /**
  * @param {{ env?: Record<string, string|undefined>, modules?: string[], tenant?: object|null,
- *           acsStatus?: string, acsPolls?: Array<object|Error>, now?: Date }} [opts]
+ *           acsStatus?: string, acsPolls?: Array<object|Error>, now?: Date,
+ *           linkLimits?: { perClientMax?: number, allClientsMax?: number } }} [opts]
+ *   `linkLimits` (R5b): the referral link router's rate limits; a fresh router
+ *   (fresh buckets) per boot either way.
  */
-async function bootEmailApp({ env = {}, modules = ['tc'], tenant, acsStatus = 'Succeeded', acsPolls = [], now = DAY } = {}) {
+async function bootEmailApp({ env = {}, modules = ['tc'], tenant, acsStatus = 'Succeeded', acsPolls = [], now = DAY, linkLimits = {} } = {}) {
   applyEnv(env);
 
   const db = new FakeTenantDb();
@@ -124,6 +128,7 @@ async function bootEmailApp({ env = {}, modules = ['tc'], tenant, acsStatus = 'S
   app.use(express.json({ verify: (req, _res, buf) => { if (buf && buf.length) req.rawBody = buf.toString('utf8'); } }));
   app.use(express.urlencoded({ extended: true, verify: (req, _res, buf) => { if (buf && buf.length) req.rawBody = buf.toString('utf8'); } }));
   app.use('/api/webhooks/email', require('./emailWebhooks'));
+  app.use('/api/webhooks/referral-link', require('./referralLinkWebhooks').createReferralLinkRouter(linkLimits));
   app.use('/api', (req, _res, next) => {
     req.user = { email: 'tc@carein.ai', name: 'TC User', tenantId: 'x' };
     next();
@@ -215,6 +220,21 @@ async function apiJson(baseUrl, method, path, body) {
   return { status: res.status, body: json };
 }
 
+/**
+ * (R5b) How many messages ACS was handed per `to` address — the shape of the
+ * "exactly one message per recipient class" pins (a referral send is one
+ * letter to the specialist and at most one notice to the patient).
+ * @returns {Record<string, number>}
+ */
+function messagesByRecipient(acsCalls) {
+  const out = {};
+  for (const c of acsCalls) {
+    if (c.method !== 'POST' || !c.body || !c.body.recipients) continue;
+    for (const r of c.body.recipients.to || []) out[r.address] = (out[r.address] || 0) + 1;
+  }
+  return out;
+}
+
 /** The unsubscribe URL ACS was handed for the Nth POSTed email. */
 function unsubscribeUrlOf(acsCalls, n = 0) {
   const posts = acsCalls.filter((c) => c.method === 'POST');
@@ -233,4 +253,5 @@ module.exports = {
   seedTemplate,
   apiJson,
   unsubscribeUrlOf,
+  messagesByRecipient,
 };

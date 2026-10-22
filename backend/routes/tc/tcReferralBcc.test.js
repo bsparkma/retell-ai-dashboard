@@ -33,7 +33,7 @@ const emailIdentity = require('../../config/emailIdentity');
 const consent = require('../../services/messaging/consent');
 const blob = require('../../services/tc/referralAttachmentStore');
 const transitions = require('./referralTransitions');
-const { bootEmailApp, resetEmailHarness, apiJson } = require('../emailTestUtils');
+const { bootEmailApp, resetEmailHarness, apiJson, messagesByRecipient } = require('../emailTestUtils');
 
 const NOW = new Date('2026-10-22T15:00:00.000Z');
 const SPECIALIST = 'referrals@endo.example.test';
@@ -117,6 +117,13 @@ async function approved(baseUrl, db, seedOpts) {
 
 const send = (baseUrl, id) => apiJson(baseUrl, 'POST', REF(`/${id}/send-email`), {});
 const posts = (acsCalls) => acsCalls.filter((c) => c.method === 'POST');
+/**
+ * (R5b) A send is one message per recipient class: one letter to the
+ * specialist (any BCC rides on it) and at most one notice to the patient.
+ * This file's offices have no Open Dental connection, so no patient notice
+ * goes; tcReferralLinks.test.js pins that the notice never carries the BCC.
+ */
+const ONE_LETTER = { [SPECIALIST]: 1 };
 const eventsOf = (db, id) => db.table('tc_referral_events').filter((e) => e.referral_id === id);
 const lastEvent = (db, id, verb) => eventsOf(db, id).filter((e) => e.verb === verb).pop();
 
@@ -130,7 +137,7 @@ test('no copy inbox saved: exactly one message, no BCC anywhere, and the history
   const id = await approved(baseUrl, db);
   const r = await send(baseUrl, id);
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  assert.equal(posts(acsCalls).length, 1, 'exactly one message');
+  assert.deepEqual(messagesByRecipient(acsCalls), ONE_LETTER, 'exactly one message per recipient class');
   const body = posts(acsCalls)[0].body;
   assert.deepEqual(body.recipients, { to: [{ address: SPECIALIST }] });
   assert.equal('bcc' in body.recipients, false);
@@ -143,7 +150,8 @@ test('a copy inbox saved: exactly one message, BCC on it, invisible to the speci
   const r = await send(baseUrl, id);
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.referral.status, 'sent');
-  assert.equal(posts(acsCalls).length, 1, 'one message — the copy is not a second send');
+  assert.deepEqual(messagesByRecipient(acsCalls), ONE_LETTER, 'one letter — the copy is not a second send');
+  assert.equal(posts(acsCalls).length, 1);
   const body = posts(acsCalls)[0].body;
   assert.deepEqual(body.recipients.to, [{ address: SPECIALIST }]);
   assert.deepEqual(body.recipients.bcc, [{ address: COPY }]);
@@ -162,7 +170,7 @@ test('the copy inbox IS the specialist: no BCC (one mailbox, one copy)', async (
   const { baseUrl, db, acsCalls } = await boot(t, { bcc: SPECIALIST });
   const id = await approved(baseUrl, db);
   assert.equal((await send(baseUrl, id)).status, 200);
-  assert.equal(posts(acsCalls).length, 1);
+  assert.deepEqual(messagesByRecipient(acsCalls), ONE_LETTER);
   assert.equal('bcc' in posts(acsCalls)[0].body.recipients, false);
 });
 
@@ -171,7 +179,7 @@ test('ACS fails it: still one attempt, the referral stays approved, and the hist
   const id = await approved(baseUrl, db);
   const r = await send(baseUrl, id);
   assert.notEqual(r.status, 200);
-  assert.equal(posts(acsCalls).length, 1, 'no retry, no copy-only send');
+  assert.deepEqual(messagesByRecipient(acsCalls), ONE_LETTER, 'no retry, no copy-only send, no patient notice for an unsent letter');
   assert.deepEqual(posts(acsCalls)[0].body.recipients.bcc, [{ address: COPY }]);
   assert.equal(db.table('tc_referrals').find((x) => x.referral_id === id).status, 'approved');
   assert.match(lastEvent(db, id, 'send_failed').note, /No blind copy went out either\.$/);
@@ -191,7 +199,7 @@ test('ACS accepted but the referral cannot be marked sent: the conflict row reco
   const r = await send(baseUrl, id);
   assert.equal(r.status, 409);
   assert.equal(r.body.code, 'REFERRAL_EMAIL_CONFLICT');
-  assert.equal(posts(acsCalls).length, 1);
+  assert.deepEqual(messagesByRecipient(acsCalls), ONE_LETTER, 'a letter not recorded as sent sends no patient notice');
   assert.match(lastEvent(db, id, 'send_conflict').note, /blind copy \(BCC\) to .* was on the same message\.$/);
 });
 
@@ -203,7 +211,7 @@ test('the auto-send on approval copies the same way: one message, BCC present', 
   const a = await apiJson(baseUrl, 'POST', SIGN(`/${id}/approve`), {});
   assert.equal(a.status, 200, JSON.stringify(a.body));
   assert.equal(a.body.referral.status, 'sent', JSON.stringify(a.body.autoSend));
-  assert.equal(posts(acsCalls).length, 1);
+  assert.deepEqual(messagesByRecipient(acsCalls), ONE_LETTER);
   assert.deepEqual(posts(acsCalls)[0].body.recipients.bcc, [{ address: COPY }]);
 });
 
