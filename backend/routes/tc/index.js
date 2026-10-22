@@ -37,6 +37,10 @@
  *                     tc_checkout_enabled switch. Postgres-only.
  *   /notification-prefs  in-app alert preferences (item 51): the caller's own
  *                     override and the office default (admin). Postgres-only.
+ *   /email-identity   the office's email reply-to, practice name and phone
+ *                     (R5c), saved in the app over the app settings. Admin +
+ *                     office (tc.notification_defaults). The From address is
+ *                     shown, never editable.
  *   /referrals        referral foundations (item 52): the specialist directory
  *                     and the two referral policies. Nothing sends. Dark behind
  *                     the per-office tc_referrals_enabled switch. Postgres-only.
@@ -97,6 +101,9 @@ router.use('/opportunities', tcFull, require('./opportunities'));
 router.use('/nurture', tcFull, require('./nurture'));
 router.use('/checkout', tcFull, require('./checkout'));
 router.use('/notification-prefs', tcFull, require('./notifications'));
+// R5c: the office's email identity (reply-to, practice name, practice phone).
+// The same people who set the office's alert defaults: admin + office.
+router.use('/email-identity', requirePermission('tc.notification_defaults'), require('./emailIdentity'));
 // MUST precede the /referrals mount (item 53), for the same registration-order
 // reason as /cases/from-call and /od/patient-search: a `doctor` holds
 // tc.referral_signoff and NOT tc.full, so the tc.full mount would refuse the
