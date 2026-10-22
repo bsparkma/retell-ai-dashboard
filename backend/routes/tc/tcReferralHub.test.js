@@ -15,7 +15,8 @@
  *   D  the doctor edits at sign-off, incl. doctor_note (cap 4000)
  *   Q  return: pending_signoff → draft with a required comment; the submitter
  *      sees "Returned by Dr. — <comment>"
- *   M  the marks: human attestations, the only way into sent+; nothing sends
+ *   M  the marks: human attestations; with R5's `send`, the only ways into
+ *      sent+; referralSend.js is the one gateway to messaging
  *
  * Test patients only (roland 12827); names synthetic.
  */
@@ -162,17 +163,33 @@ test('T: the shared next-status table, verb × status, exactly (sign-off require
   }
   // Reopen goes back to sign-off even where sign-off is not required.
   assert.equal(contract.referralNextStatus('approved', 'reopen', { signoffRequired: false }), 'pending_signoff');
-  // The only ways INTO sent and beyond are the three marks (and close).
+
+  // R5 (PM-authorized extension): every move verb — what a person says
+  // (TcReferralVerb) and the app's send (TcReferralSendVerb) — across every
+  // status in both sign-off modes. The ONLY edges into sent-and-beyond are
+  // these, and `send` leaves only approved.
+  const moveVerbs = [...contract.TcReferralVerb.options, contract.TcReferralSendVerb.value];
+  assert.deepEqual(moveVerbs.filter((v) => !contract.TcReferralVerb.options.includes(v)), ['send']);
+  const SENT_PLUS = ['sent', 'acknowledged', 'patient_seen', 'closed'];
   const intoSentPlus = [];
-  for (const verb of contract.TcReferralVerb.options) {
+  for (const verb of moveVerbs) {
     for (const from of contract.TcReferralStatus.options) {
       for (const signoffRequired of [true, false]) {
         const to = contract.referralNextStatus(from, verb, { signoffRequired });
-        if (['sent', 'acknowledged', 'patient_seen', 'closed'].includes(to)) intoSentPlus.push(verb);
+        if (verb === 'send') assert.equal(to, from === 'approved' ? 'sent' : null, `send from ${from}`);
+        if (SENT_PLUS.includes(to)) intoSentPlus.push(`${verb}:${from}->${to}`);
       }
     }
   }
-  assert.deepEqual([...new Set(intoSentPlus)].sort(), ['close', 'mark_acknowledged', 'mark_patient_seen', 'mark_sent']);
+  assert.deepEqual([...new Set(intoSentPlus)].sort(), [
+    'close:patient_seen->closed',
+    'mark_acknowledged:sent->acknowledged',
+    'mark_patient_seen:acknowledged->patient_seen',
+    'mark_sent:approved->sent',
+    'send:approved->sent',
+  ]);
+  // The moveInTx throw-pin for `send` stays in tcReferralSend.test.js
+  // ("T: a generic move cannot claim a send").
 });
 
 test('T: every transition verb is an event verb; edit / doctor_edit / create are event-only', () => {
@@ -655,14 +672,84 @@ test('M: a failed audit write rolls a mark back', async (t) => {
   assert.equal(db.table('tc_referrals')[0].status, 'approved');
 });
 
-test('M: nothing sends — no messaging is reachable from the referral routes, and auto-send stays consumed by nothing', () => {
+/**
+ * R5 (PM-authorized revision of R6's "nothing sends" pin): ONE gateway.
+ *
+ *   - referralSend.js is the only REFERRAL file under routes/tc/ that may
+ *     require services/messaging. (The patient-messaging routes —
+ *     communications.js, messages.js, nurture.js — predate referrals and are
+ *     not referral files; their own guards are services/messaging/*Guards.)
+ *   - referrals.js and referralSignoff.js reach sending only through
+ *     ./referralSend;
+ *   - every other referral file reaches no messaging / email / fax / sms;
+ *   - sendsOnApproval is consumed only by referralSend.sendAfterApproval,
+ *     which is invoked only from the approve handler, after the approval
+ *     committed.
+ */
+const SENDISH = /(messaging|email|fax|sms|acs|twilio|nodemailer|referralSend|referralLetter)/i;
+
+function requiresOf(src) {
+  return [...src.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1]);
+}
+
+test('M: referralSend.js is the one gateway from the referral routes to messaging', () => {
   const dir = __dirname;
-  const files = ['referrals.js', 'referralSignoff.js', 'referralTransitions.js', 'referralStore.js', 'referralCreate.js'];
-  for (const f of files) {
-    const src = fs.readFileSync(path.join(dir, f), 'utf8');
-    assert.doesNotMatch(src, /require\([^)]*(messaging|email|fax|sms|acs|twilio|nodemailer)[^)]*\)/i, f);
+  const referralFiles = fs.readdirSync(dir).filter((f) => /^referral.*\.js$/.test(f) && !/\.test\.js$/.test(f));
+  assert.ok(referralFiles.includes('referralSend.js') && referralFiles.length >= 8, referralFiles.join(','));
+
+  const reachMessaging = referralFiles.filter((f) =>
+    requiresOf(fs.readFileSync(path.join(dir, f), 'utf8')).some((r) => /services\/messaging/.test(r))
+  );
+  assert.deepEqual(reachMessaging, ['referralSend.js']);
+
+  for (const f of ['referrals.js', 'referralSignoff.js']) {
+    const sendish = requiresOf(fs.readFileSync(path.join(dir, f), 'utf8')).filter((r) => SENDISH.test(r));
+    assert.deepEqual(sendish, ['./referralSend'], f);
   }
-  // autosend_on_approval is READ only to show and store the setting.
+  for (const f of referralFiles.filter((x) => !['referralSend.js', 'referrals.js', 'referralSignoff.js'].includes(x))) {
+    const src = fs.readFileSync(path.join(dir, f), 'utf8');
+    assert.doesNotMatch(src, /require\([^)]*(messaging|email|fax|sms|acs|twilio|nodemailer|referralSend)[^)]*\)/i, f);
+  }
+});
+
+test('M: sendsOnApproval feeds only sendAfterApproval, called only from approve, after the approval committed', () => {
+  const backend = path.join(__dirname, '../..');
+  const uses = [];
+  const walk = (d) => {
+    for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
+      if (ent.name === 'node_modules' || ent.name.startsWith('.')) continue;
+      const p = path.join(d, ent.name);
+      if (ent.isDirectory()) walk(p);
+      else if (/\.js$/.test(ent.name) && !/\.test\.js$/.test(ent.name) && !/\.gen\.cjs$/.test(ent.name)) {
+        if (/\bsendsOnApproval\b/.test(fs.readFileSync(p, 'utf8'))) uses.push(path.relative(backend, p).replace(/\\/g, '/'));
+      }
+    }
+  };
+  walk(path.join(backend, 'routes'));
+  walk(path.join(backend, 'services'));
+  assert.deepEqual(uses.sort(), ['routes/tc/referralSend.js', 'routes/tc/referralStore.js']);
+
+  // In referralSend.js it is read once, inside sendAfterApproval.
+  const sendSrc = fs.readFileSync(path.join(__dirname, 'referralSend.js'), 'utf8');
+  const calls = [...sendSrc.matchAll(/store\.sendsOnApproval\(/g)].map((m) => m.index);
+  assert.equal(calls.length, 1);
+  const fnAt = sendSrc.indexOf('async function sendAfterApproval(');
+  const nextFn = sendSrc.indexOf('\nmodule.exports', fnAt);
+  assert.ok(fnAt > -1 && calls[0] > fnAt && calls[0] < nextFn, 'inside sendAfterApproval');
+
+  // sendAfterApproval: once, in the approve handler, after the committed approval answered 200.
+  const signoff = fs.readFileSync(path.join(__dirname, 'referralSignoff.js'), 'utf8');
+  const approveAt = signoff.indexOf("'/:id/approve'");
+  const declineAt = signoff.indexOf("'/:id/decline'");
+  const applyAt = signoff.indexOf("transitions.applyVerb(req, { referralId: id.data, verb: 'approve' })", approveAt);
+  const okAt = signoff.indexOf('if (out.status !== 200) return', applyAt);
+  const autoAt = signoff.indexOf('referralSend.sendAfterApproval(', approveAt);
+  assert.equal((signoff.match(/referralSend\.sendAfterApproval\(/g) || []).length, 1);
+  assert.ok(approveAt > -1 && applyAt > approveAt && okAt > applyAt && autoAt > okAt && autoAt < declineAt);
+});
+
+test('M: the auto-send policy column is read only to show, store and resolve it', () => {
+  const dir = __dirname;
   const readers = [];
   const walk = (d) => {
     for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
