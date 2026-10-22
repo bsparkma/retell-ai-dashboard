@@ -32,6 +32,10 @@ const {
 const { withTenantTx } = require('./tx');
 const tenantDb = require('../../platform/tenantDb');
 const store = require('./caseStore');
+const checkoutStore = require('./checkoutStore');
+const tcCheckout = require('../../config/tcCheckout');
+// (item 47) A case leaving TC work stops its nurture enrollment.
+const nurtureHooks = require('../../services/tcNurture/hooks');
 
 const { z, TcCase, TcCasePhase, TcCaseItem, TcObjection, ContactAttemptDetail, CaseStatus, LostReason, Uuid, caseToRows } = contract;
 
@@ -311,12 +315,29 @@ router.get(
       for (const r of found.rows) screened.add(r.case_id);
     }
 
+    // C2b: which of these cases hold hygiene-visit treatment nobody has yet
+    // attested as entered in Open Dental (the card's "Tx not in OD" badge).
+    // Only where checkout is switched on for the office; dark otherwise.
+    let unentered = new Set();
+    if (ids.length > 0 && (await tcCheckout.isEnabled(req.tcOffice))) {
+      unentered = await tenantDb.withTenantDb(req, async (pool) => {
+        const handoffs = await checkoutStore.listForCases(pool, req.tcOffice, ids);
+        const atts = await checkoutStore.listAttestations(
+          pool,
+          req.tcOffice,
+          handoffs.map((r) => String(r.handoff_id))
+        );
+        return checkoutStore.casesWithUnenteredTreatment(handoffs, atts, contract.checkoutItemKey);
+      });
+    }
+
     await auditTc(req, 'READ', 'tc_case', null);
     res.json({
       success: true,
       cases: rows.rows.map((r) => ({
         ...caseRowToSummary(r),
         hasOrthoScreening: screened.has(r.case_id),
+        txNotInOd: unentered.has(String(r.case_id)),
       })),
     });
   })
@@ -535,11 +556,25 @@ router.post(
         });
       }
 
-      return { aggregate: await store.loadCaseAggregate(client, req.tcOffice, caseId) };
+      // (item 47) Into a TERMINAL status ⇒ any running nurture enrollment on
+      // this case stops (stop_reason 'case_terminal'), in this transaction, so
+      // the status and the stop commit together.
+      const stoppedEnrollments = await nurtureHooks.stopForTerminalCase(client, {
+        office: req.tcOffice,
+        caseId,
+        newStatus: input.status,
+        actor,
+        now: new Date(now),
+      });
+
+      return { aggregate: await store.loadCaseAggregate(client, req.tcOffice, caseId), stoppedEnrollments };
     });
 
     if (result.missing) return notFound(res, 'case');
     if (!result.unchanged) await auditTc(req, 'UPDATE', 'tc_case', caseId);
+    for (const id of result.stoppedEnrollments || []) {
+      await auditTc(req, 'UPDATE', 'tc_nurture_enrollment.stopped', id, { office: req.tcOffice });
+    }
     res.json({ success: true, changed: !result.unchanged, case: result.aggregate });
   })
 );
@@ -552,12 +587,35 @@ router.delete(
     const caseId = parseId(res, req.params.caseId, 'case');
     if (!caseId) return;
 
-    const deleted = await tenantDb.withTenantDb(req, (pool) =>
-      pool.query('DELETE FROM tc_cases WHERE office_id = $1 AND case_id = $2 RETURNING case_id', [
-        req.tcOffice,
-        caseId,
-      ])
-    );
+    // Item 53: a referral names its case through a RESTRICT foreign key (a
+    // referral is a record of care and must not lose its case silently). Say
+    // so plainly instead of letting the constraint surface as a 500 — checked
+    // first, and the constraint itself mapped too for a referral created in
+    // between.
+    const refusedForReferrals = () =>
+      res.status(409).json({
+        success: false,
+        error: 'This case has referrals, so it cannot be deleted. Cancel or close them instead.',
+        code: 'CASE_HAS_REFERRALS',
+      });
+    let deleted;
+    try {
+      deleted = await tenantDb.withTenantDb(req, async (pool) => {
+        const named = await pool.query(
+          'SELECT referral_id FROM tc_referrals WHERE office_id = $1 AND tc_case_id = $2 LIMIT 1',
+          [req.tcOffice, caseId]
+        );
+        if (named.rows.length > 0) return null;
+        return pool.query('DELETE FROM tc_cases WHERE office_id = $1 AND case_id = $2 RETURNING case_id', [
+          req.tcOffice,
+          caseId,
+        ]);
+      });
+    } catch (err) {
+      if (err && err.code === '23503' && err.constraint === 'tc_referrals_case_fk') return refusedForReferrals();
+      throw err;
+    }
+    if (deleted === null) return refusedForReferrals();
     if (deleted.rows.length === 0) return notFound(res, 'case');
 
     await auditTc(req, 'DELETE', 'tc_case', caseId);

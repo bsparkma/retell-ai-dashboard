@@ -40,6 +40,8 @@ import {
   WelcomeSlide,
 } from "@/features/tc/present/slides";
 
+import { unpricedCheckoutPhases } from "@shared/tc/checkout";
+
 const MAX_GALLERY_PAIRS = 6;
 
 type Slide =
@@ -77,6 +79,9 @@ export default function TcPresentation() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [slide, setSlide] = useState(0);
+  // Item 50b: the coordinator's explicit "present anyway" past unpriced
+  // hygiene-visit items. Per page load; never remembered.
+  const [unpricedConfirmed, setUnpricedConfirmed] = useState(false);
 
   const practiceName = useMemo(() => {
     if (!office) return "our practice";
@@ -207,6 +212,36 @@ export default function TcPresentation() {
         <Link href="/tc" className="text-primary font-medium hover:underline">
           Back to Treatment Coordinator
         </Link>
+      </div>
+    );
+  }
+
+  // Item 50b PRESENT GUARD. A checkout writes the hygienist's staged treatment
+  // into the plan at $0 (fees are not known at checkout). Before a patient sees
+  // $0 lines, the coordinator is warned and must explicitly choose to go on.
+  // Staff-facing: it shows before the first slide, never on one.
+  const unpriced = unpricedCheckoutPhases(caseData.phases);
+  if (unpriced.length > 0 && !unpricedConfirmed) {
+    return (
+      <div
+        className="min-h-screen flex flex-col items-center justify-center gap-5 bg-background p-6 text-center"
+        data-testid="tc-present-unpriced-guard"
+      >
+        <p className="text-lg font-semibold text-foreground">
+          This plan has unpriced hygiene-visit items — set fees before presenting.
+        </p>
+        <p className="max-w-xl text-sm text-muted-foreground">
+          {unpriced.join(", ")} still {unpriced.length === 1 ? "has" : "have"} items at $0. The patient
+          would see them as free.
+        </p>
+        <div className="flex flex-wrap items-center justify-center gap-3">
+          <Button asChild>
+            <Link href={`/tc/cases/${caseId}`}>Back to the case to set fees</Link>
+          </Button>
+          <Button variant="outline" onClick={() => setUnpricedConfirmed(true)}>
+            Present anyway
+          </Button>
+        </div>
       </div>
     );
   }

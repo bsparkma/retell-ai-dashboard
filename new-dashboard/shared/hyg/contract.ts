@@ -1060,6 +1060,22 @@ export const OrthoSendSchema = z.object({
 });
 export type OrthoSend = z.infer<typeof OrthoSendSchema>;
 
+/**
+ * The visit's checkout alert, once TC took it (item 49).
+ *
+ * READ-ONLY over the wire, exactly like `orthoSend`: the server sets it after
+ * TC answered with a handoff, and no request schema accepts it. `finalAt` is
+ * when the visit Send's FINAL snapshot landed — null while only the early
+ * "Alert checkout" has, which is the state the TC sees as "notes pending".
+ */
+export const CheckoutSendSchema = z.object({
+  handoffId: z.string().min(1),
+  sentAt: z.string(),
+  sentBy: z.string(),
+  finalAt: z.string().nullable(),
+});
+export type CheckoutSend = z.infer<typeof CheckoutSendSchema>;
+
 /** The whole visit: the slip, the items, and what is staged. */
 export const HygVisitSchema = z.object({
   visitId: z.string().min(1),
@@ -1073,6 +1089,8 @@ export const HygVisitSchema = z.object({
   stagedWrites: z.array(StagedWriteSchema),
   /** Item 33. Defaulted so a response from an older server still parses. */
   orthoSend: OrthoSendSchema.nullable().default(null),
+  /** Item 49. Defaulted so a response from an older server still parses. */
+  checkoutSend: CheckoutSendSchema.nullable().default(null),
   createdBy: z.string(),
   createdAt: z.string(),
   updatedBy: z.string().nullable(),
@@ -1171,6 +1189,21 @@ export const SendOutcomeSchema = z.object({
 });
 export type SendOutcome = z.infer<typeof SendOutcomeSchema>;
 
+/**
+ * What the visit Send did with the checkout handoff (item 49).
+ *
+ * The Send fires the handoff AFTER its chart writes and never fails because of
+ * it — a TC that is down must not cost the hygienist her note. So the handoff
+ * reports here, beside the outcomes, in words: `delivered` only after TC
+ * answered with the handoff and it was recorded on the visit.
+ */
+export const CheckoutDeliverySchema = z.object({
+  state: z.enum(["delivered", "not_delivered"]),
+  code: z.string().nullable(),
+  message: z.string().nullable(),
+});
+export type CheckoutDelivery = z.infer<typeof CheckoutDeliverySchema>;
+
 export const HygSendResponseSchema = z.object({
   success: z.literal(true),
   visit: HygVisitSchema,
@@ -1189,6 +1222,8 @@ export const HygSendResponseSchema = z.object({
   /** Counts, not a verdict. A perio chart still `Sending` is in neither. */
   written: z.number().int(),
   failed: z.number().int(),
+  /** Item 49. Null when the checkout handoff is switched off for the office. */
+  checkout: CheckoutDeliverySchema.nullable().default(null),
 });
 export type HygSendResponse = z.infer<typeof HygSendResponseSchema>;
 
@@ -1219,6 +1254,31 @@ export const HygOrthoSendResponseSchema = z.object({
   alreadySent: z.boolean(),
 });
 export type HygOrthoSendResponse = z.infer<typeof HygOrthoSendResponseSchema>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/hyg/visit/:aptNum/checkout/alert     (item 49)
+// POST /api/hyg/visit/:aptNum/checkout/finalize  (item 49)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The checkout alert's body: NOTHING — the ortho send's rule, for the same
+ * reason. Office and PatNum come off the stored visit; the patient's name, the
+ * chair and the provider off the appointment snapshot; the procedures off the
+ * stored items. A client-sent value is discarded unread.
+ */
+export const CheckoutAlertRequestSchema = z.object({}).strip();
+export type CheckoutAlertRequest = z.infer<typeof CheckoutAlertRequestSchema>;
+
+export const HygCheckoutAlertResponseSchema = z.object({
+  success: z.literal(true),
+  visit: HygVisitSchema,
+  recordsNeeded: z.array(z.string()),
+  handoffCategory: HandoffCategorySchema,
+  doctorOptions: z.array(z.string()),
+  /** True when this press found it already alerted and sent nothing. */
+  alreadySent: z.boolean(),
+});
+export type HygCheckoutAlertResponse = z.infer<typeof HygCheckoutAlertResponseSchema>;
 
 /** The refusal codes slice 2 adds on top of HYG_ERROR_CODES. */
 export const HYG_VISIT_ERROR_CODES = [
@@ -1270,5 +1330,28 @@ export const HYG_VISIT_ERROR_CODES = [
   "TC_ENDPOINT_MISSING",
   "TC_ERROR",
   "TC_BAD_RESPONSE",
+  // Item 49: the checkout alert.
+  "CHECKOUT_DISABLED",
+  "CHECKOUT_SEND_IN_PROGRESS",
+  "SOURCE_KEY_CONFLICT",
+  "CHECKOUT_NOT_FINAL",
+  "CHECKOUT_UPDATE_CONFLICT",
+  "CHECKOUT_ERROR",
+  // Item 54: a referral from the chair (the shared TC producer's refusals).
+  "MODULE_NOT_ENTITLED",
+  "REFERRALS_DISABLED",
+  "DIRECTORY_ENTRY_NOT_FOUND",
+  "DIRECTORY_ENTRY_INACTIVE",
+  // Item 55: the chairside X-ray upload, and the submit after it.
+  "INVALID_ID",
+  "NOT_FOUND",
+  "NO_TENANT",
+  "INVALID_UPLOAD",
+  "ATTACHMENT_TOO_LARGE",
+  "ATTACHMENT_TYPE_NOT_ALLOWED",
+  "ATTACHMENT_LIMIT",
+  "REFERRAL_LOCKED",
+  "REFERRAL_STORAGE_UNAVAILABLE",
+  "REFERRAL_TRANSITION_NOT_ALLOWED",
 ] as const;
 export type HygVisitErrorCode = (typeof HYG_VISIT_ERROR_CODES)[number];

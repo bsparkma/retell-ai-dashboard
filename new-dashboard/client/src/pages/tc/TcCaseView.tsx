@@ -30,6 +30,9 @@ import { OrthoScreeningSection } from "@/features/tc/caseview/OrthoScreeningSect
 import { ObjectionsTab } from "@/features/tc/caseview/ObjectionsTab";
 import { StatusTransitionDialog } from "@/features/tc/caseview/StatusTransitionDialog";
 import { TreatmentTab } from "@/features/tc/caseview/TreatmentTab";
+import { NurtureCampaignBar } from "@/features/tc/nurture/NurtureCampaignBar";
+import { HygieneTreatmentPanel } from "@/features/tc/checkout/HygieneTreatmentPanel";
+import { ReferralsPanel } from "@/features/tc/referrals/ReferralsPanel";
 
 export default function TcCaseView() {
   const office = useTcOffice();
@@ -178,6 +181,15 @@ function CaseViewInner({ office }: { office: OfficeId }) {
 
       <CaseCommandBar office={office} tcCase={tcCase} onChangeStatus={() => setStatusDialogOpen(true)} />
 
+      {/* Nurture campaigns (item 47). Keyed on the status so a status change made
+          elsewhere on this page (a terminal one stops the campaign) re-reads it. */}
+      <NurtureCampaignBar
+        key={tcCase.status}
+        office={office}
+        caseId={tcCase.caseId}
+        onCaseChanged={() => void refreshCase()}
+      />
+
       <StatusTransitionDialog
         office={office}
         tcCase={tcCase}
@@ -189,6 +201,15 @@ function CaseViewInner({ office }: { office: OfficeId }) {
       {/* What hygiene handed over (item 33). Renders nothing for a case without
           a screening. Item 22's hygiene treatment list belongs in this slot too. */}
       <OrthoScreeningSection tcCase={tcCase} />
+
+      {/* Item 50b: the hygienist's checkout treatment, staff-only, with the
+          per-item "entered in Open Dental" marks. Renders nothing without a
+          checkout on this case or with checkout switched off. */}
+      <HygieneTreatmentPanel office={office} caseId={tcCase.caseId} />
+
+      {/* Item 53: this case's referrals, and New referral. Dark while
+          referrals is off for the office. */}
+      <ReferralsPanel office={office} source={{ caseId: tcCase.caseId }} />
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>

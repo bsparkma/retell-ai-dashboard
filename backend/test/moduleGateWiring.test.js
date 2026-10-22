@@ -76,6 +76,21 @@ test('server.js: the Twilio webhook mount (item 39) is unguarded, inside the /we
   );
 });
 
+test('server.js: the ACS SMS Event Grid mount (item 48) is unguarded, inside the /webhooks exemption, and ahead of /api/webhooks', () => {
+  const line = mountLine('/api/webhooks/acs-sms');
+  // Same reasoning as Twilio: Event Grid carries no user, so a module or
+  // permission guard would refuse every inbound STOP and delivery report. It
+  // authenticates itself (X-CareIN-Webhook-Token) and resolves its own tenant.
+  assert.ok(
+    !/requireModule|voiceModule|requirePermission|requireReadWrite|requireSuperAdmin/.test(line),
+    `/api/webhooks/acs-sms must carry no module or permission guard: ${line}`
+  );
+  assert.ok(
+    serverSrc.indexOf("app.use('/api/webhooks/acs-sms'") < serverSrc.indexOf("app.use('/api/webhooks', webhooksRouter)"),
+    '/api/webhooks/acs-sms must be mounted before /api/webhooks'
+  );
+});
+
 test('server.js: the email unsubscribe mount (item 40) is unguarded, inside the /webhooks exemption, and ahead of /api/webhooks', () => {
   const line = mountLine('/api/webhooks/email');
   // A patient's browser or mail client carries no user: a module or permission

@@ -157,7 +157,9 @@ async function request<T>(
 
 // --- tenant user management (Roles PR B) ------------------------------------
 
-export type TenantUserRole = "admin" | "office" | "tc" | "hygiene" | "reviewer";
+// Mirrors backend TENANT_ROLES. `rcm_biller` was missing here (the picker got it
+// from the server but had no words for it); added with `doctor` in item 53.
+export type TenantUserRole = "admin" | "office" | "tc" | "hygiene" | "reviewer" | "rcm_biller" | "doctor";
 export type TenantUserStatus = "active" | "disabled";
 
 /** One row of the tenant's `app_user` table, as /api/users renders it. */
@@ -385,6 +387,33 @@ export interface HygSwitchState {
   /** Non-null when the control plane could not be read on this request. */
   controlPlaneError?: string | null;
 }
+
+/** One office's TC checkout switch (item 50) — backend config/tcOfficeSwitch.js officeState(). */
+export interface TcCheckoutOfficeSwitch {
+  office: string;
+  enabled: boolean;
+  /** Which layer answered: the env break-glass, the stored row, or the floor. */
+  source: "env" | "db" | "default";
+  policyKnown: boolean;
+  envValue: boolean | null;
+  settingKey: string;
+  envVar: string;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+/** The checkout switch panel's whole view. */
+export interface TcCheckoutSwitchState {
+  offices: TcCheckoutOfficeSwitch[];
+  settingKey: string;
+  controlPlaneError?: string | null;
+}
+
+/**
+ * The referrals switch panel's whole view (item 52). The same factory
+ * (config/tcOfficeSwitch.js) answers it, so it is the same shape.
+ */
+export type TcReferralsSwitchState = TcCheckoutSwitchState;
 
 /** The nightly prune's result, from POST /api/admin/call-store/prune. */
 export interface PruneResult {
@@ -1428,6 +1457,21 @@ export const api = {
     });
   },
 
+  /**
+   * Start a referral from a call (item 54). The server takes the patient and
+   * the office from the stored call; `office_id` is only an assertion. Answers
+   * the referral as stored (a draft) — parsed by the caller.
+   */
+  async startCallReferral(
+    id: string,
+    body: { referral: unknown; office_id?: string; submit?: boolean },
+  ): Promise<{ success: boolean; referral: unknown }> {
+    return request(`/unified-calls/${encodeURIComponent(id)}/referral`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
   /** Office roster for the global office selector (agent→office config + odConnected). */
   async getOffices(): Promise<OfficeConfig[]> {
     const data = await request<{ offices?: OfficeConfig[] }>("/unified-calls/offices");
@@ -2052,6 +2096,45 @@ export const api = {
   async setHygOfficeEnabled(office: string, enabled: boolean): Promise<HygSwitchState> {
     return request<HygSwitchState>(
       `/platform/hyg-offices/${encodeURIComponent(office)}`,
+      { method: "PUT", body: JSON.stringify({ enabled }) },
+    );
+  },
+
+  /** The TC checkout handoff switch for every office (item 50), with the layer that answered. */
+  async getTcCheckoutOffices(): Promise<TcCheckoutSwitchState> {
+    return request<TcCheckoutSwitchState>("/platform/tc-checkout-offices");
+  },
+
+  /** Turn the checkout handoff on or off for ONE office. Returns the state as stored. */
+  async setTcCheckoutOfficeEnabled(office: string, enabled: boolean): Promise<TcCheckoutSwitchState> {
+    return request<TcCheckoutSwitchState>(
+      `/platform/tc-checkout-offices/${encodeURIComponent(office)}`,
+      { method: "PUT", body: JSON.stringify({ enabled }) },
+    );
+  },
+
+  /** The TC referrals switch for every office (item 52), with the layer that answered. */
+  async getTcReferralsOffices(): Promise<TcReferralsSwitchState> {
+    return request<TcReferralsSwitchState>("/platform/tc-referrals-offices");
+  },
+
+  /** Turn referrals on or off for ONE office. Returns the state as stored. */
+  async setTcReferralsOfficeEnabled(office: string, enabled: boolean): Promise<TcReferralsSwitchState> {
+    return request<TcReferralsSwitchState>(
+      `/platform/tc-referrals-offices/${encodeURIComponent(office)}`,
+      { method: "PUT", body: JSON.stringify({ enabled }) },
+    );
+  },
+
+  /** The TC referral EMAIL switch for every office (R5), with the layer that answered. */
+  async getTcReferralEmailOffices(): Promise<TcReferralsSwitchState> {
+    return request<TcReferralsSwitchState>("/platform/tc-referral-email-offices");
+  },
+
+  /** Turn referral email on or off for ONE office. Returns the state as stored. */
+  async setTcReferralEmailOfficeEnabled(office: string, enabled: boolean): Promise<TcReferralsSwitchState> {
+    return request<TcReferralsSwitchState>(
+      `/platform/tc-referral-email-offices/${encodeURIComponent(office)}`,
       { method: "PUT", body: JSON.stringify({ enabled }) },
     );
   },

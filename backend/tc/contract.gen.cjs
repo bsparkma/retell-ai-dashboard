@@ -14813,10 +14813,10 @@ var require_zod = __commonJS({
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.z = void 0;
-    var z6 = __importStar(require_external());
-    exports2.z = z6;
+    var z10 = __importStar(require_external());
+    exports2.z = z10;
     __exportStar(require_external(), exports2);
-    exports2.default = z6;
+    exports2.default = z10;
   }
 });
 
@@ -14824,6 +14824,7 @@ var require_zod = __commonJS({
 var contract_entry_exports = {};
 __export(contract_entry_exports, {
   ButtonBlock: () => ButtonBlock,
+  CHECKOUT_PHASE_NAME_RE: () => CHECKOUT_PHASE_NAME_RE,
   CaseCategory: () => CaseCategory,
   CaseEventType: () => CaseEventType,
   CaseStatus: () => CaseStatus,
@@ -14836,9 +14837,13 @@ __export(contract_entry_exports, {
   ConsentState: () => ConsentState,
   ContactAttemptDetail: () => ContactAttemptDetail,
   ContactPreference: () => ContactPreference,
+  DEFAULT_NOTIFICATION_LEVEL: () => DEFAULT_NOTIFICATION_LEVEL,
+  DIRECTORY_EMAIL_RE: () => DIRECTORY_EMAIL_RE,
   DividerBlock: () => DividerBlock,
   DraftMessageBody: () => DraftMessageBody,
   EMAIL_MERGE_TOKENS: () => EMAIL_MERGE_TOKENS,
+  EMAIL_TEXT_BODY_CEILING: () => EMAIL_TEXT_BODY_CEILING,
+  EMAIL_TEXT_BODY_MAX: () => EMAIL_TEXT_BODY_MAX,
   EditDraftBody: () => EditDraftBody,
   EmailBlock: () => EmailBlock,
   EmailBlocks: () => EmailBlocks,
@@ -14857,6 +14862,7 @@ __export(contract_entry_exports, {
   LibraryFinancingConfig: () => LibraryFinancingConfig,
   LibraryFinancingProvider: () => LibraryFinancingProvider,
   LibraryFinancingSettings: () => LibraryFinancingSettings,
+  LibraryNurtureConfig: () => LibraryNurtureConfig,
   LibraryObjection: () => LibraryObjection,
   LibraryOpportunitiesConfig: () => LibraryOpportunitiesConfig,
   LibrarySectionSchemas: () => LibrarySectionSchemas,
@@ -14868,7 +14874,28 @@ __export(contract_entry_exports, {
   MessageChannel: () => MessageChannel,
   MessageDirection: () => MessageDirection,
   MessageStatus: () => MessageStatus,
+  NURTURE_CAPS: () => NURTURE_CAPS,
+  NURTURE_DEFAULT_INTENSITY: () => NURTURE_DEFAULT_INTENSITY,
+  NURTURE_SMS_STOP_SUFFIX: () => NURTURE_SMS_STOP_SUFFIX,
+  NURTURE_STOP_CASE_TERMINAL: () => NURTURE_STOP_CASE_TERMINAL,
+  NURTURE_STOP_OPTED_OUT: () => NURTURE_STOP_OPTED_OUT,
+  NURTURE_TRACKS: () => NURTURE_TRACKS,
   NurtureCadence: () => NurtureCadence,
+  NurtureCaseResponse: () => NurtureCaseResponse,
+  NurtureChannelState: () => NurtureChannelState,
+  NurtureConfigResponse: () => NurtureConfigResponse,
+  NurtureConsentHint: () => NurtureConsentHint,
+  NurtureEnrollBody: () => NurtureEnrollBody,
+  NurtureEnrollmentStatus: () => NurtureEnrollmentStatus,
+  NurtureIntensity: () => NurtureIntensity,
+  NurtureOutboxDraft: () => NurtureOutboxDraft,
+  NurtureOutboxGroup: () => NurtureOutboxGroup,
+  NurtureOutboxResponse: () => NurtureOutboxResponse,
+  NurtureStopBody: () => NurtureStopBody,
+  NurtureTrackAvailability: () => NurtureTrackAvailability,
+  NurtureTrackConfig: () => NurtureTrackConfig,
+  NurtureTrackKey: () => NurtureTrackKey,
+  NurtureTrackUnavailableReason: () => NurtureTrackUnavailableReason,
   NurtureType: () => NurtureType,
   OPEN_CASE_STATUSES: () => OPEN_CASE_STATUSES,
   OPPORTUNITIES_WINDOW_DEFAULT_MONTHS: () => OPPORTUNITIES_WINDOW_DEFAULT_MONTHS,
@@ -14880,6 +14907,15 @@ __export(contract_entry_exports, {
   PerioStatus: () => PerioStatus,
   PreauthStatus: () => PreauthStatus,
   PreauthType: () => PreauthType,
+  REFERRAL_ATTACHMENT_HINT: () => REFERRAL_ATTACHMENT_HINT,
+  REFERRAL_DOCTOR_EDITABLE_STATUSES: () => REFERRAL_DOCTOR_EDITABLE_STATUSES,
+  REFERRAL_EDITABLE_STATUSES: () => REFERRAL_EDITABLE_STATUSES,
+  REFERRAL_EMAIL_UNAVAILABLE_COPY: () => REFERRAL_EMAIL_UNAVAILABLE_COPY,
+  REFERRAL_FIELD_EDITABLE_STATUSES: () => REFERRAL_FIELD_EDITABLE_STATUSES,
+  REFERRAL_MARK_LABELS: () => REFERRAL_MARK_LABELS,
+  REFERRAL_NO_EMAIL_COPY: () => REFERRAL_NO_EMAIL_COPY,
+  REFERRAL_READY_TO_EMAIL_COPY: () => REFERRAL_READY_TO_EMAIL_COPY,
+  REFERRAL_READY_TO_SEND_COPY: () => REFERRAL_READY_TO_SEND_COPY,
   Radiograph: () => Radiograph,
   RecallType: () => RecallType,
   RecordOptOutBody: () => RecordOptOutBody,
@@ -14889,48 +14925,147 @@ __export(contract_entry_exports, {
   SENDABLE_MESSAGE_STATUSES: () => SENDABLE_MESSAGE_STATUSES,
   SIGNATURE_SOURCE_TEXT: () => SIGNATURE_SOURCE_TEXT,
   SignatureBlock: () => SignatureBlock,
+  TC_CHECKOUT_OUTCOME_LABELS: () => TC_CHECKOUT_OUTCOME_LABELS,
+  TC_CHECKOUT_PRIORITY_LABELS: () => TC_CHECKOUT_PRIORITY_LABELS,
+  TC_CHECKOUT_PRIORITY_ORDER: () => TC_CHECKOUT_PRIORITY_ORDER,
+  TC_CHECKOUT_STATUS_LABELS: () => TC_CHECKOUT_STATUS_LABELS,
+  TC_CHECKOUT_WAITING: () => TC_CHECKOUT_WAITING,
+  TC_INTAKE_KIND_LABELS: () => TC_INTAKE_KIND_LABELS,
+  TC_NOTIFICATION_EVENT_LABELS: () => TC_NOTIFICATION_EVENT_LABELS,
+  TC_NOTIFICATION_LEVEL_LABELS: () => TC_NOTIFICATION_LEVEL_LABELS,
+  TC_REFERRAL_ALL_EVENT_VERBS: () => TC_REFERRAL_ALL_EVENT_VERBS,
+  TC_REFERRAL_ATTACHMENT_MAX_BYTES: () => TC_REFERRAL_ATTACHMENT_MAX_BYTES,
+  TC_REFERRAL_ATTACHMENT_MAX_FILES: () => TC_REFERRAL_ATTACHMENT_MAX_FILES,
+  TC_REFERRAL_ATTACHMENT_TYPES: () => TC_REFERRAL_ATTACHMENT_TYPES,
+  TC_REFERRAL_CHIP_LABELS: () => TC_REFERRAL_CHIP_LABELS,
+  TC_REFERRAL_DOCTOR_NOTE_MAX: () => TC_REFERRAL_DOCTOR_NOTE_MAX,
+  TC_REFERRAL_EVENT_VERBS: () => TC_REFERRAL_EVENT_VERBS,
+  TC_REFERRAL_HUB_GROUPS: () => TC_REFERRAL_HUB_GROUPS,
+  TC_REFERRAL_SEND_EVENT_VERBS: () => TC_REFERRAL_SEND_EVENT_VERBS,
+  TC_REFERRAL_STATUS_LABELS: () => TC_REFERRAL_STATUS_LABELS,
+  TC_REFERRAL_URGENCY_LABELS: () => TC_REFERRAL_URGENCY_LABELS,
   TERMINAL_CASE_STATUSES: () => TERMINAL_CASE_STATUSES,
   TcCase: () => TcCase,
   TcCaseEvent: () => TcCaseEvent,
   TcCaseEventDetail: () => TcCaseEventDetail,
   TcCaseItem: () => TcCaseItem,
   TcCasePhase: () => TcCasePhase,
+  TcCheckoutCaseTreatment: () => TcCheckoutCaseTreatment,
+  TcCheckoutDismissRequest: () => TcCheckoutDismissRequest,
+  TcCheckoutHandoff: () => TcCheckoutHandoff,
+  TcCheckoutNextVisit: () => TcCheckoutNextVisit,
+  TcCheckoutOutcome: () => TcCheckoutOutcome,
+  TcCheckoutOutcomeRequest: () => TcCheckoutOutcomeRequest,
+  TcCheckoutPanelItem: () => TcCheckoutPanelItem,
+  TcCheckoutPriority: () => TcCheckoutPriority,
+  TcCheckoutProcedure: () => TcCheckoutProcedure,
+  TcCheckoutSnapshot: () => TcCheckoutSnapshot,
+  TcCheckoutStatus: () => TcCheckoutStatus,
+  TcCheckoutSubmit: () => TcCheckoutSubmit,
+  TcCheckoutSubmitResponse: () => TcCheckoutSubmitResponse,
+  TcCheckoutSummary: () => TcCheckoutSummary,
   TcCommunication: () => TcCommunication,
   TcContactConsent: () => TcContactConsent,
   TcEmailTemplate: () => TcEmailTemplate,
   TcFollowup: () => TcFollowup,
   TcGalleryCase: () => TcGalleryCase,
   TcHygieneIntake: () => TcHygieneIntake,
+  TcIntakeKind: () => TcIntakeKind,
+  TcIntakeSourceKey: () => TcIntakeSourceKey,
   TcLegacyUserMapEntry: () => TcLegacyUserMapEntry,
   TcMessage: () => TcMessage,
+  TcNotificationEvent: () => TcNotificationEvent,
+  TcNotificationLevel: () => TcNotificationLevel,
+  TcNotificationMineRequest: () => TcNotificationMineRequest,
+  TcNotificationOfficeRequest: () => TcNotificationOfficeRequest,
+  TcNotificationPrefRow: () => TcNotificationPrefRow,
+  TcNotificationPrefsResponse: () => TcNotificationPrefsResponse,
+  TcNotificationSource: () => TcNotificationSource,
+  TcNurtureEnrollment: () => TcNurtureEnrollment,
   TcObjection: () => TcObjection,
   TcPreauthCase: () => TcPreauthCase,
+  TcReferral: () => TcReferral,
+  TcReferralAttachment: () => TcReferralAttachment,
+  TcReferralCreateRequest: () => TcReferralCreateRequest,
+  TcReferralDeclineRequest: () => TcReferralDeclineRequest,
+  TcReferralDirectoryEntry: () => TcReferralDirectoryEntry,
+  TcReferralDirectoryInput: () => TcReferralDirectoryInput,
+  TcReferralDoctorEdit: () => TcReferralDoctorEdit,
+  TcReferralEmailUnavailable: () => TcReferralEmailUnavailable,
+  TcReferralEvent: () => TcReferralEvent,
+  TcReferralEventVerb: () => TcReferralEventVerb,
+  TcReferralFieldsEdit: () => TcReferralFieldsEdit,
+  TcReferralHubQuery: () => TcReferralHubQuery,
+  TcReferralInput: () => TcReferralInput,
+  TcReferralMarkRequest: () => TcReferralMarkRequest,
+  TcReferralMarkSentRequest: () => TcReferralMarkSentRequest,
+  TcReferralPolicy: () => TcReferralPolicy,
+  TcReferralReopenRequest: () => TcReferralReopenRequest,
+  TcReferralReturnRequest: () => TcReferralReturnRequest,
+  TcReferralSendOutcome: () => TcReferralSendOutcome,
+  TcReferralSendRequest: () => TcReferralSendRequest,
+  TcReferralSendVerb: () => TcReferralSendVerb,
+  TcReferralSettingsRequest: () => TcReferralSettingsRequest,
+  TcReferralSettingsResponse: () => TcReferralSettingsResponse,
+  TcReferralSignoffSummary: () => TcReferralSignoffSummary,
+  TcReferralSourceKind: () => TcReferralSourceKind,
+  TcReferralStatus: () => TcReferralStatus,
+  TcReferralTeeth: () => TcReferralTeeth,
+  TcReferralUrgency: () => TcReferralUrgency,
+  TcReferralVerb: () => TcReferralVerb,
+  TcReferralsStatus: () => TcReferralsStatus,
   TcSmileSimulation: () => TcSmileSimulation,
   TextBlock: () => TextBlock,
   Urgency: () => Urgency,
   Uuid: () => Uuid,
   VoiceHandoffDetail: () => VoiceHandoffDetail,
-  ZodError: () => import_zod5.ZodError,
+  ZodError: () => import_zod9.ZodError,
+  allPresetViolations: () => allPresetViolations,
+  assertPresetsWithinCaps: () => assertPresetsWithinCaps,
+  attachmentProblem: () => attachmentProblem,
   caseFromRows: () => caseFromRows,
   caseToRows: () => caseToRows,
+  checkoutItemKey: () => checkoutItemKey,
+  checkoutPhaseName: () => checkoutPhaseName,
+  checkoutPhaseNames: () => checkoutPhaseNames,
+  checkoutPriorityOf: () => checkoutPriorityOf,
   communicationToRow: () => communicationToRow,
   emailBodyText: () => emailBodyText,
   escapeHtml: () => escapeHtml,
   fillBlockTokens: () => fillBlockTokens,
   fillMergeTokens: () => fillMergeTokens,
+  fillNurtureCopy: () => fillNurtureCopy,
   galleryToRow: () => galleryToRow,
   htmlToPlainText: () => htmlToPlainText,
+  intensityFor: () => intensityFor,
   isContactAttemptDetail: () => isContactAttemptDetail,
   isVoiceHandoffDetail: () => isVoiceHandoffDetail,
+  nurtureSchedule: () => nurtureSchedule,
+  nurtureTemplateId: () => nurtureTemplateId,
+  nurtureTokensIn: () => nurtureTokensIn,
+  nurtureTouch: () => nurtureTouch,
+  nurtureTrack: () => nurtureTrack,
   preauthToRow: () => preauthToRow,
+  presetViolations: () => presetViolations,
   readBlock: () => readBlock,
   readBlocks: () => readBlocks,
+  referralChipFor: () => referralChipFor,
+  referralEditSummary: () => referralEditSummary,
+  referralHubGroup: () => referralHubGroup,
+  referralLastReturn: () => referralLastReturn,
+  referralLastSendProblem: () => referralLastSendProblem,
+  referralNextStatus: () => referralNextStatus,
+  referralReturnedLine: () => referralReturnedLine,
+  referralSendBlocker: () => referralSendBlocker,
+  referralStatusAge: () => referralStatusAge,
   renderEmail: () => renderEmail,
+  resolveNotificationLevel: () => resolveNotificationLevel,
   safeUrl: () => safeUrl,
   simulationToRow: () => simulationToRow,
   templateToRow: () => templateToRow,
+  unpricedCheckoutPhases: () => unpricedCheckoutPhases,
   userMapEntryToRow: () => userMapEntryToRow,
-  z: () => import_zod5.z
+  z: () => import_zod9.z
 });
 module.exports = __toCommonJS(contract_entry_exports);
 
@@ -15250,7 +15385,18 @@ var CaseEventType = import_zod3.z.enum([
    * later (summary text, call id, deep link) is SNAPSHOT into this row. Nothing
    * in TC may dereference a voice-module record.
    */
-  "voice_handoff"
+  "voice_handoff",
+  /**
+   * Nurture campaigns v1 (item 47). Server-written only. `nurture_enrolled`
+   * (above) predates the campaign engine and is reused for a campaign
+   * enrollment; these five complete the lifecycle. A touch is QUEUED — a
+   * draft was written for a human to approve — never "sent" by the engine.
+   */
+  "nurture_paused",
+  "nurture_resumed",
+  "nurture_stopped",
+  "nurture_completed",
+  "nurture_touch_queued"
 ]);
 var OPEN_CASE_STATUSES = [
   "hygiene_review",
@@ -15666,6 +15812,11 @@ var OPPORTUNITIES_WINDOW_DEFAULT_MONTHS = 18;
 var LibraryOpportunitiesConfig = import_zod3.z.object({
   opportunitiesWindowMonths: import_zod3.z.number().int().min(OPPORTUNITIES_WINDOW_MIN_MONTHS).max(OPPORTUNITIES_WINDOW_MAX_MONTHS).default(OPPORTUNITIES_WINDOW_DEFAULT_MONTHS)
 });
+var NurtureTrackKey = import_zod3.z.enum(["no_show_recovery", "warm_followup", "reactivation", "large_case"]);
+var NurtureIntensity = import_zod3.z.enum(["gentle", "standard", "assertive"]);
+var NURTURE_DEFAULT_INTENSITY = "standard";
+var NurtureTrackConfig = import_zod3.z.object({ intensity: NurtureIntensity }).strict();
+var LibraryNurtureConfig = import_zod3.z.object({ tracks: import_zod3.z.partialRecord(NurtureTrackKey, NurtureTrackConfig).default({}) }).strict();
 var LibrarySectionSchemas = {
   stages: import_zod3.z.array(LibraryStage).max(50),
   objections: import_zod3.z.array(LibraryObjection).max(100),
@@ -15678,7 +15829,8 @@ var LibrarySectionSchemas = {
   financing_config: LibraryFinancingConfig,
   cadence_config: LibraryCadenceConfig,
   financing_settings: LibraryFinancingSettings,
-  opportunities_config: LibraryOpportunitiesConfig
+  opportunities_config: LibraryOpportunitiesConfig,
+  nurture_config: LibraryNurtureConfig
 };
 var TcLegacyUserMapEntry = import_zod3.z.object({
   legacyUserId: import_zod3.z.string().min(1).max(40),
@@ -16054,7 +16206,8 @@ var MessageStatus = import_zod4.z.enum([
   "sent",
   "delivered",
   "failed",
-  "received"
+  "received",
+  "skipped"
 ]);
 var SENDABLE_MESSAGE_STATUSES = ["draft"];
 var ConsentState = import_zod4.z.enum(["opted_in", "opted_out", "unknown"]);
@@ -16452,17 +16605,24 @@ function blockText(b) {
       return [b.address, b.phone, b.fineText].filter(Boolean).join("\n");
   }
 }
+var EMAIL_TEXT_BODY_MAX = 8e3;
+var EMAIL_TEXT_BODY_CEILING = 2e4;
+function footerReason(f, name) {
+  if (!name) return "";
+  return f.audience === "referral" ? `You are receiving this email because ${name} sent your office a patient referral.` : `You are receiving this email because you are a patient of ${name}.`;
+}
 function systemFooterHtml(f) {
   const name = str(f.practiceName, "", 200).trim();
   const contact = [str(f.practiceAddress, "", 400).trim(), str(f.practicePhone, "", 60).trim()].filter(Boolean);
   const link = f.unsubscribeUrl ? safeUrl(f.unsubscribeUrl) : null;
   const unsub = link ? `<a href="${escapeHtml(link)}" style="color:#475569;text-decoration:underline">Unsubscribe from these emails</a>` : `<span style="color:#475569;text-decoration:underline">Unsubscribe from these emails</span>`;
-  return `<tr><td style="padding:20px 32px;color:#64748b;font-size:12px;line-height:1.6;text-align:center;font-family:${FONT}">` + (name ? `<div>You are receiving this email because you are a patient of ${escapeHtml(name)}.</div>` : "") + contact.map((c) => `<div>${lines(c)}</div>`).join("") + `<div style="margin-top:8px">${unsub}</div></td></tr>`;
+  const reason = footerReason(f, name);
+  return `<tr><td style="padding:20px 32px;color:#64748b;font-size:12px;line-height:1.6;text-align:center;font-family:${FONT}">` + (reason ? `<div>${escapeHtml(reason)}</div>` : "") + contact.map((c) => `<div>${lines(c)}</div>`).join("") + `<div style="margin-top:8px">${unsub}</div></td></tr>`;
 }
 function systemFooterText(f) {
   const name = str(f.practiceName, "", 200).trim();
   const parts = [
-    name ? `You are receiving this email because you are a patient of ${name}.` : "",
+    footerReason(f, name),
     str(f.practiceAddress, "", 400).trim(),
     str(f.practicePhone, "", 60).trim(),
     f.unsubscribeUrl ? `Unsubscribe: ${f.unsubscribeUrl}` : "Unsubscribe: (link added when sent)"
@@ -16478,6 +16638,9 @@ function emailBodyText(content, values) {
   if (c && c.kind === "text") return fillMergeTokens(str(c.body, "", 8e3), v).trim();
   return "";
 }
+function textBodyLimit(maxChars) {
+  return typeof maxChars === "number" && Number.isInteger(maxChars) && maxChars > 0 ? Math.min(maxChars, EMAIL_TEXT_BODY_CEILING) : EMAIL_TEXT_BODY_MAX;
+}
 function renderEmail(input) {
   const values = asRecord(input && input.values) ?? {};
   const footer = asRecord(input && input.footer) ? input.footer : { practiceName: "", unsubscribeUrl: null };
@@ -16491,7 +16654,8 @@ function renderEmail(input) {
     bodyRows = blocks.map(blockHtml).join("");
     bodyText = blocks.map(blockText).filter(Boolean).join("\n\n");
   } else if (content && content.kind === "text") {
-    const text2 = fillMergeTokens(str(content.body, "", 8e3), values).trim();
+    const raw = str(content.body, "", textBodyLimit(content.maxChars));
+    const text2 = (content.literal === true ? raw : fillMergeTokens(raw, values)).trim();
     bodyRows = text2 ? row(paragraphs(text2, "color:#0f172a;font-size:15px;line-height:1.6"), "#ffffff", "24px 32px") : "";
     bodyText = text2;
   }
@@ -16500,11 +16664,1123 @@ function renderEmail(input) {
   return { subject, html, text };
 }
 
+// shared/tc/nurture.ts
+var import_zod5 = __toESM(require_zod(), 1);
+var IsoTimestamp3 = import_zod5.z.string().datetime({ offset: true });
+var NurtureEnrollmentStatus = import_zod5.z.enum(["active", "paused", "completed", "stopped"]);
+var NURTURE_STOP_CASE_TERMINAL = "case_terminal";
+var NURTURE_STOP_OPTED_OUT = "opted_out";
+var NurtureConsentHint = import_zod5.z.enum(["opted_out", "email_unsubscribed", "no_address"]);
+var NURTURE_CAPS = Object.freeze({
+  /** At most this many touches in any rolling 7-day window. */
+  maxTouchesPer7Days: 3,
+  /** At least this many hours between two touches of one enrollment. */
+  minHoursBetweenTouches: 48,
+  /** At most this many touches in one enrollment, ever. */
+  maxTouchesPerEnrollment: 12
+});
+var NURTURE_SMS_STOP_SUFFIX = "Reply STOP to opt out.";
+function defineTrack(def) {
+  return def;
+}
+var S = "sms";
+var E = "email";
+var NURTURE_TRACKS = {
+  no_show_recovery: defineTrack({
+    label: "No-Show Recovery",
+    goal: "Reschedule. Warm, zero guilt.",
+    enrollment: "manual",
+    touches: {
+      ns1: {
+        channel: S,
+        body: "Hi {{firstName}}, we missed you at {{officeName}}! Life happens - reply here or call {{officePhone}} and we'll find a time that works better. Reply STOP to opt out."
+      },
+      ns2: {
+        channel: E,
+        subject: "Let's find you a new time",
+        body: "Hi {{firstName}}, we missed seeing you! No worries at all \u2014 these things happen. Your spot on our schedule matters to us, so let's get you a new time that actually fits your week. Call {{officePhone}} or just reply to this email and we'll take care of it. \u2014 The team at {{officeName}}",
+        cta: "Reschedule my visit"
+      },
+      ns3: {
+        channel: S,
+        body: "Hi {{firstName}}, still want to get you back on the books at {{officeName}}. Do mornings or afternoons work better for you? Just reply and we'll handle the rest."
+      },
+      ns4: {
+        channel: E,
+        subject: "The door's still open",
+        body: "Hi {{firstName}}, we haven't been able to reconnect since your missed visit, so this is our last nudge for a while \u2014 we don't want to crowd your inbox. Whenever you're ready, one call to {{officePhone}} gets you right back in. We'll be here. \u2014 {{officeName}}",
+        cta: "Pick a new time"
+      }
+    },
+    presets: {
+      gentle: [
+        { touch: "ns2", day: 2 },
+        { touch: "ns4", day: 9 }
+      ],
+      standard: [
+        { touch: "ns1", day: 1 },
+        { touch: "ns2", day: 4 },
+        { touch: "ns3", day: 10 }
+      ],
+      assertive: [
+        { touch: "ns1", day: 1 },
+        { touch: "ns2", day: 3 },
+        { touch: "ns3", day: 6 },
+        { touch: "ns4", day: 10 }
+      ]
+    }
+  }),
+  warm_followup: defineTrack({
+    label: "Warm Follow-Up",
+    goal: "Schedule presented treatment while it's fresh.",
+    enrollment: "manual",
+    touches: {
+      wf1: {
+        channel: S,
+        body: "Hi {{firstName}}, thanks for coming in to {{officeName}}! If any questions came up after your visit, just reply, we're happy to help. Reply STOP to opt out."
+      },
+      wf2: {
+        channel: E,
+        subject: "Your plan, in plain English",
+        body: "Hi {{firstName}}, it was great seeing you. We know a treatment plan can feel like a lot to take in at the chair, so if anything we discussed deserves a second explanation \u2014 what it involves, why we recommended it, what happens if we wait \u2014 just reply or call {{officePhone}}. No pressure, just answers. \u2014 {{officeName}}",
+        cta: "Ask us anything"
+      },
+      wf3: {
+        channel: S,
+        body: "Hi {{firstName}}, ready to get your next visit scheduled at {{officeName}}? Do mornings or afternoons usually work better? Reply and we'll find you two options."
+      },
+      wf4: {
+        channel: E,
+        subject: "Why sooner beats later",
+        body: "Hi {{firstName}}, one thing we see every week: small issues are quick, comfortable, and affordable to handle \u2014 and the same issues, left a year, rarely stay small. Taking care of your plan now usually means less time in the chair and less out of pocket overall. When you're ready, {{officePhone}} is all it takes. \u2014 {{officeName}}",
+        cta: "Schedule my visit"
+      },
+      wf5: {
+        channel: E,
+        subject: "Let's make it fit your budget",
+        body: "Hi {{firstName}}, if cost is part of what's giving you pause, you're not alone \u2014 and we have options. Flexible payment plans, financing, and ways to phase treatment so it works for your budget. Five minutes with our team and you'll know exactly what's possible. \u2014 {{officeName}}",
+        cta: "See my options"
+      },
+      wf6: {
+        channel: S,
+        body: "Hi {{firstName}}, your plan is still ready and waiting at {{officeName}}. Want us to pull up a couple of times for you? Just reply yes."
+      },
+      wf7: {
+        channel: E,
+        subject: "You're in good company",
+        body: `Hi {{firstName}}, most of the patients we see felt the same hesitation before getting started \u2014 and the thing we hear most afterward is "I wish I'd done this sooner." Our team's job is to make the whole thing easier than you're expecting. Ready when you are: {{officePhone}}. \u2014 {{officeName}}`,
+        cta: "Get started"
+      },
+      wf8: {
+        channel: S,
+        body: "Hi {{firstName}}, quick check-in from {{officeName}} - still thinking it over, or any questions we can answer? Reply anytime."
+      },
+      wf9: {
+        channel: E,
+        subject: "A note from our team",
+        body: "Hi {{firstName}}, no sales pitch today \u2014 just a reminder that we genuinely care about getting you healthy and keeping you that way. Whatever the holdup is (schedule, cost, nerves \u2014 all normal), tell us and we'll work with it. \u2014 Your team at {{officeName}}",
+        cta: "Reply to the team"
+      },
+      wf10: {
+        channel: E,
+        subject: "We'll quiet down now",
+        body: "Hi {{firstName}}, we've sent a few notes about your treatment plan, and we don't want to be a pest \u2014 so we'll check in much less often from here. Your plan stays on file, and whenever you're ready, one call to {{officePhone}} picks it right back up. \u2014 {{officeName}}",
+        cta: "I'm ready now"
+      }
+    },
+    presets: {
+      gentle: [
+        { touch: "wf2", day: 3 },
+        { touch: "wf3", day: 10 },
+        { touch: "wf5", day: 24 },
+        { touch: "wf8", day: 45 }
+      ],
+      standard: [
+        { touch: "wf1", day: 2 },
+        { touch: "wf2", day: 5 },
+        { touch: "wf3", day: 9 },
+        { touch: "wf5", day: 16 },
+        { touch: "wf7", day: 30 },
+        { touch: "wf8", day: 49 }
+      ],
+      assertive: [
+        { touch: "wf1", day: 1 },
+        { touch: "wf2", day: 3 },
+        { touch: "wf3", day: 5 },
+        { touch: "wf4", day: 8 },
+        { touch: "wf6", day: 12 },
+        { touch: "wf5", day: 19 },
+        { touch: "wf8", day: 26 },
+        { touch: "wf7", day: 33 },
+        { touch: "wf9", day: 47 },
+        { touch: "wf10", day: 56 }
+      ]
+    }
+  }),
+  reactivation: defineTrack({
+    label: "Reactivation Drip",
+    goal: "Re-engage aging plans. Slow, benefit-led.",
+    enrollment: "manual",
+    touches: {
+      ra1: {
+        channel: E,
+        subject: "Your exam findings are still on file",
+        body: "Hi {{firstName}}, it's been a while since we put together your treatment plan, and we wanted you to know it hasn't gone anywhere \u2014 your exam findings are on file and ready whenever you are. One call to {{officePhone}} and we'll pick up right where we left off. \u2014 {{officeName}}",
+        cta: "Pick it back up"
+      },
+      ra2: {
+        channel: S,
+        body: "Hi {{firstName}}, {{officeName}} here - your treatment plan is still on file with us. Want to pick it back up? Reply or call {{officePhone}}. Reply STOP to opt out."
+      },
+      ra3: {
+        channel: E,
+        subject: "Small things don't stay small",
+        body: "Hi {{firstName}}, the honest truth about dental care: time is the one thing that makes everything harder to fix. What we found at your last exam was manageable then \u2014 and the sooner we look again, the more likely it still is. A quick visit tells us exactly where things stand. \u2014 {{officeName}}",
+        cta: "Book a quick check"
+      },
+      ra4: {
+        channel: E,
+        subject: "Don't leave your benefits on the table",
+        body: "Hi {{firstName}}, if you have dental insurance, unused benefits typically reset at the end of the year \u2014 money you've already paid for through your premiums. Finishing your treatment plan is one of the smartest ways to actually use them. We're happy to check what you have left: {{officePhone}}. \u2014 {{officeName}}",
+        cta: "Check my benefits"
+      },
+      ra5: {
+        channel: S,
+        body: "Hi {{firstName}}, we'd love to see you back at {{officeName}}. Getting restarted is one quick call: {{officePhone}}."
+      },
+      ra6: {
+        channel: E,
+        subject: "Should we keep your plan active?",
+        body: "Hi {{firstName}}, we still have your treatment plan on file, but it's been long enough that some of it may need a fresh look. If you'd like, we'll have the doctor review it and schedule a short visit to update anything that's changed \u2014 so when you start, you're starting from today, not from last year. \u2014 {{officeName}}",
+        cta: "Update my plan"
+      },
+      ra7: {
+        channel: E,
+        subject: "A lot has gotten easier",
+        body: "Hi {{firstName}}, dentistry keeps getting more comfortable \u2014 and so do we. Faster visits, better options, and a team that will meet you wherever you left off, no judgment, no lecture. Come see the difference. \u2014 {{officeName}}",
+        cta: "Come back in"
+      },
+      ra8: {
+        channel: E,
+        subject: "We'll keep the light on",
+        body: "Hi {{firstName}}, this is our last regular note about your treatment plan \u2014 we don't believe in nagging. You'll stay on our books as our patient, and the day you're ready, we're one call away: {{officePhone}}. Take care of yourself. \u2014 {{officeName}}",
+        cta: "I'm ready"
+      }
+    },
+    presets: {
+      // Beau, 2026-10-13: Appendix A listed ra2@67 (E) and ra5@127 (E), but
+      // ra2 and ra5 exist only as SMS copy, and as SMS they stack two texts
+      // back to back. Ruling: keep gentle all-email on the same four days,
+      // using the approved email touches ra3 and ra4.
+      gentle: [
+        { touch: "ra1", day: 7 },
+        { touch: "ra3", day: 67 },
+        { touch: "ra4", day: 127 },
+        { touch: "ra6", day: 187 }
+      ],
+      standard: [
+        { touch: "ra1", day: 7 },
+        { touch: "ra2", day: 37 },
+        { touch: "ra3", day: 67 },
+        { touch: "ra4", day: 97 },
+        { touch: "ra5", day: 127 },
+        { touch: "ra6", day: 157 }
+      ],
+      assertive: [
+        { touch: "ra1", day: 3 },
+        { touch: "ra2", day: 17 },
+        { touch: "ra3", day: 31 },
+        { touch: "ra4", day: 61 },
+        { touch: "ra5", day: 91 },
+        { touch: "ra7", day: 121 },
+        { touch: "ra6", day: 151 },
+        { touch: "ra8", day: 181 }
+      ]
+    }
+  }),
+  large_case: defineTrack({
+    label: "Large Case / Financing",
+    goal: "Convert big presented cases. Fewer, higher-touch, value-first.",
+    enrollment: "manual",
+    touches: {
+      lc1: {
+        channel: E,
+        subject: "The smile you talked about, step by step",
+        body: "Hi {{firstName}}, big decisions deserve clear information, so here's the short version of what we discussed: what we'd be doing, in what order, and what it gets you \u2014 function, comfort, and a result you'll see every day in the mirror. If you'd like us to walk through any part again (or all of it), we'll make the time. \u2014 {{officeName}}",
+        cta: "Walk me through it"
+      },
+      lc2: {
+        channel: E,
+        subject: "Making the investment manageable",
+        body: "Hi {{firstName}}, almost no one pays for comprehensive treatment all at once \u2014 and you don't have to either. Between phasing the work, payment plans, and third-party financing, there's usually a monthly number that feels very doable. Let us run the options for your plan specifically: {{officePhone}}. \u2014 {{officeName}}",
+        cta: "Show me my options"
+      },
+      lc3: {
+        channel: E,
+        subject: "A personal note from Dr. Sparkman",
+        body: "Hi {{firstName}}, I wanted to reach out myself. The plan we put together for you is one I'm confident in, and I don't take recommendations of this size lightly \u2014 I recommend what I'd want for my own family. If you have doubts or questions, I'd rather hear them than have you sit with them. Call the office and they'll get us time to talk. \u2014 Dr. Beau Sparkman, {{officeName}}",
+        cta: "Set up a time to talk"
+      },
+      lc4: {
+        channel: E,
+        subject: "What a finished case looks like",
+        body: "Hi {{firstName}}, it's hard to picture the end result from a treatment plan on paper. Patients who've completed treatment like yours tell us the change in how they eat, speak, and smile was worth every step. We'd love to show you what's possible \u2014 come in for a no-pressure conversation. \u2014 {{officeName}}",
+        cta: "Show me"
+      },
+      lc5: {
+        channel: E,
+        subject: "No rush \u2014 but let's stay in touch",
+        body: "Hi {{firstName}}, a plan like yours is a real decision, and we respect that it takes time. We'll stop checking in so often, but your plan stays on file and our door stays open. When you want to talk \u2014 about the treatment, the timing, or the money \u2014 we're at {{officePhone}}. \u2014 {{officeName}}",
+        cta: "Let's talk"
+      },
+      lc6: {
+        channel: S,
+        body: "Hi {{firstName}}, {{officeName}} here - happy to answer any questions about your treatment plan or go over payment options. Just reply. Reply STOP to opt out."
+      },
+      lc7: {
+        channel: S,
+        body: "Hi {{firstName}}, checking in from {{officeName}} - want us to set up a quick, no-pressure chat about your plan? Reply yes and we'll arrange it."
+      }
+    },
+    presets: {
+      gentle: [
+        { touch: "lc1", day: 5 },
+        { touch: "lc2", day: 21 },
+        { touch: "lc5", day: 49 }
+      ],
+      standard: [
+        { touch: "lc1", day: 3 },
+        { touch: "lc2", day: 10 },
+        { touch: "lc3", day: 21 },
+        { touch: "lc6", day: 35 },
+        { touch: "lc5", day: 56 }
+      ],
+      assertive: [
+        { touch: "lc1", day: 2 },
+        { touch: "lc2", day: 6 },
+        { touch: "lc3", day: 12 },
+        { touch: "lc6", day: 21 },
+        { touch: "lc4", day: 30 },
+        { touch: "lc7", day: 42 },
+        { touch: "lc5", day: 56 }
+      ]
+    }
+  })
+};
+function nurtureTrack(key) {
+  return NURTURE_TRACKS[key];
+}
+function nurtureSchedule(key, intensity) {
+  return nurtureTrack(key).presets[intensity];
+}
+function nurtureTouch(key, touchKey) {
+  const touches = nurtureTrack(key).touches;
+  const t = touches[touchKey];
+  if (!t) throw new Error(`nurture: track ${key} has no touch ${touchKey}`);
+  return t;
+}
+function nurtureTemplateId(key, touchKey) {
+  return `nurture.${key}.${touchKey}`;
+}
+function presetViolations(key, intensity, tracks = NURTURE_TRACKS) {
+  const touchOf = (touchKey) => {
+    const touches = tracks[key].touches;
+    const t = touches[touchKey];
+    if (!t) throw new Error(`nurture: track ${key} has no touch ${touchKey}`);
+    return t;
+  };
+  const steps = tracks[key].presets[intensity];
+  const where = `${key}/${intensity}`;
+  const out = [];
+  const minDays = NURTURE_CAPS.minHoursBetweenTouches / 24;
+  if (steps.length === 0) out.push(`${where}: no touches`);
+  if (steps.length > NURTURE_CAPS.maxTouchesPerEnrollment) {
+    out.push(`${where}: ${steps.length} touches > ${NURTURE_CAPS.maxTouchesPerEnrollment}`);
+  }
+  steps.forEach((s, i) => {
+    if (!Number.isInteger(s.day) || s.day < 1) out.push(`${where}: step ${i} day ${s.day} is not a whole day \u2265 1`);
+    let touch = null;
+    try {
+      touch = touchOf(s.touch);
+    } catch {
+      out.push(`${where}: step ${i} names unknown touch ${s.touch}`);
+    }
+    if (touch) {
+      if (!touch.body.trim()) out.push(`${where}: ${s.touch} has no copy`);
+      if (touch.channel === "email" && (!touch.subject.trim() || !touch.cta.trim())) {
+        out.push(`${where}: ${s.touch} needs a subject and a CTA`);
+      }
+    }
+    if (i > 0) {
+      const prev = steps[i - 1];
+      if (s.day - prev.day < minDays) {
+        out.push(`${where}: ${prev.touch}@${prev.day} \u2192 ${s.touch}@${s.day} is under ${NURTURE_CAPS.minHoursBetweenTouches}h`);
+      }
+      let prevTouch = null;
+      try {
+        prevTouch = touchOf(prev.touch);
+      } catch {
+        prevTouch = null;
+      }
+      if (touch && prevTouch && touch.channel === "sms" && prevTouch.channel === "sms") {
+        out.push(`${where}: ${prev.touch} \u2192 ${s.touch} stacks SMS back to back`);
+      }
+    }
+    const inWindow = steps.filter((t) => t.day >= s.day && t.day <= s.day + 6).length;
+    if (inWindow > NURTURE_CAPS.maxTouchesPer7Days) {
+      out.push(`${where}: ${inWindow} touches in the 7 days from day ${s.day}`);
+    }
+  });
+  return out;
+}
+function allPresetViolations(tracks = NURTURE_TRACKS) {
+  const out = [];
+  for (const key of NurtureTrackKey.options) {
+    for (const intensity of NurtureIntensity.options) out.push(...presetViolations(key, intensity, tracks));
+  }
+  return out;
+}
+function assertPresetsWithinCaps(tracks = NURTURE_TRACKS) {
+  const v = allPresetViolations(tracks);
+  if (v.length) {
+    throw new Error(`[tcNurture] ${v.length} preset(s) break the hard caps:
+  ${v.join("\n  ")}`);
+  }
+}
+function fillNurtureCopy(text, values) {
+  return text.replace(/\{\{(firstName|officeName|officePhone)\}\}/g, (_m, k) => values[k]);
+}
+function nurtureTokensIn(text) {
+  return Array.from(text.matchAll(/\{\{\s*([^}]+?)\s*\}\}/g), (m) => m[1]);
+}
+function intensityFor(config, key) {
+  return config?.tracks?.[key]?.intensity ?? NURTURE_DEFAULT_INTENSITY;
+}
+var TcNurtureEnrollment = import_zod5.z.object({
+  enrollmentId: Uuid,
+  caseId: Uuid,
+  officeId: OfficeId,
+  trackKey: NurtureTrackKey,
+  intensityAtEnroll: NurtureIntensity,
+  status: NurtureEnrollmentStatus,
+  stopReason: import_zod5.z.string().max(200).nullable(),
+  nextTouchIndex: import_zod5.z.number().int().min(0),
+  nextTouchDueAt: IsoTimestamp3.nullable(),
+  lastTouchAt: IsoTimestamp3.nullable(),
+  /** The touch the next draft will be, or null when the schedule is exhausted. */
+  nextTouchKey: import_zod5.z.string().max(20).nullable(),
+  touchCount: import_zod5.z.number().int().min(0),
+  createdBy: import_zod5.z.string().max(320).nullable(),
+  createdAt: IsoTimestamp3,
+  updatedAt: IsoTimestamp3
+});
+var NurtureTrackUnavailableReason = import_zod5.z.enum([
+  "switched_off",
+  "case_terminal",
+  "already_enrolled",
+  "no_address"
+]);
+var NurtureTrackAvailability = import_zod5.z.object({
+  trackKey: NurtureTrackKey,
+  label: import_zod5.z.string(),
+  goal: import_zod5.z.string(),
+  intensity: NurtureIntensity,
+  touchCount: import_zod5.z.number().int().min(0),
+  channels: import_zod5.z.array(MessageChannel),
+  available: import_zod5.z.boolean(),
+  reason: NurtureTrackUnavailableReason.nullable()
+});
+var NurtureCaseResponse = import_zod5.z.object({
+  enabled: import_zod5.z.boolean(),
+  enrollments: import_zod5.z.array(TcNurtureEnrollment),
+  tracks: import_zod5.z.array(NurtureTrackAvailability)
+});
+var NurtureEnrollBody = import_zod5.z.object({ case_id: Uuid, track_key: NurtureTrackKey }).strict();
+var NurtureStopBody = import_zod5.z.object({ reason: import_zod5.z.string().trim().min(1).max(200) }).strict();
+var NurtureOutboxDraft = import_zod5.z.object({
+  message: TcMessage,
+  enrollmentId: Uuid,
+  caseId: Uuid,
+  patientName: import_zod5.z.string().max(200).nullable(),
+  // PHI
+  touchKey: import_zod5.z.string().max(20),
+  consentBlockedHint: NurtureConsentHint.nullable()
+});
+var NurtureOutboxGroup = import_zod5.z.object({
+  trackKey: NurtureTrackKey,
+  label: import_zod5.z.string(),
+  drafts: import_zod5.z.array(NurtureOutboxDraft)
+});
+var NurtureChannelState = import_zod5.z.object({
+  channel: MessageChannel,
+  enabled: import_zod5.z.boolean(),
+  reason: import_zod5.z.enum(["switched_off", "not_configured", "office_not_configured"]).nullable()
+});
+var NurtureOutboxResponse = import_zod5.z.object({
+  enabled: import_zod5.z.boolean(),
+  channels: import_zod5.z.array(NurtureChannelState),
+  groups: import_zod5.z.array(NurtureOutboxGroup)
+});
+var NurtureConfigResponse = import_zod5.z.object({
+  enabled: import_zod5.z.boolean(),
+  tracks: import_zod5.z.array(
+    import_zod5.z.object({
+      trackKey: NurtureTrackKey,
+      label: import_zod5.z.string(),
+      intensity: NurtureIntensity,
+      stored: import_zod5.z.boolean()
+    })
+  )
+});
+
+// shared/tc/checkout.ts
+var import_zod6 = __toESM(require_zod(), 1);
+var TcIntakeKind = import_zod6.z.enum(["hygiene", "ortho", "checkout"]);
+var TC_INTAKE_KIND_LABELS = {
+  hygiene: "Treatment",
+  ortho: "Ortho screening",
+  checkout: "Checkout"
+};
+var TcIntakeSourceKey = import_zod6.z.string().min(8).max(200).regex(/^[A-Za-z0-9:_-]+$/, "a source key is letters, digits, ':', '_' and '-' only");
+var TcCheckoutPriority = import_zod6.z.enum(["urgent", "preventative", "cosmetic"]);
+var TC_CHECKOUT_PRIORITY_LABELS = {
+  urgent: "Urgent",
+  preventative: "Preventative",
+  cosmetic: "Cosmetic"
+};
+var TC_CHECKOUT_PRIORITY_ORDER = [
+  "urgent",
+  "preventative",
+  "cosmetic"
+];
+var TcCheckoutProcedure = import_zod6.z.object({
+  /** Universal tooth numbers, or "mouth" for a whole-mouth item. */
+  teeth: import_zod6.z.union([import_zod6.z.array(import_zod6.z.number().int()), import_zod6.z.literal("mouth")]),
+  code: import_zod6.z.string().min(1).max(60),
+  category: import_zod6.z.string().min(1).max(40),
+  priority: TcCheckoutPriority,
+  status: import_zod6.z.string().min(1).max(40),
+  surfaces: import_zod6.z.array(import_zod6.z.string().max(4)).max(10),
+  /** The hygienist marked this to schedule at the next visit. */
+  scheduleNext: import_zod6.z.boolean(),
+  note: import_zod6.z.string().max(500)
+}).strict();
+var TcCheckoutNextVisit = import_zod6.z.object({
+  type: import_zod6.z.string().max(120).nullable(),
+  intervalMonths: import_zod6.z.number().int().min(1).max(24).nullable(),
+  lengthMin: import_zod6.z.number().int().min(5).max(240).nullable(),
+  withDoctor: import_zod6.z.boolean(),
+  /** The note's return-to-clinic line, verbatim. */
+  rtc: import_zod6.z.string().max(4e3)
+}).strict();
+var TcCheckoutSnapshot = import_zod6.z.object({
+  procedures: import_zod6.z.array(TcCheckoutProcedure).max(100),
+  /** The highest priority among the procedures; null when there are none. */
+  priority: TcCheckoutPriority.nullable(),
+  nextVisit: TcCheckoutNextVisit,
+  /**
+   * The clinical note has not reached the chart yet. True on an early
+   * "Alert checkout" (the visit Send has not run); the visit Send's update
+   * says whether the note landed.
+   */
+  notesPending: import_zod6.z.boolean(),
+  frontDeskNote: import_zod6.z.string().max(4e3),
+  financialNote: import_zod6.z.string().max(4e3)
+}).strict();
+var TcCheckoutSubmit = import_zod6.z.object({
+  kind: import_zod6.z.literal("checkout"),
+  sourceKey: TcIntakeSourceKey,
+  final: import_zod6.z.boolean(),
+  patientName: import_zod6.z.string().min(1).max(200),
+  odPatientId: import_zod6.z.number().int().positive(),
+  provider: import_zod6.z.string().max(200),
+  providerSeen: import_zod6.z.string().max(200),
+  operatory: import_zod6.z.string().max(200),
+  visitDate: import_zod6.z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  snapshot: TcCheckoutSnapshot
+}).strict();
+var TcCheckoutStatus = import_zod6.z.enum([
+  "open",
+  "claimed",
+  "scheduled",
+  "not_scheduled",
+  "nothing_needed",
+  "dismissed",
+  "expired"
+]);
+var TC_CHECKOUT_STATUS_LABELS = {
+  open: "Waiting",
+  claimed: "Claimed",
+  scheduled: "Scheduled",
+  not_scheduled: "Not scheduled",
+  nothing_needed: "Nothing needed",
+  dismissed: "Dismissed",
+  expired: "Expired"
+};
+var TC_CHECKOUT_WAITING = ["open", "claimed"];
+var TcCheckoutOutcome = import_zod6.z.enum(["scheduled", "not_scheduled", "nothing_needed"]);
+var TC_CHECKOUT_OUTCOME_LABELS = {
+  scheduled: "Scheduled",
+  not_scheduled: "Not scheduled",
+  nothing_needed: "Nothing needed"
+};
+var TcCheckoutHandoff = import_zod6.z.object({
+  handoffId: import_zod6.z.string().uuid(),
+  officeId: import_zod6.z.enum(["roland", "valley"]),
+  odPatientId: import_zod6.z.number().int().positive(),
+  patientName: import_zod6.z.string(),
+  provider: import_zod6.z.string(),
+  providerSeen: import_zod6.z.string(),
+  operatory: import_zod6.z.string(),
+  visitDate: import_zod6.z.string(),
+  snapshot: TcCheckoutSnapshot,
+  final: import_zod6.z.boolean(),
+  revision: import_zod6.z.number().int().positive(),
+  submittedBy: import_zod6.z.string(),
+  createdAt: import_zod6.z.string(),
+  updatedAt: import_zod6.z.string(),
+  // Item 50 — the front desk's side. Defaulted so an item-49 reader still parses.
+  status: TcCheckoutStatus.default("open"),
+  claimedBy: import_zod6.z.string().nullable().default(null),
+  claimedAt: import_zod6.z.string().nullable().default(null),
+  dismissedReason: import_zod6.z.string().nullable().default(null),
+  dismissedBy: import_zod6.z.string().nullable().default(null),
+  dismissedAt: import_zod6.z.string().nullable().default(null),
+  outcomeBy: import_zod6.z.string().nullable().default(null),
+  outcomeAt: import_zod6.z.string().nullable().default(null),
+  appointmentNote: import_zod6.z.string().nullable().default(null),
+  caseId: import_zod6.z.string().uuid().nullable().default(null),
+  expiredAt: import_zod6.z.string().nullable().default(null),
+  /** Always `system:checkout_expiry` when set — the system closed it, not a person. */
+  expiredBy: import_zod6.z.string().nullable().default(null)
+});
+var TcCheckoutOutcomeRequest = import_zod6.z.object({
+  outcome: TcCheckoutOutcome,
+  /** Optional, and only meaningful for "Scheduled" ("Tue 9am, Dr. chair"). */
+  appointmentNote: import_zod6.z.string().trim().max(500).default("")
+}).strict();
+var TcCheckoutDismissRequest = import_zod6.z.object({ reason: import_zod6.z.string().trim().min(1).max(500) }).strict();
+var TcCheckoutSummary = import_zod6.z.object({
+  success: import_zod6.z.literal(true),
+  office: import_zod6.z.enum(["roland", "valley"]),
+  enabled: import_zod6.z.boolean(),
+  /** The office's own day, `YYYY-MM-DD`, that "today" means here. */
+  today: import_zod6.z.string().nullable(),
+  waiting: import_zod6.z.number().int().nonnegative(),
+  /** The newest waiting handoff — what an arrival toast names. Null when none. */
+  newest: import_zod6.z.object({ handoffId: import_zod6.z.string().uuid(), patientName: import_zod6.z.string(), createdAt: import_zod6.z.string() }).nullable()
+});
+var TcCheckoutSubmitResponse = import_zod6.z.object({
+  success: import_zod6.z.literal(true),
+  kind: import_zod6.z.literal("checkout"),
+  handoff: TcCheckoutHandoff,
+  /** True when the key was already known and nothing new was stored. */
+  replayed: import_zod6.z.boolean()
+});
+function checkoutPriorityOf(procedures) {
+  for (const p of TC_CHECKOUT_PRIORITY_ORDER) {
+    if (procedures.some((x) => x.priority === p)) return p;
+  }
+  return null;
+}
+function checkoutPhaseName(visitDate) {
+  return `Hygiene visit ${visitDate ?? ""}`.trim();
+}
+var CHECKOUT_PHASE_NAME_RE = /^Hygiene visit \d{4}-\d{2}-\d{2}$/;
+function unpricedCheckoutPhases(phases) {
+  return phases.filter((p) => CHECKOUT_PHASE_NAME_RE.test(p.name) && p.items.some((i) => i.feeCents === 0)).map((p) => p.name);
+}
+function checkoutPhaseNames(phases) {
+  return phases.filter((p) => CHECKOUT_PHASE_NAME_RE.test(p.name)).map((p) => p.name);
+}
+function checkoutItemKey(p) {
+  return JSON.stringify([p.code, p.teeth, p.surfaces]);
+}
+var TcCheckoutPanelItem = import_zod6.z.object({
+  index: import_zod6.z.number().int().nonnegative(),
+  procedure: TcCheckoutProcedure,
+  /** Set while a CURRENT (non-stale) attestation exists. */
+  enteredBy: import_zod6.z.string().nullable(),
+  enteredAt: import_zod6.z.string().nullable(),
+  /** An attestation exists but was made against an item that has since changed. */
+  stale: import_zod6.z.boolean()
+});
+var TcCheckoutCaseTreatment = import_zod6.z.object({
+  success: import_zod6.z.literal(true),
+  caseId: import_zod6.z.string().uuid(),
+  /** Admin-only: may undo an attestation. */
+  canUnattest: import_zod6.z.boolean(),
+  visits: import_zod6.z.array(
+    import_zod6.z.object({
+      handoff: TcCheckoutHandoff,
+      items: import_zod6.z.array(TcCheckoutPanelItem)
+    })
+  )
+});
+
+// shared/tc/notifications.ts
+var import_zod7 = __toESM(require_zod(), 1);
+var TcNotificationEvent = import_zod7.z.enum(["checkout_handoff", "referral_signoff"]);
+var TC_NOTIFICATION_EVENT_LABELS = {
+  checkout_handoff: "A patient is headed to checkout",
+  referral_signoff: "A referral is waiting for the doctor's sign-off"
+};
+var TcNotificationLevel = import_zod7.z.enum(["silent", "banner", "sound_banner"]);
+var TC_NOTIFICATION_LEVEL_LABELS = {
+  silent: "Badge only",
+  banner: "Banner",
+  sound_banner: "Sound + banner"
+};
+var DEFAULT_NOTIFICATION_LEVEL = "banner";
+var TcNotificationSource = import_zod7.z.enum(["user", "office", "default"]);
+function resolveNotificationLevel(mine, officeDefault) {
+  if (mine) return { level: mine, source: "user" };
+  if (officeDefault) return { level: officeDefault, source: "office" };
+  return { level: DEFAULT_NOTIFICATION_LEVEL, source: "default" };
+}
+var TcNotificationPrefRow = import_zod7.z.object({
+  event: TcNotificationEvent,
+  level: TcNotificationLevel,
+  source: TcNotificationSource,
+  mine: TcNotificationLevel.nullable(),
+  officeDefault: TcNotificationLevel.nullable()
+});
+var TcNotificationPrefsResponse = import_zod7.z.object({
+  success: import_zod7.z.literal(true),
+  office: import_zod7.z.enum(["roland", "valley"]),
+  /** Whether the caller may change the office default (admin). */
+  canEditOffice: import_zod7.z.boolean(),
+  events: import_zod7.z.array(TcNotificationPrefRow)
+});
+var TcNotificationMineRequest = import_zod7.z.object({ level: TcNotificationLevel.nullable() }).strict();
+var TcNotificationOfficeRequest = import_zod7.z.object({ level: TcNotificationLevel.nullable() }).strict();
+
+// shared/tc/referrals.ts
+var import_zod8 = __toESM(require_zod(), 1);
+var TcReferralStatus = import_zod8.z.enum([
+  "draft",
+  "pending_signoff",
+  "approved",
+  "sent",
+  "acknowledged",
+  "patient_seen",
+  "closed",
+  "declined",
+  "cancelled"
+]);
+var TC_REFERRAL_STATUS_LABELS = {
+  draft: "Draft",
+  pending_signoff: "Pending Dr. sign-off",
+  approved: "Approved",
+  sent: "Sent",
+  acknowledged: "Acknowledged",
+  patient_seen: "Patient seen",
+  closed: "Closed",
+  declined: "Declined",
+  cancelled: "Cancelled"
+};
+var TcReferralUrgency = import_zod8.z.enum(["routine", "soon", "urgent"]);
+var TC_REFERRAL_URGENCY_LABELS = {
+  routine: "Routine",
+  soon: "Soon",
+  urgent: "Urgent"
+};
+var TC_REFERRAL_ATTACHMENT_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+  "application/pdf"
+];
+var TC_REFERRAL_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+var TC_REFERRAL_ATTACHMENT_MAX_FILES = 5;
+var DIRECTORY_EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+var Field = (max) => import_zod8.z.string().trim().max(max);
+var TcReferralDirectoryInput = import_zod8.z.object({
+  practiceName: import_zod8.z.string().trim().min(1, "Practice name is required").max(200),
+  specialistName: Field(200).default(""),
+  specialty: Field(120).default(""),
+  contactPerson: Field(200).default(""),
+  email: Field(200).default("").refine((v) => v === "" || DIRECTORY_EMAIL_RE.test(v), "That email address does not look right"),
+  phone: Field(40).default(""),
+  fax: Field(40).default(""),
+  notes: Field(2e3).default(""),
+  preferredFormatNotes: Field(2e3).default(""),
+  active: import_zod8.z.boolean().default(true)
+}).strict();
+var TcReferralDirectoryEntry = import_zod8.z.object({
+  entryId: import_zod8.z.string().uuid(),
+  officeId: import_zod8.z.enum(["roland", "valley"]),
+  practiceName: import_zod8.z.string(),
+  specialistName: import_zod8.z.string(),
+  specialty: import_zod8.z.string(),
+  contactPerson: import_zod8.z.string(),
+  email: import_zod8.z.string(),
+  phone: import_zod8.z.string(),
+  fax: import_zod8.z.string(),
+  notes: import_zod8.z.string(),
+  preferredFormatNotes: import_zod8.z.string(),
+  active: import_zod8.z.boolean(),
+  createdBy: import_zod8.z.string(),
+  createdAt: import_zod8.z.string(),
+  updatedBy: import_zod8.z.string(),
+  updatedAt: import_zod8.z.string()
+});
+var TcReferralPolicy = import_zod8.z.object({
+  value: import_zod8.z.boolean(),
+  source: import_zod8.z.enum(["env", "office", "default"])
+});
+var TcReferralSettingsResponse = import_zod8.z.object({
+  success: import_zod8.z.literal(true),
+  office: import_zod8.z.enum(["roland", "valley"]),
+  signoffRequired: TcReferralPolicy,
+  autosendOnApproval: TcReferralPolicy,
+  /** Admin-only for now: may this user change the two policies? */
+  canEdit: import_zod8.z.boolean(),
+  updatedBy: import_zod8.z.string().nullable(),
+  updatedAt: import_zod8.z.string().nullable()
+});
+var TcReferralSettingsRequest = import_zod8.z.object({
+  signoffRequired: import_zod8.z.boolean().optional(),
+  autosendOnApproval: import_zod8.z.boolean().optional()
+}).strict().refine((v) => v.signoffRequired !== void 0 || v.autosendOnApproval !== void 0, "Nothing to change");
+var TcReferralEmailUnavailable = import_zod8.z.enum([
+  "switched_off",
+  "not_configured",
+  "office_not_configured"
+]);
+var TcReferralsStatus = import_zod8.z.object({
+  success: import_zod8.z.literal(true),
+  office: import_zod8.z.enum(["roland", "valley"]),
+  enabled: import_zod8.z.boolean(),
+  /**
+   * R5: referral email. `enabled` is the per-office dark-launch switch
+   * (tc_referral_email_enabled) — off means no send UI at all. `unavailable`
+   * says why an enabled office still cannot send. Absent from an older server
+   * = off.
+   */
+  emailSend: import_zod8.z.object({ enabled: import_zod8.z.boolean(), unavailable: TcReferralEmailUnavailable.nullable() }).optional()
+});
+var TcReferralSourceKind = import_zod8.z.enum(["case", "checkout", "hyg_visit", "call"]);
+var TcReferralTeeth = import_zod8.z.union([
+  import_zod8.z.array(import_zod8.z.number().int().min(1).max(32)).max(32),
+  import_zod8.z.literal("mouth")
+]);
+var TcReferralInput = import_zod8.z.object({
+  directoryEntryId: import_zod8.z.string().uuid().nullable().default(null),
+  referringProvider: import_zod8.z.string().trim().max(200).default(""),
+  specialty: import_zod8.z.string().trim().max(120).default(""),
+  reason: import_zod8.z.string().trim().min(1, "Say why you are referring").max(2e3),
+  teeth: TcReferralTeeth.default([]),
+  urgency: TcReferralUrgency.default("routine"),
+  narrative: import_zod8.z.string().trim().max(8e3).default("")
+}).strict();
+var TcReferralCreateRequest = import_zod8.z.object({
+  source: import_zod8.z.union([
+    import_zod8.z.object({ caseId: import_zod8.z.string().uuid() }).strict(),
+    import_zod8.z.object({ handoffId: import_zod8.z.string().uuid() }).strict()
+  ]),
+  referral: TcReferralInput
+}).strict();
+var TcReferralDeclineRequest = import_zod8.z.object({ reason: import_zod8.z.string().trim().min(1, "Say why").max(500) }).strict();
+var TC_REFERRAL_EVENT_VERBS = [
+  "create",
+  "edit",
+  "doctor_edit",
+  "submit",
+  "withdraw",
+  "cancel",
+  "approve",
+  "decline",
+  "reopen",
+  "return",
+  "mark_sent",
+  "mark_acknowledged",
+  "mark_patient_seen",
+  "close"
+];
+var TC_REFERRAL_SEND_EVENT_VERBS = ["send", "send_failed", "send_conflict"];
+var TC_REFERRAL_ALL_EVENT_VERBS = [...TC_REFERRAL_EVENT_VERBS, ...TC_REFERRAL_SEND_EVENT_VERBS];
+var TcReferralEventVerb = import_zod8.z.enum(TC_REFERRAL_ALL_EVENT_VERBS);
+var TcReferralEvent = import_zod8.z.object({
+  eventId: import_zod8.z.string().uuid(),
+  fromStatus: TcReferralStatus.nullable(),
+  toStatus: TcReferralStatus,
+  actor: import_zod8.z.string(),
+  at: import_zod8.z.string(),
+  note: import_zod8.z.string(),
+  /** R6: what happened. null on rows written before R6. */
+  verb: TcReferralEventVerb.nullable().optional()
+});
+var TcReferral = import_zod8.z.object({
+  referralId: import_zod8.z.string().uuid(),
+  officeId: import_zod8.z.enum(["roland", "valley"]),
+  odPatientId: import_zod8.z.number().int().positive(),
+  patientName: import_zod8.z.string(),
+  tcCaseId: import_zod8.z.string().uuid().nullable(),
+  sourceKind: TcReferralSourceKind,
+  sourceRef: import_zod8.z.string(),
+  referringProvider: import_zod8.z.string(),
+  directoryEntryId: import_zod8.z.string().uuid().nullable(),
+  /** The directory entry's current name, for display; null when none is chosen. */
+  practiceName: import_zod8.z.string().nullable(),
+  specialty: import_zod8.z.string(),
+  reason: import_zod8.z.string(),
+  teeth: TcReferralTeeth,
+  urgency: TcReferralUrgency,
+  narrative: import_zod8.z.string(),
+  status: TcReferralStatus,
+  statusChangedAt: import_zod8.z.string(),
+  statusChangedBy: import_zod8.z.string(),
+  createdBy: import_zod8.z.string(),
+  createdAt: import_zod8.z.string(),
+  updatedAt: import_zod8.z.string(),
+  /** Only on the detail read. */
+  events: import_zod8.z.array(TcReferralEvent).optional(),
+  /** R6: the doctor's own note, written at sign-off. null when none. */
+  doctorNote: import_zod8.z.string().nullable().optional(),
+  /** R6: only on the hub list — how many files are attached. */
+  attachmentCount: import_zod8.z.number().int().nonnegative().optional(),
+  /**
+   * R6: set while a draft's latest STATUS MOVE is the doctor's `return` — the
+   * question the submitter must answer. null otherwise. On list and detail reads.
+   */
+  returned: import_zod8.z.object({ note: import_zod8.z.string(), actor: import_zod8.z.string(), at: import_zod8.z.string() }).nullable().optional(),
+  /**
+   * R5: the chosen specialist's email as the directory holds it NOW, when it is
+   * a usable address; null when there is none. On list and detail reads. The
+   * send always re-reads the directory row; this is only for the button.
+   */
+  specialistEmail: import_zod8.z.string().nullable().optional(),
+  /**
+   * R5: while it is approved, the last email attempt that did not end in
+   * `sent` — a failure (retry allowed) or a conflict (the email went out but
+   * the referral was not marked sent; no retry). null otherwise.
+   */
+  sendProblem: import_zod8.z.object({ kind: import_zod8.z.enum(["failed", "conflict"]), note: import_zod8.z.string(), actor: import_zod8.z.string(), at: import_zod8.z.string() }).nullable().optional()
+});
+var TcReferralVerb = import_zod8.z.enum([
+  "submit",
+  "withdraw",
+  "cancel",
+  "approve",
+  "decline",
+  "reopen",
+  "return",
+  "mark_sent",
+  "mark_acknowledged",
+  "mark_patient_seen",
+  "close"
+]);
+var TcReferralSendVerb = import_zod8.z.literal("send");
+function referralNextStatus(from, verb, opts) {
+  switch (verb) {
+    // R5: only from approved, and only once ACS has accepted the email. The
+    // same edge as mark_sent; the event's verb says which one happened.
+    case "send":
+      return from === "approved" ? "sent" : null;
+    case "submit":
+      return from === "draft" ? opts.signoffRequired ? "pending_signoff" : "approved" : null;
+    case "withdraw":
+      return from === "pending_signoff" ? "draft" : null;
+    case "cancel":
+      return from === "draft" || from === "pending_signoff" ? "cancelled" : null;
+    case "approve":
+      return from === "pending_signoff" ? "approved" : null;
+    case "decline":
+      return from === "pending_signoff" ? "declined" : null;
+    // Back to sign-off even when this office does not require it: an approved
+    // referral that changes is re-read by a doctor before it goes anywhere.
+    case "reopen":
+      return from === "approved" ? "pending_signoff" : null;
+    case "return":
+      return from === "pending_signoff" ? "draft" : null;
+    case "mark_sent":
+      return from === "approved" ? "sent" : null;
+    case "mark_acknowledged":
+      return from === "sent" ? "acknowledged" : null;
+    case "mark_patient_seen":
+      return from === "acknowledged" ? "patient_seen" : null;
+    case "close":
+      return from === "patient_seen" ? "closed" : null;
+  }
+}
+var REFERRAL_EDITABLE_STATUSES = ["draft"];
+var REFERRAL_FIELD_EDITABLE_STATUSES = ["draft", "pending_signoff"];
+var REFERRAL_DOCTOR_EDITABLE_STATUSES = ["pending_signoff"];
+var TC_REFERRAL_DOCTOR_NOTE_MAX = 4e3;
+var fieldShape = {
+  directoryEntryId: import_zod8.z.string().uuid().nullable().optional(),
+  urgency: TcReferralUrgency.optional(),
+  reason: import_zod8.z.string().trim().min(1, "Say why you are referring").max(2e3).optional(),
+  teeth: TcReferralTeeth.optional()
+};
+var hasAnyField = (v) => Object.values(v).some((x) => x !== void 0);
+var TcReferralFieldsEdit = import_zod8.z.object(fieldShape).strict().refine(hasAnyField, "Nothing to change");
+var TcReferralDoctorEdit = import_zod8.z.object({
+  ...fieldShape,
+  doctorNote: import_zod8.z.string().trim().max(TC_REFERRAL_DOCTOR_NOTE_MAX).nullable().optional()
+}).strict().refine(hasAnyField, "Nothing to change");
+var TcReferralReopenRequest = import_zod8.z.object({ fields: TcReferralFieldsEdit.optional() }).strict();
+var TcReferralReturnRequest = import_zod8.z.object({ comment: import_zod8.z.string().trim().min(1, "Say what you need").max(1e3) }).strict();
+var TcReferralMarkSentRequest = import_zod8.z.object({ how: import_zod8.z.string().trim().min(1, "Say how it was sent").max(300) }).strict();
+var TcReferralMarkRequest = import_zod8.z.object({ note: import_zod8.z.string().trim().max(300).optional() }).strict();
+var TC_REFERRAL_HUB_GROUPS = [
+  { key: "drafts", label: "Drafts", statuses: ["draft"] },
+  { key: "signoff", label: "Awaiting sign-off", statuses: ["pending_signoff"] },
+  { key: "ready", label: "Ready to send", statuses: ["approved"] },
+  { key: "sent", label: "Sent", statuses: ["sent", "acknowledged"] },
+  { key: "seen", label: "Patient seen", statuses: ["patient_seen"] },
+  { key: "done", label: "Closed / declined / cancelled", statuses: ["closed", "declined", "cancelled"] }
+];
+function referralHubGroup(status) {
+  const g = TC_REFERRAL_HUB_GROUPS.find((x) => x.statuses.includes(status));
+  return g ? g.key : "done";
+}
+var TcReferralHubQuery = import_zod8.z.object({
+  status: TcReferralStatus.optional(),
+  directoryEntryId: import_zod8.z.string().uuid().optional(),
+  sourceKind: TcReferralSourceKind.optional(),
+  /** Only referrals that have sat in their status at least this many days. */
+  minAgeDays: import_zod8.z.coerce.number().int().min(0).max(3650).optional()
+}).strict();
+function referralStatusAge(status, statusChangedAt, now) {
+  const ms = now.getTime() - new Date(statusChangedAt).getTime();
+  const days = Math.max(0, Math.floor(ms / 864e5));
+  const where = {
+    draft: "draft",
+    pending_signoff: "in sign-off",
+    approved: "ready",
+    sent: "sent",
+    acknowledged: "acknowledged",
+    patient_seen: "seen",
+    closed: "closed",
+    declined: "declined",
+    cancelled: "cancelled"
+  };
+  return `${where[status]} ${days < 1 ? "<1d" : `${days}d`}`;
+}
+var REFERRAL_MARK_LABELS = {
+  mark_sent: "Mark sent outside the app",
+  mark_acknowledged: "Specialist acknowledged (outside the app)",
+  mark_patient_seen: "Patient seen by specialist",
+  close: "Close referral"
+};
+function referralLastReturn(events) {
+  const moves = (events ?? []).filter(isStatusMove);
+  const last = moves[moves.length - 1];
+  if (!last || last.verb !== "return") return null;
+  return { note: last.note, actor: last.actor, at: last.at };
+}
+var NON_MOVE_VERBS = ["create", "edit", "doctor_edit", "send_failed", "send_conflict"];
+function isStatusMove(e) {
+  return !e.verb || !NON_MOVE_VERBS.includes(e.verb);
+}
+function referralLastSendProblem(events) {
+  const list = events ?? [];
+  let start = 0;
+  for (let i = 0; i < list.length; i += 1) if (isStatusMove(list[i])) start = i + 1;
+  const since = list.slice(start);
+  const conflict = [...since].reverse().find((e) => e.verb === "send_conflict");
+  if (conflict) return { kind: "conflict", note: conflict.note, actor: conflict.actor, at: conflict.at };
+  const failed = [...since].reverse().find((e) => e.verb === "send_failed");
+  if (failed) return { kind: "failed", note: failed.note, actor: failed.actor, at: failed.at };
+  return null;
+}
+function referralReturnedLine(returned) {
+  return returned ? `Returned by Dr. \u2014 ${returned.note}` : null;
+}
+function referralEditSummary(before, change) {
+  const out = [];
+  if (change.directoryEntryId !== void 0 && change.directoryEntryId !== before.directoryEntryId) out.push("specialist");
+  if (change.urgency !== void 0 && change.urgency !== before.urgency) {
+    out.push(`how soon (${TC_REFERRAL_URGENCY_LABELS[before.urgency]} \u2192 ${TC_REFERRAL_URGENCY_LABELS[change.urgency]})`);
+  }
+  if (change.reason !== void 0 && change.reason !== before.reason) out.push("reason");
+  if (change.teeth !== void 0 && JSON.stringify(change.teeth) !== JSON.stringify(before.teeth)) out.push("teeth");
+  if (change.doctorNote !== void 0 && (change.doctorNote || null) !== (before.doctorNote ?? null)) {
+    out.push("doctor's note");
+  }
+  return out;
+}
+var TC_REFERRAL_CHIP_LABELS = {
+  none: "None",
+  staged: "Staged",
+  pending_signoff: "Pending Dr. sign-off",
+  approved: "Approved",
+  declined: "Declined"
+};
+function referralChipFor(referrals) {
+  const live = referrals.filter((r) => r.status !== "cancelled").sort((a, b) => a.createdAt < b.createdAt ? 1 : -1);
+  const top = live[0];
+  if (!top) return "none";
+  if (top.status === "draft") return "staged";
+  if (top.status === "pending_signoff") return "pending_signoff";
+  if (top.status === "declined") return "declined";
+  return "approved";
+}
+var REFERRAL_READY_TO_SEND_COPY = "Ready to send \u2014 sending ships in a later update.";
+var TcReferralSendRequest = import_zod8.z.object({}).strict();
+var TcReferralSendOutcome = import_zod8.z.object({
+  status: import_zod8.z.enum(["sent", "failed", "conflict", "skipped"]),
+  /** The honest sentence: why it failed, or where it went. */
+  message: import_zod8.z.string(),
+  code: import_zod8.z.string().nullable()
+});
+var REFERRAL_READY_TO_EMAIL_COPY = "Approved \u2014 ready to email to the specialist.";
+var REFERRAL_NO_EMAIL_COPY = "No email on file \u2014 add it in Settings \u2192 Referrals, or mark sent outside the app";
+var REFERRAL_EMAIL_UNAVAILABLE_COPY = {
+  switched_off: "Email sending is switched off for the practice right now.",
+  not_configured: "Email sending is not connected yet.",
+  office_not_configured: "This office has no referral sending address set up yet."
+};
+function referralSendBlocker(r, email) {
+  if (r.status !== "approved") return "Only an approved referral can be emailed.";
+  if (!email || !email.enabled) return "Referral email is not switched on for this office.";
+  if (r.sendProblem && r.sendProblem.kind === "conflict") {
+    return "This referral was already emailed but could not be marked sent. Check with the specialist, then mark it sent.";
+  }
+  if (email.unavailable) return REFERRAL_EMAIL_UNAVAILABLE_COPY[email.unavailable];
+  if (!r.specialistEmail) return REFERRAL_NO_EMAIL_COPY;
+  return null;
+}
+var TcReferralSignoffSummary = import_zod8.z.object({
+  success: import_zod8.z.literal(true),
+  office: import_zod8.z.enum(["roland", "valley"]),
+  enabled: import_zod8.z.boolean(),
+  waiting: import_zod8.z.number().int().nonnegative(),
+  newest: import_zod8.z.object({ referralId: import_zod8.z.string().uuid(), patientName: import_zod8.z.string(), at: import_zod8.z.string() }).nullable()
+});
+var TcReferralAttachment = import_zod8.z.object({
+  attachmentId: import_zod8.z.string().uuid(),
+  referralId: import_zod8.z.string().uuid(),
+  fileName: import_zod8.z.string(),
+  contentType: import_zod8.z.enum(TC_REFERRAL_ATTACHMENT_TYPES),
+  sizeBytes: import_zod8.z.number().int().positive(),
+  uploadedBy: import_zod8.z.string(),
+  uploadedAt: import_zod8.z.string()
+});
+var REFERRAL_ATTACHMENT_HINT = "Press Win+Shift+S to snip the X-ray, then drag it here.";
+function attachmentProblem(file, alreadyChosen) {
+  if (alreadyChosen >= TC_REFERRAL_ATTACHMENT_MAX_FILES) {
+    return `A referral can carry at most ${TC_REFERRAL_ATTACHMENT_MAX_FILES} files.`;
+  }
+  if (!TC_REFERRAL_ATTACHMENT_TYPES.includes(file.type)) {
+    return `${file.name || "That file"} isn't an image or a PDF.`;
+  }
+  if (file.size <= 0) return `${file.name || "That file"} is empty.`;
+  if (file.size > TC_REFERRAL_ATTACHMENT_MAX_BYTES) {
+    return `${file.name || "That file"} is larger than ${TC_REFERRAL_ATTACHMENT_MAX_BYTES / 1024 / 1024} MB.`;
+  }
+  return null;
+}
+
 // ../backend/tc/contract.entry.ts
-var import_zod5 = __toESM(require_zod());
+var import_zod9 = __toESM(require_zod());
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   ButtonBlock,
+  CHECKOUT_PHASE_NAME_RE,
   CaseCategory,
   CaseEventType,
   CaseStatus,
@@ -16517,9 +17793,13 @@ var import_zod5 = __toESM(require_zod());
   ConsentState,
   ContactAttemptDetail,
   ContactPreference,
+  DEFAULT_NOTIFICATION_LEVEL,
+  DIRECTORY_EMAIL_RE,
   DividerBlock,
   DraftMessageBody,
   EMAIL_MERGE_TOKENS,
+  EMAIL_TEXT_BODY_CEILING,
+  EMAIL_TEXT_BODY_MAX,
   EditDraftBody,
   EmailBlock,
   EmailBlocks,
@@ -16538,6 +17818,7 @@ var import_zod5 = __toESM(require_zod());
   LibraryFinancingConfig,
   LibraryFinancingProvider,
   LibraryFinancingSettings,
+  LibraryNurtureConfig,
   LibraryObjection,
   LibraryOpportunitiesConfig,
   LibrarySectionSchemas,
@@ -16549,7 +17830,28 @@ var import_zod5 = __toESM(require_zod());
   MessageChannel,
   MessageDirection,
   MessageStatus,
+  NURTURE_CAPS,
+  NURTURE_DEFAULT_INTENSITY,
+  NURTURE_SMS_STOP_SUFFIX,
+  NURTURE_STOP_CASE_TERMINAL,
+  NURTURE_STOP_OPTED_OUT,
+  NURTURE_TRACKS,
   NurtureCadence,
+  NurtureCaseResponse,
+  NurtureChannelState,
+  NurtureConfigResponse,
+  NurtureConsentHint,
+  NurtureEnrollBody,
+  NurtureEnrollmentStatus,
+  NurtureIntensity,
+  NurtureOutboxDraft,
+  NurtureOutboxGroup,
+  NurtureOutboxResponse,
+  NurtureStopBody,
+  NurtureTrackAvailability,
+  NurtureTrackConfig,
+  NurtureTrackKey,
+  NurtureTrackUnavailableReason,
   NurtureType,
   OPEN_CASE_STATUSES,
   OPPORTUNITIES_WINDOW_DEFAULT_MONTHS,
@@ -16561,6 +17863,15 @@ var import_zod5 = __toESM(require_zod());
   PerioStatus,
   PreauthStatus,
   PreauthType,
+  REFERRAL_ATTACHMENT_HINT,
+  REFERRAL_DOCTOR_EDITABLE_STATUSES,
+  REFERRAL_EDITABLE_STATUSES,
+  REFERRAL_EMAIL_UNAVAILABLE_COPY,
+  REFERRAL_FIELD_EDITABLE_STATUSES,
+  REFERRAL_MARK_LABELS,
+  REFERRAL_NO_EMAIL_COPY,
+  REFERRAL_READY_TO_EMAIL_COPY,
+  REFERRAL_READY_TO_SEND_COPY,
   Radiograph,
   RecallType,
   RecordOptOutBody,
@@ -16570,46 +17881,145 @@ var import_zod5 = __toESM(require_zod());
   SENDABLE_MESSAGE_STATUSES,
   SIGNATURE_SOURCE_TEXT,
   SignatureBlock,
+  TC_CHECKOUT_OUTCOME_LABELS,
+  TC_CHECKOUT_PRIORITY_LABELS,
+  TC_CHECKOUT_PRIORITY_ORDER,
+  TC_CHECKOUT_STATUS_LABELS,
+  TC_CHECKOUT_WAITING,
+  TC_INTAKE_KIND_LABELS,
+  TC_NOTIFICATION_EVENT_LABELS,
+  TC_NOTIFICATION_LEVEL_LABELS,
+  TC_REFERRAL_ALL_EVENT_VERBS,
+  TC_REFERRAL_ATTACHMENT_MAX_BYTES,
+  TC_REFERRAL_ATTACHMENT_MAX_FILES,
+  TC_REFERRAL_ATTACHMENT_TYPES,
+  TC_REFERRAL_CHIP_LABELS,
+  TC_REFERRAL_DOCTOR_NOTE_MAX,
+  TC_REFERRAL_EVENT_VERBS,
+  TC_REFERRAL_HUB_GROUPS,
+  TC_REFERRAL_SEND_EVENT_VERBS,
+  TC_REFERRAL_STATUS_LABELS,
+  TC_REFERRAL_URGENCY_LABELS,
   TERMINAL_CASE_STATUSES,
   TcCase,
   TcCaseEvent,
   TcCaseEventDetail,
   TcCaseItem,
   TcCasePhase,
+  TcCheckoutCaseTreatment,
+  TcCheckoutDismissRequest,
+  TcCheckoutHandoff,
+  TcCheckoutNextVisit,
+  TcCheckoutOutcome,
+  TcCheckoutOutcomeRequest,
+  TcCheckoutPanelItem,
+  TcCheckoutPriority,
+  TcCheckoutProcedure,
+  TcCheckoutSnapshot,
+  TcCheckoutStatus,
+  TcCheckoutSubmit,
+  TcCheckoutSubmitResponse,
+  TcCheckoutSummary,
   TcCommunication,
   TcContactConsent,
   TcEmailTemplate,
   TcFollowup,
   TcGalleryCase,
   TcHygieneIntake,
+  TcIntakeKind,
+  TcIntakeSourceKey,
   TcLegacyUserMapEntry,
   TcMessage,
+  TcNotificationEvent,
+  TcNotificationLevel,
+  TcNotificationMineRequest,
+  TcNotificationOfficeRequest,
+  TcNotificationPrefRow,
+  TcNotificationPrefsResponse,
+  TcNotificationSource,
+  TcNurtureEnrollment,
   TcObjection,
   TcPreauthCase,
+  TcReferral,
+  TcReferralAttachment,
+  TcReferralCreateRequest,
+  TcReferralDeclineRequest,
+  TcReferralDirectoryEntry,
+  TcReferralDirectoryInput,
+  TcReferralDoctorEdit,
+  TcReferralEmailUnavailable,
+  TcReferralEvent,
+  TcReferralEventVerb,
+  TcReferralFieldsEdit,
+  TcReferralHubQuery,
+  TcReferralInput,
+  TcReferralMarkRequest,
+  TcReferralMarkSentRequest,
+  TcReferralPolicy,
+  TcReferralReopenRequest,
+  TcReferralReturnRequest,
+  TcReferralSendOutcome,
+  TcReferralSendRequest,
+  TcReferralSendVerb,
+  TcReferralSettingsRequest,
+  TcReferralSettingsResponse,
+  TcReferralSignoffSummary,
+  TcReferralSourceKind,
+  TcReferralStatus,
+  TcReferralTeeth,
+  TcReferralUrgency,
+  TcReferralVerb,
+  TcReferralsStatus,
   TcSmileSimulation,
   TextBlock,
   Urgency,
   Uuid,
   VoiceHandoffDetail,
   ZodError,
+  allPresetViolations,
+  assertPresetsWithinCaps,
+  attachmentProblem,
   caseFromRows,
   caseToRows,
+  checkoutItemKey,
+  checkoutPhaseName,
+  checkoutPhaseNames,
+  checkoutPriorityOf,
   communicationToRow,
   emailBodyText,
   escapeHtml,
   fillBlockTokens,
   fillMergeTokens,
+  fillNurtureCopy,
   galleryToRow,
   htmlToPlainText,
+  intensityFor,
   isContactAttemptDetail,
   isVoiceHandoffDetail,
+  nurtureSchedule,
+  nurtureTemplateId,
+  nurtureTokensIn,
+  nurtureTouch,
+  nurtureTrack,
   preauthToRow,
+  presetViolations,
   readBlock,
   readBlocks,
+  referralChipFor,
+  referralEditSummary,
+  referralHubGroup,
+  referralLastReturn,
+  referralLastSendProblem,
+  referralNextStatus,
+  referralReturnedLine,
+  referralSendBlocker,
+  referralStatusAge,
   renderEmail,
+  resolveNotificationLevel,
   safeUrl,
   simulationToRow,
   templateToRow,
+  unpricedCheckoutPhases,
   userMapEntryToRow,
   z
 });

@@ -201,6 +201,13 @@ class FakeHygDb extends FakeAuditDb {
     return Date.now() - new Date(at).getTime() < 2 * 60 * 1000;
   }
 
+  /** Item 49: the same two-minute rule, for the checkout alert's claim. */
+  checkoutClaimFresh(row) {
+    const at = row.checkout_send_claimed_at;
+    if (at === null || at === undefined) return false;
+    return Date.now() - new Date(at).getTime() < 2 * 60 * 1000;
+  }
+
   checkOffice(office) {
     if (!FakeHygDb.OFFICES.includes(office)) {
       throw new Error(`hyg office_check violated: '${office}'`);
@@ -237,6 +244,16 @@ class FakeHygDb extends FakeAuditDb {
       );
       if (new Set(set).size !== 1) {
         throw new Error('hyg_visit_ortho_sent_check violated: ' + JSON.stringify(set));
+      }
+      // hyg_visit_checkout_sent_check / _final_check (item 49).
+      const co = [row.checkout_handoff_id, row.checkout_sent_at, row.checkout_sent_by].map(
+        (v) => v !== null && v !== undefined
+      );
+      if (new Set(co).size !== 1) {
+        throw new Error('hyg_visit_checkout_sent_check violated: ' + JSON.stringify(co));
+      }
+      if (row.checkout_final_at != null && row.checkout_handoff_id == null) {
+        throw new Error('hyg_visit_checkout_final_check violated');
       }
     }
     for (const row of this.hyg_staged_write) {
@@ -560,6 +577,11 @@ class FakeHygDb extends FakeAuditDb {
         ortho_sent_at: null,
         ortho_sent_by: null,
         ortho_send_claimed_at: null,
+        checkout_handoff_id: null,
+        checkout_sent_at: null,
+        checkout_sent_by: null,
+        checkout_send_claimed_at: null,
+        checkout_final_at: null,
         created_by: actor,
         created_at: new Date(),
         updated_by: actor,
@@ -637,6 +659,47 @@ class FakeHygDb extends FakeAuditDb {
       row.ortho_sent_at = new Date();
       row.ortho_sent_by = actor;
       row.ortho_send_claimed_at = null;
+      return { rows: [row], rowCount: 1 };
+    }
+
+    // ── hyg_visit, item 49: the checkout alert ─────────────────────────────
+    if (/UPDATE hyg_visit SET checkout_send_claimed_at = now\(\)/i.test(text)) {
+      const [office, aptNum] = params;
+      const row = this.hyg_visit.find(
+        (r) =>
+          r.office === office &&
+          Number(r.apt_num) === Number(aptNum) &&
+          r.checkout_handoff_id == null &&
+          !this.checkoutClaimFresh(r)
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      row.checkout_send_claimed_at = new Date();
+      return { rows: [{ visit_id: row.visit_id }], rowCount: 1 };
+    }
+
+    if (/UPDATE hyg_visit SET checkout_send_claimed_at = NULL/i.test(text)) {
+      const [office, aptNum] = params;
+      const row = this.hyg_visit.find(
+        (r) => r.office === office && Number(r.apt_num) === Number(aptNum) && r.checkout_handoff_id == null
+      );
+      if (row) row.checkout_send_claimed_at = null;
+      return { rows: [], rowCount: row ? 1 : 0 };
+    }
+
+    if (/UPDATE hyg_visit\s+SET checkout_handoff_id = COALESCE/i.test(text)) {
+      const [office, aptNum, handoffId, actor, final] = params;
+      const row = this.hyg_visit.find(
+        (r) =>
+          r.office === office &&
+          Number(r.apt_num) === Number(aptNum) &&
+          (r.checkout_handoff_id == null || r.checkout_handoff_id === handoffId)
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      row.checkout_handoff_id = row.checkout_handoff_id ?? handoffId;
+      row.checkout_sent_at = row.checkout_sent_at ?? new Date();
+      row.checkout_sent_by = row.checkout_sent_by ?? actor;
+      row.checkout_send_claimed_at = null;
+      if (final === true) row.checkout_final_at = new Date();
       return { rows: [row], rowCount: 1 };
     }
 
@@ -1160,6 +1223,7 @@ async function bootHygApp({
   hygOffices = ['roland'],
   odUnavailableFor = [],
   tcSubmit = null,
+  checkoutSubmit = null,
 } = {}) {
   const originals = {
     registry: Object.fromEntries(REGISTRY_KEYS.map((k) => [k, registry[k]])),
@@ -1269,6 +1333,8 @@ async function bootHygApp({
    * gets: nothing here can turn the loopback into a service credential.
    */
   if (tcSubmit) app.set('hygTcSubmit', tcSubmit);
+  // Item 49: the checkout handoff's transport, injectable the same way.
+  if (checkoutSubmit) app.set('hygCheckoutSubmit', checkoutSubmit);
   app.use(express.json({ limit: '1mb' }));
   app.use('/api', requireDashboardAuth());
   if (user) {

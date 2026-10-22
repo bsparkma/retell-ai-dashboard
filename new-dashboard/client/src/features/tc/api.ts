@@ -120,7 +120,7 @@ export function tcErrorMessage(err: unknown): string {
 // ── Core request ────────────────────────────────────────────────────────────
 
 export interface TcRequestOptions {
-  method?: "GET" | "POST" | "PUT" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   office: OfficeId;
   params?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
@@ -191,6 +191,70 @@ export async function tcRequest<T>(path: string, options: TcRequestOptions): Pro
   return parsed as T;
 }
 
+/**
+ * Item 55: one file, multipart, through TC's transport (office in the query,
+ * the same auth, the same typed refusals). No Content-Type header: the browser
+ * writes the multipart boundary itself.
+ */
+export async function tcUpload<T>(path: string, office: OfficeId, file: File): Promise<T> {
+  const url = new URL(`${BASE}${path.startsWith("/") ? "" : "/"}${path}`, window.location.origin);
+  url.searchParams.set("office", office);
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const res = await fetch(url.toString(), {
+    method: "POST",
+    credentials: "include",
+    headers: DASHBOARD_TOKEN ? { Authorization: `Bearer ${DASHBOARD_TOKEN}` } : {},
+    body: form,
+  });
+  if (res.status === 401) handleUnauthorized();
+  let parsed: unknown = null;
+  try {
+    parsed = await res.json();
+  } catch {
+    parsed = null;
+  }
+  if (!res.ok) {
+    const obj = (parsed ?? {}) as { error?: unknown; code?: unknown };
+    throw new TcApiError(
+      typeof obj.error === "string" ? obj.error : `HTTP ${res.status}`,
+      res.status,
+      typeof obj.code === "string" ? obj.code : null,
+      null,
+      [],
+    );
+  }
+  return parsed as T;
+}
+
+/**
+ * Item 55: a protected file's bytes, as an object URL the caller opens and
+ * later revokes. Fetched (not linked) so the bearer mode works too; every call
+ * is a server-side audited view.
+ */
+export async function tcFetchObjectUrl(path: string, office: OfficeId): Promise<string> {
+  const url = new URL(`${BASE}${path.startsWith("/") ? "" : "/"}${path}`, window.location.origin);
+  url.searchParams.set("office", office);
+  const res = await fetch(url.toString(), {
+    credentials: "include",
+    headers: DASHBOARD_TOKEN ? { Authorization: `Bearer ${DASHBOARD_TOKEN}` } : {},
+  });
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) {
+    let code: string | null = null;
+    let message = `HTTP ${res.status}`;
+    try {
+      const obj = (await res.json()) as { error?: unknown; code?: unknown };
+      if (typeof obj.error === "string") message = obj.error;
+      if (typeof obj.code === "string") code = obj.code;
+    } catch {
+      /* not JSON */
+    }
+    throw new TcApiError(message, res.status, code, null, []);
+  }
+  return URL.createObjectURL(await res.blob());
+}
+
 // ── Cases ───────────────────────────────────────────────────────────────────
 
 /** GET /cases list item — TcCase scalars (no children) + timestamps. */
@@ -206,6 +270,12 @@ export type TcCaseSummary = Omit<
    * folded back from a full TcCase (mergeCase) keeps the row's own value.
    */
   hasOrthoScreening?: boolean;
+  /**
+   * Item 50b: the case holds hygiene-visit treatment (a checkout) that nobody
+   * has yet marked "entered in Open Dental". Same list-route computation and
+   * the same optionality as hasOrthoScreening.
+   */
+  txNotInOd?: boolean;
 };
 
 export interface TcCaseListFilters {
@@ -577,6 +647,14 @@ export interface TcIntakeSubmit {
    */
   hygienistName?: string;
   /**
+   * Item 49. Which intake this is, and the caller's idempotency key: TC answers
+   * a key it has already seen with the case it already made, so a resend after
+   * a lost response cannot open a second case. TC's own intake form sends a
+   * fresh key per submission (`newIntakeSourceKey`).
+   */
+  kind?: "hygiene" | "ortho";
+  sourceKey?: string;
+  /**
    * The hygienist's ortho screening (item 33). Sent only by the hygiene visit's
    * own send, server-assembled; TC's intake form never sets it, and the server
    * stores null when it is absent.
@@ -671,6 +749,15 @@ interface IntakeRowBase {
   flag_urgent: boolean;
   /** jsonb (item 33). Absent from a server older than the column — read as null. */
   ortho_screening?: OrthoScreening | null;
+}
+
+/**
+ * A fresh idempotency key for ONE submission of TC's own intake form (item 49).
+ * Kept for the life of the filled-in form, so a retry of the same submission
+ * re-sends the same key; replaced after a successful submit.
+ */
+export function newIntakeSourceKey(): string {
+  return `tc-form:${crypto.randomUUID()}`;
 }
 
 export function submitHygieneIntake(

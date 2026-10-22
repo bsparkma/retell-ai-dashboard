@@ -20,6 +20,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { OfficeId, TcCase } from "@shared/tc/contract";
+import { checkoutPhaseNames } from "@shared/tc/checkout";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -326,14 +327,28 @@ export function OdPullDialog({ office, tcCase, open, onOpenChange, onImported }:
                     </span>
                   )}
                 </div>
-
-                {tcCase.phases.length > 0 && (
-                  <p className="text-xs text-amber-700 dark:text-amber-400">
-                    This case already has a treatment plan. Importing replaces every existing phase.
-                  </p>
-                )}
               </>
             )}
+
+            {/* Shown whether or not Open Dental returned anything (rider from
+                Beau's staging walk: the empty state used to hide them). */}
+            {tcCase.phases.length > 0 && (
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                This case already has a treatment plan. Importing replaces every existing phase.
+              </p>
+            )}
+            {/* Item 50b: say by name which checkout section goes, and that
+                the hygienist's treatment is still kept on the staff panel. */}
+            {checkoutPhaseNames(tcCase.phases).map((name) => (
+              <p
+                key={name}
+                className="text-xs font-medium text-amber-700 dark:text-amber-400"
+                data-testid="tc-od-pull-checkout-warning"
+              >
+                This will remove the '{name}' section added at checkout — that treatment remains on
+                the staff panel.
+              </p>
+            ))}
           </div>
         )}
 
@@ -344,10 +359,17 @@ export function OdPullDialog({ office, tcCase, open, onOpenChange, onImported }:
           <Button
             onClick={confirmImport}
             disabled={stage !== "review" || saving || included.length === 0 || totals.invalid}
+            data-testid="tc-od-pull-import"
           >
             {saving ? <Loader2 size={14} className="animate-spin" /> : <DownloadCloud size={14} />}
-            Import {included.length > 0 ? `${included.length} ` : ""}
-            {included.length === 1 ? "procedure" : "procedures"}
+            {stage === "review" && rows.length === 0 ? (
+              "Nothing to import"
+            ) : (
+              <>
+                Import {included.length > 0 ? `${included.length} ` : ""}
+                {included.length === 1 ? "procedure" : "procedures"}
+              </>
+            )}
           </Button>
         </DialogFooter>
       </DialogContent>

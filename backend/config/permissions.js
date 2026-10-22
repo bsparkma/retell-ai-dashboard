@@ -21,6 +21,10 @@
  *   rcm_biller RCM end to end EXCEPT the two acts that reach a chart or retire
  *            money, and except the shadow-gate switch (added by the RCM shadow
  *            gate — see the rcm block below).
+ *   doctor   signs off referrals (queue item 53, PM ruling 2026-10-14): the
+ *            "Awaiting sign-off" queue and the referral detail it needs, and
+ *            NOTHING else. What else a doctor may see is deliberately not
+ *            decided here — the minimum, until it is.
  *
  * Above them sits the PLATFORM tier: a super_admin (platform_admin row) acts as
  * tenant 'admin' everywhere and short-circuits every check below.
@@ -30,7 +34,7 @@
  * inheriting a permission set that was never chosen for it.
  */
 
-/** @typedef {'admin'|'office'|'tc'|'hygiene'|'reviewer'|'rcm_biller'} TenantRole */
+/** @typedef {'admin'|'office'|'tc'|'hygiene'|'reviewer'|'rcm_biller'|'doctor'} TenantRole */
 
 /**
  * Action → roles that hold it. Frozen: this is configuration, and a route that
@@ -58,6 +62,20 @@ const PERMISSIONS = Object.freeze({
   'tc.full': Object.freeze(['admin', 'office', 'tc']),
   /** The hygiene handoff surface only — intake, my submissions, inbox. */
   'tc.hygiene': Object.freeze(['admin', 'office', 'tc', 'hygiene']),
+  /**
+   * Approve or decline a referral awaiting the doctor's sign-off (item 53).
+   * PM ruling 2026-10-14: a NEW `doctor` role, and `admin` too. NOT `office`
+   * and NOT `tc`: the person who writes a referral is not the one who signs
+   * it off. This is the doctor role's ONLY action.
+   */
+  'tc.referral_signoff': Object.freeze(['admin', 'doctor']),
+  /**
+   * Set the OFFICE default for in-app alerts (item 51's Settings section).
+   * PM addition 2026-10-15: office managers run their office's alerts, so
+   * `office` joins `admin`. A person's OWN choice needs no action at all — it
+   * is keyed by their session and nobody can set another person's.
+   */
+  'tc.notification_defaults': Object.freeze(['admin', 'office']),
 
   // --- hyg ------------------------------------------------------------------
   /*
@@ -238,7 +256,7 @@ const PERMISSIONS = Object.freeze({
 });
 
 /** Every role that appears anywhere in the map, for validation and PR C's UI. */
-const TENANT_ROLES = Object.freeze(['admin', 'office', 'tc', 'hygiene', 'reviewer', 'rcm_biller']);
+const TENANT_ROLES = Object.freeze(['admin', 'office', 'tc', 'hygiene', 'reviewer', 'rcm_biller', 'doctor']);
 
 /**
  * Does `role` hold `action`?

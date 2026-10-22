@@ -64,7 +64,10 @@ test('up: re-adds the section CHECK with exactly the contract sections', () => {
     ['addConstraint', 'tc_library_config', 'tc_library_config_section_check'],
   ]);
   const check = calls[1].args[2].check;
-  assert.deepEqual(literals(check), Object.keys(LibrarySectionSchemas), 'CHECK literals == LibrarySectionSchemas keys');
+  // Every literal is a contract section. The CURRENT contract's full key list
+  // is pinned by the newest migration that widens this CHECK
+  // (1791100000000_tc_nurture.js → tcNurtureMigration.test.js), not here.
+  for (const s of literals(check)) assert.ok(Object.keys(LibrarySectionSchemas).includes(s), s);
   assert.deepEqual(literals(check), [...ORIGINAL_ELEVEN, 'opportunities_config']);
 });
 

@@ -38,6 +38,7 @@ async function bootstrap() {
   const openDentalSyncRouter = require('./routes/openDentalSync');
   const webhooksRouter = require('./routes/webhooks');
   const twilioWebhooksRouter = require('./routes/twilioWebhooks');
+  const acsSmsWebhooksRouter = require('./routes/acsSmsWebhooks');
   const emailWebhooksRouter = require('./routes/emailWebhooks');
   const liveCallsRouter = require('./routes/liveCalls');
   const adminRouter = require('./routes/admin');
@@ -59,6 +60,9 @@ async function bootstrap() {
   const odHealthCheck = require('./services/odHealthCheck');
   const hygDayWarm = require('./services/hygDayWarm');
   const tcOpportunitiesSync = require('./services/tcOpportunities/scheduler');
+  // Requiring it runs the nurture preset/cap assertion: a preset that breaks a
+  // hard cap stops the server here, at boot (config/tcNurture.js).
+  const tcNurtureGenerator = require('./services/tcNurture/scheduler');
   const hygPilot = require('./config/hygPilot');
   const tcSms = require('./config/tcSms');
   const tcEmail = require('./config/tcEmail');
@@ -274,6 +278,14 @@ async function bootstrap() {
   // It authenticates every request itself (X-Twilio-Signature) and resolves its
   // tenant from TWILIO_TENANT_SLUG through the registry — see the router header.
   app.use('/api/webhooks/twilio', twilioWebhooksRouter);
+  // ACS SMS (TC text messaging, item 48 — the default provider). Same
+  // placement and reasoning as Twilio: Event Grid carries no user identity, so
+  // it rides the /api/webhooks exemptions with no module guard. It
+  // authenticates every request itself (X-CareIN-Webhook-Token, a Key Vault
+  // shared secret Event Grid sends as a secret delivery header) and resolves
+  // its tenant from TC_SMS_ACS_TENANT_SLUG — see the router header. It never
+  // sends.
+  app.use('/api/webhooks/acs-sms', acsSmsWebhooksRouter);
   // TC email unsubscribe link (item 40). Same placement and the same reasoning
   // as Twilio: a patient's browser or mail client carries no user identity, so
   // it rides the /api/webhooks exemptions with no module guard. It needs no
@@ -620,6 +632,12 @@ async function bootstrap() {
     //    boot. See services/tcOpportunities/scheduler.js.
     tcOpportunitiesSync.start();
 
+    // 8. Arm the nightly TC nurture generator (default 05:00 America/Chicago,
+    //    item 47). DRAFTS ONLY — it writes tc_messages drafts a human approves;
+    //    it never sends. DARK: each pass reads platform_setting['tc_nurture_enabled']
+    //    first. No pass at boot. See services/tcNurture/scheduler.js.
+    tcNurtureGenerator.start();
+
     // (M3) The startup `transcribeUntranscribedMango` backfill was removed: it keyed on
     // `recording_path`, which the API ingest path never sets, so it found zero candidates
     // on every run (diagnosis H2). Re-transcribing an already-ingested call is M4's
@@ -637,6 +655,7 @@ async function bootstrap() {
     odHealthCheck.stop();
     hygDayWarm.stop();
     tcOpportunitiesSync.stop();
+    tcNurtureGenerator.stop();
     hygPilot.stopRefreshTimer();
     tcSms.stopRefreshTimer();
     tcEmail.stopRefreshTimer();
@@ -650,6 +669,7 @@ async function bootstrap() {
     odHealthCheck.stop();
     hygDayWarm.stop();
     tcOpportunitiesSync.stop();
+    tcNurtureGenerator.stop();
     hygPilot.stopRefreshTimer();
     tcSms.stopRefreshTimer();
     tcEmail.stopRefreshTimer();
