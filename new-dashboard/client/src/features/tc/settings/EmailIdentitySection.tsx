@@ -9,6 +9,9 @@
  *     value and the app setting (if there is one) applies again.
  *   - The From address is shown, never editable: it is tied to the verified
  *     sending domain and the platform manages it.
+ *   - (R6.3) "Send a copy to (BCC)": an optional inbox every referral letter
+ *     is blind-copied to. Saved here only (no app-setting fallback); empty =
+ *     no copy.
  *
  * Shown to admin and office (tc.notification_defaults); the server enforces
  * the same. Every value shown is the server's answer after the save, never
@@ -34,7 +37,10 @@ import type { OfficeId } from "@shared/tc/contract";
 
 const FIELDS = TcEmailIdentityField.options;
 
-type Drafts = Record<TcEmailIdentityField, string>;
+/** The three identity fields plus (R6.3) the referral copy inbox. */
+type Drafts = Record<TcEmailIdentityField, string> & { referralBcc: string };
+
+const BCC_ID = "tc-email-identity-referralBcc";
 
 const HINTS: Record<TcEmailIdentityField, string> = {
   replyTo: "Where a reply lands. Referral letters need one: the specialist replies with findings.",
@@ -47,6 +53,7 @@ function draftsOf(state: TcEmailIdentityResponse): Drafts {
     replyTo: state.fields.replyTo.stored ?? "",
     practiceName: state.fields.practiceName.stored ?? "",
     practicePhone: state.fields.practicePhone.stored ?? "",
+    referralBcc: state.referralBcc ?? "",
   };
 }
 
@@ -86,6 +93,7 @@ export function EmailIdentitySection({ office }: { office: OfficeId }) {
         replyTo: value(drafts.replyTo),
         practiceName: value(drafts.practiceName),
         practicePhone: value(drafts.practicePhone),
+        referralBcc: value(drafts.referralBcc),
       });
       setState(next);
       setDrafts(draftsOf(next));
@@ -116,7 +124,9 @@ export function EmailIdentitySection({ office }: { office: OfficeId }) {
     );
   }
 
-  const dirty = FIELDS.some((f) => drafts[f].trim() !== (state.fields[f].stored ?? ""));
+  const savedBcc = state.referralBcc ?? "";
+  const dirty =
+    FIELDS.some((f) => drafts[f].trim() !== (state.fields[f].stored ?? "")) || drafts.referralBcc.trim() !== savedBcc;
 
   return (
     <div className="bg-card rounded-xl border border-border p-4 shadow-sm space-y-4" data-testid="tc-email-identity-section">
@@ -176,6 +186,27 @@ export function EmailIdentitySection({ office }: { office: OfficeId }) {
             </div>
           );
         })}
+        {/* R6.3: the referral copy inbox. Saved here or not at all — no app-setting fallback. */}
+        <div className="space-y-1 border-t border-border pt-4">
+          <Label htmlFor={BCC_ID}>Send a copy to (BCC)</Label>
+          <Input
+            id={BCC_ID}
+            data-testid={BCC_ID}
+            type="email"
+            value={drafts.referralBcc}
+            maxLength={EMAIL_IDENTITY_LIMITS.referralBcc}
+            placeholder="Optional"
+            disabled={saving}
+            onChange={(ev) => setDrafts({ ...drafts, referralBcc: ev.target.value })}
+          />
+          <p className="text-xs text-muted-foreground" data-testid={`${BCC_ID}-hint`}>
+            Every referral letter from this office is blind-copied here; the specialist never sees it. Use a mailbox the
+            practice controls, such as a shared office inbox, not a personal address. Leave it empty for no copy.
+          </p>
+          <p className="text-xs text-foreground break-all" data-testid={`${BCC_ID}-in-use`}>
+            {state.referralBcc ? `In use: ${state.referralBcc}` : "No copy is sent"}
+          </p>
+        </div>
         <Button type="submit" size="sm" disabled={saving || !dirty} data-testid="tc-email-identity-save">
           {saving ? <Loader2 className="w-4 h-4 mr-1 animate-spin" aria-hidden /> : null}
           Save
