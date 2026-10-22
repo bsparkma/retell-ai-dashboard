@@ -14,6 +14,7 @@ import {
   TcReferralSignoffSummary,
   TcReferralAttachment,
   TcReferralSendOutcome,
+  type TcReferralCreateRequest,
   type TcReferralDirectoryInput,
   type TcReferralDoctorEdit,
   type TcReferralFieldsEdit,
@@ -105,10 +106,14 @@ export async function listReferrals(
   return res.referrals;
 }
 
-/** Start a referral FROM a case or a checkout; the server derives the patient. */
+/**
+ * Start a referral FROM a case or a checkout, or (R6.2) by hand for a patient
+ * picked from Open Dental (`{ patNum }`); the server derives — or, for a
+ * PatNum, re-reads from this office's Open Dental — the patient.
+ */
 export async function createReferral(
   office: OfficeId,
-  source: { caseId: string } | { handoffId: string },
+  source: TcReferralCreateRequest["source"],
   referral: TcReferralInput,
 ): Promise<TcReferral> {
   const res = parse(

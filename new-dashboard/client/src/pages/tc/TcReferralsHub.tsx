@@ -68,6 +68,7 @@ import {
 } from "@/features/tc/referrals/hubActions";
 import { AttachmentList, ReferralStatusBadge, teethLabel, viewAttachment } from "@/features/tc/referrals/ReferralsPanel";
 import { AddAttachments } from "@/features/tc/referrals/AddAttachments";
+import { NewHubReferral } from "@/features/tc/referrals/NewHubReferral";
 import { ReferralFieldsForm, type ReferralFieldsChange } from "@/features/tc/referrals/ReferralFieldsForm";
 import { ReferralTimeline } from "@/features/tc/referrals/ReferralTimeline";
 import type { OfficeId } from "@shared/tc/contract";
@@ -101,6 +102,8 @@ export const SOURCE_LABELS: Record<TcReferralSourceKind, string> = {
   checkout: "Checkout",
   hyg_visit: "Hygiene visit",
   call: "Call",
+  // R6.2: started by hand on this page ("started from referrals hub").
+  manual: "Referrals hub",
 };
 
 const AGE_OPTIONS = [
@@ -248,9 +251,21 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
             : "Every referral for this office. Nothing is sent from here — sending ships in a later update."
         }
         actions={
-          <Button variant="outline" size="sm" onClick={load} aria-label="Refresh">
-            <RefreshCw className="w-4 h-4" />
-          </Button>
+          <div className="flex items-center gap-2">
+            {/* R6.2: start one by hand. tc.full, like every hub move; the server re-checks. */}
+            {viewer.tcFull && (
+              <NewHubReferral
+                office={office}
+                onCreated={(r) => {
+                  load();
+                  setOpenId(r.referralId);
+                }}
+              />
+            )}
+            <Button variant="outline" size="sm" onClick={load} aria-label="Refresh">
+              <RefreshCw className="w-4 h-4" />
+            </Button>
+          </div>
         }
       />
 
