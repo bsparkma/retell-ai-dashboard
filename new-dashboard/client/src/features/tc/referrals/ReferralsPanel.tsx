@@ -117,6 +117,33 @@ export function reportFailedUploads(failed: { name: string; message: string }[])
   for (const f of failed) toast.error(`${f.name} was not attached: ${f.message}`);
 }
 
+/**
+ * After a referral is saved from the form: its files, THEN the submit when
+ * asked. Files go first so the doctor sees them at sign-off; a file that did
+ * not land keeps the referral a draft — nothing goes to the doctor missing an
+ * X-ray someone meant to attach. Says what happened; throws only if the
+ * submit itself is refused.
+ */
+export async function attachThenSubmit(
+  office: OfficeId,
+  referralId: string,
+  submit: boolean,
+  chosen: readonly File[],
+): Promise<void> {
+  const { failed } = await uploadAll(chosen, (f) => uploadReferralAttachment(office, referralId, f));
+  if (failed.length > 0) {
+    reportFailedUploads(failed);
+    if (submit) toast.error("Kept as a draft so the missing file can be added before sign-off");
+    return;
+  }
+  if (submit) {
+    const moved = await referralVerb(office, referralId, "submit");
+    toast.success(moved.status === "approved" ? "Referral approved (sign-off not required)" : "Sent for the doctor's sign-off");
+  } else {
+    toast.success("Referral saved as a draft");
+  }
+}
+
 /** Open a file (an audited view on the server) in a new tab. */
 export async function viewAttachment(open: () => Promise<string>) {
   try {
@@ -443,24 +470,7 @@ export function ReferralsPanel({ office, source, compact = false }: ReferralsPan
       const saved = editing
         ? await updateReferral(office, editing.referralId, input)
         : await createReferral(office, source, input);
-      // Files BEFORE the submit, so the doctor sees them at sign-off. A file
-      // that did not land keeps the referral a draft: nothing goes to the
-      // doctor missing an X-ray someone meant to attach.
-      const { failed } = await uploadAll(chosen, (f) => uploadReferralAttachment(office, saved.referralId, f));
-      if (failed.length > 0) {
-        reportFailedUploads(failed);
-        if (submit) toast.error("Kept as a draft so the missing file can be added before sign-off");
-        setDialogOpen(false);
-        setEditing(null);
-        load();
-        return;
-      }
-      if (submit) {
-        const moved = await referralVerb(office, saved.referralId, "submit");
-        toast.success(moved.status === "approved" ? "Referral approved (sign-off not required)" : "Sent for the doctor's sign-off");
-      } else {
-        toast.success("Referral saved as a draft");
-      }
+      await attachThenSubmit(office, saved.referralId, submit, chosen);
       setDialogOpen(false);
       setEditing(null);
       load();

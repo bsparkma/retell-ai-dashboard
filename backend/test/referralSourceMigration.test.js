@@ -44,7 +44,9 @@ test('the kind CHECK is inline and equals the contract', () => {
   const calls = capture();
   const check = String(calls.find((c) => c.args[1] === 'tc_referrals_source_kind_check').args[2].check);
   const inList = /IN \(([^)]+)\)/.exec(check)[1].split(',').map((s) => s.trim().replace(/^'|'$/g, ''));
-  assert.deepEqual(inList, [...contract.TcReferralSourceKind.options]);
+  // This migration is history: it pins the list it was written with. R6.2's
+  // 1792300000000 adds `manual` and pins the live TcReferralSourceKind.
+  assert.deepEqual(inList, [...contract.TC_REFERRAL_SOURCE_KINDS_R2]);
   assert.deepEqual(inList, ['case', 'checkout', 'hyg_visit', 'call']);
 });
 

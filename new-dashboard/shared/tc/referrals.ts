@@ -201,8 +201,20 @@ export type TcReferralsStatus = z.infer<typeof TcReferralsStatus>;
 
 // ── R2 (item 53): the referral record, its lifecycle, and the sign-off queue ─
 
-/** Where a referral was started. The DB CHECK (1791900000000) carries the same four. */
-export const TcReferralSourceKind = z.enum(["case", "checkout", "hyg_visit", "call"]);
+/**
+ * The four kinds item 53's CHECK (1791900000000) was written with. Kept as its
+ * own list because that migration is history and its test pins THIS list;
+ * the live vocabulary is TcReferralSourceKind below.
+ */
+export const TC_REFERRAL_SOURCE_KINDS_R2 = ["case", "checkout", "hyg_visit", "call"] as const;
+
+/**
+ * Where a referral was started. R6.2 adds `manual`: started by hand (from the
+ * Referrals hub) for a patient looked up in this office's Open Dental, with no
+ * case, checkout, visit or call behind it; source_ref is ''. The DB CHECK
+ * (1792300000000) carries exactly these five; that migration's test pins it.
+ */
+export const TcReferralSourceKind = z.enum([...TC_REFERRAL_SOURCE_KINDS_R2, "manual"]);
 export type TcReferralSourceKind = z.infer<typeof TcReferralSourceKind>;
 
 /** Universal tooth numbers, or "mouth" — the checkout procedure's shape. */
@@ -230,12 +242,19 @@ export const TcReferralInput = z
   .strict();
 export type TcReferralInput = z.infer<typeof TcReferralInput>;
 
-/** POST /api/tc/referrals — start one FROM a case or a checkout. */
+/**
+ * POST /api/tc/referrals — start one FROM a case or a checkout, or (R6.2) by
+ * hand for a patient picked from this office's Open Dental search. For the
+ * last, the PatNum is only WHICH patient: the server re-reads it from this
+ * office's Open Dental and takes the name from there. Strict: an office, a
+ * name or any other extra field is a 400.
+ */
 export const TcReferralCreateRequest = z
   .object({
     source: z.union([
       z.object({ caseId: z.string().uuid() }).strict(),
       z.object({ handoffId: z.string().uuid() }).strict(),
+      z.object({ patNum: z.number().int().positive() }).strict(),
     ]),
     referral: TcReferralInput,
   })

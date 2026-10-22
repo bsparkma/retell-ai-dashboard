@@ -17,6 +17,10 @@
  * soon, reason, teeth — and add their own note, and may SEND IT BACK with a
  * question instead of approving or declining. The submitter sees
  * "Returned by Dr. — <question>". Approve's rules are unchanged.
+ *
+ * R6.2: while editing, the doctor may also ADD files (the R4 upload, through
+ * the sign-off route), only while the referral awaits sign-off. Nothing removes
+ * a stored file.
  */
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -45,7 +49,9 @@ import {
   listSignoffQueue,
   openReferralAttachment,
   returnReferral,
+  uploadReferralAttachment,
 } from "@/features/tc/referrals/referralsApi";
+import { AddAttachments } from "@/features/tc/referrals/AddAttachments";
 import { ReferralFieldsForm, type ReferralFieldsChange } from "@/features/tc/referrals/ReferralFieldsForm";
 import { referralEventLabel } from "@/features/tc/referrals/ReferralTimeline";
 import {
@@ -56,6 +62,7 @@ import {
 } from "@/features/tc/referrals/ReferralsPanel";
 import type { OfficeId } from "@shared/tc/contract";
 import {
+  REFERRAL_DOCTOR_EDITABLE_STATUSES,
   REFERRAL_READY_TO_SEND_COPY,
   TC_REFERRAL_STATUS_LABELS,
   TC_REFERRAL_URGENCY_LABELS,
@@ -326,6 +333,19 @@ export function SignoffInner({ office }: { office: OfficeId }) {
                     setEditing(false);
                     setEditError(null);
                   }}
+                />
+              )}
+              {/* R6.2: the doctor may add a file while editing — only while it awaits sign-off. */}
+              {editing && REFERRAL_DOCTOR_EDITABLE_STATUSES.includes(open.status) && (
+                <AddAttachments
+                  alreadyAttached={openFiles.length}
+                  upload={(f) => uploadReferralAttachment(office, open.referralId, f, true)}
+                  onDone={() => {
+                    listReferralAttachments(office, open.referralId, true)
+                      .then(setOpenFiles)
+                      .catch(() => undefined);
+                  }}
+                  disabled={busy}
                 />
               )}
               <AttachmentList

@@ -13,7 +13,9 @@
  *
  *   R2 (item 53) — the referral record and its lifecycle:
  *   GET    /                      ?caseId= | ?handoffId= | ?callId= | ?status= , newest first
- *   POST   /                      start one FROM a case or a checkout (draft)
+ *   POST   /                      start one FROM a case or a checkout (draft), or
+ *                                 (R6.2) by hand from the hub: { patNum }, re-read
+ *                                 from this office's Open Dental (source `manual`)
  *   GET    /:id                   one referral, with its history
  *   PUT    /:id                   edit a draft (only a draft)
  *   POST   /:id/submit            draft → pending_signoff (or → approved when
@@ -72,6 +74,8 @@ const transitions = require('./referralTransitions');
 const { createDraft, directoryProblem } = require('./referralCreate');
 const attachments = require('./referralAttachments');
 const referralSend = require('./referralSend');
+const odOffices = require('../../config/odOffices');
+const odReads = require('./odReads');
 
 const {
   z,
@@ -354,6 +358,42 @@ router.get(
   })
 );
 
+/**
+ * R6.2: the patient of a referral started by hand, read from THIS office's
+ * Open Dental (read only), before any transaction opens. The PatNum in the
+ * body says only WHICH patient; existence and the name come from Open Dental,
+ * through the office's own client (never another practice's: PatNum numbering
+ * restarts in every database). Returns { patient } or { refusal }.
+ */
+async function manualPatient(office, patNum) {
+  let od;
+  try {
+    od = odOffices.assertOfficeMatch(office, odOffices.getOdOffice(office));
+  } catch (err) {
+    return { refusal: [503, err.publicMessage || 'Open Dental is not connected for this office', 'OFFICE_NOT_CONNECTED'] };
+  }
+  const odGet = (path, params, opts) => od.client.apiGetRaw(path, params, { ...(opts || {}), module: 'tc' });
+  let found;
+  try {
+    found = await odReads.getPatient(odGet, patNum);
+  } catch {
+    console.error(`[tc/referrals] office=${office} manual start: patient read failed`);
+    return { refusal: [502, 'Could not read that patient from Open Dental. Nothing was saved.', 'OD_READ_FAILED'] };
+  }
+  if (!found.patient || odReads.EXCLUDED_PAT_STATUS.has(found.patient.status)) {
+    return { refusal: [404, "That patient is not in this office's Open Dental", 'PATIENT_NOT_FOUND'] };
+  }
+  return {
+    patient: {
+      odPatientId: found.patient.patNum,
+      patientName: found.patient.displayName,
+      tcCaseId: null,
+      sourceKind: 'manual',
+      sourceRef: '',
+    },
+  };
+}
+
 router.post(
   '/',
   h(async (req, res) => {
@@ -362,10 +402,24 @@ router.post(
     const office = req.tcOffice;
     const at = transitions.clock().toISOString();
 
+    // R6.2: a hand start reads Open Dental first, so no transaction is held
+    // open across a network call.
+    let manual = null;
+    if ('patNum' in body.source) {
+      const m = await manualPatient(office, body.source.patNum);
+      if (m.refusal) {
+        const [status, error, code] = m.refusal;
+        return res.status(status).json({ success: false, error, code });
+      }
+      manual = m.patient;
+    }
+
     const result = await withTenantTx(req, async (client) => {
       // The patient, from the SOURCE, office-scoped. Never from the body.
       let patient;
-      if ('caseId' in body.source) {
+      if (manual) {
+        patient = manual;
+      } else if ('caseId' in body.source) {
         const c = await client.query(
           'SELECT case_id, od_patient_id, patient_name FROM tc_cases WHERE office_id = $1 AND case_id = $2',
           [office, body.source.caseId]

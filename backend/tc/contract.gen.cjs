@@ -14945,6 +14945,7 @@ __export(contract_entry_exports, {
   TC_REFERRAL_EVENT_VERBS: () => TC_REFERRAL_EVENT_VERBS,
   TC_REFERRAL_HUB_GROUPS: () => TC_REFERRAL_HUB_GROUPS,
   TC_REFERRAL_SEND_EVENT_VERBS: () => TC_REFERRAL_SEND_EVENT_VERBS,
+  TC_REFERRAL_SOURCE_KINDS_R2: () => TC_REFERRAL_SOURCE_KINDS_R2,
   TC_REFERRAL_STATUS_LABELS: () => TC_REFERRAL_STATUS_LABELS,
   TC_REFERRAL_URGENCY_LABELS: () => TC_REFERRAL_URGENCY_LABELS,
   TERMINAL_CASE_STATUSES: () => TERMINAL_CASE_STATUSES,
@@ -17477,7 +17478,8 @@ var TcReferralsStatus = import_zod8.z.object({
     missing: import_zod8.z.array(TcReferralEmailMissing).optional()
   }).optional()
 });
-var TcReferralSourceKind = import_zod8.z.enum(["case", "checkout", "hyg_visit", "call"]);
+var TC_REFERRAL_SOURCE_KINDS_R2 = ["case", "checkout", "hyg_visit", "call"];
+var TcReferralSourceKind = import_zod8.z.enum([...TC_REFERRAL_SOURCE_KINDS_R2, "manual"]);
 var TcReferralTeeth = import_zod8.z.union([
   import_zod8.z.array(import_zod8.z.number().int().min(1).max(32)).max(32),
   import_zod8.z.literal("mouth")
@@ -17494,7 +17496,8 @@ var TcReferralInput = import_zod8.z.object({
 var TcReferralCreateRequest = import_zod8.z.object({
   source: import_zod8.z.union([
     import_zod8.z.object({ caseId: import_zod8.z.string().uuid() }).strict(),
-    import_zod8.z.object({ handoffId: import_zod8.z.string().uuid() }).strict()
+    import_zod8.z.object({ handoffId: import_zod8.z.string().uuid() }).strict(),
+    import_zod8.z.object({ patNum: import_zod8.z.number().int().positive() }).strict()
   ]),
   referral: TcReferralInput
 }).strict();
@@ -17993,6 +17996,7 @@ var import_zod10 = __toESM(require_zod());
   TC_REFERRAL_EVENT_VERBS,
   TC_REFERRAL_HUB_GROUPS,
   TC_REFERRAL_SEND_EVENT_VERBS,
+  TC_REFERRAL_SOURCE_KINDS_R2,
   TC_REFERRAL_STATUS_LABELS,
   TC_REFERRAL_URGENCY_LABELS,
   TERMINAL_CASE_STATUSES,
