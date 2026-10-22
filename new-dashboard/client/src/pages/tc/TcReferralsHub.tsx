@@ -7,6 +7,13 @@
  * how long it has sat. Open one for its history, its files (each view
  * audited), the edit form, and its next step.
  *
+ * NEXT STEPS (R6.1). The panel offers exactly the moves the shared transition
+ * table allows from the referral's status (features/tc/referrals/hubActions):
+ * a draft can be submitted, edited or cancelled; one awaiting sign-off can be
+ * withdrawn or cancelled. They go through the same routes the case panel uses.
+ * The doctor's moves stay on Awaiting sign-off (approving can email it), so
+ * the hub names where to act instead of drawing them.
+ *
  * tc.full (a doctor never gets here — their surface is /tc/referrals/signoff)
  * and dark while referrals is off for the office; the server enforces both.
  *
@@ -24,6 +31,7 @@
  * marked or sent before the server confirms it.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "wouter";
 import { toast } from "sonner";
 import { ChevronDown, ChevronRight, Loader2, Mail, Paperclip, Pencil, RefreshCw } from "lucide-react";
 
@@ -32,21 +40,31 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { useAuth } from "@/contexts/AuthContext";
+import { can } from "@/lib/permissions";
 import { TcApiError, tcErrorMessage } from "@/features/tc/api";
 import { TcOfficeGate, TcPageHeader, useTcOffice } from "@/features/tc/components/TcShell";
 import {
   editReferralFields,
   getReferral,
+  getReferralSettings,
   getReferralsStatus,
   listDirectory,
   listHub,
   listReferralAttachments,
   markReferral,
   openReferralAttachment,
+  referralVerb,
   reopenReferral,
   sendReferralEmail,
   type ReferralMark,
 } from "@/features/tc/referrals/referralsApi";
+import {
+  HUB_MARK_VERBS,
+  hubActionLabel,
+  hubActionPlan,
+  type HubViewer,
+} from "@/features/tc/referrals/hubActions";
 import { AttachmentList, ReferralStatusBadge, teethLabel, viewAttachment } from "@/features/tc/referrals/ReferralsPanel";
 import { ReferralFieldsForm, type ReferralFieldsChange } from "@/features/tc/referrals/ReferralFieldsForm";
 import { ReferralTimeline } from "@/features/tc/referrals/ReferralTimeline";
@@ -62,6 +80,7 @@ import {
   TcReferralSourceKind,
   TcReferralStatus,
   referralHubGroup,
+  referralNextStatus,
   referralReturnedLine,
   referralSendBlocker,
   referralStatusAge,
@@ -91,22 +110,28 @@ const AGE_OPTIONS = [
 ];
 
 /**
- * The next manual mark for a status, if any — the pre-R5 world only. Pure.
- * (The shared transition table still decides; this only picks the button.)
+ * The next manual mark for a status, if any. Pure: the shared transition table
+ * decides (no mark depends on the sign-off policy).
  */
 export function nextMark(status: TcReferralStatus): ReferralMark | null {
-  switch (status) {
-    case "approved":
-      return "mark_sent";
-    case "sent":
-      return "mark_acknowledged";
-    case "acknowledged":
-      return "mark_patient_seen";
-    case "patient_seen":
-      return "close";
-    default:
-      return null;
-  }
+  return HUB_MARK_VERBS.find((m) => referralNextStatus(status, m, { signoffRequired: true }) !== null) ?? null;
+}
+
+/**
+ * Who is looking, for the detail panel's buttons. UX only — every move is
+ * re-checked by the server. This page renders only behind the /tc route's
+ * tc.full gate (lib/permissions ROUTE_PERMISSIONS), so until /auth/me has
+ * answered, tc.full is what the route already established; sign-off is never
+ * assumed.
+ */
+export function useHubViewer(): HubViewer {
+  const auth = useAuth();
+  if (auth.status !== "authenticated") return { tcFull: true, signoff: false };
+  const { isSuperAdmin, permissions } = auth.user;
+  return {
+    tcFull: isSuperAdmin || can(permissions, "tc.full"),
+    signoff: isSuperAdmin || can(permissions, "tc.referral_signoff"),
+  };
 }
 
 /** Referrals → the hub's groups, in page order, each newest status change first. Pure. */
@@ -140,6 +165,9 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
   const [filter, setFilter] = useState<TcReferralHubQuery>({});
   const [showDone, setShowDone] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
+  /** The office's sign-off policy, only to say where Submit leads; null = unread. */
+  const [signoffRequired, setSignoffRequired] = useState<boolean | null>(null);
+  const viewer = useHubViewer();
 
   const load = useCallback(() => {
     setError(null);
@@ -173,6 +201,22 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
   useEffect(() => {
     if (enabled) load();
   }, [enabled, load]);
+
+  // Only once referrals is on (the route 403s otherwise). A policy that cannot
+  // be read leaves Submit's label generic; the server decides where it goes.
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    Promise.resolve()
+      .then(() => getReferralSettings(office))
+      .then((s) => {
+        if (!cancelled) setSignoffRequired(s.signoffRequired.value);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [office, enabled]);
 
   const groups = useMemo(() => groupForHub(referrals ?? []), [referrals]);
   const at = now();
@@ -297,6 +341,8 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
         onClose={() => setOpenId(null)}
         onChanged={load}
         emailSend={emailSend}
+        viewer={viewer}
+        signoffRequired={signoffRequired}
       />
     </div>
   );
@@ -450,6 +496,8 @@ export function HubDetail({
   onClose,
   onChanged,
   emailSend = null,
+  viewer = { tcFull: true, signoff: false },
+  signoffRequired = null,
 }: {
   office: OfficeId;
   referralId: string | null;
@@ -457,6 +505,10 @@ export function HubDetail({
   onChanged: () => void;
   /** R5: the office's referral-email state; null / off = no send UI, as before. */
   emailSend?: ReferralEmailState | null;
+  /** R6.1: who is looking (UX only; the server re-checks every move). */
+  viewer?: HubViewer;
+  /** R6.1: the office's sign-off policy, for Submit's label; null = unread. */
+  signoffRequired?: boolean | null;
 }) {
   const [r, setR] = useState<TcReferral | null>(null);
   const [files, setFiles] = useState<TcReferralAttachment[]>([]);
@@ -466,6 +518,7 @@ export function HubDetail({
   const [serverError, setServerError] = useState<string | null>(null);
   const [markText, setMarkText] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [confirmCancel, setConfirmCancel] = useState(false);
 
   useEffect(() => {
     setR(null);
@@ -474,6 +527,7 @@ export function HubDetail({
     setServerError(null);
     setMarkText("");
     setLoadError(null);
+    setConfirmCancel(false);
     if (!referralId) return;
     let cancelled = false;
     getReferral(office, referralId)
@@ -502,15 +556,16 @@ export function HubDetail({
   }
 
   /** Run a change; show only what the server answered. */
-  async function act(run: () => Promise<TcReferral>, ok: string) {
+  async function act(run: () => Promise<TcReferral>, ok: string | ((next: TcReferral) => string)) {
     setBusy(true);
     setServerError(null);
+    setConfirmCancel(false);
     try {
       const next = await run();
       setR(next);
       setEditing(null);
       setMarkText("");
-      toast.success(ok);
+      toast.success(typeof ok === "string" ? ok : ok(next));
     } catch (e) {
       setServerError(tcErrorMessage(e));
     } finally {
@@ -552,8 +607,30 @@ export function HubDetail({
     }
   }
 
-  const mark = r ? nextMark(r.status) : null;
-  const editable = r ? REFERRAL_FIELD_EDITABLE_STATUSES.includes(r.status) : false;
+  /** submit / withdraw / cancel, through the same routes the case panel uses. */
+  function move(verb: "submit" | "withdraw" | "cancel") {
+    if (!r) return;
+    void act(
+      () => referralVerb(office, r.referralId, verb),
+      (next) =>
+        verb === "submit"
+          ? next.status === "approved"
+            ? "Referral approved (sign-off not required)"
+            : "Sent for the doctor's sign-off"
+          : verb === "withdraw"
+            ? "Back to draft"
+            : "Referral cancelled",
+    );
+  }
+
+  const plan = r ? hubActionPlan(r.status, viewer, signoffRequired) : null;
+  const offered = (verb: string) => plan?.actions.find((a) => a.verb === verb) ?? null;
+  const mark = HUB_MARK_VERBS.find((m) => offered(m) !== null) ?? null;
+  const submit = offered("submit");
+  const withdraw = offered("withdraw");
+  const cancel = offered("cancel");
+  const reopen = offered("reopen");
+  const editable = r ? viewer.tcFull && REFERRAL_FIELD_EDITABLE_STATUSES.includes(r.status) : false;
   const returned = r ? referralReturnedLine(r.returned) : null;
 
   return (
@@ -627,10 +704,54 @@ export function HubDetail({
               />
             ) : (
               <div className="space-y-3" data-testid="tc-hub-actions">
-                {editable && (
-                  <Button size="sm" variant="outline" className="gap-1" onClick={() => startEdit("fields")}>
-                    <Pencil className="w-3.5 h-3.5" /> Edit
-                  </Button>
+                {(editable || submit || withdraw || cancel) && (
+                  <div className="flex flex-wrap items-center gap-2" data-testid="tc-hub-moves">
+                    {submit && (
+                      <Button size="sm" onClick={() => move("submit")} disabled={busy} data-testid="tc-hub-submit">
+                        {hubActionLabel(submit)}
+                      </Button>
+                    )}
+                    {editable && (
+                      <Button size="sm" variant="outline" className="gap-1" onClick={() => startEdit("fields")}>
+                        <Pencil className="w-3.5 h-3.5" /> Edit
+                      </Button>
+                    )}
+                    {withdraw && (
+                      <Button size="sm" variant="outline" onClick={() => move("withdraw")} disabled={busy} data-testid="tc-hub-withdraw">
+                        {hubActionLabel(withdraw)}
+                      </Button>
+                    )}
+                    {cancel && !confirmCancel && (
+                      <Button size="sm" variant="ghost" onClick={() => setConfirmCancel(true)} disabled={busy} data-testid="tc-hub-cancel">
+                        {hubActionLabel(cancel)}
+                      </Button>
+                    )}
+                  </div>
+                )}
+                {cancel && confirmCancel && (
+                  <div className="space-y-2 rounded-lg border border-border p-3" data-testid="tc-hub-cancel-confirm">
+                    <p className="text-sm">Cancel this referral? It moves to Closed / declined / cancelled and cannot be reopened.</p>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="destructive" onClick={() => move("cancel")} disabled={busy}>
+                        {busy && <Loader2 className="w-4 h-4 animate-spin" />} Yes, cancel it
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => setConfirmCancel(false)} disabled={busy}>
+                        Keep it
+                      </Button>
+                    </div>
+                  </div>
+                )}
+                {plan && plan.notes.length > 0 && (
+                  <div className="space-y-1 text-xs text-muted-foreground" data-testid="tc-hub-move-notes">
+                    {plan.notes.map((n) => (
+                      <p key={n}>{n}</p>
+                    ))}
+                    {plan.signoffLink && (
+                      <Link href="/tc/referrals/signoff" className="font-medium text-primary underline" data-testid="tc-hub-signoff-link">
+                        Open Awaiting sign-off
+                      </Link>
+                    )}
+                  </div>
                 )}
                 {r.status === "approved" && (
                   <>
@@ -639,9 +760,11 @@ export function HubDetail({
                     ) : (
                       <p className="text-xs font-medium text-emerald-700 dark:text-emerald-400">{REFERRAL_READY_TO_SEND_COPY}</p>
                     )}
-                    <Button size="sm" variant="outline" className="gap-1" onClick={() => startEdit("reopen")}>
-                      <Pencil className="w-3.5 h-3.5" /> Edit (re-approval needed)
-                    </Button>
+                    {reopen && (
+                      <Button size="sm" variant="outline" className="gap-1" onClick={() => startEdit("reopen")}>
+                        <Pencil className="w-3.5 h-3.5" /> {hubActionLabel(reopen)}
+                      </Button>
+                    )}
                   </>
                 )}
                 {!editable && r.status !== "approved" && (
