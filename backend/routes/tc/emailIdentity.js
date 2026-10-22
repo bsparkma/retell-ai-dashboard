@@ -9,8 +9,10 @@
  *                    practicePhone }, each a string or null (null = clear, back
  *                    to the app setting)
  *
- * WHO: `tc.notification_defaults` (admin + office), applied at the mount — the
- * same people who run the office's alert defaults run what its email says.
+ * WHO: `tc.notification_defaults` (admin + office), for reading AND saving —
+ * the same people who run the office's alert defaults run what its email says.
+ * The mount is tc.full like every TC mount (test/roleGateWiring.test.js); this
+ * router narrows it, first thing, so a tc user is refused before anything.
  *
  * WHAT IT IS NOT: the From address. It is bound to the verified sending domain
  * and stays an app setting; GET shows it, nothing here can change it, and the
@@ -37,6 +39,7 @@ const { contract, requireOffice, actorEmail, parseBody, h, auditTc } = require('
 const { withTenantTx } = require('./tx');
 const acsConfig = require('../../config/acsEmail');
 const emailIdentity = require('../../config/emailIdentity');
+const { holdsPermission } = require('../../config/permissions');
 
 const { TcEmailIdentityRequest } = contract;
 
@@ -48,6 +51,15 @@ const FIELD_SLUG = Object.freeze({
 });
 
 const router = express.Router();
+// Plain middleware, not h(): it must call next().
+router.use((req, res, next) => {
+  if (holdsPermission(req, 'tc.notification_defaults')) return next();
+  return res.status(403).json({
+    success: false,
+    error: "Only a practice admin or office manager can see or change the office's email identity",
+    code: 'FORBIDDEN',
+  });
+});
 router.use(requireOffice);
 
 /** @param {string} office */
@@ -90,7 +102,7 @@ router.put(
       }
       const clean = emailIdentity.normalizeField(field, raw);
       if (clean === null) {
-        return res.status(400).json({ success: false, error: `${field} is not usable`, code: 'VALIDATION_ERROR' });
+        return res.status(400).json({ success: false, error: `${field} is not usable`, code: 'VALIDATION_FAILED', issues: [] });
       }
       next[field] = clean;
     }
