@@ -91,6 +91,7 @@ import {
   type TcReferralAttachment,
   type TcReferralDirectoryEntry,
   type TcReferralHubQuery,
+  type TcReferralSendOutcome,
   type TcReferralsStatus,
 } from "@shared/tc/referrals";
 
@@ -374,6 +375,22 @@ export function sendErrorMessage(e: unknown): string {
   return e instanceof TcApiError && e.message ? e.message : tcErrorMessage(e);
 }
 
+/** R5b: "Tue, Nov 3, 2026" for the 'YYYY-MM-DD' a link gave; the raw value if it does not parse. */
+export function scheduledDateLabel(ymd: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
+  if (!m) return ymd;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return d.toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric", year: "numeric" });
+}
+
+/**
+ * R5b: the send's sentence, then what happened to the patient's email (sent,
+ * skipped and why, or failed) — the server's words, both.
+ */
+export function sendOutcomeLine(outcome: TcReferralSendOutcome): string {
+  return outcome.patientEmail ? `${outcome.message} ${outcome.patientEmail.message}` : outcome.message;
+}
+
 /**
  * R5: email it, and say what happened — only the server's answer. A refusal
  * or a conflict comes back as the server's own sentence.
@@ -381,7 +398,7 @@ export function sendErrorMessage(e: unknown): string {
 async function runSend(office: OfficeId, referralId: string): Promise<void> {
   try {
     const { outcome } = await sendReferralEmail(office, referralId);
-    toast.success(outcome.message);
+    toast.success(sendOutcomeLine(outcome));
   } catch (e) {
     toast.error(sendErrorMessage(e));
   }
@@ -607,7 +624,7 @@ export function HubDetail({
     try {
       const { referral, outcome } = await sendReferralEmail(office, r.referralId);
       setR(referral);
-      toast.success(outcome.message);
+      toast.success(sendOutcomeLine(outcome));
     } catch (e) {
       setServerError(sendErrorMessage(e));
       try {
@@ -700,6 +717,12 @@ export function HubDetail({
                 <>
                   <dt className="text-muted-foreground">Doctor's note</dt>
                   <dd className="whitespace-pre-wrap">{r.doctorNote}</dd>
+                </>
+              )}
+              {r.scheduledDate && (
+                <>
+                  <dt className="text-muted-foreground">Appointment</dt>
+                  <dd data-testid="tc-hub-detail-scheduled">{scheduledDateLabel(r.scheduledDate)} (from the email link)</dd>
                 </>
               )}
             </dl>
