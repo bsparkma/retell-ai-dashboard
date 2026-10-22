@@ -287,13 +287,19 @@ export async function returnReferral(office: OfficeId, referralId: string, comme
 const AttachmentResponse = z.object({ success: z.literal(true), attachment: TcReferralAttachment });
 const AttachmentListResponse = z.object({ success: z.literal(true), attachments: z.array(TcReferralAttachment) });
 
-/** One file onto a referral (TC side). The server decides the type from the bytes. */
+/**
+ * One file onto a referral. The server decides the type from the bytes.
+ * `signoff` uploads through the doctor's route (R6.2: only while it awaits
+ * sign-off); the handler and its limits are the same either way.
+ */
 export async function uploadReferralAttachment(
   office: OfficeId,
   referralId: string,
   file: File,
+  signoff = false,
 ): Promise<TcReferralAttachment> {
-  return parse(AttachmentResponse, await tcUpload<unknown>(`/tc/referrals/${referralId}/attachments`, office, file))
+  const base = signoff ? "/tc/referrals/signoff" : "/tc/referrals";
+  return parse(AttachmentResponse, await tcUpload<unknown>(`${base}/${referralId}/attachments`, office, file))
     .attachment;
 }
 

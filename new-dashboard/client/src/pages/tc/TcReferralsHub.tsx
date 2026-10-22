@@ -57,6 +57,7 @@ import {
   referralVerb,
   reopenReferral,
   sendReferralEmail,
+  uploadReferralAttachment,
   type ReferralMark,
 } from "@/features/tc/referrals/referralsApi";
 import {
@@ -66,6 +67,7 @@ import {
   type HubViewer,
 } from "@/features/tc/referrals/hubActions";
 import { AttachmentList, ReferralStatusBadge, teethLabel, viewAttachment } from "@/features/tc/referrals/ReferralsPanel";
+import { AddAttachments } from "@/features/tc/referrals/AddAttachments";
 import { ReferralFieldsForm, type ReferralFieldsChange } from "@/features/tc/referrals/ReferralFieldsForm";
 import { ReferralTimeline } from "@/features/tc/referrals/ReferralTimeline";
 import type { OfficeId } from "@shared/tc/contract";
@@ -547,6 +549,14 @@ export function HubDetail({
     };
   }, [office, referralId]);
 
+  /** R6.2: re-read the stored files after an upload, so what shows is what landed. */
+  function reloadFiles() {
+    if (!referralId) return;
+    listReferralAttachments(office, referralId)
+      .then(setFiles)
+      .catch(() => undefined);
+  }
+
   function startEdit(kind: Exclude<Editing, null>) {
     setServerError(null);
     setEditing(kind);
@@ -685,23 +695,34 @@ export function HubDetail({
             />
 
             {editing ? (
-              <ReferralFieldsForm
-                referral={r}
-                entries={entries}
-                saving={busy}
-                serverError={serverError}
-                saveLabel={editing === "reopen" ? "Save & send for re-approval" : "Save changes"}
-                hint={
-                  editing === "reopen"
-                    ? "This referral is approved. Saving sends it back to the doctor for sign-off first."
-                    : undefined
-                }
-                onSave={save}
-                onCancel={() => {
-                  setEditing(null);
-                  setServerError(null);
-                }}
-              />
+              <>
+                <ReferralFieldsForm
+                  referral={r}
+                  entries={entries}
+                  saving={busy}
+                  serverError={serverError}
+                  saveLabel={editing === "reopen" ? "Save & send for re-approval" : "Save changes"}
+                  hint={
+                    editing === "reopen"
+                      ? "This referral is approved. Saving sends it back to the doctor for sign-off first."
+                      : undefined
+                  }
+                  onSave={save}
+                  onCancel={() => {
+                    setEditing(null);
+                    setServerError(null);
+                  }}
+                />
+                {/* R6.2: files only where staff may edit (draft / awaiting sign-off), never on a reopen. */}
+                {editing === "fields" && editable && (
+                  <AddAttachments
+                    alreadyAttached={files.length}
+                    upload={(f) => uploadReferralAttachment(office, r.referralId, f)}
+                    onDone={reloadFiles}
+                    disabled={busy}
+                  />
+                )}
+              </>
             ) : (
               <div className="space-y-3" data-testid="tc-hub-actions">
                 {(editable || submit || withdraw || cancel) && (
