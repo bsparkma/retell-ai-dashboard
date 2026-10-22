@@ -104,13 +104,23 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("ReferralsPanel on a case", () => {
-  it("lists the case's referrals; an approved one says nothing is sent yet", async () => {
+  // R5 (PM-authorized revision): the approved line follows the office's
+  // referral-email switch — the old copy while it is off (or unsaid), and a
+  // pointer to the hub, where sending happens, while it is on.
+  it.each([
+    ["absent (email off)", undefined, "Ready to send — sending ships in a later update."],
+    ["off", { enabled: false, unavailable: null }, "Ready to send — sending ships in a later update."],
+    ["on", { enabled: true, unavailable: null }, "Approved — send it from the Referrals hub."],
+  ])("lists the case's referrals; an approved one's line with referral email %s", async (_label, emailSend, copy) => {
+    ref.getReferralsStatus.mockResolvedValue({ success: true, office: "roland", enabled: true, ...(emailSend ? { emailSend } : {}) });
     ref.listReferrals.mockResolvedValue([referral({ status: "approved" }), referral({ referralId: "1b1c2d3e-4f50-4a61-8b72-938495a6b7c8", status: "pending_signoff" })]);
     render(<ReferralsPanel office="roland" source={{ caseId: CASE_ID }} />);
     const rows = await screen.findAllByTestId("tc-referral-row");
     expect(ref.listReferrals).toHaveBeenCalledWith("roland", { caseId: CASE_ID });
     expect(within(rows[0]).getByTestId("tc-referral-status").textContent).toBe("Approved");
-    expect(within(rows[0]).getByText("Ready to send — sending ships in a later update.")).toBeTruthy();
+    expect(within(rows[0]).getByText(copy)).toBeTruthy();
+    const other = copy.startsWith("Ready") ? "Approved — send it from the Referrals hub." : "Ready to send — sending ships in a later update.";
+    expect(within(rows[0]).queryByText(other)).toBeNull();
     expect(within(rows[1]).getByText("Pending Dr. sign-off")).toBeTruthy();
     expect(within(rows[1]).getByRole("button", { name: "Withdraw to edit" })).toBeTruthy();
     expect(within(rows[0]).queryByRole("button")).toBeNull();

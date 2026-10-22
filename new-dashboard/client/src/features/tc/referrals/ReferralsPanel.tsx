@@ -380,8 +380,13 @@ export interface ReferralsPanelProps {
   compact?: boolean;
 }
 
+/** R5: the approved line when referral email is on for the office — sending happens in the hub. */
+export const REFERRAL_SEND_FROM_HUB_COPY = "Approved — send it from the Referrals hub.";
+
 export function ReferralsPanel({ office, source, compact = false }: ReferralsPanelProps) {
   const [enabled, setEnabled] = useState<boolean | null>(null);
+  // R5: tc_referral_email_enabled for the office (absent from the answer = off).
+  const [emailOn, setEmailOn] = useState(false);
   const [referrals, setReferrals] = useState<TcReferral[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -421,6 +426,7 @@ export function ReferralsPanel({ office, source, compact = false }: ReferralsPan
       .then((s) => {
         if (cancelled) return;
         setEnabled(s.enabled);
+        setEmailOn(s.emailSend?.enabled === true);
         if (s.enabled) load();
       })
       .catch(() => {
@@ -567,7 +573,9 @@ export function ReferralsPanel({ office, source, compact = false }: ReferralsPan
             onView={(a) => void viewAttachment(() => openReferralAttachment(office, r.referralId, a.attachmentId))}
           />
           {r.status === "approved" && (
-            <p className="text-xs font-medium text-emerald-700 dark:text-emerald-400">{REFERRAL_READY_TO_SEND_COPY}</p>
+            <p className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
+              {emailOn ? REFERRAL_SEND_FROM_HUB_COPY : REFERRAL_READY_TO_SEND_COPY}
+            </p>
           )}
           <div className="flex flex-wrap gap-2 pt-1">
             {r.status === "draft" && (
