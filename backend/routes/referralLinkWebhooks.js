@@ -407,6 +407,10 @@ function createReferralLinkRouter({ perClientMax = PER_CLIENT_MAX, allClientsMax
       handler: throttled('client'),
     })
   );
+  // The ceiling for everyone counts only MISSES (dead or guessed tokens): a
+  // hit that found a live link is handed back once it answers, so real
+  // clicks — and mail scanners prefetching real links — never fill it. It
+  // caps guessing, not use.
   router.use(
     rateLimit({
       windowMs: WINDOW_MS,
@@ -414,6 +418,8 @@ function createReferralLinkRouter({ perClientMax = PER_CLIENT_MAX, allClientsMax
       keyGenerator: () => 'all',
       standardHeaders: false,
       legacyHeaders: false,
+      skipSuccessfulRequests: true,
+      requestWasSuccessful: (_req, res) => res.locals.referralLinkLive === true,
       handler: throttled('all'),
     })
   );
@@ -427,6 +433,7 @@ function createReferralLinkRouter({ perClientMax = PER_CLIENT_MAX, allClientsMax
       const live = await liveLink(req, token, at);
       await auditHit(req, { action: 'READ', resourceType: 'tc_referral.link_view', result: live ? 'SUCCESS' : 'UNAUTHORIZED', live });
       if (!live) return send(res, 200, NEUTRAL_PAGE);
+      res.locals.referralLinkLive = true;
       const names = namesOf(live.link.office_id, live.referral, live.entry);
       return send(res, 200, landingPage(token, live.link, names, at));
     } catch (err) {
@@ -447,6 +454,7 @@ function createReferralLinkRouter({ perClientMax = PER_CLIENT_MAX, allClientsMax
         await auditHit(req, { action: 'UPDATE', resourceType: 'tc_referral.link_use', result: 'UNAUTHORIZED' });
         return send(res, 200, NEUTRAL_PAGE);
       }
+      res.locals.referralLinkLive = true;
     } catch (err) {
       console.error('[referral-link] use FAILED (503):', err && err.message ? err.message : err);
       return send(res, 503, UNAVAILABLE_PAGE);

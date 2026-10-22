@@ -637,7 +637,10 @@ async function notifyPatient(req, { office, row, entry }) {
   } catch {
     return skip('unaudited');
   }
-  const contact = await patientContact.patientEmailFor(office, Number(row.od_patient_id));
+  // A PatNum that is not a safe integer would read a DIFFERENT patient.
+  const patNum = Number(row.od_patient_id);
+  if (!Number.isSafeInteger(patNum) || patNum <= 0) return skip('not_found');
+  const contact = await patientContact.patientEmailFor(office, patNum);
   if (contact.status !== 'found') return skip(contact.status);
   const address = referralLetter.recipientOf(contact.address);
   if (!address) return skip('no_email');
@@ -702,7 +705,8 @@ async function notifyPatient(req, { office, row, entry }) {
         to: status,
         actor: actorEmail(req),
         at,
-        note: `Patient emailed at ${address} — who they are referred to and the specialist's phone. The email service accepted it.`,
+        // The address is in recipient_address; the note does not repeat it.
+        note: "Patient emailed at the address on file in Open Dental — who they are referred to and the specialist's phone. The email service accepted it.",
         verb: 'patient_email_sent',
         acsMessageId: accepted.providerMessageId,
         recipientAddress: address,
@@ -739,7 +743,7 @@ async function notifyPatient(req, { office, row, entry }) {
           to: 'sent',
           actor: actorEmail(req),
           at,
-          note: `Patient emailed at ${address} (the email service accepted it), but the record of it is incomplete, so its "I've scheduled" button will not work.`,
+          note: `Patient emailed at the address on file (the email service accepted it), but the record of it is incomplete, so its "I've scheduled" button will not work.`,
           verb: 'patient_email_sent',
           acsMessageId: accepted.providerMessageId,
           recipientAddress: address,

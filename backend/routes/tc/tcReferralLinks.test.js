@@ -285,7 +285,8 @@ test('N: one message per recipient class — the letter to the specialist, the n
   assert.equal(notified.acs_message_id, 'op-2');
   assert.match(notified.unsubscribe_token_hash, /^[0-9a-f]{64}$/);
   assert.notEqual(notified.unsubscribe_token_hash, send.unsubscribe_token_hash);
-  assert.match(notified.note, /^Patient emailed at stedi\.test2@example\.test/);
+  assert.match(notified.note, /^Patient emailed at the address on file in Open Dental/);
+  assert.doesNotMatch(notified.note, /@/, 'the address lives in recipient_address, not in the free-text note');
 
   // Open Dental: exactly one read, of THIS office's patient, and nothing else.
   assert.deepEqual(odCalls.map((c) => [c.office, c.method, c.path]), [['roland', 'apiGetRaw', '/patients/12827']]);
@@ -737,6 +738,18 @@ test('L: a ceiling for all clients together', async (t) => {
   const statuses = [];
   for (let i = 0; i < 5; i += 1) statuses.push((await postPage(baseUrl, { t: `x${i}` })).status);
   assert.deepEqual(statuses, [200, 200, 200, 429, 429]);
+});
+
+test('L: the ceiling counts only misses — live links (and scanners prefetching them) never fill it', async (t) => {
+  const { baseUrl, db, acsCalls } = await boot(t, { linkLimits: { perClientMax: 100, allClientsMax: 3 } });
+  const { id, links } = await sent(baseUrl, db, acsCalls);
+  for (let i = 0; i < 6; i += 1) assert.equal((await getPage(baseUrl, links.received)).status, 200, `live view ${i}`);
+  assert.equal((await postPage(baseUrl, { t: tokenOf(links.received) })).status, 200);
+  assert.equal(referralRow(db, id).status, 'acknowledged');
+  // Now dead: the misses count again.
+  const statuses = [];
+  for (let i = 0; i < 4; i += 1) statuses.push((await postPage(baseUrl, { t: `x${i}` })).status);
+  assert.deepEqual(statuses, [200, 200, 200, 429]);
 });
 
 test('L: the defaults are real ceilings', () => {
