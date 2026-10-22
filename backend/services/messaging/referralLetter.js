@@ -17,8 +17,8 @@
  *   - PER-OFFICE SENDER ONLY. The office must have its own ACS_EMAIL_FROM_<OFFICE>;
  *     the shared ACS_EMAIL_FROM is never used for a referral.
  *   - A REPLY-TO. The letter asks the specialist to reply with findings; a
- *     sender address is not a mailbox, so ACS_EMAIL_REPLY_TO_<OFFICE> is
- *     required.
+ *     sender address is not a mailbox, so a Reply-To is required: the one
+ *     saved in Settings -> Email identity (R5c), else ACS_EMAIL_REPLY_TO_<OFFICE>.
  * And what it keeps, unweakened:
  *   - the transport's own kill switch and "no unsubscribe config → no send"
  *     (accountConfigured needs TC_EMAIL_PUBLIC_BASE_URL + TC_EMAIL_TENANT_SLUG);
@@ -74,6 +74,20 @@ function missingFor(office) {
   return missing;
 }
 
+/**
+ * Which office detail a referral letter lacks, by kind (never a setting
+ * name), so the hub can say which one and who sets it. Only meaningful
+ * alongside office_not_configured.
+ * @param {string} office
+ * @returns {Array<'sending_address'|'reply_to'>}
+ */
+function officeMissing(office) {
+  const missing = [];
+  if (!acsConfig.ownFromAddressFor(office)) missing.push('sending_address');
+  if (!acsConfig.replyToFor(office)) missing.push('reply_to');
+  return missing;
+}
+
 /** Re-read the transport's kill switch from the control plane. Never throws. */
 async function refreshTransportSwitch() {
   try {
@@ -91,6 +105,24 @@ const UNAVAILABLE_SENTENCE = Object.freeze({
 });
 
 /**
+ * (R5c) The refusal sentence, saying WHICH office detail is missing: the
+ * sending address is the platform's to set up, the reply-to is the office's
+ * own (Settings -> Email identity), and the two are fixed by different people.
+ * @param {'switched_off'|'not_configured'|'office_not_configured'} reason
+ * @param {string} office
+ */
+function unavailableSentence(reason, office) {
+  if (reason !== 'office_not_configured') return UNAVAILABLE_SENTENCE[reason];
+  const noFrom = !acsConfig.ownFromAddressFor(office);
+  const noReplyTo = !acsConfig.replyToFor(office);
+  if (noFrom && !noReplyTo) return 'This office has no referral sending address set up yet (the platform sets that up).';
+  if (noReplyTo && !noFrom) {
+    return 'This office has no reply-to address for referral email yet. An admin or office manager can set one in Settings, under Email identity.';
+  }
+  return UNAVAILABLE_SENTENCE[reason];
+}
+
+/**
  * Refuse unless a letter can go out from this office. The FEATURE_DISABLED
  * error names the reason and the missing setting names.
  * @param {string} office
@@ -98,7 +130,7 @@ const UNAVAILABLE_SENTENCE = Object.freeze({
 function assertAvailable(office) {
   const reason = unavailableReason(office);
   if (!reason) return;
-  throw new MessagingError('FEATURE_DISABLED', `${UNAVAILABLE_SENTENCE[reason]} Nothing was sent.`, {
+  throw new MessagingError('FEATURE_DISABLED', `${unavailableSentence(reason, office)} Nothing was sent.`, {
     feature: 'tc_referral_email',
     reason,
     missing: missingFor(office),
@@ -215,6 +247,7 @@ async function transport(message, office) {
 module.exports = {
   unavailableReason,
   missingFor,
+  officeMissing,
   refreshTransportSwitch,
   assertAvailable,
   recipientOf,

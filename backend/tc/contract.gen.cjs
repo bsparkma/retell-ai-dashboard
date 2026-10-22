@@ -1766,8 +1766,8 @@ var require_doc = __commonJS({
         const lines2 = content.split("\n").filter((x) => x);
         const minIndent = Math.min(...lines2.map((x) => x.length - x.trimStart().length));
         const dedented = lines2.map((x) => x.slice(minIndent)).map((x) => " ".repeat(this.indent * 2) + x);
-        for (const line of dedented) {
-          this.content.push(line);
+        for (const line2 of dedented) {
+          this.content.push(line2);
         }
       }
       compile() {
@@ -14813,10 +14813,10 @@ var require_zod = __commonJS({
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.z = void 0;
-    var z10 = __importStar(require_external());
-    exports2.z = z10;
+    var z11 = __importStar(require_external());
+    exports2.z = z11;
     __exportStar(require_external(), exports2);
-    exports2.default = z10;
+    exports2.default = z11;
   }
 });
 
@@ -14841,6 +14841,7 @@ __export(contract_entry_exports, {
   DIRECTORY_EMAIL_RE: () => DIRECTORY_EMAIL_RE,
   DividerBlock: () => DividerBlock,
   DraftMessageBody: () => DraftMessageBody,
+  EMAIL_IDENTITY_LIMITS: () => EMAIL_IDENTITY_LIMITS,
   EMAIL_MERGE_TOKENS: () => EMAIL_MERGE_TOKENS,
   EMAIL_TEXT_BODY_CEILING: () => EMAIL_TEXT_BODY_CEILING,
   EMAIL_TEXT_BODY_MAX: () => EMAIL_TEXT_BODY_MAX,
@@ -14910,6 +14911,7 @@ __export(contract_entry_exports, {
   REFERRAL_ATTACHMENT_HINT: () => REFERRAL_ATTACHMENT_HINT,
   REFERRAL_DOCTOR_EDITABLE_STATUSES: () => REFERRAL_DOCTOR_EDITABLE_STATUSES,
   REFERRAL_EDITABLE_STATUSES: () => REFERRAL_EDITABLE_STATUSES,
+  REFERRAL_EMAIL_MISSING_COPY: () => REFERRAL_EMAIL_MISSING_COPY,
   REFERRAL_EMAIL_UNAVAILABLE_COPY: () => REFERRAL_EMAIL_UNAVAILABLE_COPY,
   REFERRAL_FIELD_EDITABLE_STATUSES: () => REFERRAL_FIELD_EDITABLE_STATUSES,
   REFERRAL_MARK_LABELS: () => REFERRAL_MARK_LABELS,
@@ -14930,6 +14932,7 @@ __export(contract_entry_exports, {
   TC_CHECKOUT_PRIORITY_ORDER: () => TC_CHECKOUT_PRIORITY_ORDER,
   TC_CHECKOUT_STATUS_LABELS: () => TC_CHECKOUT_STATUS_LABELS,
   TC_CHECKOUT_WAITING: () => TC_CHECKOUT_WAITING,
+  TC_EMAIL_IDENTITY_FIELD_LABELS: () => TC_EMAIL_IDENTITY_FIELD_LABELS,
   TC_INTAKE_KIND_LABELS: () => TC_INTAKE_KIND_LABELS,
   TC_NOTIFICATION_EVENT_LABELS: () => TC_NOTIFICATION_EVENT_LABELS,
   TC_NOTIFICATION_LEVEL_LABELS: () => TC_NOTIFICATION_LEVEL_LABELS,
@@ -14966,6 +14969,11 @@ __export(contract_entry_exports, {
   TcCheckoutSummary: () => TcCheckoutSummary,
   TcCommunication: () => TcCommunication,
   TcContactConsent: () => TcContactConsent,
+  TcEmailIdentityField: () => TcEmailIdentityField,
+  TcEmailIdentityFieldState: () => TcEmailIdentityFieldState,
+  TcEmailIdentityRequest: () => TcEmailIdentityRequest,
+  TcEmailIdentityResponse: () => TcEmailIdentityResponse,
+  TcEmailIdentitySource: () => TcEmailIdentitySource,
   TcEmailTemplate: () => TcEmailTemplate,
   TcFollowup: () => TcFollowup,
   TcGalleryCase: () => TcGalleryCase,
@@ -14991,6 +14999,7 @@ __export(contract_entry_exports, {
   TcReferralDirectoryEntry: () => TcReferralDirectoryEntry,
   TcReferralDirectoryInput: () => TcReferralDirectoryInput,
   TcReferralDoctorEdit: () => TcReferralDoctorEdit,
+  TcReferralEmailMissing: () => TcReferralEmailMissing,
   TcReferralEmailUnavailable: () => TcReferralEmailUnavailable,
   TcReferralEvent: () => TcReferralEvent,
   TcReferralEventVerb: () => TcReferralEventVerb,
@@ -15019,7 +15028,7 @@ __export(contract_entry_exports, {
   Urgency: () => Urgency,
   Uuid: () => Uuid,
   VoiceHandoffDetail: () => VoiceHandoffDetail,
-  ZodError: () => import_zod9.ZodError,
+  ZodError: () => import_zod10.ZodError,
   allPresetViolations: () => allPresetViolations,
   assertPresetsWithinCaps: () => assertPresetsWithinCaps,
   attachmentProblem: () => attachmentProblem,
@@ -15065,7 +15074,7 @@ __export(contract_entry_exports, {
   templateToRow: () => templateToRow,
   unpricedCheckoutPhases: () => unpricedCheckoutPhases,
   userMapEntryToRow: () => userMapEntryToRow,
-  z: () => import_zod9.z
+  z: () => import_zod10.z
 });
 module.exports = __toCommonJS(contract_entry_exports);
 
@@ -16559,8 +16568,8 @@ function blockHtml(b) {
       return row(a, "#ffffff", "12px 32px", `text-align:${b.align}`);
     }
     case "highlight": {
-      const line = (label, value) => value ? `<tr><td style="color:#64748b;font-size:14px;padding:2px 0">${escapeHtml(label)}</td><td style="font-weight:600;font-size:14px;text-align:right;padding:2px 0">${escapeHtml(value)}</td></tr>` : "";
-      const inner = `<div style="border:1px solid #e2e8f0;border-left:4px solid ${b.accentColor};border-radius:8px;padding:16px 20px;color:#0f172a">` + (b.title ? `<div style="font-size:13px;font-weight:700;color:${b.accentColor};text-transform:uppercase;letter-spacing:0.04em">${escapeHtml(b.title)}</div>` : "") + (b.treatment ? `<div style="font-size:15px;margin-top:6px">${lines(b.treatment)}</div>` : "") + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:10px">` + line("Total fee", b.totalFee) + line("Your portion", b.patientOwes) + (b.showFinancing ? line("Est. monthly", b.monthly) : "") + `</table></div>`;
+      const line2 = (label, value) => value ? `<tr><td style="color:#64748b;font-size:14px;padding:2px 0">${escapeHtml(label)}</td><td style="font-weight:600;font-size:14px;text-align:right;padding:2px 0">${escapeHtml(value)}</td></tr>` : "";
+      const inner = `<div style="border:1px solid #e2e8f0;border-left:4px solid ${b.accentColor};border-radius:8px;padding:16px 20px;color:#0f172a">` + (b.title ? `<div style="font-size:13px;font-weight:700;color:${b.accentColor};text-transform:uppercase;letter-spacing:0.04em">${escapeHtml(b.title)}</div>` : "") + (b.treatment ? `<div style="font-size:15px;margin-top:6px">${lines(b.treatment)}</div>` : "") + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:10px">` + line2("Total fee", b.totalFee) + line2("Your portion", b.patientOwes) + (b.showFinancing ? line2("Est. monthly", b.monthly) : "") + `</table></div>`;
       return row(inner, "#ffffff", "12px 32px");
     }
     case "signature": {
@@ -17449,6 +17458,7 @@ var TcReferralEmailUnavailable = import_zod8.z.enum([
   "not_configured",
   "office_not_configured"
 ]);
+var TcReferralEmailMissing = import_zod8.z.enum(["sending_address", "reply_to"]);
 var TcReferralsStatus = import_zod8.z.object({
   success: import_zod8.z.literal(true),
   office: import_zod8.z.enum(["roland", "valley"]),
@@ -17457,9 +17467,14 @@ var TcReferralsStatus = import_zod8.z.object({
    * R5: referral email. `enabled` is the per-office dark-launch switch
    * (tc_referral_email_enabled) — off means no send UI at all. `unavailable`
    * says why an enabled office still cannot send. Absent from an older server
-   * = off.
+   * = off. `missing` (R5c) rides only with `office_not_configured` and names
+   * which detail; absent = the generic sentence.
    */
-  emailSend: import_zod8.z.object({ enabled: import_zod8.z.boolean(), unavailable: TcReferralEmailUnavailable.nullable() }).optional()
+  emailSend: import_zod8.z.object({
+    enabled: import_zod8.z.boolean(),
+    unavailable: TcReferralEmailUnavailable.nullable(),
+    missing: import_zod8.z.array(TcReferralEmailMissing).optional()
+  }).optional()
 });
 var TcReferralSourceKind = import_zod8.z.enum(["case", "checkout", "hyg_visit", "call"]);
 var TcReferralTeeth = import_zod8.z.union([
@@ -17734,13 +17749,24 @@ var REFERRAL_EMAIL_UNAVAILABLE_COPY = {
   not_configured: "Email sending is not connected yet.",
   office_not_configured: "This office has no referral sending address set up yet."
 };
+var REFERRAL_EMAIL_MISSING_COPY = {
+  reply_to: "This office has no reply-to address for referral email yet \u2014 an admin or office manager can set one in Settings \u2192 Email identity.",
+  sending_address: "This office has no referral sending address set up yet (the platform sets that up)."
+};
+function unavailableCopy(email) {
+  const missing = email.missing;
+  if (email.unavailable !== "office_not_configured" || !missing || missing.length === 0) {
+    return REFERRAL_EMAIL_UNAVAILABLE_COPY[email.unavailable];
+  }
+  return TcReferralEmailMissing.options.filter((k) => missing.includes(k)).map((k) => REFERRAL_EMAIL_MISSING_COPY[k]).join(" ");
+}
 function referralSendBlocker(r, email) {
   if (r.status !== "approved") return "Only an approved referral can be emailed.";
   if (!email || !email.enabled) return "Referral email is not switched on for this office.";
   if (r.sendProblem && r.sendProblem.kind === "conflict") {
     return "This referral was already emailed but could not be marked sent. Check with the specialist, then mark it sent.";
   }
-  if (email.unavailable) return REFERRAL_EMAIL_UNAVAILABLE_COPY[email.unavailable];
+  if (email.unavailable) return unavailableCopy({ unavailable: email.unavailable, missing: email.missing });
   if (!r.specialistEmail) return REFERRAL_NO_EMAIL_COPY;
   return null;
 }
@@ -17775,8 +17801,63 @@ function attachmentProblem(file, alreadyChosen) {
   return null;
 }
 
+// shared/tc/emailIdentity.ts
+var import_zod9 = __toESM(require_zod(), 1);
+var EMAIL_IDENTITY_LIMITS = {
+  replyTo: 254,
+  practiceName: 120,
+  practicePhone: 40
+};
+var TcEmailIdentityField = import_zod9.z.enum(["replyTo", "practiceName", "practicePhone"]);
+var TC_EMAIL_IDENTITY_FIELD_LABELS = {
+  replyTo: "Reply-to address",
+  practiceName: "Practice name",
+  practicePhone: "Practice phone"
+};
+var TcEmailIdentitySource = import_zod9.z.enum(["stored", "env", "none"]);
+var TcEmailIdentityFieldState = import_zod9.z.object({
+  /** What an email sent right now would use, or null. */
+  value: import_zod9.z.string().nullable(),
+  source: TcEmailIdentitySource,
+  /** The value saved in the app for this office, or null when none is. */
+  stored: import_zod9.z.string().nullable(),
+  /** The app setting's value (the fallback), or null when unset or unusable. */
+  fallback: import_zod9.z.string().nullable(),
+  /** The NAME of that app setting, e.g. ACS_EMAIL_REPLY_TO_ROLAND. */
+  fallbackSetting: import_zod9.z.string()
+});
+var TcEmailIdentityResponse = import_zod9.z.object({
+  success: import_zod9.z.literal(true),
+  office: import_zod9.z.enum(["roland", "valley"]),
+  fields: import_zod9.z.object({
+    replyTo: TcEmailIdentityFieldState,
+    practiceName: TcEmailIdentityFieldState,
+    practicePhone: TcEmailIdentityFieldState
+  }),
+  /** Read-only: managed by the platform, bound to the verified sending domain. */
+  from: import_zod9.z.object({
+    /** The sender a patient email uses (this office's own, else the shared one). */
+    patientEmail: import_zod9.z.string().nullable(),
+    /** The sender a referral letter uses (this office's own only). */
+    referral: import_zod9.z.string().nullable()
+  }),
+  /** False when the saved values could not be read since boot (env answers). */
+  policyKnown: import_zod9.z.boolean(),
+  updatedAt: import_zod9.z.string().nullable(),
+  updatedBy: import_zod9.z.string().nullable()
+});
+var SINGLE_LINE = /^[^\u0000-\u001f\u007f]*$/;
+function line(max) {
+  return import_zod9.z.string().trim().min(1).max(max).regex(SINGLE_LINE, "must be a single line of plain text");
+}
+var TcEmailIdentityRequest = import_zod9.z.object({
+  replyTo: line(EMAIL_IDENTITY_LIMITS.replyTo).regex(/^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/, "must be one plain email address").nullable(),
+  practiceName: line(EMAIL_IDENTITY_LIMITS.practiceName).nullable(),
+  practicePhone: line(EMAIL_IDENTITY_LIMITS.practicePhone).nullable()
+}).strict();
+
 // ../backend/tc/contract.entry.ts
-var import_zod9 = __toESM(require_zod());
+var import_zod10 = __toESM(require_zod());
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   ButtonBlock,
@@ -17797,6 +17878,7 @@ var import_zod9 = __toESM(require_zod());
   DIRECTORY_EMAIL_RE,
   DividerBlock,
   DraftMessageBody,
+  EMAIL_IDENTITY_LIMITS,
   EMAIL_MERGE_TOKENS,
   EMAIL_TEXT_BODY_CEILING,
   EMAIL_TEXT_BODY_MAX,
@@ -17866,6 +17948,7 @@ var import_zod9 = __toESM(require_zod());
   REFERRAL_ATTACHMENT_HINT,
   REFERRAL_DOCTOR_EDITABLE_STATUSES,
   REFERRAL_EDITABLE_STATUSES,
+  REFERRAL_EMAIL_MISSING_COPY,
   REFERRAL_EMAIL_UNAVAILABLE_COPY,
   REFERRAL_FIELD_EDITABLE_STATUSES,
   REFERRAL_MARK_LABELS,
@@ -17886,6 +17969,7 @@ var import_zod9 = __toESM(require_zod());
   TC_CHECKOUT_PRIORITY_ORDER,
   TC_CHECKOUT_STATUS_LABELS,
   TC_CHECKOUT_WAITING,
+  TC_EMAIL_IDENTITY_FIELD_LABELS,
   TC_INTAKE_KIND_LABELS,
   TC_NOTIFICATION_EVENT_LABELS,
   TC_NOTIFICATION_LEVEL_LABELS,
@@ -17922,6 +18006,11 @@ var import_zod9 = __toESM(require_zod());
   TcCheckoutSummary,
   TcCommunication,
   TcContactConsent,
+  TcEmailIdentityField,
+  TcEmailIdentityFieldState,
+  TcEmailIdentityRequest,
+  TcEmailIdentityResponse,
+  TcEmailIdentitySource,
   TcEmailTemplate,
   TcFollowup,
   TcGalleryCase,
@@ -17947,6 +18036,7 @@ var import_zod9 = __toESM(require_zod());
   TcReferralDirectoryEntry,
   TcReferralDirectoryInput,
   TcReferralDoctorEdit,
+  TcReferralEmailMissing,
   TcReferralEmailUnavailable,
   TcReferralEvent,
   TcReferralEventVerb,

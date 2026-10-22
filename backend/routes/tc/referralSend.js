@@ -97,7 +97,11 @@ async function emailSendStatus(office) {
   const enabled = await tcReferralEmail.isEnabled(office);
   if (!enabled) return { enabled: false, unavailable: null };
   await referralLetter.refreshTransportSwitch();
-  return { enabled: true, unavailable: referralLetter.unavailableReason(office) };
+  const unavailable = referralLetter.unavailableReason(office);
+  if (unavailable === 'office_not_configured') {
+    return { enabled: true, unavailable, missing: referralLetter.officeMissing(office) };
+  }
+  return { enabled: true, unavailable };
 }
 
 /** The attachments' rows, in upload order. */

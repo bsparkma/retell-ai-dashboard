@@ -290,12 +290,15 @@ describe("the detail panel", () => {
   });
 
   it("an office that cannot send yet says why", async () => {
-    ref.getReferralsStatus.mockResolvedValue(status({ enabled: true, unavailable: "office_not_configured" }));
+    ref.getReferralsStatus.mockResolvedValue({
+      ...status(),
+      emailSend: { enabled: true, unavailable: "office_not_configured", missing: ["reply_to"] },
+    });
     const panel = await openPanel();
     const btn = (await within(panel).findByTestId("tc-hub-send-button")) as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
     expect(within(panel).getByTestId("tc-hub-send-blocked").textContent).toBe(
-      "This office has no referral sending address set up yet.",
+      "This office has no reply-to address for referral email yet — an admin or office manager can set one in Settings → Email identity.",
     );
   });
 });

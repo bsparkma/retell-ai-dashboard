@@ -612,7 +612,7 @@ test('G: per-office sender ONLY — the shared ACS_EMAIL_FROM never sends a refe
   assert.equal(r.body.reason, 'office_not_configured');
   assert.ok(r.body.missing.includes('ACS_EMAIL_FROM_ROLAND'));
   const s = await apiJson(baseUrl, 'GET', REF('/status'));
-  assert.deepEqual(s.body.emailSend, { enabled: true, unavailable: 'office_not_configured' });
+  assert.deepEqual(s.body.emailSend, { enabled: true, unavailable: 'office_not_configured', missing: ['sending_address'] });
 
   process.env.ACS_EMAIL_FROM_ROLAND = 'donotreply@roland.example.test';
   delete process.env.ACS_EMAIL_REPLY_TO_ROLAND;
@@ -900,4 +900,38 @@ test('guards: the send path reaches ACS only through the email adapter, and neve
   const routes = ['routes/tc/referrals.js', 'routes/tc/referralSignoff.js'];
   assert.match(read(routes[0]), /referralSend\.sendReferral\(req, \{ office: req\.tcOffice, referralId: id\.data, trigger: 'manual' \}\)/);
   assert.match(read(routes[1]), /referralSend\.sendAfterApproval\(req, \{ office: req\.tcOffice, referralId: id\.data \}\)/);
+});
+
+test('R5c: a SAVED email identity signs the letter and sets its Reply-To, over the app settings and with none', async (t) => {
+  const registry = require('../../platform/registry');
+  const emailIdentity = require('../../config/emailIdentity');
+  const { baseUrl, db, acsCalls } = await boot(t);
+  const { id } = await approved(baseUrl, db);
+  // Saved in Settings -> Email identity. The env reply-to is gone entirely:
+  // the saved one alone must satisfy the referral gate.
+  delete process.env.ACS_EMAIL_REPLY_TO_ROLAND;
+  const harnessGet = registry.getPlatformSetting;
+  registry.getPlatformSetting = async (key) =>
+    key === emailIdentity.SETTING_KEY
+      ? {
+          key,
+          value: { roland: { replyTo: 'frontdesk@roland.example.test', practiceName: 'Roland Example Dental', practicePhone: '(918) 555-0142' } },
+          updated_at: new Date(),
+          updated_by: 'office.manager@example.test',
+        }
+      : harnessGet(key);
+  t.after(() => emailIdentity.resetCacheForTests());
+  await emailIdentity.refreshFromDb();
+
+  const r = await send(baseUrl, id);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const p = posts(acsCalls)[0].body;
+  assert.deepEqual(p.replyTo, [{ address: 'frontdesk@roland.example.test' }]);
+  assert.equal(p.senderAddress, 'donotreply@roland.example.test', 'the From is never the saved identity');
+  assert.match(p.content.subject, /^Referral from Roland Example Dental — /);
+  assert.ok(
+    p.content.plainText.includes('Roland Example Dental\n(918) 555-0142\nReply to: frontdesk@roland.example.test'),
+    'the signature'
+  );
+  assert.doesNotMatch(p.content.plainText + p.content.html, /Roland Family Dental|555-0100/, 'the app settings are shadowed');
 });

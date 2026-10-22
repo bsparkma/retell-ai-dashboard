@@ -169,6 +169,14 @@ export const TcReferralEmailUnavailable = z.enum([
 ]);
 export type TcReferralEmailUnavailable = z.infer<typeof TcReferralEmailUnavailable>;
 
+/**
+ * R5c: which office detail is missing behind `office_not_configured`. The
+ * sending address is the platform's to set up; the reply-to is the office's
+ * own (Settings → Email identity) — different people fix them.
+ */
+export const TcReferralEmailMissing = z.enum(["sending_address", "reply_to"]);
+export type TcReferralEmailMissing = z.infer<typeof TcReferralEmailMissing>;
+
 /** GET /api/tc/referrals/status — is the feature on here? Never refused. */
 export const TcReferralsStatus = z.object({
   success: z.literal(true),
@@ -178,10 +186,15 @@ export const TcReferralsStatus = z.object({
    * R5: referral email. `enabled` is the per-office dark-launch switch
    * (tc_referral_email_enabled) — off means no send UI at all. `unavailable`
    * says why an enabled office still cannot send. Absent from an older server
-   * = off.
+   * = off. `missing` (R5c) rides only with `office_not_configured` and names
+   * which detail; absent = the generic sentence.
    */
   emailSend: z
-    .object({ enabled: z.boolean(), unavailable: TcReferralEmailUnavailable.nullable() })
+    .object({
+      enabled: z.boolean(),
+      unavailable: TcReferralEmailUnavailable.nullable(),
+      missing: z.array(TcReferralEmailMissing).optional(),
+    })
     .optional(),
 });
 export type TcReferralsStatus = z.infer<typeof TcReferralsStatus>;
@@ -689,20 +702,45 @@ export const REFERRAL_EMAIL_UNAVAILABLE_COPY: Record<TcReferralEmailUnavailable,
   office_not_configured: "This office has no referral sending address set up yet.",
 };
 
+/** R5c: the `office_not_configured` sentence once the server says which detail is missing. */
+export const REFERRAL_EMAIL_MISSING_COPY: Record<TcReferralEmailMissing, string> = {
+  reply_to:
+    "This office has no reply-to address for referral email yet — an admin or office manager can set one in Settings → Email identity.",
+  sending_address: "This office has no referral sending address set up yet (the platform sets that up).",
+};
+
+function unavailableCopy(email: {
+  unavailable: TcReferralEmailUnavailable;
+  missing?: TcReferralEmailMissing[];
+}): string {
+  const missing = email.missing;
+  if (email.unavailable !== "office_not_configured" || !missing || missing.length === 0) {
+    return REFERRAL_EMAIL_UNAVAILABLE_COPY[email.unavailable];
+  }
+  // Sending address first: the platform's gap, and the reply-to is moot without it.
+  return TcReferralEmailMissing.options
+    .filter((k) => missing.includes(k))
+    .map((k) => REFERRAL_EMAIL_MISSING_COPY[k])
+    .join(" ");
+}
+
 /**
  * Should this approved referral offer Send, and if not, why not? Pure — the
  * server re-checks everything at the click.
  */
 export function referralSendBlocker(
   r: Pick<TcReferral, "status" | "specialistEmail" | "sendProblem">,
-  email: { enabled: boolean; unavailable: TcReferralEmailUnavailable | null } | null | undefined,
+  email:
+    | { enabled: boolean; unavailable: TcReferralEmailUnavailable | null; missing?: TcReferralEmailMissing[] }
+    | null
+    | undefined,
 ): string | null {
   if (r.status !== "approved") return "Only an approved referral can be emailed.";
   if (!email || !email.enabled) return "Referral email is not switched on for this office.";
   if (r.sendProblem && r.sendProblem.kind === "conflict") {
     return "This referral was already emailed but could not be marked sent. Check with the specialist, then mark it sent.";
   }
-  if (email.unavailable) return REFERRAL_EMAIL_UNAVAILABLE_COPY[email.unavailable];
+  if (email.unavailable) return unavailableCopy({ unavailable: email.unavailable, missing: email.missing });
   if (!r.specialistEmail) return REFERRAL_NO_EMAIL_COPY;
   return null;
 }

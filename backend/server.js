@@ -66,6 +66,7 @@ async function bootstrap() {
   const hygPilot = require('./config/hygPilot');
   const tcSms = require('./config/tcSms');
   const tcEmail = require('./config/tcEmail');
+  const emailIdentity = require('./config/emailIdentity');
   const { requireDashboardAuth, socketAuth } = require('./middleware/auth');
   const { tenantContext, requireModule } = require('./middleware/tenantContext');
   const { requirePermission, requireReadWrite, requireSuperAdmin } = require('./config/permissions');
@@ -623,6 +624,14 @@ async function bootstrap() {
     await tcEmail.refreshFromDb();
     tcEmail.startRefreshTimer();
     console.log(`[tcEmail] email sending ${tcEmail.emailEnabled() ? 'ON' : 'OFF'} (source=${tcEmail.source()})`);
+
+    //    The offices' in-app email identity (R5c): reply-to, practice name and
+    //    phone saved in Settings beat the app settings. Read before anything
+    //    could send, then keep fresh (5 min); a save refreshes it inline.
+    //    Never throws; an unreadable control plane leaves the app settings
+    //    answering, exactly as before this existed.
+    await emailIdentity.refreshFromDb();
+    emailIdentity.startRefreshTimer();
 
     hygDayWarm.start();
 
