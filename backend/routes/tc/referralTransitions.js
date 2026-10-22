@@ -18,11 +18,13 @@
  *      recorded trail.
  * Then the referral is READ BACK and that is what the caller reports.
  *
- * NOTHING SENDS. `approved` is where R2 stops. R6 (item 56) adds `reopen`,
+ * NOTHING HERE SENDS. `approved` is where R2 stops. R6 (item 56) adds `reopen`,
  * `return` and four MANUAL marks (mark_sent, mark_acknowledged,
  * mark_patient_seen, close) — a person's attestation of something that
  * happened outside the app. They move a status and write a history line;
- * they email, fax and trigger nothing. They are the only way into sent+.
+ * they email, fax and trigger nothing. R5's `send` (approved → sent) is the
+ * other way into sent: it is performed only by ./referralSend.js, after ACS
+ * accepted the email, never through applyVerb.
  *
  * R6 also adds FIELD EDITS (editFieldsInTx): the same five steps, except the
  * status does not move — the UPDATE is conditional on the status read in
@@ -57,6 +59,8 @@ const VERB_WORDS = Object.freeze({
   mark_acknowledged: 'marked acknowledged',
   mark_patient_seen: 'marked patient seen',
   close: 'closed',
+  // R5: performed only by routes/tc/referralSend.js, after ACS accepted the email.
+  send: 'emailed',
 });
 
 function refusal(row, verb) {
@@ -92,6 +96,9 @@ async function applyVerb(req, { referralId, verb, note = '', office = req.tcOffi
  * | { moved: true }; the caller decides what a refusal does to its transaction.
  */
 async function moveInTx(req, client, { office, referralId, verb, note = '' }) {
+  // R5: a send is recorded only by referralSend.js, after ACS accepted the
+  // email. Nothing may claim one through a generic move.
+  if (verb === 'send') throw new Error('referralTransitions: `send` moves only through referralSend.js');
   const actor = actorEmail(req);
   const at = clock().toISOString();
   const row = await store.findReferral(client, office, referralId);
@@ -250,14 +257,17 @@ async function answer(req, outcome, { referralId, verb, office }) {
   return { status: 200, body: { success: true, referral: await readBack(req, referralId, office) } };
 }
 
-/** The referral as stored now, with its practice name and its history. */
+/** The referral as stored now, with its practice name, its history and (R5) its specialist's email. */
 async function readBack(req, referralId, office = req.tcOffice) {
   return tenantDb.withTenantDb(req, async (pool) => {
     const row = await store.findReferral(pool, office, referralId);
     if (!row) return null;
     const names = await store.practiceNames(pool, office, [row]);
+    const emails = await store.directoryEmails(pool, office, [row]);
     const events = await store.listEvents(pool, office, referralId);
-    return store.toReferral(row, names.get(String(row.directory_entry_id)) ?? null, events);
+    const out = store.toReferral(row, names.get(String(row.directory_entry_id)) ?? null, events);
+    out.specialistEmail = emails.get(String(row.directory_entry_id)) ?? null;
+    return out;
   });
 }
 

@@ -783,8 +783,13 @@ async function recordUnsubscribeLink(req, token) {
         WHERE unsubscribe_token_hash = $1 AND channel = 'email' AND direction = 'outbound'`,
       [hash]
     );
-    if (res.rows.length !== 1) return { outcome: 'no_match' };
-    const m = res.rows[0];
+    if (res.rows.length > 1) return { outcome: 'no_match' };
+    // (R5) Not a patient email: perhaps a referral letter, whose link's hash
+    // sits on the referral history row that records the email
+    // (services/messaging/referralLetter.js). Same rule: the token names
+    // exactly one sent email, and that row's office and address are opted out.
+    const m = res.rows.length === 1 ? res.rows[0] : await referralEmailByToken(q, hash);
+    if (!m) return { outcome: 'no_match' };
     const address = normalizeAddress('email', m.to_address);
     if (!address || !['roland', 'valley'].includes(m.office_id)) return { outcome: 'no_match' };
     const existing = await consent.getConsentRow(q, m.office_id, 'email', address);
@@ -811,18 +816,47 @@ async function recordUnsubscribeLink(req, token) {
       outcome: 'recorded',
       office: m.office_id,
       messageId: m.message_id,
+      referralEventId: m.referral_event_id || null,
       consentId: row.consent_id,
       stoppedEnrollments,
     };
   });
   if (out.outcome === 'recorded') {
     await auditMessage(req, 'UPDATE', 'tc_contact_consent', out.consentId, out.office);
-    await auditMessage(req, 'UPDATE', 'tc_message.unsubscribe_link', out.messageId, out.office);
+    if (out.referralEventId) {
+      await auditMessage(req, 'UPDATE', 'tc_referral_event.unsubscribe_link', out.referralEventId, out.office);
+    } else {
+      await auditMessage(req, 'UPDATE', 'tc_message.unsubscribe_link', out.messageId, out.office);
+    }
     for (const id of out.stoppedEnrollments || []) {
       await auditMessage(req, 'UPDATE', 'tc_nurture_enrollment.stopped', id, out.office);
     }
   }
   return out.outcome;
+}
+
+/**
+ * (R5) The referral email a token's hash names, shaped like the tc_messages
+ * row recordUnsubscribeLink reads, or null. Only the rows that record an
+ * email that went out (send, send_conflict) carry a hash.
+ * @param {{ query: Function }} q
+ * @param {string} hash
+ */
+async function referralEmailByToken(q, hash) {
+  const res = await q.query(
+    `SELECT event_id, office_id, recipient_address FROM tc_referral_events
+      WHERE unsubscribe_token_hash = $1 AND verb = ANY($2)`,
+    [hash, ['send', 'send_conflict']]
+  );
+  if (res.rows.length !== 1) return null;
+  const e = res.rows[0];
+  return {
+    message_id: null,
+    referral_event_id: String(e.event_id),
+    office_id: e.office_id,
+    channel: 'email',
+    to_address: e.recipient_address,
+  };
 }
 
 // ── consent writes ──────────────────────────────────────────────────────────

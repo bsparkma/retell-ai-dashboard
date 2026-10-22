@@ -54,6 +54,7 @@ const retentionConfig = require('../config/retention');
 const hygPilot = require('../config/hygPilot');
 const tcCheckout = require('../config/tcCheckout');
 const tcReferrals = require('../config/tcReferrals');
+const tcReferralEmail = require('../config/tcReferralEmail');
 const { realOffices } = require('../config/tcOfficeSwitch');
 const odOffices = require('../config/odOffices');
 const retentionScheduler = require('../services/retentionScheduler');
@@ -730,6 +731,58 @@ router.put('/tc-referrals-offices/:office', async (req, res) => {
     console.error('[platform] referrals switch write failed:', err && err.message ? err.message : err);
     const status = code === 'INVALID_OFFICE' || code === 'INVALID_BODY' ? 400 : 500;
     return fail(res, status, 'Could not save the referrals switch', code);
+  }
+});
+
+// ── TC referral EMAIL switch (R5) — the same shape again ────────────────────
+
+function tcReferralEmailPayload() {
+  return {
+    offices: realOffices().map((office) => tcReferralEmail.officeState(office)),
+    settingKey: tcReferralEmail.settingKey,
+  };
+}
+
+/** GET /tc-referral-email-offices — refreshed from the control plane before answering. */
+router.get('/tc-referral-email-offices', async (req, res) => {
+  const refreshed = await tcReferralEmail.refreshFromDb();
+  return res.json({ success: true, ...tcReferralEmailPayload(), controlPlaneError: refreshed.error });
+});
+
+/**
+ * PUT /tc-referral-email-offices/:office   { enabled: boolean }
+ *
+ * Writes, re-reads from the database, answers with what was stored. Audited
+ * to the acting super_admin's own tenant, `priorState` on|off.
+ */
+router.put('/tc-referral-email-offices/:office', async (req, res) => {
+  const office = String(req.params.office || '');
+  const enabled = req.body ? req.body.enabled : undefined;
+  if (typeof enabled !== 'boolean') {
+    return fail(res, 400, 'enabled must be true or false', 'INVALID_BODY');
+  }
+  if (!realOffices().includes(office)) {
+    return fail(res, 404, 'No such office', 'INVALID_OFFICE');
+  }
+
+  try {
+    await tcReferralEmail.refreshFromDb();
+    const before = tcReferralEmail.officeState(office);
+    await tcReferralEmail.persist(office, enabled, actorEmail(req));
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'platform_setting',
+      resourceId: tcReferralEmail.settingKey,
+      result: 'SUCCESS',
+      office,
+      priorState: before.enabled ? 'on' : 'off',
+    });
+    return res.json({ success: true, ...tcReferralEmailPayload() });
+  } catch (err) {
+    const code = err && err.code ? err.code : 'TC_REFERRAL_EMAIL_SWITCH_WRITE_FAILED';
+    console.error('[platform] referral email switch write failed:', err && err.message ? err.message : err);
+    const status = code === 'INVALID_OFFICE' || code === 'INVALID_BODY' ? 400 : 500;
+    return fail(res, status, 'Could not save the referral email switch', code);
   }
 });
 
