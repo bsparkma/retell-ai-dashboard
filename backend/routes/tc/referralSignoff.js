@@ -27,6 +27,10 @@
  *                        (required) — shown to the submitter as
  *                        "Returned by Dr. — <comment>"
  *
+ *   R6.2:
+ *   POST  /:id/attachments  the doctor adds a file while it awaits sign-off,
+ *                        through the R4 upload handler unchanged
+ *
  * The minimum for a doctor, on purpose: they can read only referrals and
  * only from here. What else a doctor may see is not decided in this slice.
  *
@@ -153,6 +157,27 @@ const signoffAttachmentOpts = {
 };
 router.get('/:id/attachments', h(attachments.listHandler(signoffAttachmentOpts)));
 router.get('/:id/attachments/:attachmentId', h(attachments.viewHandler(signoffAttachmentOpts)));
+
+// R6.2: the doctor may ADD a file while editing what they sign — the same R4
+// handler (bytes sniffed, 10 MB cut by multer, ≤5 under the row lock, audited,
+// 503 when storage is unconfigured), and only while it awaits sign-off, which
+// is where the doctor may edit at all. The guard runs under the row lock.
+router.post(
+  '/:id/attachments',
+  attachments.receiveFile,
+  h(
+    attachments.uploadHandler({
+      ...signoffAttachmentOpts,
+      guard: (_req, ref) => {
+        if (!SIGNOFF_READABLE.includes(ref.status)) return [404, 'Referral not found', 'NOT_FOUND'];
+        if (!contract.REFERRAL_DOCTOR_EDITABLE_STATUSES.includes(ref.status)) {
+          return [409, 'Files can be added at sign-off only while the referral is awaiting it.', 'REFERRAL_LOCKED'];
+        }
+        return null;
+      },
+    })
+  )
+);
 
 router.post(
   '/:id/approve',
