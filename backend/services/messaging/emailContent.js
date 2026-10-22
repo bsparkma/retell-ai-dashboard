@@ -7,9 +7,12 @@
  * bundle), the ONE implementation. This file only decides WHICH values go in:
  *
  *   patient.firstName   the case's patient first name. The only case fact.
- *   practice.name       the office's display name (config/officeAgents)
+ *   practice.name       the office's practice name (R5c: Settings -> Email
+ *                       identity, else TC_EMAIL_PRACTICE_NAME_<OFFICE>), else
+ *                       its display name (config/officeAgents)
  *   practice.address    TC_EMAIL_PRACTICE_ADDRESS_<OFFICE>, optional
- *   practice.phone      TC_EMAIL_PRACTICE_PHONE_<OFFICE>, optional
+ *   practice.phone      the office's phone (R5c: Settings -> Email identity,
+ *                       else TC_EMAIL_PRACTICE_PHONE_<OFFICE>), optional
  *   sender.name         the TC who wrote the draft (their SSO display name)
  *   sender.email        the office's Reply-To, if one is set. NEVER the TC's
  *                       own mailbox: a patient's reply should reach the
@@ -29,11 +32,20 @@ const odOffices = require('../../config/odOffices');
 const acsConfig = require('../../config/acsEmail');
 const { firstNameOf } = require('./templates');
 
+/**
+ * (R5c) The name an email from this office signs with: ONE identity per
+ * office, the same for a patient email and a referral letter.
+ * @param {string} office
+ */
+function practiceNameOf(office) {
+  return acsConfig.practiceNameFor(office) || odOffices.describeOffice(office).officeName;
+}
+
 /** @param {string} office */
 function practiceValues(office) {
   const details = acsConfig.practiceDetailsFor(office);
   return {
-    'practice.name': odOffices.describeOffice(office).officeName,
+    'practice.name': practiceNameOf(office),
     'practice.address': details.address,
     'practice.phone': details.phone,
     'sender.email': acsConfig.replyToFor(office),
@@ -57,7 +69,7 @@ function mergeValues(office, { patientName = null, senderName = null } = {}) {
 function footerFor(office, unsubscribeUrl) {
   const details = acsConfig.practiceDetailsFor(office);
   return {
-    practiceName: odOffices.describeOffice(office).officeName,
+    practiceName: practiceNameOf(office),
     practiceAddress: details.address,
     practicePhone: details.phone,
     unsubscribeUrl,
@@ -131,8 +143,8 @@ function renderReferralLetter({ office, subject, text, unsubscribeUrl }) {
     preheader: '',
     content: { kind: 'text', body: text, maxChars: contract.EMAIL_TEXT_BODY_CEILING, literal: true },
     values: {},
-    footer: { ...footer, practiceName: acsConfig.practiceNameFor(office) || footer.practiceName, audience: 'referral' },
+    footer: { ...footer, audience: 'referral' },
   });
 }
 
-module.exports = { mergeValues, practiceValues, footerFor, snapshotTemplate, renderRow, renderReferralLetter };
+module.exports = { mergeValues, practiceValues, practiceNameOf, footerFor, snapshotTemplate, renderRow, renderReferralLetter };

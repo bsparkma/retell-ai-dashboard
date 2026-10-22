@@ -40,10 +40,18 @@
  *   TC_EMAIL_PRACTICE_ADDRESS_<OFFICE>, TC_EMAIL_PRACTICE_PHONE_<OFFICE>
  *                                 optional, plain text, for the footer and the
  *                                 {{practice.address}} / {{practice.phone}} tokens
- *   TC_EMAIL_PRACTICE_NAME_<OFFICE>  (R5) optional: the practice's name as a
- *                                 referral letter signs it ("Valley Family
- *                                 Dental"). Absent = the office label. Read by
- *                                 the referral letter only.
+ *   TC_EMAIL_PRACTICE_NAME_<OFFICE>  (R5) optional: the practice's name as an
+ *                                 email signs it ("Valley Family Dental").
+ *                                 Absent = the office label. (R5c: read by
+ *                                 every email the office sends, not only the
+ *                                 referral letter: one identity per office.)
+ *
+ * (R5c) IN-APP EMAIL IDENTITY. Reply-To, practice name and practice phone can
+ * also be saved per office in Settings -> Email identity
+ * (config/emailIdentity.js). A SAVED value beats the app setting above; the
+ * app setting is the fallback when nothing is saved. The From address is NOT
+ * editable in the app: it is bound to the verified sending domain and stays
+ * an app setting.
  *
  * REFERRAL EMAIL (R5) uses PER-OFFICE senders only: ownFromAddressFor never
  * falls back to the shared ACS_EMAIL_FROM, so a referral cannot go out under
@@ -68,6 +76,7 @@
  */
 
 const { OFFICES } = require('./officeAgents');
+const emailIdentity = require('./emailIdentity');
 
 const AUTH_MODES = Object.freeze(['managed_identity', 'connection_string']);
 
@@ -217,27 +226,82 @@ function ownFromAddressFor(officeKey) {
   return isEmailAddress(own) ? /** @type {string} */ (own).toLowerCase() : null;
 }
 
-/** @param {string} officeKey @returns {string|null} */
-function replyToFor(officeKey) {
+/** The APP SETTING's Reply-To for an office (the fallback), or null. @param {string} officeKey @returns {string|null} */
+function envReplyToFor(officeKey) {
   if (!isKnownOffice(officeKey)) return null;
   const v = envValue(`ACS_EMAIL_REPLY_TO_${officeEnvSuffix(officeKey)}`);
   return isEmailAddress(v) ? /** @type {string} */ (v).toLowerCase() : null;
 }
 
-/** @param {string} officeKey */
-function practiceDetailsFor(officeKey) {
-  if (!isKnownOffice(officeKey)) return { address: null, phone: null };
-  const sfx = officeEnvSuffix(officeKey);
-  const address = envValue(`TC_EMAIL_PRACTICE_ADDRESS_${sfx}`);
-  const phone = envValue(`TC_EMAIL_PRACTICE_PHONE_${sfx}`);
-  return { address: address ? address.slice(0, 300) : null, phone: phone ? phone.slice(0, 40) : null };
+/** The APP SETTING's practice phone for an office (the fallback), or null. @param {string} officeKey @returns {string|null} */
+function envPracticePhoneFor(officeKey) {
+  if (!isKnownOffice(officeKey)) return null;
+  const phone = envValue(`TC_EMAIL_PRACTICE_PHONE_${officeEnvSuffix(officeKey)}`);
+  return phone ? phone.slice(0, 40) : null;
 }
 
-/** (R5) The practice name a referral letter signs with, or null (the caller uses the office label). @param {string} officeKey */
-function practiceNameFor(officeKey) {
+/** The APP SETTING's practice name for an office (the fallback), or null. @param {string} officeKey @returns {string|null} */
+function envPracticeNameFor(officeKey) {
   if (!isKnownOffice(officeKey)) return null;
   const name = envValue(`TC_EMAIL_PRACTICE_NAME_${officeEnvSuffix(officeKey)}`);
   return name ? name.replace(/[\r\n]+/g, ' ').slice(0, 120) : null;
+}
+
+/** (R5c) The office's Reply-To: saved in the app, else the app setting, else null. @param {string} officeKey @returns {string|null} */
+function replyToFor(officeKey) {
+  if (!isKnownOffice(officeKey)) return null;
+  return emailIdentity.storedValue(officeKey, 'replyTo') ?? envReplyToFor(officeKey);
+}
+
+/** @param {string} officeKey */
+function practiceDetailsFor(officeKey) {
+  if (!isKnownOffice(officeKey)) return { address: null, phone: null };
+  const address = envValue(`TC_EMAIL_PRACTICE_ADDRESS_${officeEnvSuffix(officeKey)}`);
+  return {
+    address: address ? address.slice(0, 300) : null,
+    // (R5c) saved in the app, else the app setting.
+    phone: emailIdentity.storedValue(officeKey, 'practicePhone') ?? envPracticePhoneFor(officeKey),
+  };
+}
+
+/**
+ * The practice name an email signs with, or null (the caller uses the office
+ * label). (R5c) Saved in the app, else the app setting. Read by the patient
+ * email AND the referral letter: one identity per office.
+ * @param {string} officeKey
+ * @returns {string|null}
+ */
+function practiceNameFor(officeKey) {
+  if (!isKnownOffice(officeKey)) return null;
+  return emailIdentity.storedValue(officeKey, 'practiceName') ?? envPracticeNameFor(officeKey);
+}
+
+/**
+ * (R5c) What is in force for one office's identity, field by field, and why,
+ * for Settings -> Email identity. Plain contact details; none is a secret.
+ * @param {string} officeKey
+ */
+function identityStateFor(officeKey) {
+  /** @type {Record<import('./emailIdentity').IdentityField, string|null>} */
+  const fallbacks = {
+    replyTo: envReplyToFor(officeKey),
+    practiceName: envPracticeNameFor(officeKey),
+    practicePhone: envPracticePhoneFor(officeKey),
+  };
+  /** @type {Record<string, { value: string|null, source: 'stored'|'env'|'none', stored: string|null, fallback: string|null, fallbackSetting: string }>} */
+  const fields = {};
+  for (const field of emailIdentity.FIELD_NAMES) {
+    const stored = emailIdentity.storedValue(officeKey, field);
+    const fallback = fallbacks[field];
+    fields[field] = {
+      value: stored ?? fallback,
+      source: stored !== null ? 'stored' : fallback !== null ? 'env' : 'none',
+      stored,
+      fallback,
+      fallbackSetting: emailIdentity.envVarFor(officeKey, field),
+    };
+  }
+  return fields;
 }
 
 /**
@@ -270,5 +334,9 @@ module.exports = {
   replyToFor,
   practiceDetailsFor,
   practiceNameFor,
+  envReplyToFor,
+  envPracticeNameFor,
+  envPracticePhoneFor,
+  identityStateFor,
   unsubscribeUrl,
 };
