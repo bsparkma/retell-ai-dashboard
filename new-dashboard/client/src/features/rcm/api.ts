@@ -2190,6 +2190,14 @@ export interface PostingQueuePage {
   rows: PostingQueueRow[];
   /** Zero-filled over the whole vocabulary — a missing state is a measured 0. */
   byStatus: Record<PostingQueueStatus, number>;
+  /**
+   * W-21c. How many `outcome_unknown` / `partially_posted` plans sit over a
+   * claim deleted from Open Dental (step `read_od_truth_claim_gone`). Still in
+   * `byStatus` under their own state and still drainable — but no press can
+   * settle them, so "waiting to post" leaves them out. Optional: a server one
+   * revision older does not send it.
+   */
+  claimGone?: number;
   total: number;
   limit: number;
   offset: number;
