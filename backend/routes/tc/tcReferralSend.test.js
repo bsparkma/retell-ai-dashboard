@@ -466,6 +466,23 @@ test('O: ACS refuses → 502, still approved, a visible send_failed row, claim r
   assert.equal(retry.body.referral.sendProblem, null);
 });
 
+test('O: a failure that raced a move is recorded on the status it moved to, not on approved', async (t) => {
+  const { baseUrl, db, acsCalls } = await boot(t);
+  const { id } = await approved(baseUrl, db);
+  acsClient.setFetchForTests(async (url, init) => {
+    acsCalls.push({ method: init.method, url: String(url) });
+    referralRow(db, id).status = 'pending_signoff'; // a reopen landed meanwhile
+    return new Response(JSON.stringify({ error: { code: 'Busy', message: 'try later' } }), { status: 503 });
+  });
+  const r = await send(baseUrl, id);
+  assert.equal(r.status, 502);
+  const failed = eventsOf(db, id).filter((e) => e.verb === 'send_failed');
+  assert.equal(failed.length, 1);
+  assert.deepEqual([failed[0].from_status, failed[0].to_status], ['pending_signoff', 'pending_signoff']);
+  assert.equal(sendAudits(db).at(-1).prior_state, 'pending_signoff');
+  assert.equal(referralRow(db, id).send_attempt_id, null);
+});
+
 test('O: ACS accepts then reports Failed → nothing moves; a timeout → nothing moves', async (t) => {
   const { baseUrl, db } = await boot(t, { acsStatus: 'Running', acsPolls: [{ status: 'Failed', error: { code: 'Bounced' } }] });
   const { id } = await approved(baseUrl, db);

@@ -213,18 +213,23 @@ function failureOf(err) {
  */
 async function recordFailure(req, { office, referralId, attemptId, auto, failure }) {
   try {
-    await tenantDb.withTenantDb(req, async (pool) => {
+    const status = await tenantDb.withTenantDb(req, async (pool) => {
       if (attemptId) await store.releaseSendClaim(pool, { office, referralId, attemptId });
+      // Where it stands NOW: a failure that raced a move is recorded on the
+      // status it moved to, never on an `approved` it no longer is.
+      const now = await store.findReferral(pool, office, referralId);
+      const current = now ? now.status : 'approved';
       await store.insertSendEvent(pool, {
         office,
         referralId,
-        from: 'approved',
-        to: 'approved',
+        from: current,
+        to: current,
         actor: actorEmail(req),
         at: transitions.clock().toISOString(),
         note: `${auto ? 'Not sent automatically' : 'Not sent'}: ${failure.message}`,
         verb: 'send_failed',
       });
+      return current;
     });
     await audit(req, {
       action: 'UPDATE',
@@ -232,7 +237,7 @@ async function recordFailure(req, { office, referralId, attemptId, auto, failure
       resourceId: referralId,
       result: 'ERROR',
       office,
-      priorState: 'approved',
+      priorState: status,
     });
   } catch (err) {
     console.error(
