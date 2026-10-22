@@ -83,13 +83,13 @@ async function boot(t, { role = 'admin', db = new FakeTenantDb(), env = {}, user
 const history = (db) => db.table('tc_email_identity_changes');
 const identityAudits = (db) => auditRows(db).filter((a) => a.resource_type === 'tc_email_identity');
 
-test('W: admin and office read and write; tc, hygiene and doctor are refused, and nothing is saved', async (t) => {
+test('W: admin and office read and write; tc, hygiene, doctor, reviewer and rcm_biller are refused, and nothing is saved', async (t) => {
   for (const role of ['admin', 'office']) {
     const { baseUrl } = await boot(t, { role });
     assert.equal((await api(baseUrl, 'GET', URL('roland'))).status, 200, role);
     assert.equal((await api(baseUrl, 'PUT', URL('roland'), IDENTITY)).status, 200, role);
   }
-  for (const role of ['tc', 'hygiene', 'doctor']) {
+  for (const role of ['tc', 'hygiene', 'doctor', 'reviewer', 'rcm_biller']) {
     const { baseUrl, db, cp } = await boot(t, { role });
     assert.equal((await api(baseUrl, 'GET', URL('roland'))).status, 403, role);
     assert.equal((await api(baseUrl, 'PUT', URL('roland'), IDENTITY)).status, 403, role);
