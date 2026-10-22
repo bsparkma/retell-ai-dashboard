@@ -169,8 +169,8 @@ describe("2: what is in force, and the From read-only", () => {
     expect(from.textContent).toContain("donotreply@roland.example.test");
     expect(from.textContent).toContain("Managed by the platform");
     expect(within(from).queryByRole("textbox")).toBeNull();
-    // Three boxes, none of them the From.
-    expect(screen.getAllByRole("textbox")).toHaveLength(3);
+    // Four boxes — the three identity fields and (R6.3) the referral copy inbox — none of them the From.
+    expect(screen.getAllByRole("textbox")).toHaveLength(4);
     expect(screen.queryAllByRole("textbox", { name: /from/i })).toHaveLength(0);
   });
 
@@ -221,6 +221,7 @@ describe("3: save sends the whole identity and shows the server's answer", () =>
         replyTo: "FrontDesk@Roland.example.test",
         practiceName: null,
         practicePhone: null,
+        referralBcc: null, // R6.3: the copy inbox box, empty = no copy
       }),
     );
     await waitFor(() =>

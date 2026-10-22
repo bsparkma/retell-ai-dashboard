@@ -14975,6 +14975,7 @@ __export(contract_entry_exports, {
   TcEmailIdentityRequest: () => TcEmailIdentityRequest,
   TcEmailIdentityResponse: () => TcEmailIdentityResponse,
   TcEmailIdentitySource: () => TcEmailIdentitySource,
+  TcEmailIdentityStoredField: () => TcEmailIdentityStoredField,
   TcEmailTemplate: () => TcEmailTemplate,
   TcFollowup: () => TcFollowup,
   TcGalleryCase: () => TcGalleryCase,
@@ -17809,9 +17810,11 @@ var import_zod9 = __toESM(require_zod(), 1);
 var EMAIL_IDENTITY_LIMITS = {
   replyTo: 254,
   practiceName: 120,
-  practicePhone: 40
+  practicePhone: 40,
+  referralBcc: 254
 };
 var TcEmailIdentityField = import_zod9.z.enum(["replyTo", "practiceName", "practicePhone"]);
+var TcEmailIdentityStoredField = import_zod9.z.enum([...TcEmailIdentityField.options, "referralBcc"]);
 var TC_EMAIL_IDENTITY_FIELD_LABELS = {
   replyTo: "Reply-to address",
   practiceName: "Practice name",
@@ -17837,6 +17840,12 @@ var TcEmailIdentityResponse = import_zod9.z.object({
     practiceName: TcEmailIdentityFieldState,
     practicePhone: TcEmailIdentityFieldState
   }),
+  /**
+   * R6.3: the address every referral letter from this office is blind-copied
+   * to, or null for no copy. Saved here only (no app-setting fallback). Absent
+   * from an older server = no copy.
+   */
+  referralBcc: import_zod9.z.string().nullable().optional(),
   /** Read-only: managed by the platform, bound to the verified sending domain. */
   from: import_zod9.z.object({
     /** The sender a patient email uses (this office's own, else the shared one). */
@@ -17853,10 +17862,12 @@ var SINGLE_LINE = /^[^\u0000-\u001f\u007f]*$/;
 function line(max) {
   return import_zod9.z.string().trim().min(1).max(max).regex(SINGLE_LINE, "must be a single line of plain text");
 }
+var ONE_ADDRESS = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/;
 var TcEmailIdentityRequest = import_zod9.z.object({
-  replyTo: line(EMAIL_IDENTITY_LIMITS.replyTo).regex(/^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/, "must be one plain email address").nullable(),
+  replyTo: line(EMAIL_IDENTITY_LIMITS.replyTo).regex(ONE_ADDRESS, "must be one plain email address").nullable(),
   practiceName: line(EMAIL_IDENTITY_LIMITS.practiceName).nullable(),
-  practicePhone: line(EMAIL_IDENTITY_LIMITS.practicePhone).nullable()
+  practicePhone: line(EMAIL_IDENTITY_LIMITS.practicePhone).nullable(),
+  referralBcc: line(EMAIL_IDENTITY_LIMITS.referralBcc).regex(ONE_ADDRESS, "must be one plain email address").nullable().optional()
 }).strict();
 
 // ../backend/tc/contract.entry.ts
@@ -18015,6 +18026,7 @@ var import_zod10 = __toESM(require_zod());
   TcEmailIdentityRequest,
   TcEmailIdentityResponse,
   TcEmailIdentitySource,
+  TcEmailIdentityStoredField,
   TcEmailTemplate,
   TcFollowup,
   TcGalleryCase,

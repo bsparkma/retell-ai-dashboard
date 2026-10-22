@@ -60,8 +60,21 @@ const FIELDS = Object.freeze({
 });
 const FIELD_NAMES = Object.freeze(Object.keys(FIELDS));
 
+/**
+ * R6.3: the referral copy inbox. Saved in the same row as the three above and
+ * recorded in the same history, but with NO app-setting fallback: an empty
+ * value means no copy, so nothing outside this setting can switch copies on.
+ * The only reader that acts on it is the referral send (routes/tc/referralSend.js).
+ */
+const REFERRAL_BCC = 'referralBcc';
+const REFERRAL_BCC_MAX = 254;
+
+/** Everything saved per office: the identity fields plus the copy inbox. */
+const STORED_FIELDS = Object.freeze([...FIELD_NAMES, REFERRAL_BCC]);
+
 /** @typedef {'replyTo'|'practiceName'|'practicePhone'} IdentityField */
-/** @typedef {Partial<Record<IdentityField, string>>} OfficeIdentity */
+/** @typedef {IdentityField|'referralBcc'} StoredField */
+/** @typedef {Partial<Record<StoredField, string>>} OfficeIdentity */
 
 /** @type {{ loaded: boolean, byOffice: Record<string, OfficeIdentity>, updatedAt: string|null, updatedBy: string|null }} */
 let cache = { loaded: false, byOffice: {}, updatedAt: null, updatedBy: null };
@@ -90,16 +103,17 @@ function isEmailAddress(v) {
  * saved value can never put a line break in a header or an over-long string in
  * a footer. (The env fallback keeps config/acsEmail.js's own long-standing
  * rules; this file does not re-judge it.)
- * @param {IdentityField} field
+ * @param {StoredField} field
  * @param {unknown} raw
  * @returns {string|null}
  */
 function normalizeField(field, raw) {
   if (typeof raw !== 'string') return null;
   const v = raw.trim();
-  if (!v || v.length > FIELDS[field].max) return null;
+  const max = field === REFERRAL_BCC ? REFERRAL_BCC_MAX : FIELDS[field].max;
+  if (!v || v.length > max) return null;
   if (/[\u0000-\u001f\u007f]/.test(v)) return null;
-  if (field === 'replyTo') return isEmailAddress(v) ? v.toLowerCase() : null;
+  if (field === 'replyTo' || field === REFERRAL_BCC) return isEmailAddress(v) ? v.toLowerCase() : null;
   return v;
 }
 
@@ -121,13 +135,17 @@ function parseStored(value) {
     /** @type {OfficeIdentity} */
     const identity = {};
     for (const [field, v] of Object.entries(/** @type {Record<string, unknown>} */ (raw))) {
-      if (!FIELD_NAMES.includes(field) || v === null) continue;
-      const clean = normalizeField(/** @type {IdentityField} */ (field), v);
+      if (!STORED_FIELDS.includes(field) || v === null) continue;
+      const clean = normalizeField(/** @type {StoredField} */ (field), v);
       if (clean === null) {
-        console.warn(`[emailIdentity] platform_setting['${SETTING_KEY}']['${office}'].${field} is not usable; the app setting answers`);
+        console.warn(
+          `[emailIdentity] platform_setting['${SETTING_KEY}']['${office}'].${field} is not usable; ${
+            field === REFERRAL_BCC ? 'no copy is sent' : 'the app setting answers'
+          }`
+        );
         continue;
       }
-      identity[/** @type {IdentityField} */ (field)] = clean;
+      identity[/** @type {StoredField} */ (field)] = clean;
     }
     byOffice[office] = identity;
   }
@@ -138,13 +156,23 @@ function parseStored(value) {
  * The value SAVED IN THE APP for one office's field, from the cache, or null.
  * Synchronous; this is what config/acsEmail.js consults first.
  * @param {string} officeKey
- * @param {IdentityField} field
+ * @param {StoredField} field
  * @returns {string|null}
  */
 function storedValue(officeKey, field) {
   if (!isRealOffice(officeKey) || !cache.loaded) return null;
   const identity = cache.byOffice[officeKey];
   return identity && typeof identity[field] === 'string' ? /** @type {string} */ (identity[field]) : null;
+}
+
+/**
+ * R6.3: the inbox this office's referral letters are blind-copied to, or null
+ * for no copy. Saved value only — there is no fallback, by design.
+ * @param {string} officeKey
+ * @returns {string|null}
+ */
+function referralBccFor(officeKey) {
+  return storedValue(officeKey, REFERRAL_BCC);
 }
 
 /** The app setting's NAME for one office's field. @param {string} officeKey @param {IdentityField} field */
@@ -212,7 +240,7 @@ function stopRefreshTimer() {
  * What is SAVED for one office, read from the DATABASE (not the cache). Throws
  * when the control plane cannot be read: a save must not guess what it replaces.
  * @param {string} officeKey
- * @returns {Promise<{ all: Record<string, unknown>, office: Record<IdentityField, string|null> }>}
+ * @returns {Promise<{ all: Record<string, unknown>, office: Record<StoredField, string|null> }>}
  */
 async function readStoredFromDb(officeKey) {
   const row = await registry.getPlatformSetting(SETTING_KEY);
@@ -222,9 +250,9 @@ async function readStoredFromDb(officeKey) {
       : {};
   const parsed = parseStored({ [officeKey]: all[officeKey] && typeof all[officeKey] === 'object' ? all[officeKey] : {} });
   const mine = (parsed && parsed[officeKey]) || {};
-  /** @type {Record<IdentityField, string|null>} */
-  const office = { replyTo: null, practiceName: null, practicePhone: null };
-  for (const f of FIELD_NAMES) office[/** @type {IdentityField} */ (f)] = mine[/** @type {IdentityField} */ (f)] ?? null;
+  /** @type {Record<StoredField, string|null>} */
+  const office = { replyTo: null, practiceName: null, practicePhone: null, referralBcc: null };
+  for (const f of STORED_FIELDS) office[/** @type {StoredField} */ (f)] = mine[/** @type {StoredField} */ (f)] ?? null;
   return { all, office };
 }
 
@@ -238,7 +266,7 @@ async function readStoredFromDb(officeKey) {
  * through untouched.
  *
  * @param {string} officeKey
- * @param {Record<IdentityField, string|null>} values
+ * @param {Record<StoredField, string|null>} values  every stored field; null = not saved
  * @param {string|null} updatedBy
  * @returns {Promise<void>}
  */
@@ -250,9 +278,9 @@ async function persist(officeKey, values, updatedBy) {
   }
   /** @type {OfficeIdentity} */
   const next = {};
-  for (const f of FIELD_NAMES) {
-    const field = /** @type {IdentityField} */ (f);
-    if (values[field] === null) continue;
+  for (const f of STORED_FIELDS) {
+    const field = /** @type {StoredField} */ (f);
+    if (values[field] === null || values[field] === undefined) continue;
     const clean = normalizeField(field, values[field]);
     if (clean === null) {
       const err = /** @type {Error & { code?: string }} */ (new Error(`${field} is not usable`));
@@ -267,7 +295,7 @@ async function persist(officeKey, values, updatedBy) {
 
   const read = await refreshFromDb();
   const mismatch =
-    !read.ok || FIELD_NAMES.some((f) => storedValue(officeKey, /** @type {IdentityField} */ (f)) !== (next[/** @type {IdentityField} */ (f)] ?? null));
+    !read.ok || STORED_FIELDS.some((f) => storedValue(officeKey, /** @type {StoredField} */ (f)) !== (next[/** @type {StoredField} */ (f)] ?? null));
   if (mismatch) {
     const err = /** @type {Error & { code?: string }} */ (
       new Error('The email identity was written but could not be read back as saved')
@@ -293,8 +321,11 @@ module.exports = {
   SETTING_KEY,
   FIELDS,
   FIELD_NAMES,
+  REFERRAL_BCC,
+  STORED_FIELDS,
   normalizeField,
   storedValue,
+  referralBccFor,
   envVarFor,
   refreshFromDb,
   ensureFresh,
