@@ -30,9 +30,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/core.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/core.cjs
 var require_core = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/core.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/core.cjs"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.globalConfig = exports2.$ZodEncodeError = exports2.$ZodAsyncError = exports2.$brand = exports2.NEVER = void 0;
@@ -106,9 +106,9 @@ var require_core = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/util.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/util.cjs
 var require_util = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/util.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/util.cjs"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.Class = exports2.BIGINT_FORMAT_RANGES = exports2.NUMBER_FORMAT_RANGES = exports2.primitiveTypes = exports2.propertyKeyTypes = exports2.getParsedType = exports2.allowsEval = exports2.captureStackTrace = void 0;
@@ -738,9 +738,9 @@ var require_util = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/errors.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/errors.cjs
 var require_errors = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/errors.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/errors.cjs"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -915,9 +915,9 @@ var require_errors = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/parse.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/parse.cjs
 var require_parse = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/parse.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/parse.cjs"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -1052,9 +1052,9 @@ var require_parse = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/regexes.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/regexes.cjs
 var require_regexes = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/regexes.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/regexes.cjs"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.sha384_base64 = exports2.sha384_hex = exports2.sha256_base64url = exports2.sha256_base64 = exports2.sha256_hex = exports2.sha1_base64url = exports2.sha1_base64 = exports2.sha1_hex = exports2.md5_base64url = exports2.md5_base64 = exports2.md5_hex = exports2.hex = exports2.uppercase = exports2.lowercase = exports2.undefined = exports2.null = exports2.boolean = exports2.number = exports2.integer = exports2.bigint = exports2.string = exports2.date = exports2.e164 = exports2.domain = exports2.hostname = exports2.base64url = exports2.base64 = exports2.cidrv6 = exports2.cidrv4 = exports2.ipv6 = exports2.ipv4 = exports2.browserEmail = exports2.idnEmail = exports2.unicodeEmail = exports2.rfc5322Email = exports2.html5Email = exports2.email = exports2.uuid7 = exports2.uuid6 = exports2.uuid4 = exports2.uuid = exports2.guid = exports2.extendedDuration = exports2.duration = exports2.nanoid = exports2.ksuid = exports2.xid = exports2.ulid = exports2.cuid2 = exports2.cuid = void 0;
@@ -1159,9 +1159,9 @@ var require_regexes = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/checks.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/checks.cjs
 var require_checks = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/checks.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/checks.cjs"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -1738,9 +1738,9 @@ var require_checks = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/doc.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/doc.cjs
 var require_doc = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/doc.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/doc.cjs"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.Doc = void 0;
@@ -1766,8 +1766,8 @@ var require_doc = __commonJS({
         const lines2 = content.split("\n").filter((x) => x);
         const minIndent = Math.min(...lines2.map((x) => x.length - x.trimStart().length));
         const dedented = lines2.map((x) => x.slice(minIndent)).map((x) => " ".repeat(this.indent * 2) + x);
-        for (const line of dedented) {
-          this.content.push(line);
+        for (const line2 of dedented) {
+          this.content.push(line2);
         }
       }
       compile() {
@@ -1782,9 +1782,9 @@ var require_doc = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/versions.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/versions.cjs
 var require_versions = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/versions.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/versions.cjs"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.version = void 0;
@@ -1796,9 +1796,9 @@ var require_versions = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/schemas.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/schemas.cjs
 var require_schemas = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/schemas.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/schemas.cjs"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -3690,9 +3690,9 @@ var require_schemas = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ar.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ar.cjs
 var require_ar = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ar.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ar.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -3843,9 +3843,9 @@ var require_ar = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/az.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/az.cjs
 var require_az = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/az.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/az.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -3995,9 +3995,9 @@ var require_az = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/be.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/be.cjs
 var require_be = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/be.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/be.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -4196,9 +4196,9 @@ var require_be = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/bg.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/bg.cjs
 var require_bg = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/bg.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/bg.cjs"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -4362,9 +4362,9 @@ var require_bg = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ca.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ca.cjs
 var require_ca = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ca.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ca.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -4518,9 +4518,9 @@ var require_ca = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/cs.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/cs.cjs
 var require_cs = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/cs.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/cs.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -4690,9 +4690,9 @@ var require_cs = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/da.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/da.cjs
 var require_da = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/da.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/da.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -4858,9 +4858,9 @@ var require_da = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/de.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/de.cjs
 var require_de = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/de.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/de.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -5011,9 +5011,9 @@ var require_de = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/en.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/en.cjs
 var require_en = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/en.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/en.cjs"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -5166,9 +5166,9 @@ var require_en = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/eo.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/eo.cjs
 var require_eo = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/eo.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/eo.cjs"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -5320,9 +5320,9 @@ var require_eo = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/es.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/es.cjs
 var require_es = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/es.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/es.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -5506,9 +5506,9 @@ var require_es = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/fa.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/fa.cjs
 var require_fa = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/fa.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/fa.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -5665,9 +5665,9 @@ var require_fa = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/fi.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/fi.cjs
 var require_fi = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/fi.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/fi.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -5824,9 +5824,9 @@ var require_fi = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/fr.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/fr.cjs
 var require_fr = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/fr.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/fr.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -5977,9 +5977,9 @@ var require_fr = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/fr-CA.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/fr-CA.cjs
 var require_fr_CA = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/fr-CA.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/fr-CA.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -6131,9 +6131,9 @@ var require_fr_CA = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/he.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/he.cjs
 var require_he = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/he.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/he.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -6285,9 +6285,9 @@ var require_he = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/hu.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/hu.cjs
 var require_hu = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/hu.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/hu.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -6439,9 +6439,9 @@ var require_hu = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/id.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/id.cjs
 var require_id = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/id.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/id.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -6592,9 +6592,9 @@ var require_id = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/is.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/is.cjs
 var require_is = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/is.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/is.cjs"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -6747,9 +6747,9 @@ var require_is = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/it.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/it.cjs
 var require_it = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/it.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/it.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -6901,9 +6901,9 @@ var require_it = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ja.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ja.cjs
 var require_ja = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ja.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ja.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -7053,9 +7053,9 @@ var require_ja = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ka.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ka.cjs
 var require_ka = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ka.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ka.cjs"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -7216,9 +7216,9 @@ var require_ka = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/km.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/km.cjs
 var require_km = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/km.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/km.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -7370,9 +7370,9 @@ var require_km = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/kh.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/kh.cjs
 var require_kh = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/kh.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/kh.cjs"(exports2, module2) {
     "use strict";
     var __importDefault = exports2 && exports2.__importDefault || function(mod) {
       return mod && mod.__esModule ? mod : { "default": mod };
@@ -7387,9 +7387,9 @@ var require_kh = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ko.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ko.cjs
 var require_ko = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ko.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ko.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -7545,9 +7545,9 @@ var require_ko = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/lt.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/lt.cjs
 var require_lt = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/lt.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/lt.cjs"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -7813,9 +7813,9 @@ var require_lt = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/mk.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/mk.cjs
 var require_mk = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/mk.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/mk.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -7968,9 +7968,9 @@ var require_mk = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ms.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ms.cjs
 var require_ms = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ms.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ms.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -8121,9 +8121,9 @@ var require_ms = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/nl.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/nl.cjs
 var require_nl = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/nl.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/nl.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -8275,9 +8275,9 @@ var require_nl = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/no.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/no.cjs
 var require_no = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/no.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/no.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -8428,9 +8428,9 @@ var require_no = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ota.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ota.cjs
 var require_ota = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ota.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ota.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -8582,9 +8582,9 @@ var require_ota = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ps.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ps.cjs
 var require_ps = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ps.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ps.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -8741,9 +8741,9 @@ var require_ps = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/pl.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/pl.cjs
 var require_pl = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/pl.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/pl.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -8895,9 +8895,9 @@ var require_pl = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/pt.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/pt.cjs
 var require_pt = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/pt.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/pt.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -9048,9 +9048,9 @@ var require_pt = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ru.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ru.cjs
 var require_ru = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ru.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ru.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -9249,9 +9249,9 @@ var require_ru = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/sl.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/sl.cjs
 var require_sl = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/sl.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/sl.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -9403,9 +9403,9 @@ var require_sl = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/sv.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/sv.cjs
 var require_sv = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/sv.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/sv.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -9558,9 +9558,9 @@ var require_sv = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ta.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ta.cjs
 var require_ta = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ta.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ta.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -9712,9 +9712,9 @@ var require_ta = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/th.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/th.cjs
 var require_th = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/th.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/th.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -9866,9 +9866,9 @@ var require_th = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/tr.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/tr.cjs
 var require_tr = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/tr.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/tr.cjs"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -10019,9 +10019,9 @@ var require_tr = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/uk.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/uk.cjs
 var require_uk = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/uk.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/uk.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -10173,9 +10173,9 @@ var require_uk = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ua.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ua.cjs
 var require_ua = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ua.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ua.cjs"(exports2, module2) {
     "use strict";
     var __importDefault = exports2 && exports2.__importDefault || function(mod) {
       return mod && mod.__esModule ? mod : { "default": mod };
@@ -10190,9 +10190,9 @@ var require_ua = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ur.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ur.cjs
 var require_ur = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ur.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/ur.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -10344,9 +10344,9 @@ var require_ur = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/vi.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/vi.cjs
 var require_vi = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/vi.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/vi.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -10497,9 +10497,9 @@ var require_vi = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/zh-CN.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/zh-CN.cjs
 var require_zh_CN = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/zh-CN.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/zh-CN.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -10650,9 +10650,9 @@ var require_zh_CN = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/zh-TW.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/zh-TW.cjs
 var require_zh_TW = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/zh-TW.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/zh-TW.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -10804,9 +10804,9 @@ var require_zh_TW = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/yo.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/yo.cjs
 var require_yo = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/yo.cjs"(exports2, module2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/yo.cjs"(exports2, module2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -10956,9 +10956,9 @@ var require_yo = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/index.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/index.cjs
 var require_locales = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/index.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/locales/index.cjs"(exports2) {
     "use strict";
     var __importDefault = exports2 && exports2.__importDefault || function(mod) {
       return mod && mod.__esModule ? mod : { "default": mod };
@@ -11156,9 +11156,9 @@ var require_locales = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/registries.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/registries.cjs
 var require_registries = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/registries.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/registries.cjs"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.globalRegistry = exports2.$ZodRegistry = exports2.$input = exports2.$output = void 0;
@@ -11216,9 +11216,9 @@ var require_registries = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/api.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/api.cjs
 var require_api = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/api.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/api.cjs"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -12250,9 +12250,9 @@ var require_api = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/to-json-schema.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/to-json-schema.cjs
 var require_to_json_schema = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/to-json-schema.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/to-json-schema.cjs"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.JSONSchemaGenerator = void 0;
@@ -13081,17 +13081,17 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/json-schema.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/json-schema.cjs
 var require_json_schema = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/json-schema.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/json-schema.cjs"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/index.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/index.cjs
 var require_core2 = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/index.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/core/index.cjs"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -13142,9 +13142,9 @@ var require_core2 = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/checks.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/checks.cjs
 var require_checks2 = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/checks.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/checks.cjs"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.toUpperCase = exports2.toLowerCase = exports2.trim = exports2.normalize = exports2.overwrite = exports2.mime = exports2.property = exports2.endsWith = exports2.startsWith = exports2.includes = exports2.uppercase = exports2.lowercase = exports2.regex = exports2.length = exports2.minLength = exports2.maxLength = exports2.size = exports2.minSize = exports2.maxSize = exports2.multipleOf = exports2.nonnegative = exports2.nonpositive = exports2.negative = exports2.positive = exports2.gte = exports2.gt = exports2.lte = exports2.lt = void 0;
@@ -13236,9 +13236,9 @@ var require_checks2 = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/iso.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/iso.cjs
 var require_iso = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/iso.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/iso.cjs"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -13306,9 +13306,9 @@ var require_iso = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/errors.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/errors.cjs
 var require_errors2 = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/errors.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/errors.cjs"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -13383,9 +13383,9 @@ var require_errors2 = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/parse.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/parse.cjs
 var require_parse2 = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/parse.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/parse.cjs"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -13433,9 +13433,9 @@ var require_parse2 = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/schemas.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/schemas.cjs
 var require_schemas2 = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/schemas.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/schemas.cjs"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -14534,9 +14534,9 @@ var require_schemas2 = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/compat.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/compat.cjs
 var require_compat = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/compat.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/compat.cjs"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -14604,9 +14604,9 @@ var require_compat = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/coerce.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/coerce.cjs
 var require_coerce = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/coerce.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/coerce.cjs"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -14661,9 +14661,9 @@ var require_coerce = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/external.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/external.cjs
 var require_external = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/external.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/v4/classic/external.cjs"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -14777,9 +14777,9 @@ var require_external = __commonJS({
   }
 });
 
-// node_modules/.pnpm/zod@4.1.12/node_modules/zod/index.cjs
+// ../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/index.cjs
 var require_zod = __commonJS({
-  "node_modules/.pnpm/zod@4.1.12/node_modules/zod/index.cjs"(exports2) {
+  "../../../carein cursor dashboard-dev/new-dashboard/node_modules/.pnpm/zod@4.1.12/node_modules/zod/index.cjs"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -14813,10 +14813,10 @@ var require_zod = __commonJS({
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.z = void 0;
-    var z10 = __importStar(require_external());
-    exports2.z = z10;
+    var z11 = __importStar(require_external());
+    exports2.z = z11;
     __exportStar(require_external(), exports2);
-    exports2.default = z10;
+    exports2.default = z11;
   }
 });
 
@@ -14841,6 +14841,7 @@ __export(contract_entry_exports, {
   DIRECTORY_EMAIL_RE: () => DIRECTORY_EMAIL_RE,
   DividerBlock: () => DividerBlock,
   DraftMessageBody: () => DraftMessageBody,
+  EMAIL_IDENTITY_LIMITS: () => EMAIL_IDENTITY_LIMITS,
   EMAIL_MERGE_TOKENS: () => EMAIL_MERGE_TOKENS,
   EMAIL_TEXT_BODY_CEILING: () => EMAIL_TEXT_BODY_CEILING,
   EMAIL_TEXT_BODY_MAX: () => EMAIL_TEXT_BODY_MAX,
@@ -14930,6 +14931,7 @@ __export(contract_entry_exports, {
   TC_CHECKOUT_PRIORITY_ORDER: () => TC_CHECKOUT_PRIORITY_ORDER,
   TC_CHECKOUT_STATUS_LABELS: () => TC_CHECKOUT_STATUS_LABELS,
   TC_CHECKOUT_WAITING: () => TC_CHECKOUT_WAITING,
+  TC_EMAIL_IDENTITY_FIELD_LABELS: () => TC_EMAIL_IDENTITY_FIELD_LABELS,
   TC_INTAKE_KIND_LABELS: () => TC_INTAKE_KIND_LABELS,
   TC_NOTIFICATION_EVENT_LABELS: () => TC_NOTIFICATION_EVENT_LABELS,
   TC_NOTIFICATION_LEVEL_LABELS: () => TC_NOTIFICATION_LEVEL_LABELS,
@@ -14966,6 +14968,11 @@ __export(contract_entry_exports, {
   TcCheckoutSummary: () => TcCheckoutSummary,
   TcCommunication: () => TcCommunication,
   TcContactConsent: () => TcContactConsent,
+  TcEmailIdentityField: () => TcEmailIdentityField,
+  TcEmailIdentityFieldState: () => TcEmailIdentityFieldState,
+  TcEmailIdentityRequest: () => TcEmailIdentityRequest,
+  TcEmailIdentityResponse: () => TcEmailIdentityResponse,
+  TcEmailIdentitySource: () => TcEmailIdentitySource,
   TcEmailTemplate: () => TcEmailTemplate,
   TcFollowup: () => TcFollowup,
   TcGalleryCase: () => TcGalleryCase,
@@ -15019,7 +15026,7 @@ __export(contract_entry_exports, {
   Urgency: () => Urgency,
   Uuid: () => Uuid,
   VoiceHandoffDetail: () => VoiceHandoffDetail,
-  ZodError: () => import_zod9.ZodError,
+  ZodError: () => import_zod10.ZodError,
   allPresetViolations: () => allPresetViolations,
   assertPresetsWithinCaps: () => assertPresetsWithinCaps,
   attachmentProblem: () => attachmentProblem,
@@ -15065,7 +15072,7 @@ __export(contract_entry_exports, {
   templateToRow: () => templateToRow,
   unpricedCheckoutPhases: () => unpricedCheckoutPhases,
   userMapEntryToRow: () => userMapEntryToRow,
-  z: () => import_zod9.z
+  z: () => import_zod10.z
 });
 module.exports = __toCommonJS(contract_entry_exports);
 
@@ -16559,8 +16566,8 @@ function blockHtml(b) {
       return row(a, "#ffffff", "12px 32px", `text-align:${b.align}`);
     }
     case "highlight": {
-      const line = (label, value) => value ? `<tr><td style="color:#64748b;font-size:14px;padding:2px 0">${escapeHtml(label)}</td><td style="font-weight:600;font-size:14px;text-align:right;padding:2px 0">${escapeHtml(value)}</td></tr>` : "";
-      const inner = `<div style="border:1px solid #e2e8f0;border-left:4px solid ${b.accentColor};border-radius:8px;padding:16px 20px;color:#0f172a">` + (b.title ? `<div style="font-size:13px;font-weight:700;color:${b.accentColor};text-transform:uppercase;letter-spacing:0.04em">${escapeHtml(b.title)}</div>` : "") + (b.treatment ? `<div style="font-size:15px;margin-top:6px">${lines(b.treatment)}</div>` : "") + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:10px">` + line("Total fee", b.totalFee) + line("Your portion", b.patientOwes) + (b.showFinancing ? line("Est. monthly", b.monthly) : "") + `</table></div>`;
+      const line2 = (label, value) => value ? `<tr><td style="color:#64748b;font-size:14px;padding:2px 0">${escapeHtml(label)}</td><td style="font-weight:600;font-size:14px;text-align:right;padding:2px 0">${escapeHtml(value)}</td></tr>` : "";
+      const inner = `<div style="border:1px solid #e2e8f0;border-left:4px solid ${b.accentColor};border-radius:8px;padding:16px 20px;color:#0f172a">` + (b.title ? `<div style="font-size:13px;font-weight:700;color:${b.accentColor};text-transform:uppercase;letter-spacing:0.04em">${escapeHtml(b.title)}</div>` : "") + (b.treatment ? `<div style="font-size:15px;margin-top:6px">${lines(b.treatment)}</div>` : "") + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:10px">` + line2("Total fee", b.totalFee) + line2("Your portion", b.patientOwes) + (b.showFinancing ? line2("Est. monthly", b.monthly) : "") + `</table></div>`;
       return row(inner, "#ffffff", "12px 32px");
     }
     case "signature": {
@@ -17775,8 +17782,63 @@ function attachmentProblem(file, alreadyChosen) {
   return null;
 }
 
+// shared/tc/emailIdentity.ts
+var import_zod9 = __toESM(require_zod(), 1);
+var EMAIL_IDENTITY_LIMITS = {
+  replyTo: 254,
+  practiceName: 120,
+  practicePhone: 40
+};
+var TcEmailIdentityField = import_zod9.z.enum(["replyTo", "practiceName", "practicePhone"]);
+var TC_EMAIL_IDENTITY_FIELD_LABELS = {
+  replyTo: "Reply-to address",
+  practiceName: "Practice name",
+  practicePhone: "Practice phone"
+};
+var TcEmailIdentitySource = import_zod9.z.enum(["stored", "env", "none"]);
+var TcEmailIdentityFieldState = import_zod9.z.object({
+  /** What an email sent right now would use, or null. */
+  value: import_zod9.z.string().nullable(),
+  source: TcEmailIdentitySource,
+  /** The value saved in the app for this office, or null when none is. */
+  stored: import_zod9.z.string().nullable(),
+  /** The app setting's value (the fallback), or null when unset or unusable. */
+  fallback: import_zod9.z.string().nullable(),
+  /** The NAME of that app setting, e.g. ACS_EMAIL_REPLY_TO_ROLAND. */
+  fallbackSetting: import_zod9.z.string()
+});
+var TcEmailIdentityResponse = import_zod9.z.object({
+  success: import_zod9.z.literal(true),
+  office: import_zod9.z.enum(["roland", "valley"]),
+  fields: import_zod9.z.object({
+    replyTo: TcEmailIdentityFieldState,
+    practiceName: TcEmailIdentityFieldState,
+    practicePhone: TcEmailIdentityFieldState
+  }),
+  /** Read-only: managed by the platform, bound to the verified sending domain. */
+  from: import_zod9.z.object({
+    /** The sender a patient email uses (this office's own, else the shared one). */
+    patientEmail: import_zod9.z.string().nullable(),
+    /** The sender a referral letter uses (this office's own only). */
+    referral: import_zod9.z.string().nullable()
+  }),
+  /** False when the saved values could not be read since boot (env answers). */
+  policyKnown: import_zod9.z.boolean(),
+  updatedAt: import_zod9.z.string().nullable(),
+  updatedBy: import_zod9.z.string().nullable()
+});
+var SINGLE_LINE = /^[^\u0000-\u001f\u007f]*$/;
+function line(max) {
+  return import_zod9.z.string().trim().min(1).max(max).regex(SINGLE_LINE, "must be a single line of plain text");
+}
+var TcEmailIdentityRequest = import_zod9.z.object({
+  replyTo: line(EMAIL_IDENTITY_LIMITS.replyTo).regex(/^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/, "must be one plain email address").nullable(),
+  practiceName: line(EMAIL_IDENTITY_LIMITS.practiceName).nullable(),
+  practicePhone: line(EMAIL_IDENTITY_LIMITS.practicePhone).nullable()
+}).strict();
+
 // ../backend/tc/contract.entry.ts
-var import_zod9 = __toESM(require_zod());
+var import_zod10 = __toESM(require_zod());
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   ButtonBlock,
@@ -17797,6 +17859,7 @@ var import_zod9 = __toESM(require_zod());
   DIRECTORY_EMAIL_RE,
   DividerBlock,
   DraftMessageBody,
+  EMAIL_IDENTITY_LIMITS,
   EMAIL_MERGE_TOKENS,
   EMAIL_TEXT_BODY_CEILING,
   EMAIL_TEXT_BODY_MAX,
@@ -17886,6 +17949,7 @@ var import_zod9 = __toESM(require_zod());
   TC_CHECKOUT_PRIORITY_ORDER,
   TC_CHECKOUT_STATUS_LABELS,
   TC_CHECKOUT_WAITING,
+  TC_EMAIL_IDENTITY_FIELD_LABELS,
   TC_INTAKE_KIND_LABELS,
   TC_NOTIFICATION_EVENT_LABELS,
   TC_NOTIFICATION_LEVEL_LABELS,
@@ -17922,6 +17986,11 @@ var import_zod9 = __toESM(require_zod());
   TcCheckoutSummary,
   TcCommunication,
   TcContactConsent,
+  TcEmailIdentityField,
+  TcEmailIdentityFieldState,
+  TcEmailIdentityRequest,
+  TcEmailIdentityResponse,
+  TcEmailIdentitySource,
   TcEmailTemplate,
   TcFollowup,
   TcGalleryCase,

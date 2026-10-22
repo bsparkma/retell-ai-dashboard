@@ -44,6 +44,8 @@ export * from "../../new-dashboard/shared/tc/checkout";
 export * from "../../new-dashboard/shared/tc/notifications";
 // Referrals (items 52-55): status/urgency vocabulary, directory, settings.
 export * from "../../new-dashboard/shared/tc/referrals";
+// The office email identity (R5c): reply-to, practice name and phone.
+export * from "../../new-dashboard/shared/tc/emailIdentity";
 // The routes compose small request shapes (status-transition bodies, complete/
 // reschedule payloads) from contract pieces; export the SAME zod instance so
 // those shapes and the contract schemas share one library version.
