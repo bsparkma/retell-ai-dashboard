@@ -612,7 +612,7 @@ test('G: per-office sender ONLY — the shared ACS_EMAIL_FROM never sends a refe
   assert.equal(r.body.reason, 'office_not_configured');
   assert.ok(r.body.missing.includes('ACS_EMAIL_FROM_ROLAND'));
   const s = await apiJson(baseUrl, 'GET', REF('/status'));
-  assert.deepEqual(s.body.emailSend, { enabled: true, unavailable: 'office_not_configured' });
+  assert.deepEqual(s.body.emailSend, { enabled: true, unavailable: 'office_not_configured', missing: ['sending_address'] });
 
   process.env.ACS_EMAIL_FROM_ROLAND = 'donotreply@roland.example.test';
   delete process.env.ACS_EMAIL_REPLY_TO_ROLAND;

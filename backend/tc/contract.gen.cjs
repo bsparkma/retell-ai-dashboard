@@ -14911,6 +14911,7 @@ __export(contract_entry_exports, {
   REFERRAL_ATTACHMENT_HINT: () => REFERRAL_ATTACHMENT_HINT,
   REFERRAL_DOCTOR_EDITABLE_STATUSES: () => REFERRAL_DOCTOR_EDITABLE_STATUSES,
   REFERRAL_EDITABLE_STATUSES: () => REFERRAL_EDITABLE_STATUSES,
+  REFERRAL_EMAIL_MISSING_COPY: () => REFERRAL_EMAIL_MISSING_COPY,
   REFERRAL_EMAIL_UNAVAILABLE_COPY: () => REFERRAL_EMAIL_UNAVAILABLE_COPY,
   REFERRAL_FIELD_EDITABLE_STATUSES: () => REFERRAL_FIELD_EDITABLE_STATUSES,
   REFERRAL_MARK_LABELS: () => REFERRAL_MARK_LABELS,
@@ -14998,6 +14999,7 @@ __export(contract_entry_exports, {
   TcReferralDirectoryEntry: () => TcReferralDirectoryEntry,
   TcReferralDirectoryInput: () => TcReferralDirectoryInput,
   TcReferralDoctorEdit: () => TcReferralDoctorEdit,
+  TcReferralEmailMissing: () => TcReferralEmailMissing,
   TcReferralEmailUnavailable: () => TcReferralEmailUnavailable,
   TcReferralEvent: () => TcReferralEvent,
   TcReferralEventVerb: () => TcReferralEventVerb,
@@ -17456,6 +17458,7 @@ var TcReferralEmailUnavailable = import_zod8.z.enum([
   "not_configured",
   "office_not_configured"
 ]);
+var TcReferralEmailMissing = import_zod8.z.enum(["sending_address", "reply_to"]);
 var TcReferralsStatus = import_zod8.z.object({
   success: import_zod8.z.literal(true),
   office: import_zod8.z.enum(["roland", "valley"]),
@@ -17464,9 +17467,14 @@ var TcReferralsStatus = import_zod8.z.object({
    * R5: referral email. `enabled` is the per-office dark-launch switch
    * (tc_referral_email_enabled) — off means no send UI at all. `unavailable`
    * says why an enabled office still cannot send. Absent from an older server
-   * = off.
+   * = off. `missing` (R5c) rides only with `office_not_configured` and names
+   * which detail; absent = the generic sentence.
    */
-  emailSend: import_zod8.z.object({ enabled: import_zod8.z.boolean(), unavailable: TcReferralEmailUnavailable.nullable() }).optional()
+  emailSend: import_zod8.z.object({
+    enabled: import_zod8.z.boolean(),
+    unavailable: TcReferralEmailUnavailable.nullable(),
+    missing: import_zod8.z.array(TcReferralEmailMissing).optional()
+  }).optional()
 });
 var TcReferralSourceKind = import_zod8.z.enum(["case", "checkout", "hyg_visit", "call"]);
 var TcReferralTeeth = import_zod8.z.union([
@@ -17741,13 +17749,24 @@ var REFERRAL_EMAIL_UNAVAILABLE_COPY = {
   not_configured: "Email sending is not connected yet.",
   office_not_configured: "This office has no referral sending address set up yet."
 };
+var REFERRAL_EMAIL_MISSING_COPY = {
+  reply_to: "This office has no reply-to address for referral email yet \u2014 an admin or office manager can set one in Settings \u2192 Email identity.",
+  sending_address: "This office has no referral sending address set up yet (the platform sets that up)."
+};
+function unavailableCopy(email) {
+  const missing = email.missing;
+  if (email.unavailable !== "office_not_configured" || !missing || missing.length === 0) {
+    return REFERRAL_EMAIL_UNAVAILABLE_COPY[email.unavailable];
+  }
+  return TcReferralEmailMissing.options.filter((k) => missing.includes(k)).map((k) => REFERRAL_EMAIL_MISSING_COPY[k]).join(" ");
+}
 function referralSendBlocker(r, email) {
   if (r.status !== "approved") return "Only an approved referral can be emailed.";
   if (!email || !email.enabled) return "Referral email is not switched on for this office.";
   if (r.sendProblem && r.sendProblem.kind === "conflict") {
     return "This referral was already emailed but could not be marked sent. Check with the specialist, then mark it sent.";
   }
-  if (email.unavailable) return REFERRAL_EMAIL_UNAVAILABLE_COPY[email.unavailable];
+  if (email.unavailable) return unavailableCopy({ unavailable: email.unavailable, missing: email.missing });
   if (!r.specialistEmail) return REFERRAL_NO_EMAIL_COPY;
   return null;
 }
@@ -17929,6 +17948,7 @@ var import_zod10 = __toESM(require_zod());
   REFERRAL_ATTACHMENT_HINT,
   REFERRAL_DOCTOR_EDITABLE_STATUSES,
   REFERRAL_EDITABLE_STATUSES,
+  REFERRAL_EMAIL_MISSING_COPY,
   REFERRAL_EMAIL_UNAVAILABLE_COPY,
   REFERRAL_FIELD_EDITABLE_STATUSES,
   REFERRAL_MARK_LABELS,
@@ -18016,6 +18036,7 @@ var import_zod10 = __toESM(require_zod());
   TcReferralDirectoryEntry,
   TcReferralDirectoryInput,
   TcReferralDoctorEdit,
+  TcReferralEmailMissing,
   TcReferralEmailUnavailable,
   TcReferralEvent,
   TcReferralEventVerb,

@@ -74,6 +74,20 @@ function missingFor(office) {
   return missing;
 }
 
+/**
+ * Which office detail a referral letter lacks, by kind (never a setting
+ * name), so the hub can say which one and who sets it. Only meaningful
+ * alongside office_not_configured.
+ * @param {string} office
+ * @returns {Array<'sending_address'|'reply_to'>}
+ */
+function officeMissing(office) {
+  const missing = [];
+  if (!acsConfig.ownFromAddressFor(office)) missing.push('sending_address');
+  if (!acsConfig.replyToFor(office)) missing.push('reply_to');
+  return missing;
+}
+
 /** Re-read the transport's kill switch from the control plane. Never throws. */
 async function refreshTransportSwitch() {
   try {
@@ -233,6 +247,7 @@ async function transport(message, office) {
 module.exports = {
   unavailableReason,
   missingFor,
+  officeMissing,
   refreshTransportSwitch,
   assertAvailable,
   recipientOf,
