@@ -2050,6 +2050,13 @@ export const POSTING_STEPS = [
    * is what `stuckKind` reads (PM ruling, 2026-10-12).
    */
   "confirm_patient_interrupted",
+  /*
+   * W-21b. `read_od_truth` found the claim deleted, on a plan that may already
+   * have written, so it could not be retired. Its own slug so the screens can
+   * stop offering Post: no press can settle it (`CLAIM_GONE_STEP` in
+   * `postingDrain.js`).
+   */
+  "read_od_truth_claim_gone",
   "document_attach",
 ] as const;
 export type PostingStep = (typeof POSTING_STEPS)[number];

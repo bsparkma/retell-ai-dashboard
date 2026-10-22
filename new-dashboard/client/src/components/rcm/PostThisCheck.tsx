@@ -45,6 +45,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "wouter";
 import { AlertTriangle, CheckCircle2, FileCheck2, Hourglass, Loader2, Send } from "lucide-react";
 import DisabledReason from "@/components/rcm/DisabledReason";
+import { EarlierCheckProof } from "@/components/rcm/EarlierCheckProof";
 import {
   drainPostingQueue,
   getPostingPlan,
@@ -60,6 +61,7 @@ import {
   QUEUE_STATE_COPY,
   SHADOW_MODE_COPY,
   blockedCopy,
+  claimGone,
   queueHint,
   queueStateTone,
 } from "@/features/rcm/posting";
@@ -208,7 +210,13 @@ export default function PostThisCheck({
 
   const { plan, canDrain, drainRequires, postingEnabled, drainEnabled } = state.detail;
   const copy = QUEUE_STATE_COPY[plan.statusLabel];
-  const postable = POSTABLE.has(plan.status);
+  /*
+   * W-21b: still drainable on the server (D-15), but NOT offered here when the
+   * claim is gone — every press reads the same 404, so a Post button would be a
+   * dead press presented as the way out. The not-postable sentence names the
+   * situation instead.
+   */
+  const postable = POSTABLE.has(plan.status) && !claimGone(plan);
   /*
    * A RUN IS UNDER WAY — this press, or one the server says owns the check
    * (`posting`: somebody pressed it and it has not answered yet, from this tab
@@ -334,13 +342,7 @@ export default function PostThisCheck({
         its recorded total. That total is not a current measurement either.
       */}
       {plan.odClaimPaymentNum != null && earlierRun && (
-        <div
-          className="mt-3 rounded-lg border border-border bg-muted/40 p-3 text-sm text-foreground"
-          data-testid="post-this-check-earlier-check"
-        >
-          An Open Dental check #{plan.odClaimPaymentNum} from an earlier run exists. Do not enter
-          this payment again by hand.
-        </div>
+        <EarlierCheckProof checkNum={plan.odClaimPaymentNum} testId="post-this-check-earlier-check" />
       )}
       {plan.odClaimPaymentNum != null &&
         plan.statusLabel !== "posted" &&

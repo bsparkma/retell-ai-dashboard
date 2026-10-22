@@ -64,6 +64,33 @@ export const OUTCOME_UNKNOWN_COPY =
   "landed. Do not enter this payment by hand. Press Post again — posting reads Open Dental " +
   "first and settles what landed before it does anything else.";
 
+/**
+ * W-21b — THE STEP THE DRAIN RECORDS WHEN A PLAN'S CLAIM IS GONE.
+ *
+ * Mirrors `CLAIM_GONE_STEP` in `services/rcm/postingDrain.js`. The plan stays
+ * `outcome_unknown` (legal, drainable — D-15), but every press reads the same
+ * 404, because Open Dental never reissues a ClaimNum. So pressing Post is not a
+ * way out of this row, and the screens stop saying it is.
+ */
+export const CLAIM_GONE_STEP = "read_od_truth_claim_gone";
+
+/**
+ * What an unsettleable plan says instead of "press Post again". The situation,
+ * where to look, and the one hand action that is right — only if the money is
+ * not already there. No figure and no chart-correction steps: nothing measured
+ * this chart.
+ */
+export const CLAIM_GONE_COPY =
+  "The claim this payment was for is no longer in Open Dental, so posting can never confirm " +
+  "what reached the chart — pressing Post again will not change that. Check the patient's " +
+  "chart in Open Dental, and post this payment by hand only if the money isn't there.";
+
+/** Is this the unsettleable case — an unknown outcome over a deleted claim? */
+export function claimGone(row: { status?: string; statusLabel?: string; step: string | null }): boolean {
+  const unknown = row.status === "outcome_unknown" || row.statusLabel === "outcome_unknown";
+  return unknown && row.step === CLAIM_GONE_STEP;
+}
+
 /** What a plan's state means, in the words a biller would use. */
 export const QUEUE_STATE_COPY: Record<PostingQueueLabel, { label: string; hint: string }> = {
   queued: {
@@ -127,6 +154,8 @@ export function queueHint(row: {
   if (row.statusLabel === "failed") {
     return `The run stopped ${stoppedWhile(row.step)}. ${POST_AGAIN_SAFE}`;
   }
+  // W-21b: never "press Post again" over a claim no press can ever find.
+  if (claimGone(row)) return CLAIM_GONE_COPY;
   return QUEUE_STATE_COPY[row.statusLabel].hint;
 }
 
@@ -483,6 +512,8 @@ export const STEP_COPY: Record<PostingStep, string> = {
   // W-21 / W-16: it STARTED that check and did not finish it. Nothing was
   // compared, which is exactly what the stopped screen goes on to say.
   confirm_patient_interrupted: "Starting to check what the patient owes now",
+  // W-21b: the read found the claim deleted, after this plan had written.
+  read_od_truth_claim_gone: "Reading Open Dental and finding the claim no longer there",
   document_attach: "Filing the EOB into the patient chart",
 };
 
