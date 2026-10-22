@@ -2126,6 +2126,19 @@ export const api = {
     );
   },
 
+  /** The TC referral EMAIL switch for every office (R5), with the layer that answered. */
+  async getTcReferralEmailOffices(): Promise<TcReferralsSwitchState> {
+    return request<TcReferralsSwitchState>("/platform/tc-referral-email-offices");
+  },
+
+  /** Turn referral email on or off for ONE office. Returns the state as stored. */
+  async setTcReferralEmailOfficeEnabled(office: string, enabled: boolean): Promise<TcReferralsSwitchState> {
+    return request<TcReferralsSwitchState>(
+      `/platform/tc-referral-email-offices/${encodeURIComponent(office)}`,
+      { method: "PUT", body: JSON.stringify({ enabled }) },
+    );
+  },
+
   // --- call-store jobs (existing /api/admin endpoints, super_admin-gated) ----
   // Deliberately NOT re-homed under /api/platform: forking a job that destroys
   // records would mean two copies of its safety rules.

@@ -33,7 +33,7 @@ import PracticesPanel from "./platform/PracticesPanel";
 import RetentionPanel from "./platform/RetentionPanel";
 import HygienePanel from "./platform/HygienePanel";
 import { TcCheckoutPanel } from "./platform/TcCheckoutPanel";
-import { TcReferralsPanel } from "./platform/TcReferralsPanel";
+import { TcReferralEmailPanel, TcReferralsPanel } from "./platform/TcReferralsPanel";
 
 /** The message to show for a failed request — the server's, whenever it sent one. */
 export function loadError(e: unknown): string {
@@ -155,8 +155,10 @@ export default function Platform() {
           <TcCheckoutPanel />
         </TabsContent>
 
-        <TabsContent value="tc-referrals" className="mt-4">
+        <TabsContent value="tc-referrals" className="mt-4 space-y-8">
           <TcReferralsPanel />
+          {/* R5: referral email has its own switch, beside the referrals one. */}
+          <TcReferralEmailPanel />
         </TabsContent>
       </Tabs>
     </div>

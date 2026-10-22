@@ -10,24 +10,29 @@
  * tc.full (a doctor never gets here — their surface is /tc/referrals/signoff)
  * and dark while referrals is off for the office; the server enforces both.
  *
- * NOTHING SENDS. Sending ships later (R5). Until then an approved referral
- * goes out by hand, and the three marks here — "Mark sent outside the app",
- * "Specialist acknowledged", "Patient seen" — are a person RECORDING that it
- * happened. They email, fax and trigger nothing, and they say so.
+ * SENDING (R5). Where the office has referral email switched on, an approved
+ * referral can be EMAILED to its specialist: a Send button under its card
+ * and in its panel, enabled only when the directory row has an email. It
+ * reads as sent only once the server says ACS accepted it; a failure leaves
+ * it approved with the reason and a retry. Where email is off, nothing here
+ * sends, exactly as before: an approved referral goes out by hand, and the
+ * marks — "Mark sent outside the app", "Specialist acknowledged", "Patient
+ * seen" — are a person RECORDING that it happened. They email, fax and
+ * trigger nothing, and they say so.
  *
- * Every state shown is the server's answer: nothing reads as saved, moved or
- * marked before the server confirms it.
+ * Every state shown is the server's answer: nothing reads as saved, moved,
+ * marked or sent before the server confirms it.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { ChevronDown, ChevronRight, Loader2, Paperclip, Pencil, RefreshCw } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, Mail, Paperclip, Pencil, RefreshCw } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { tcErrorMessage } from "@/features/tc/api";
+import { TcApiError, tcErrorMessage } from "@/features/tc/api";
 import { TcOfficeGate, TcPageHeader, useTcOffice } from "@/features/tc/components/TcShell";
 import {
   editReferralFields,
@@ -39,6 +44,7 @@ import {
   markReferral,
   openReferralAttachment,
   reopenReferral,
+  sendReferralEmail,
   type ReferralMark,
 } from "@/features/tc/referrals/referralsApi";
 import { AttachmentList, ReferralStatusBadge, teethLabel, viewAttachment } from "@/features/tc/referrals/ReferralsPanel";
@@ -48,6 +54,7 @@ import type { OfficeId } from "@shared/tc/contract";
 import {
   REFERRAL_FIELD_EDITABLE_STATUSES,
   REFERRAL_MARK_LABELS,
+  REFERRAL_READY_TO_EMAIL_COPY,
   REFERRAL_READY_TO_SEND_COPY,
   TC_REFERRAL_HUB_GROUPS,
   TC_REFERRAL_STATUS_LABELS,
@@ -56,12 +63,17 @@ import {
   TcReferralStatus,
   referralHubGroup,
   referralReturnedLine,
+  referralSendBlocker,
   referralStatusAge,
   type TcReferral,
   type TcReferralAttachment,
   type TcReferralDirectoryEntry,
   type TcReferralHubQuery,
+  type TcReferralsStatus,
 } from "@shared/tc/referrals";
+
+/** R5: the office's referral-email state, as GET /status answered it (absent = off). */
+export type ReferralEmailState = NonNullable<TcReferralsStatus["emailSend"]>;
 
 export const SOURCE_LABELS: Record<TcReferralSourceKind, string> = {
   case: "TC case",
@@ -121,6 +133,7 @@ export default function TcReferralsHub() {
 
 export function HubInner({ office, now = () => new Date() }: { office: OfficeId; now?: () => Date }) {
   const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [emailSend, setEmailSend] = useState<ReferralEmailState | null>(null);
   const [referrals, setReferrals] = useState<TcReferral[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [entries, setEntries] = useState<TcReferralDirectoryEntry[]>([]);
@@ -139,7 +152,9 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
     let cancelled = false;
     getReferralsStatus(office)
       .then((s) => {
-        if (!cancelled) setEnabled(s.enabled);
+        if (cancelled) return;
+        setEnabled(s.enabled);
+        setEmailSend(s.emailSend ?? null);
       })
       .catch(() => {
         if (!cancelled) setEnabled(false);
@@ -181,7 +196,11 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
     <div className="p-6 space-y-4">
       <TcPageHeader
         title="Referrals"
-        subtitle="Every referral for this office. Nothing is sent from here — sending ships in a later update."
+        subtitle={
+          emailSend?.enabled
+            ? "Every referral for this office. Approved referrals can be emailed to their specialist from here."
+            : "Every referral for this office. Nothing is sent from here — sending ships in a later update."
+        }
         actions={
           <Button variant="outline" size="sm" onClick={load} aria-label="Refresh">
             <RefreshCw className="w-4 h-4" />
@@ -258,7 +277,13 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
                 {!collapsed && g.referrals.length === 0 && <p className="text-xs text-muted-foreground">None</p>}
                 {!collapsed &&
                   g.referrals.map((r) => (
-                    <HubCard key={r.referralId} referral={r} now={at} onOpen={() => setOpenId(r.referralId)} />
+                    <div key={r.referralId} className="space-y-1">
+                      <HubCard referral={r} now={at} onOpen={() => setOpenId(r.referralId)} />
+                      {/* A sibling of the card, never inside it: the card is itself a button. */}
+                      {emailSend?.enabled && r.status === "approved" && (
+                        <CardSend office={office} referral={r} email={emailSend} onDone={load} />
+                      )}
+                    </div>
                   ))}
               </section>
             );
@@ -271,7 +296,78 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
         referralId={openId}
         onClose={() => setOpenId(null)}
         onChanged={load}
+        emailSend={emailSend}
       />
+    </div>
+  );
+}
+
+/**
+ * R5: the send route's refusals are already a person's sentence naming the
+ * cause ("…switched off…", "…unsubscribed…", "The email went out, but…"), so
+ * show it as sent — the generic code mapping would hide which one it was.
+ */
+export function sendErrorMessage(e: unknown): string {
+  return e instanceof TcApiError && e.message ? e.message : tcErrorMessage(e);
+}
+
+/**
+ * R5: email it, and say what happened — only the server's answer. A refusal
+ * or a conflict comes back as the server's own sentence.
+ */
+async function runSend(office: OfficeId, referralId: string): Promise<void> {
+  try {
+    const { outcome } = await sendReferralEmail(office, referralId);
+    toast.success(outcome.message);
+  } catch (e) {
+    toast.error(sendErrorMessage(e));
+  }
+}
+
+/** The send row under an approved card. */
+export function CardSend({
+  office,
+  referral: r,
+  email,
+  onDone,
+}: {
+  office: OfficeId;
+  referral: TcReferral;
+  email: ReferralEmailState;
+  onDone: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const blocker = referralSendBlocker(r, email);
+  const failed = r.sendProblem?.kind === "failed" ? r.sendProblem : null;
+  return (
+    <div className="flex flex-wrap items-center gap-2 px-1 text-xs" data-testid="tc-hub-card-send">
+      <Button
+        size="sm"
+        variant="outline"
+        className="h-7 gap-1"
+        disabled={busy || blocker !== null}
+        title={blocker ?? (r.specialistEmail ? `Email it to ${r.specialistEmail}` : undefined)}
+        onClick={async () => {
+          setBusy(true);
+          await runSend(office, r.referralId);
+          setBusy(false);
+          onDone();
+        }}
+      >
+        {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Mail className="w-3.5 h-3.5" />}
+        {failed ? "Retry send" : "Send"}
+      </Button>
+      {blocker ? (
+        <span className="text-muted-foreground" data-testid="tc-hub-card-send-blocked">
+          {blocker}
+        </span>
+      ) : failed ? (
+        <span className="text-amber-800 dark:text-amber-300" data-testid="tc-hub-card-send-failed">
+          Last email did not go out — {failed.note}
+        </span>
+      ) : (
+        <span className="text-muted-foreground truncate">to {r.specialistEmail}</span>
+      )}
     </div>
   );
 }
@@ -353,11 +449,14 @@ export function HubDetail({
   referralId,
   onClose,
   onChanged,
+  emailSend = null,
 }: {
   office: OfficeId;
   referralId: string | null;
   onClose: () => void;
   onChanged: () => void;
+  /** R5: the office's referral-email state; null / off = no send UI, as before. */
+  emailSend?: ReferralEmailState | null;
 }) {
   const [r, setR] = useState<TcReferral | null>(null);
   const [files, setFiles] = useState<TcReferralAttachment[]>([]);
@@ -414,6 +513,28 @@ export function HubDetail({
       toast.success(ok);
     } catch (e) {
       setServerError(tcErrorMessage(e));
+    } finally {
+      setBusy(false);
+      onChanged();
+    }
+  }
+
+  /** R5: email it. Shows the server's answer; on a refusal, re-reads it so a send_failed / conflict row shows. */
+  async function send() {
+    if (!r) return;
+    setBusy(true);
+    setServerError(null);
+    try {
+      const { referral, outcome } = await sendReferralEmail(office, r.referralId);
+      setR(referral);
+      toast.success(outcome.message);
+    } catch (e) {
+      setServerError(sendErrorMessage(e));
+      try {
+        setR(await getReferral(office, r.referralId));
+      } catch {
+        // Keep what is shown; the error above already says it did not go.
+      }
     } finally {
       setBusy(false);
       onChanged();
@@ -513,7 +634,11 @@ export function HubDetail({
                 )}
                 {r.status === "approved" && (
                   <>
-                    <p className="text-xs font-medium text-emerald-700 dark:text-emerald-400">{REFERRAL_READY_TO_SEND_COPY}</p>
+                    {emailSend?.enabled ? (
+                      <SendBox referral={r} email={emailSend} busy={busy} onSend={() => void send()} />
+                    ) : (
+                      <p className="text-xs font-medium text-emerald-700 dark:text-emerald-400">{REFERRAL_READY_TO_SEND_COPY}</p>
+                    )}
                     <Button size="sm" variant="outline" className="gap-1" onClick={() => startEdit("reopen")}>
                       <Pencil className="w-3.5 h-3.5" /> Edit (re-approval needed)
                     </Button>
@@ -549,6 +674,55 @@ export function HubDetail({
         )}
       </SheetContent>
     </Sheet>
+  );
+}
+
+/**
+ * R5: the detail panel's send box — who it goes to, the last attempt's
+ * trouble, and the button (disabled, with the reason, when it cannot go).
+ */
+function SendBox({
+  referral: r,
+  email,
+  busy,
+  onSend,
+}: {
+  referral: TcReferral;
+  email: ReferralEmailState;
+  busy: boolean;
+  onSend: () => void;
+}) {
+  const blocker = referralSendBlocker(r, email);
+  const problem = r.sendProblem ?? null;
+  return (
+    <div className="space-y-2 rounded-lg border border-border p-3" data-testid="tc-hub-send">
+      <p className="text-xs font-medium text-emerald-700 dark:text-emerald-400">{REFERRAL_READY_TO_EMAIL_COPY}</p>
+      {r.specialistEmail && (
+        <p className="text-sm" data-testid="tc-hub-send-to">
+          To: {r.practiceName ? `${r.practiceName} — ` : ""}
+          {r.specialistEmail}
+        </p>
+      )}
+      {problem?.kind === "failed" && (
+        <p className="rounded-md bg-amber-50 p-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200" data-testid="tc-hub-send-failed">
+          The last email did not go out — {problem.note} You can try again.
+        </p>
+      )}
+      {problem?.kind === "conflict" && (
+        <p className="rounded-md bg-red-50 p-2 text-sm text-red-900 dark:bg-red-950 dark:text-red-200" data-testid="tc-hub-send-conflict">
+          {problem.note}
+        </p>
+      )}
+      <Button size="sm" className="gap-1" onClick={onSend} disabled={busy || blocker !== null} data-testid="tc-hub-send-button">
+        {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
+        {problem?.kind === "failed" ? "Retry send" : "Send to specialist"}
+      </Button>
+      {blocker && (
+        <p className="text-xs text-muted-foreground" data-testid="tc-hub-send-blocked">
+          {blocker}
+        </p>
+      )}
+    </div>
   );
 }
 
