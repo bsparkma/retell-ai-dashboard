@@ -132,6 +132,7 @@
  */
 
 const odPostingWrites = require('./odPostingWrites');
+const postingIntent = require('./postingIntent');
 const odOfficeConfig = require('./odOfficeConfig');
 const postingGate = require('./postingGate');
 const lineDecisions = require('./lineDecisions');
@@ -245,7 +246,38 @@ const QUEUE_STATUS_LABEL = Object.freeze({
   failed: 'failed',
   blocked: 'blocked',
   withdrawn: 'withdrawn',
+  // W-21. A write may or may not have landed and nothing has read the chart
+  // since. Its own word: never `failed` (nothing moved) and never `posted`.
+  outcome_unknown: 'outcome_unknown',
 });
+
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * W-21 / W-16: THE STEP A SETTLED ENDING RECORDS WHEN IT STOPPED MID-CONFIRM
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The screens' W-16 key (`stuckKind`) reads `partially_posted` at
+ * `confirm_patient` as "the patient-balance measurement COMPLETED and disagreed"
+ * — and until W-21 that was structurally true, because the measured branch was
+ * the only way a plan ended at that step as `partially_posted`.
+ *
+ * W-21 creates the first other way: the run dies DURING confirm_patient, after
+ * the check exists. That plan is `partially_posted` (there is proof money
+ * landed) but nothing was measured. Recording its step as `confirm_patient`
+ * would make the screen print an exception as a measurement and offer
+ * chart-correction steps over a chart nobody compared — W-16 again.
+ *
+ * So every ending the drain SETTLES from evidence (rather than the measured
+ * branch's own finalise) records this slug instead, which restores the proxy
+ * structurally: `confirm_patient` keeps meaning exactly "measured". When in
+ * doubt this is the answer — it under-claims, and under-claiming is the safe
+ * direction. (PM ruling, 2026-10-12.)
+ */
+const CONFIRM_INTERRUPTED_STEP = 'confirm_patient_interrupted';
+
+/** @param {string|null} step */
+function settledStep(step) {
+  return step === 'confirm_patient' ? CONFIRM_INTERRUPTED_STEP : step;
+}
 
 /**
  * Why a plan was withdrawn. Two causes, and a third would be a design decision
@@ -358,6 +390,14 @@ const DRAINABLE_STATUSES = Object.freeze([
   'failed',
   'partially_posted',
   'blocked',
+  /*
+   * W-21. The same standing ruling as `blocked`: a row with no exit is a trap,
+   * and pressing Post is a human act. The press that picks this up re-reads
+   * Open Dental and settles every pending intent BEFORE any write is retried —
+   * see `settlePendingIntents` — and if it still cannot tell, it says so again
+   * rather than guessing.
+   */
+  'outcome_unknown',
 ]);
 
 /**
@@ -1788,6 +1828,319 @@ async function auditOd(req, entry) {
   });
 }
 
+// ─── W-21: write-ahead intent, and endings judged from evidence ──────────────
+
+const { WRITE_KINDS, OUTCOMES } = postingIntent;
+
+/**
+ * Commit an intent, then attempt the write it names.
+ *
+ * The receipt exists only once the INSERT has returned, and the write function
+ * refuses without it — so the trace is in Postgres before the call leaves the
+ * process. A named 4xx refusal settles the intent `refused` (Open Dental
+ * answered no to this write). ANY other throw leaves it `pending`: a dead
+ * socket, a 5xx or a lost response says nothing about whether the write landed.
+ *
+ * Settling the success is the CALLER's job, AFTER it has persisted whatever id
+ * the write produced — so a crash between the two leaves `pending` (resolved by
+ * a re-read) rather than `landed` with the id nowhere on the line.
+ *
+ * @param {{ pool: any, office: string }} ctx
+ * @param {object} plan
+ * @param {{ writeKind: string, queueLineId?: string|null, odClaimNum?: number|null,
+ *           target: Record<string, unknown> }} spec
+ * @param {(intent: object) => Promise<any>} write
+ * @returns {Promise<{ intent: object, out: any }>}
+ */
+async function attemptWrite(ctx, plan, spec, write) {
+  const intent = await postingIntent.recordIntent(ctx.pool, {
+    office: ctx.office,
+    queueId: plan.queue.queueId,
+    queueLineId: spec.queueLineId || null,
+    odClaimNum: spec.odClaimNum == null ? null : spec.odClaimNum,
+    attempt: plan.queue.attemptCount,
+    writeKind: spec.writeKind,
+    target: spec.target,
+  });
+  try {
+    return { intent, out: await write(intent) };
+  } catch (err) {
+    if (odPostingWrites.isWriteRefusal(err)) {
+      await postingIntent.resolveIntent(ctx.pool, intent, OUTCOMES.REFUSED, {
+        status: err.status,
+        code: err.code,
+      });
+    }
+    throw err;
+  }
+}
+
+/**
+ * Settle a write whose read-back came back. `agreed: false` is still PROOF the
+ * write reached the chart's target — it is what G2 looks like — so it is
+ * `disagreed`, never `absent`.
+ */
+async function settleWrite(pool, intent, verdict, ids) {
+  await postingIntent.resolveIntent(
+    pool,
+    intent,
+    verdict && verdict.agreed ? OUTCOMES.LANDED : OUTCOMES.DISAGREED,
+    {
+      via: 'read_back',
+      agreed: Boolean(verdict && verdict.agreed),
+      mismatches: ((verdict && verdict.mismatches) || []).map((m) => m.field),
+      ...(ids || {}),
+    }
+  );
+}
+
+/**
+ * RESOLVE BY RE-READING, BEFORE ANY RETRY IS ALLOWED.
+ *
+ * Every intent an earlier attempt left `pending` is matched against what Open
+ * Dental holds NOW, and settled `landed`, `disagreed` or `absent` from that
+ * read alone. An id the chart proves this plan created — an adjustment, a
+ * supplemental — is written back onto its line, so the adopt-before-create
+ * guards below see it and a resume can never book the same money twice.
+ *
+ * Anything the read cannot decide stays `pending` — a claimproc that has
+ * vanished, two candidate adjustments that both fit. Ambiguity is a refusal,
+ * not a coin flip, and the caller ends the run `outcome_unknown` rather than
+ * writing past it.
+ *
+ * Mutates `intents` (each settled one's `outcome`) and the in-memory lines it
+ * back-fills, because the rest of this run decides from those objects.
+ *
+ * @returns {Promise<number>} how many intents are still pending
+ */
+async function settlePendingIntents(ctx, plan, intents, claimByNum, claimProcsByClaim) {
+  const { pool, req, office, od } = ctx;
+  const queueId = plan.queue.queueId;
+  const pending = intents.filter(
+    (i) => i.outcome === OUTCOMES.PENDING && i.writeKind !== WRITE_KINDS.DOCUMENT_UPLOAD
+  );
+  if (pending.length === 0) return 0;
+
+  const procsFor = async (claimNum) => {
+    const key = Number(claimNum);
+    if (!claimProcsByClaim.has(key)) {
+      claimProcsByClaim.set(key, await odPostingWrites.readClaimProcsForClaim(od, key));
+      await auditOd(req, { action: 'READ', resourceType: 'rcm_od_claimproc', resourceId: key, office });
+    }
+    return claimProcsByClaim.get(key) || [];
+  };
+  /** @type {Map<number, Record<string, unknown>[]>} */
+  const adjByPatient = new Map();
+  const adjFor = async (patNum) => {
+    const key = Number(patNum);
+    if (!adjByPatient.has(key)) {
+      adjByPatient.set(key, await odPostingWrites.readAdjustmentsForPatient(od, key));
+      await auditOd(req, { action: 'READ', resourceType: 'rcm_od_adjustment', resourceId: key, office });
+    }
+    return adjByPatient.get(key) || [];
+  };
+
+  // Ids a line already owns can never be adopted a second time by another line.
+  const taken = new Set();
+  for (const l of plan.lines) {
+    for (const n of [l.odAdjustmentNum, l.odWriteoffAdjustmentNum, l.odSupplementalClaimProcNum]) {
+      if (n != null) taken.add(Number(n));
+    }
+  }
+  const lineById = new Map(plan.lines.map((l) => [l.queueLineId, l]));
+  const cents = (v) => odPostingWrites.dollarsToCents(v);
+
+  for (const intent of pending) {
+    const t = intent.target || {};
+    /** @type {{ outcome: string, evidence: Record<string, unknown> }|null} */
+    let settled = null;
+
+    switch (intent.writeKind) {
+      case WRITE_KINDS.CLAIMPROC_RECEIVED: {
+        const row = (await procsFor(t.claimNum)).find(
+          (r) => Number(r.ClaimProcNum) === Number(t.claimProcNum)
+        );
+        if (!row) break; // the target is gone — the read cannot say; stays pending
+        const cmp = odPostingWrites.compareClaimProc(
+          {
+            Status: 'Received',
+            InsPayAmt: odPostingWrites.centsToDollars(t.insPayAmtCents),
+            WriteOff: odPostingWrites.centsToDollars(t.writeOffCents),
+            DedApplied: odPostingWrites.centsToDollars(t.dedAppliedCents),
+          },
+          row
+        );
+        const status = String(row.Status || '').trim();
+        if (cmp.agreed) settled = { outcome: OUTCOMES.LANDED, evidence: {} };
+        else if (status !== 'Received' && !cents(row.InsPayAmt)) {
+          settled = { outcome: OUTCOMES.ABSENT, evidence: { status } };
+        } else {
+          settled = {
+            outcome: OUTCOMES.DISAGREED,
+            evidence: { mismatches: cmp.mismatches.map((m) => m.field) },
+          };
+        }
+        break;
+      }
+
+      case WRITE_KINDS.CLAIM_RECEIVED: {
+        const claim = claimByNum.get(Number(t.claimNum));
+        if (!claim) break;
+        const isR = String(claim.ClaimStatus || '').trim() === 'R';
+        const dateOk = String(claim.DateReceived || '').slice(0, 10) === String(t.dateReceived);
+        const noteOk = !t.withNote || String(claim.ClaimNote || '').includes(queueId);
+        if (isR && dateOk && noteOk) settled = { outcome: OUTCOMES.LANDED, evidence: {} };
+        // A PUT sets every field it carries or none of them: a claim not at `R`,
+        // or one at `R` without the note this write carried, did not take it.
+        else if (!isR || (dateOk && !noteOk)) {
+          settled = { outcome: OUTCOMES.ABSENT, evidence: { claimStatus: isR ? 'R' : 'not_R' } };
+        } else settled = { outcome: OUTCOMES.DISAGREED, evidence: { mismatches: ['DateReceived'] } };
+        break;
+      }
+
+      case WRITE_KINDS.CLAIM_PAYMENT: {
+        const ours = new Set((t.claimProcNums || []).map(Number));
+        const checks = new Set();
+        for (const claimNum of t.claimNums || []) {
+          for (const row of await procsFor(claimNum)) {
+            if (!ours.has(Number(row.ClaimProcNum))) continue;
+            const n = odPostingWrites.attachedCheckNum(row);
+            if (n > 0) checks.add(n);
+          }
+        }
+        if (checks.size === 1) {
+          settled = { outcome: OUTCOMES.LANDED, evidence: { claimPaymentNum: [...checks][0] } };
+        } else if (checks.size === 0) {
+          settled = { outcome: OUTCOMES.ABSENT, evidence: {} };
+        }
+        // Two or more checks across our own lines: not decidable here. The
+        // check step refuses that shape too (OD_MULTIPLE_CHECKS).
+        break;
+      }
+
+      case WRITE_KINDS.WRITEOFF_ADJUSTMENT:
+      case WRITE_KINDS.RECOUPMENT_ADJUSTMENT: {
+        const candidates = (await adjFor(t.odPatientId)).filter(
+          (r) =>
+            Number(r.AdjType) === Number(t.adjTypeDefNum) &&
+            cents(r.AdjAmt) === Number(t.amountCents) &&
+            String(r.AdjNote || '').includes(queueId) &&
+            !taken.has(Number(r.AdjNum))
+        );
+        if (candidates.length === 0) settled = { outcome: OUTCOMES.ABSENT, evidence: {} };
+        else if (candidates.length === 1) {
+          const adjNum = Number(candidates[0].AdjNum);
+          taken.add(adjNum);
+          const line = lineById.get(intent.queueLineId);
+          if (line && intent.writeKind === WRITE_KINDS.WRITEOFF_ADJUSTMENT && !line.odWriteoffAdjustmentNum) {
+            await persistLine(pool, line.queueLineId, { odWriteoffAdjustmentNum: adjNum });
+            line.odWriteoffAdjustmentNum = adjNum;
+          }
+          if (line && intent.writeKind === WRITE_KINDS.RECOUPMENT_ADJUSTMENT && !line.odAdjustmentNum) {
+            await persistLine(pool, line.queueLineId, {
+              status: 'recouped',
+              odAdjustmentNum: adjNum,
+              paidAt: true,
+              lastError: null,
+            });
+            line.odAdjustmentNum = adjNum;
+            line.status = 'recouped';
+          }
+          settled = { outcome: OUTCOMES.LANDED, evidence: { adjNum } };
+        }
+        break;
+      }
+
+      case WRITE_KINDS.RECOUPMENT_SUPPLEMENTAL: {
+        const candidates = (await procsFor(t.claimNum)).filter(
+          (r) =>
+            String(r.Status || '').trim() === 'Supplemental' &&
+            cents(r.InsPayAmt) === Number(t.insPayAmtCents) &&
+            !taken.has(Number(r.ClaimProcNum)) &&
+            (r.Remarks == null || String(r.Remarks).includes(queueId))
+        );
+        if (candidates.length === 0) settled = { outcome: OUTCOMES.ABSENT, evidence: {} };
+        else if (candidates.length === 1) {
+          const claimProcNum = Number(candidates[0].ClaimProcNum);
+          taken.add(claimProcNum);
+          const line = lineById.get(intent.queueLineId);
+          if (line && !line.odSupplementalClaimProcNum) {
+            await persistLine(pool, line.queueLineId, {
+              status: 'recouped',
+              odSupplementalClaimProcNum: claimProcNum,
+              paidAt: true,
+              lastError: null,
+            });
+            line.odSupplementalClaimProcNum = claimProcNum;
+            line.status = 'recouped';
+          }
+          settled = { outcome: OUTCOMES.LANDED, evidence: { claimProcNum } };
+        }
+        break;
+      }
+
+      default:
+        break;
+    }
+
+    if (settled) {
+      await postingIntent.resolveIntent(pool, intent, settled.outcome, {
+        via: 're_read',
+        ...settled.evidence,
+      });
+      intent.outcome = settled.outcome;
+    }
+  }
+
+  return intents.filter(
+    (i) => i.outcome === OUTCOMES.PENDING && i.writeKind !== WRITE_KINDS.DOCUMENT_UPLOAD
+  ).length;
+}
+
+/**
+ * Classify what the record PROVES about a plan. Never what the crash implies.
+ *
+ * Stored proof on a line (a written status, a check number, an adjustment id)
+ * counts alongside the intents, so a plan that predates the intent table is
+ * judged by what it recorded rather than read as untouched.
+ *
+ * @param {object} plan
+ * @param {ReadonlyArray<object>} intents
+ */
+function classifyPlanEvidence(plan, intents) {
+  return postingIntent.classifyPlan({
+    lines: plan.lines.map((l) => ({ odClaimNum: l.odClaimNum, storedProof: chartTouchedBy([l]) })),
+    intents,
+  });
+}
+
+/**
+ * END A ROW FROM EVIDENCE — the replacement for "which step did it die at".
+ *
+ * Re-reads every intent this plan has ever recorded (the in-memory ones may be
+ * a step behind) and classifies claim by claim. The step recorded is
+ * `settledStep(step)`, so a stop mid-confirmation can never be read as a
+ * measurement (see `CONFIRM_INTERRUPTED_STEP`).
+ *
+ * The check number is assigned only when the caller has one, exactly as
+ * `finalizeRow` always did — a null would erase the proof a resume adopts.
+ *
+ * @returns {Promise<ReturnType<typeof postingIntent.classifyPlan>>}
+ */
+async function settleEnding(ctx, plan, step, detail, extra = {}) {
+  const intents = await postingIntent.listIntents(ctx.pool, ctx.office, plan.queue.queueId);
+  const ending = classifyPlanEvidence(plan, intents);
+  await finalizeRow(ctx.pool, plan.queue.queueId, {
+    status: ending.status,
+    odClaimPaymentNum: extra.odClaimPaymentNum == null ? null : extra.odClaimPaymentNum,
+    reconciled: false,
+    postedTotalCents: ending.status === 'failed' ? 0 : Number(extra.postedTotalCents || 0),
+    lastError: detail,
+    step: settledStep(step),
+  });
+  return ending;
+}
+
 // ─── The row sequence ────────────────────────────────────────────────────────
 
 /**
@@ -1941,14 +2294,34 @@ async function drainTakebacks(ctx, plan, takebackLines, config, claimById, note)
         throw refusal;
       }
 
-      const { adjNum, verdict } = await odPostingWrites.writeRecoupmentAdjustment(od, {
-        odPatientId: claim.odPatientId,
-        adjTypeDefNum: adjType.defNum,
-        amountCents: line.intendedInsPayAmtCents,
-        adjDate: plan.queue.carrierEobDate || officeToday(),
-        note,
-        odProcNum: null,
-      });
+      const { intent, out } = await attemptWrite(
+        ctx,
+        plan,
+        {
+          writeKind: WRITE_KINDS.RECOUPMENT_ADJUSTMENT,
+          queueLineId: line.queueLineId,
+          odClaimNum: line.odClaimNum,
+          target: {
+            odPatientId: claim.odPatientId,
+            adjTypeDefNum: adjType.defNum,
+            amountCents: line.intendedInsPayAmtCents,
+          },
+        },
+        (receipt) =>
+          odPostingWrites.writeRecoupmentAdjustment(
+            od,
+            {
+              odPatientId: claim.odPatientId,
+              adjTypeDefNum: adjType.defNum,
+              amountCents: line.intendedInsPayAmtCents,
+              adjDate: plan.queue.carrierEobDate || officeToday(),
+              note,
+              odProcNum: null,
+            },
+            receipt
+          )
+      );
+      const { adjNum, verdict } = out;
       await auditOd(req, {
         action: 'CREATE',
         resourceType: 'rcm_od_adjustment',
@@ -1977,6 +2350,7 @@ async function drainTakebacks(ctx, plan, takebackLines, config, claimById, note)
           : 'Open Dental accepted the adjustment but read back different values: ' +
             verdict.mismatches.map((m) => m.field).join(', '),
       });
+      await settleWrite(pool, intent, verdict, { adjNum });
       await stepPause(ctx, 'recoupment_adjustment');
 
       if (!verdict.agreed) {
@@ -2003,12 +2377,28 @@ async function drainTakebacks(ctx, plan, takebackLines, config, claimById, note)
      * verdict. If this process dies between the 201 and the next statement, the
      * supplemental is in the chart and nothing anywhere would know its number.
      */
-    const { claimProcNum, verdict } = await odPostingWrites.writeRecoupmentSupplemental(od, {
-      claimNum: line.odClaimNum,
-      odProcNum: null,
-      insPayAmtCents: line.intendedInsPayAmtCents,
-      note,
-    });
+    const { intent, out } = await attemptWrite(
+      ctx,
+      plan,
+      {
+        writeKind: WRITE_KINDS.RECOUPMENT_SUPPLEMENTAL,
+        queueLineId: line.queueLineId,
+        odClaimNum: line.odClaimNum,
+        target: { claimNum: line.odClaimNum, insPayAmtCents: line.intendedInsPayAmtCents },
+      },
+      (receipt) =>
+        odPostingWrites.writeRecoupmentSupplemental(
+          od,
+          {
+            claimNum: line.odClaimNum,
+            odProcNum: null,
+            insPayAmtCents: line.intendedInsPayAmtCents,
+            note,
+          },
+          receipt
+        )
+    );
+    const { claimProcNum, verdict } = out;
     await auditOd(req, {
       action: 'CREATE',
       resourceType: 'rcm_od_claimproc_supplemental',
@@ -2048,6 +2438,12 @@ async function drainTakebacks(ctx, plan, takebackLines, config, claimById, note)
           'through the API, and it now pins its claim and procedure. Correct it in Open ' +
           "Dental's desktop application; do not drain this plan again expecting a fix.",
     });
+    /*
+     * Settled only when there is an id to stand on. A 201 with no ClaimProcNum
+     * whose read-back found nothing is not proof of anything — the intent stays
+     * `pending` and the next press re-reads the claim for it.
+     */
+    if (claimProcNum != null) await settleWrite(pool, intent, verdict, { claimProcNum });
     await stepPause(ctx, 'recoupment_supplemental');
 
     if (!verdict.agreed) {
@@ -2261,6 +2657,11 @@ async function attachEobDocuments(ctx, plan, config, claimById) {
     /** @type {string|null} */
     let firstError = null;
 
+    /** Uploads an earlier attempt recorded and never settled (W-21). */
+    const priorDocIntents = (await postingIntent.listIntents(pool, office, queueId)).filter(
+      (i) => i.writeKind === WRITE_KINDS.DOCUMENT_UPLOAD
+    );
+
     for (const odPatientId of patients) {
       /*
        * The intent row is written BEFORE the upload, so a process that dies
@@ -2302,21 +2703,53 @@ async function attachEobDocuments(ctx, plan, config, claimById) {
           (d) => String(d.Description || '').trim() === description.trim()
         );
 
+        /*
+         * W-21: THE READ ABOVE IS ALSO WHAT SETTLES AN EARLIER ATTEMPT'S UPLOAD.
+         * A document carrying our description proves a pending upload for this
+         * patient landed; its absence proves it did not — and that is settled
+         * BEFORE this attempt records an intent of its own.
+         */
+        for (const prior of priorDocIntents.filter(
+          (i) => i.outcome === OUTCOMES.PENDING && Number(i.target.odPatientId) === odPatientId
+        )) {
+          await postingIntent.resolveIntent(
+            pool,
+            prior,
+            mine ? OUTCOMES.LANDED : OUTCOMES.ABSENT,
+            mine ? { via: 're_read', docNum: Number(mine.DocNum) } : { via: 're_read' }
+          );
+          prior.outcome = mine ? OUTCOMES.LANDED : OUTCOMES.ABSENT;
+        }
+
         let docNum;
         if (mine) {
           // Filed by an earlier attempt whose response we never saw.
           docNum = Number(mine.DocNum);
         } else {
-          const uploaded = await odPostingWrites.writeDocumentUpload(od, {
-            odPatientId,
-            docCategoryDefNum: docCategory.defNum,
-            description,
-            base64: pdf.base64,
-            extension: pdf.extension || '.pdf',
-            // `DateCreated` wants "yyyy-MM-dd HH:mm:ss" here and nowhere else in
-            // this API. Spike 0b hit that; it is Open Dental's inconsistency.
-            dateCreated: `${officeToday()} 00:00:00`,
-          });
+          const { intent, out: uploaded } = await attemptWrite(
+            ctx,
+            plan,
+            {
+              writeKind: WRITE_KINDS.DOCUMENT_UPLOAD,
+              target: { odPatientId, docCategoryDefNum: docCategory.defNum },
+            },
+            (receipt) =>
+              odPostingWrites.writeDocumentUpload(
+                od,
+                {
+                  odPatientId,
+                  docCategoryDefNum: docCategory.defNum,
+                  description,
+                  base64: pdf.base64,
+                  extension: pdf.extension || '.pdf',
+                  // `DateCreated` wants "yyyy-MM-dd HH:mm:ss" here and nowhere else in
+                  // this API. Spike 0b hit that; it is Open Dental's inconsistency.
+                  dateCreated: `${officeToday()} 00:00:00`,
+                },
+                receipt
+              )
+          );
+          await settleWrite(pool, intent, uploaded.verdict, { docNum: uploaded.docNum });
           await auditOd(req, {
             action: 'CREATE',
             resourceType: 'rcm_od_document',
@@ -2672,6 +3105,14 @@ async function drainRow(ctx, queueId) {
     step = 'read_od_truth';
     await persistStep(pool, queueId, step);
 
+    /*
+     * W-21: every intent this plan has EVER recorded, every attempt. Read before
+     * the chart so the 404 branch below can see whether an earlier attempt may
+     * have written, and so `settlePendingIntents` can match each unsettled one
+     * against what the chart holds once it has been read.
+     */
+    const priorIntents = await postingIntent.listIntents(pool, office, queueId);
+
     /** @type {Map<number, Record<string, unknown>[]>} */
     const claimProcsByClaim = new Map();
     /** @type {Map<number, Record<string, unknown>>} */
@@ -2719,21 +3160,25 @@ async function drainRow(ctx, queueId) {
            * partly did. The database would not stop it either; its withdrawal
            * CHECK guards the check number, not the claimproc writes.
            */
-          if (chartTouchedBy(plan.lines)) {
+          /*
+           * W-21: "has this plan written?" is now answered by the EVIDENCE — the
+           * stored proof on its lines AND every intent an earlier attempt
+           * recorded. An intent nobody has settled is a write that may be in a
+           * chart, and that is reason enough not to retire the plan.
+           *
+           * The ending is classified rather than hard-coded `failed`: money that
+           * provably moved is `partially_posted`, a write nobody could check is
+           * `outcome_unknown`, and only a plan whose every attempt is proven
+           * not to have landed reaches the withdrawal below.
+           */
+          if (classifyPlanEvidence(plan, priorIntents).status !== 'failed') {
             const detail =
               `Open Dental has no claim ${group.odClaimNum} in this office, but this plan has ` +
               'already written to a chart on a previous attempt. It is NOT retired — a human ' +
               'has to decide what happened to the part that posted.';
             console.error(`[rcm/drain] ${office} plan ${queueId}: ${detail}`);
-            await finalizeRow(pool, queueId, {
-              status: 'failed',
-              odClaimPaymentNum: null,
-              reconciled: false,
-              postedTotalCents: 0,
-              lastError: detail,
-              step,
-            });
-            return { queueId, status: 'failed', detail };
+            const ending = await settleEnding(ctx, plan, step, detail);
+            return { queueId, status: ending.status, detail };
           }
 
           await withdrawRow(pool, office, queueId, {
@@ -2787,6 +3232,36 @@ async function drainRow(ctx, queueId) {
         office,
       });
       adoptable.add(plan.queue.odClaimPaymentNum);
+    }
+
+    /*
+     * ── W-21: SETTLE WHAT AN EARLIER ATTEMPT LEFT UNKNOWN, BEFORE ANY RETRY ──
+     *
+     * A `pending` intent is a write that may or may not be in the chart. It is
+     * matched against the reads just made (plus any it needs of its own) and
+     * settled from that evidence alone. Only once EVERY one is settled may this
+     * run decide anything — a retry on top of a write nobody has accounted for
+     * is exactly how a payment lands twice.
+     *
+     * Still unsettled after the re-read means the chart cannot say. The run
+     * stops there, `outcome_unknown`, having written nothing — and says so,
+     * rather than picking an answer.
+     */
+    const stillPending = await settlePendingIntents(
+      ctx,
+      plan,
+      priorIntents,
+      claimByNum,
+      claimProcsByClaim
+    );
+    if (stillPending > 0) {
+      const detail =
+        `${stillPending} earlier write(s) to Open Dental could not be confirmed either way by ` +
+        're-reading the chart. Nothing was retried. Do not enter this payment by hand.';
+      const ending = await settleEnding(ctx, plan, step, detail, {
+        postedTotalCents: plan.queue.postedTotalCents,
+      });
+      return { queueId, status: ending.status, reason: 'outcome_unresolved', detail };
     }
 
     /*
@@ -2847,15 +3322,25 @@ async function drainRow(ctx, queueId) {
           lastError: 'Open Dental holds different amounts for this line than this plan intends.',
         });
       }
-      await finalizeRow(pool, queueId, {
-        status: 'failed',
-        postedTotalCents: 0,
-        lastError:
-          `${conflicted.length} line(s) already carry different amounts in Open Dental. ` +
-          'Nothing was written. Re-match and re-approve, or resolve the chart first.',
+      /*
+       * W-21: this run wrote nothing — but an EARLIER attempt may have, and a
+       * hard-coded `failed` + "Nothing was written" would say otherwise about a
+       * plan whose other claims already posted. The ending is classified, and
+       * the sentence only claims nothing was written when the evidence does.
+       */
+      const ending = classifyPlanEvidence(plan, priorIntents);
+      const settled = await settleEnding(
+        ctx,
+        plan,
         step,
-      });
-      return { queueId, status: 'failed', reason: 'od_conflict' };
+        `${conflicted.length} line(s) already carry different amounts in Open Dental. ` +
+          (ending.nothingWritten
+            ? 'Nothing was written. '
+            : 'Nothing was written by this attempt; an earlier attempt did write to this plan. ') +
+          'Re-match and re-approve, or resolve the chart first.',
+        { postedTotalCents: plan.queue.postedTotalCents }
+      );
+      return { queueId, status: settled.status, reason: 'od_conflict' };
     }
 
     /*
@@ -2985,13 +3470,25 @@ async function drainRow(ctx, queueId) {
          * `lineDecisions.test.js` pins that as an identity over both modes.
          */
         const figures = figuresByLine.get(line.queueLineId);
-        const { verdict } = await odPostingWrites.writeClaimProcReceived(od, {
+        const claimprocWrite = {
           claimNum: group.odClaimNum,
           claimProcNum: line.odClaimProcNum,
           insPayAmtCents: figures.insPayAmtCents,
           writeOffCents: figures.writeOffCents,
           dedAppliedCents: figures.dedAppliedCents,
-        });
+        };
+        const { intent: claimprocIntent, out: claimprocOut } = await attemptWrite(
+          ctx,
+          plan,
+          {
+            writeKind: WRITE_KINDS.CLAIMPROC_RECEIVED,
+            queueLineId: line.queueLineId,
+            odClaimNum: group.odClaimNum,
+            target: claimprocWrite,
+          },
+          (receipt) => odPostingWrites.writeClaimProcReceived(od, claimprocWrite, receipt)
+        );
+        const { verdict } = claimprocOut;
         await auditOd(req, {
           action: 'UPDATE',
           resourceType: 'rcm_od_claimproc',
@@ -3028,6 +3525,7 @@ async function drainRow(ctx, queueId) {
               'Open Dental accepted the write but read back different values: ' +
               verdict.mismatches.map((m) => m.field).join(', '),
           });
+          await settleWrite(pool, claimprocIntent, verdict);
           throw new OdWriteError(
             `claimproc ${line.odClaimProcNum} read back different values`,
             'OD_READBACK_MISMATCH',
@@ -3041,6 +3539,7 @@ async function drainRow(ctx, queueId) {
           readback: { step: 'claimproc_write', ...verdict },
           lastError: null,
         });
+        await settleWrite(pool, claimprocIntent, verdict);
         postedTotalCents += line.intendedInsPayAmtCents;
         // The pause lands HERE — after the write, its read-back and the persist
         // that records both. That is the state a killed process really leaves
@@ -3078,11 +3577,21 @@ async function drainRow(ctx, queueId) {
         // with nothing to change, and every avoidable chart write is one fewer
         // chance to disturb an income transfer.
       } else {
-        const { verdict } = await odPostingWrites.writeClaimReceived(od, {
-          claimNum: group.odClaimNum,
-          dateReceived,
-          note: claimNote,
-        });
+        const claimWrite = { claimNum: group.odClaimNum, dateReceived, note: claimNote };
+        const { intent: claimIntent, out: claimOut } = await attemptWrite(
+          ctx,
+          plan,
+          {
+            writeKind: WRITE_KINDS.CLAIM_RECEIVED,
+            odClaimNum: group.odClaimNum,
+            // `withNote`, not the note: the note carries the operator's name,
+            // and recovery only needs to know whether to look for our plan id.
+            target: { claimNum: group.odClaimNum, dateReceived, withNote: Boolean(claimNote) },
+          },
+          (receipt) => odPostingWrites.writeClaimReceived(od, claimWrite, receipt)
+        );
+        const { verdict } = claimOut;
+        await settleWrite(pool, claimIntent, verdict);
         await auditOd(req, {
           action: 'UPDATE',
           resourceType: 'rcm_od_claim',
@@ -3227,16 +3736,39 @@ async function drainRow(ctx, queueId) {
       }
 
       const endpoint = odOfficeConfig.resolveCheckEndpoint(config, grouped.length);
-      const created = await odPostingWrites.writeClaimPayment(od, {
-        endpoint,
-        claimNums: grouped.map((g) => g.odClaimNum),
-        checkAmtCents: ordinaryTotalCents,
-        payTypeDefNum: payType.defNum,
-        checkNumber: plan.batch ? plan.batch.checkNumber || plan.batch.eftNumber : null,
-        checkDate: (plan.batch && plan.batch.depositDate) || plan.queue.carrierEobDate,
-        carrierName: plan.batch ? plan.batch.payer : null,
-        note,
-      });
+      /*
+       * The intent's target is OUR OWN claimprocs, not the check's amount: on a
+       * re-read, "is one of these lines on a check" is the question that tells
+       * a landed POST from one that never arrived.
+       */
+      const { intent: checkIntent, out: created } = await attemptWrite(
+        ctx,
+        plan,
+        {
+          writeKind: WRITE_KINDS.CLAIM_PAYMENT,
+          odClaimNum: grouped.length === 1 ? grouped[0].odClaimNum : null,
+          target: {
+            claimNums: grouped.map((g) => g.odClaimNum),
+            claimProcNums: ordinaryLines.map((l) => l.odClaimProcNum),
+            checkAmtCents: ordinaryTotalCents,
+          },
+        },
+        (receipt) =>
+          odPostingWrites.writeClaimPayment(
+            od,
+            {
+              endpoint,
+              claimNums: grouped.map((g) => g.odClaimNum),
+              checkAmtCents: ordinaryTotalCents,
+              payTypeDefNum: payType.defNum,
+              checkNumber: plan.batch ? plan.batch.checkNumber || plan.batch.eftNumber : null,
+              checkDate: (plan.batch && plan.batch.depositDate) || plan.queue.carrierEobDate,
+              carrierName: plan.batch ? plan.batch.payer : null,
+              note,
+            },
+            receipt
+          )
+      );
       claimPaymentNum = created.claimPaymentNum;
 
       await auditOd(req, {
@@ -3257,6 +3789,16 @@ async function drainRow(ctx, queueId) {
         'UPDATE rcm_posting_queue SET od_claim_payment_num = $2, updated_at = now() WHERE queue_id = $1',
         [queueId, claimPaymentNum]
       );
+      /*
+       * A stored check number is proof the check exists (the brief's own
+       * words); the reconciliation below is what proves its CONTENTS. Settled
+       * only after the number is on the row, so a crash between the two leaves
+       * `pending` for a re-read rather than `landed` with nothing to adopt.
+       */
+      await postingIntent.resolveIntent(pool, checkIntent, OUTCOMES.LANDED, {
+        via: 'stored_check_number',
+        claimPaymentNum,
+      });
       await stepPause(ctx, 'check');
     }
 
@@ -3428,14 +3970,34 @@ async function drainRow(ctx, queueId) {
          * owes. `pickAdjTypeByName` already refused a `+` type wearing this
          * name, so Open Dental's own sign rule cannot surprise the sequence here.
          */
-        const { adjNum, verdict } = await odPostingWrites.writeRecoupmentAdjustment(od, {
-          odPatientId: claim.odPatientId,
-          adjTypeDefNum: writeoffAdjType.defNum,
-          amountCents: -figures.adjustmentCents,
-          adjDate: plan.queue.carrierEobDate || officeToday(),
-          note,
-          odProcNum: null,
-        });
+        const { intent: writeoffIntent, out: writeoffOut } = await attemptWrite(
+          ctx,
+          plan,
+          {
+            writeKind: WRITE_KINDS.WRITEOFF_ADJUSTMENT,
+            queueLineId: line.queueLineId,
+            odClaimNum: line.odClaimNum,
+            target: {
+              odPatientId: claim.odPatientId,
+              adjTypeDefNum: writeoffAdjType.defNum,
+              amountCents: -figures.adjustmentCents,
+            },
+          },
+          (receipt) =>
+            odPostingWrites.writeRecoupmentAdjustment(
+              od,
+              {
+                odPatientId: claim.odPatientId,
+                adjTypeDefNum: writeoffAdjType.defNum,
+                amountCents: -figures.adjustmentCents,
+                adjDate: plan.queue.carrierEobDate || officeToday(),
+                note,
+                odProcNum: null,
+              },
+              receipt
+            )
+        );
+        const { adjNum, verdict } = writeoffOut;
         await auditOd(req, {
           action: 'CREATE',
           resourceType: 'rcm_od_adjustment',
@@ -3460,6 +4022,7 @@ async function drainRow(ctx, queueId) {
             ? null
             : 'Open Dental accepted the write-off adjustment and read it back differently.',
         });
+        await settleWrite(pool, writeoffIntent, verdict, { adjNum });
         writeoffAdjByLine.set(line.queueLineId, adjNum);
 
         if (!verdict.agreed) {
@@ -3637,21 +4200,10 @@ async function drainRow(ctx, queueId) {
     };
   } catch (err) {
     /*
-     * WHERE IT FAILED DECIDES WHAT THE ROW SAYS.
-     *
-     * Before the first claimproc write, nothing moved — `failed`, and the next
-     * attempt starts clean. At or after it, something may have, so the row must
-     * say `partially_posted` and let resume find out from the chart. Guessing
-     * `failed` because an exception was thrown would be the honest-states rule
-     * failing at the only moment it costs money.
-     */
-    /*
-     * `recoupment` is on this list and `document_attach` is NOT, and the split
-     * is the point. A failed takeback may have left a permanent supplemental on
-     * a chart; a failed document attach cannot move a cent. The document step
-     * also runs AFTER the row was finalised `posted`, so it has no business
-     * rewriting that status — `attachEobDocuments` handles its own failures on
-     * its own columns and never throws to here.
+     * `document_attach` never reaches here: it runs AFTER the row was finalised
+     * `posted`, and `attachEobDocuments` handles its own failures on its own
+     * columns. A failed document attach cannot move a cent and has no business
+     * rewriting that status.
      */
     /*
      * A ROW THAT REFUSED ITSELF IS ALREADY FINISHED. See `alreadyBlocked` above:
@@ -3662,25 +4214,28 @@ async function drainRow(ctx, queueId) {
       return { queueId, status: 'blocked', reason: BLOCK_REASONS.NO_ADJ_TYPE, detail: err.message };
     }
 
-    const touchedChart = [
-      'claimproc_writes',
-      'claim_receipts',
-      'check',
-      'reconcile',
-      'recoupment',
-    ].includes(step);
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * W-21: THE ENDING IS CLASSIFIED FROM EVIDENCE, NOT FROM WHERE IT DIED
+     * ═══════════════════════════════════════════════════════════════════════
+     * This used to be a list of steps that "touched the chart" — and the list
+     * left out `office_writeoffs` and `confirm_patient`, both of which run
+     * AFTER the check exists. A throw in either wrote `failed` over a payment
+     * that was already in the chart, and `failed` reads as "nothing was
+     * written". A biller who believed it re-entered the payment by hand.
+     *
+     * Now: every intent this plan ever recorded, plus the proof on its lines,
+     * decides it claim by claim (see `postingIntent.classifyPlan`). A write
+     * whose outcome is unknown is `outcome_unknown`; proof that money landed is
+     * `partially_posted`; only zero writes (or writes proven not to have
+     * landed) is `failed`. The step is recorded through `settledStep`, so a stop
+     * mid-confirmation can never be mistaken for a measurement.
+     */
     const message = err instanceof OdWriteError ? `${err.message}: ${err.detail}` : String(err && err.message ? err.message : err);
     console.error(`[rcm/drain] ${office} plan ${queueId} failed at ${step}: ${message}`);
 
-    await finalizeRow(pool, queueId, {
-      status: touchedChart ? 'partially_posted' : 'failed',
-      odClaimPaymentNum: null,
-      reconciled: false,
-      postedTotalCents: touchedChart ? postedTotalCents : 0,
-      lastError: message,
-      step,
-    });
-    return { queueId, status: touchedChart ? 'partially_posted' : 'failed', detail: message };
+    const ending = await settleEnding(ctx, plan, step, message, { postedTotalCents });
+    return { queueId, status: ending.status, detail: message };
   }
 }
 
@@ -3944,8 +4499,10 @@ function describeConfig(config) {
  * Re-home rows a dead process left mid-flight. Mirrors `eobStartupSweep.js`
  * exactly, and carries the same two load-bearing conditions.
  *
- * IT DOES NOT DRAIN. A `posting` row becomes `approved` again and waits for a
- * human to press the button. Auto-draining on boot would make a container
+ * IT DOES NOT DRAIN. A `posting` row is settled from its evidence (W-21 — see
+ * the loop below: `approved` when nothing provably landed, otherwise
+ * `outcome_unknown` or `partially_posted`) and waits for a human to press the
+ * button. Auto-draining on boot would make a container
  * restart a chart write nobody asked for, which is the opposite of every rule in
  * this module.
  *
@@ -3983,23 +4540,88 @@ async function sweepInterruptedPostings(deps = {}) {
   for (const tenant of active) {
     try {
       const pool = await tenantDb.getTenantPool(tenant.tenant_id);
-      const res = await pool.query(
-        `UPDATE rcm_posting_queue
-            SET status = 'approved',
-                drain_step = NULL,
-                last_error = $1,
-                updated_at = now()
-          WHERE status = 'posting'
-          RETURNING queue_id`,
-        [
-          'The server restarted while this plan was posting. It is queued again; ' +
-            'draining re-reads Open Dental first and resumes from what the chart shows.',
-        ]
+
+      /*
+       * ── W-21: A DEAD PROCESS IS CLASSIFIED FROM ITS EVIDENCE, NOT RE-QUEUED
+       *    BLIND ─────────────────────────────────────────────────────────────
+       *
+       * A row left at `posting` used to go straight back to `approved`, which
+       * reads as "queued" over a plan whose check may already be in a chart.
+       * Now each one is judged by what it recorded:
+       *
+       *   nothing provably landed, nothing unknown  →  `approved`, exactly as
+       *       before. Its `attempt_count` stays raised, so no screen claims
+       *       "nothing has been written" over it.
+       *   a pending intent                          →  `outcome_unknown`
+       *   proof money landed                        →  `partially_posted`
+       *
+       * Every UPDATE re-asserts `status = 'posting'`, so the sweep can only ever
+       * move a row that is still the one it read. It still writes nothing to a
+       * chart and never drains — a person presses the button.
+       */
+      const interrupted = await pool.query(
+        "SELECT queue_id, office_id, drain_step FROM rcm_posting_queue WHERE status = 'posting'"
       );
-      swept += res.rows.length;
-      if (res.rows.length > 0) {
+      let requeued = 0;
+      for (const row of interrupted.rows) {
+        const queueId = String(row.queue_id);
+        const office = String(row.office_id);
+        const lines = (await pool.query(PLAN_QUERIES.lines, [queueId, office])).rows.map(toLine);
+        const intents = await postingIntent.listIntents(pool, office, queueId);
+        const ending = classifyPlanEvidence({ lines }, intents);
+
+        if (ending.status === 'failed') {
+          const res = await pool.query(
+            `UPDATE rcm_posting_queue
+                SET status = 'approved',
+                    drain_step = NULL,
+                    last_error = $2,
+                    updated_at = now()
+              WHERE queue_id = $1 AND status = 'posting'
+              RETURNING queue_id`,
+            [
+              queueId,
+              'The server restarted while this plan was posting. It is queued again; ' +
+                'draining re-reads Open Dental first and resumes from what the chart shows.',
+            ]
+          );
+          requeued += res.rows.length;
+          continue;
+        }
+
+        const res = await pool.query(
+          `UPDATE rcm_posting_queue
+              SET status = $2,
+                  drain_step = $3,
+                  last_error = $4,
+                  finished_at = now(),
+                  updated_at = now()
+            WHERE queue_id = $1 AND status = 'posting'
+            RETURNING queue_id`,
+          [
+            queueId,
+            ending.status,
+            settledStep(row.drain_step == null ? null : String(row.drain_step)),
+            ending.status === 'outcome_unknown'
+              ? 'The server restarted mid-write. Whether that write reached Open Dental is not ' +
+                'known yet; posting again re-reads the chart and settles it before anything is ' +
+                'retried. Do not enter this payment by hand.'
+              : 'The server restarted after part of this plan reached Open Dental. Posting again ' +
+                're-reads the chart and resumes from what it shows. Do not enter this payment by hand.',
+          ]
+        );
+        if (res.rows.length > 0) {
+          console.warn(
+            `[rcm/drain] startup sweep: plan ${queueId} for tenant '${tenant.slug}' settled ` +
+              `${ending.status} from its evidence — press Drain to resume`
+          );
+        }
+        swept += res.rows.length;
+      }
+      swept += requeued;
+      if (requeued > 0) {
         console.warn(
-          `[rcm/drain] startup sweep: ${res.rows.length} interrupted posting plan(s) re-queued ` +
+          `[rcm/drain] startup sweep: ${requeued} interrupted posting plan(s) re-queued ` +
             `for tenant '${tenant.slug}' — press Drain to resume`
         );
       }
@@ -4055,6 +4677,10 @@ module.exports = {
   WITHDRAWABLE_STATUSES,
   CHART_TOUCHED_LINE_STATUSES,
   chartTouchedBy,
+  CONFIRM_INTERRUPTED_STEP,
+  settledStep,
+  classifyPlanEvidence,
+  settlePendingIntents,
   WITHDRAW_REASONS,
   OFFICES_ENABLED_FOR_POSTING,
   DEFAULT_BUDGET_MS,

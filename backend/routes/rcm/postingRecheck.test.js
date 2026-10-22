@@ -279,6 +279,22 @@ test('a plan that has NOT posted is refused — there is nothing to read back', 
   }
 });
 
+test('W-21: an outcome_unknown plan is refused with its OWN code — never "nothing posted"', async () => {
+  const db = seedPosted(new FakeRcmDb(), {
+    queue: { status: 'outcome_unknown', od_claim_payment_num: null, posted_total_cents: 0 },
+  });
+  const app = await bootRcmApp({ db, od: new FakeOd({ claimProcs: [] }) });
+  try {
+    const res = await api(app.baseUrl, 'POST', URL, json({}));
+    assert.equal(res.status, 409);
+    assert.equal(res.body.code, 'OUTCOME_NOT_SETTLED');
+    assert.equal(res.body.status, 'outcome_unknown');
+    assert.doesNotMatch(res.body.error, /Nothing has been posted/);
+  } finally {
+    await app.close();
+  }
+});
+
 test('a POSTED plan may be re-checked too — asking again is always allowed', async () => {
   // `posted` and `partially_posted` both have a check in Open Dental to read.
   const db = seedPosted(new FakeRcmDb(), {
