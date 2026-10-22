@@ -35,6 +35,10 @@
  *   POST   /:id/mark-patient-seen acknowledged → patient_seen                  │ they send
  *   POST   /:id/close             patient_seen → closed                        ┘ nothing
  *
+ *   R5 — email (./referralSend.js), dark unless tc_referral_email_enabled:
+ *   POST   /:id/send-email        approved → sent, ONLY after ACS accepted
+ *                                 the email; a failure leaves it approved
+ *
  *   R4 (item 55) — attachments (./referralAttachments.js):
  *   POST   /:id/attachments       one image or PDF (multipart "file"), ≤10 MB, ≤5
  *   GET    /:id/attachments       the referral's files (metadata)
@@ -44,8 +48,9 @@
  *   - DARK. `tc_referrals_enabled` off for the office → 403 REFERRALS_DISABLED
  *     on everything but /status, which answers `enabled: false` so the
  *     Settings page can hide the section without treating "off" as an error.
- *   - NOTHING SENDS. No email, no fax, no Open Dental read or write. `approved`
- *     is where R2 stops; sending is a later update.
+ *   - SENDING IS ONE ROUTE. Only POST /:id/send-email (and the auto-send after a
+ *     doctor's approval) emails anything, through ./referralSend.js. No fax,
+ *     no Open Dental read or write.
  *   - THE PATIENT IS NEVER FROM THE REQUEST. office + PatNum + name come from
  *     the case or checkout the referral is started from, read office-scoped.
  *   - Office from `?office=` through requireOffice, in every WHERE. A body can
@@ -66,6 +71,7 @@ const { withTenantTx } = require('./tx');
 const transitions = require('./referralTransitions');
 const { createDraft, directoryProblem } = require('./referralCreate');
 const attachments = require('./referralAttachments');
+const referralSend = require('./referralSend');
 
 const {
   z,
@@ -79,6 +85,7 @@ const {
   TcReferralReopenRequest,
   TcReferralMarkSentRequest,
   TcReferralMarkRequest,
+  TcReferralSendRequest,
 } = contract;
 
 const router = express.Router();
@@ -92,7 +99,12 @@ const PG_FK_VIOLATION = '23503';
 router.get(
   '/status',
   h(async (req, res) => {
-    res.json({ success: true, office: req.tcOffice, enabled: await tcReferrals.isEnabled(req.tcOffice) });
+    const office = req.tcOffice;
+    const enabled = await tcReferrals.isEnabled(office);
+    // R5: referral email's own switch, and why an office with it on cannot
+    // send yet. Only said when referrals itself is on; off answers as before.
+    if (!enabled) return res.json({ success: true, office, enabled });
+    return res.json({ success: true, office, enabled, emailSend: await referralSend.emailSendStatus(office) });
   })
 );
 
@@ -294,12 +306,17 @@ function badReferralId(res) {
 async function present(pool, office, rows, { withAttachmentCounts = false } = {}) {
   const names = await store.practiceNames(pool, office, rows);
   const returns = await store.openReturns(pool, office, rows);
+  // R5: the Send button's two inputs, for the approved ones.
+  const emails = await store.directoryEmails(pool, office, rows);
+  const problems = await store.openSendProblems(pool, office, rows);
   const counts = withAttachmentCounts
     ? await store.attachmentCounts(pool, office, rows.map((r) => r.referral_id))
     : null;
   return rows.map((r) => {
     const out = store.toReferral(r, names.get(String(r.directory_entry_id)) ?? null);
     out.returned = returns.get(String(r.referral_id)) ?? null;
+    out.specialistEmail = emails.get(String(r.directory_entry_id)) ?? null;
+    out.sendProblem = problems.get(String(r.referral_id)) ?? null;
     if (counts) out.attachmentCount = counts.get(String(r.referral_id)) ?? 0;
     return out;
   });
@@ -521,6 +538,27 @@ for (const mark of MARKS) {
     })
   );
 }
+
+// ── R5: email it to the specialist ──────────────────────────────────────────
+
+/**
+ * POST /:id/send-email — no body (strict: any field is a 400). The office is the
+ * request's server-derived one, the recipient the directory row's address;
+ * nothing the client sends can change either. Dark (403
+ * REFERRAL_EMAIL_DISABLED) unless tc_referral_email_enabled is on for the
+ * office. See ./referralSend.js for the order of everything else.
+ */
+router.post(
+  '/:id/send-email',
+  h(async (req, res) => {
+    const id = ReferralId.safeParse(req.params.id);
+    if (!id.success) return badReferralId(res);
+    const body = parseBody(res, TcReferralSendRequest, req.body ?? {});
+    if (!body) return undefined;
+    const out = await referralSend.sendReferral(req, { office: req.tcOffice, referralId: id.data, trigger: 'manual' });
+    return res.status(out.status).json(out.body);
+  })
+);
 
 for (const verb of ['submit', 'withdraw', 'cancel']) {
   router.post(

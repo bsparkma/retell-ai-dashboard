@@ -11,7 +11,9 @@
  *   3  sign-off not required → submit goes straight to approved
  *   4  each transition writes exactly one audit row, and a failed audit write
  *      fails (rolls back) the transition
- *   5  nothing sends (no send route exists; approved is terminal here)
+ *   5  (R5) one way out by email: POST /:id/send-email only, refused unless
+ *      referrals, email AND referral email are all on, and for every status
+ *      but approved (/send, /email, /fax stay 404)
  *   8  an office manager may set the office notification default; tc and
  *      the rest may not; nobody sets another person's choice
  *   +  the patient is derived from the case / checkout, never from the body;
@@ -411,9 +413,59 @@ test('dark: referrals off → every lifecycle route refuses', async (t) => {
   assert.equal((await api(baseUrl, 'GET', SIGN('/queue'))).status, 403);
 });
 
-// ── 5: nothing sends ────────────────────────────────────────────────────────
+// ── 5: one way out by email, behind three switches ──────────────────────────
 
-test('5: there is no send route; approved is where it stops', async (t) => {
+/**
+ * R5 (PM-authorized revision of the R2 "nothing sends" pin): the ONLY route
+ * that emails a referral is POST /:id/send-email, and it is refused unless
+ * tc_referrals_enabled AND tc_email_enabled AND tc_referral_email_enabled are
+ * all on, and refused for every status but approved. ACS is a recording fake
+ * that refuses: nothing here can send. The full send, with a configured
+ * transport, is pinned in tcReferralSend.test.js.
+ */
+const EMAIL_ENV = [
+  'TC_EMAIL_ENABLED',
+  'TC_REFERRAL_EMAIL_ENABLED_ROLAND',
+  'ACS_EMAIL_AUTH_MODE',
+  'ACS_EMAIL_ENDPOINT',
+  'ACS_EMAIL_CONNECTION',
+  'ACS_EMAIL_FROM',
+  'ACS_EMAIL_FROM_ROLAND',
+  'ACS_EMAIL_REPLY_TO_ROLAND',
+  'TC_EMAIL_PUBLIC_BASE_URL',
+  'TC_EMAIL_TENANT_SLUG',
+];
+
+function emailSwitches(t) {
+  const tcEmail = require('../../config/tcEmail');
+  const tcReferralEmail = require('../../config/tcReferralEmail');
+  const acsClient = require('../../services/messaging/acs/client');
+  const keep = Object.fromEntries(EMAIL_ENV.map((k) => [k, process.env[k]]));
+  for (const k of EMAIL_ENV) delete process.env[k];
+  const acs = { calls: 0 };
+  acsClient.setFetchForTests(async () => {
+    acs.calls += 1;
+    throw new Error('no network in this test');
+  });
+  const set = ({ email, referralEmail }) => {
+    process.env.TC_EMAIL_ENABLED = String(email);
+    process.env.TC_REFERRAL_EMAIL_ENABLED_ROLAND = String(referralEmail);
+    tcEmail.resetCacheForTests();
+    tcReferralEmail.resetCacheForTests();
+  };
+  t.after(() => {
+    for (const [k, v] of Object.entries(keep)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    acsClient.resetForTests();
+    tcEmail.resetCacheForTests();
+    tcReferralEmail.resetCacheForTests();
+  });
+  return { set, acs };
+}
+
+test('5: /send, /email and /fax do not exist — the email route is /send-email', async (t) => {
   switchReferrals(t);
   const { baseUrl, db } = await boot(t);
   const c = seedCase(db);
@@ -422,6 +474,88 @@ test('5: there is no send route; approved is where it stops', async (t) => {
     const r = await api(baseUrl, 'POST', REF(`/${ref.referralId}${path}`));
     assert.equal(r.status, 404, path);
   }
+});
+
+test('5: /send-email is refused unless referrals, email AND referral email are all on', async (t) => {
+  const byOffice = { roland: true };
+  switchReferrals(t, byOffice);
+  const { set, acs } = emailSwitches(t);
+  const { baseUrl, db } = await boot(t);
+  const entry = seedEntry(db, { email: 'referrals@endo.example.test' });
+  const ref = await create(baseUrl, { caseId: seedCase(db).case_id }, { ...BODY, directoryEntryId: entry.entry_id });
+  assert.equal((await api(baseUrl, 'POST', REF(`/${ref.referralId}/submit`))).status, 200);
+  assert.equal((await api(baseUrl, 'POST', SIGN(`/${ref.referralId}/approve`))).status, 200);
+  const send = () => api(baseUrl, 'POST', REF(`/${ref.referralId}/send-email`), {});
+
+  set({ email: true, referralEmail: false });
+  let r = await send();
+  assert.deepEqual([r.status, r.body.code], [403, 'REFERRAL_EMAIL_DISABLED'], 'referral email off');
+
+  set({ email: false, referralEmail: true });
+  r = await send();
+  assert.deepEqual([r.status, r.body.code, r.body.reason], [501, 'FEATURE_DISABLED', 'switched_off'], 'email off');
+
+  set({ email: true, referralEmail: true });
+  byOffice.roland = false;
+  tcReferrals.resetCacheForTests();
+  r = await send();
+  assert.deepEqual([r.status, r.body.code], [403, 'REFERRALS_DISABLED'], 'referrals off');
+
+  // All three on: past every switch — here it stops at the unconfigured transport.
+  byOffice.roland = true;
+  tcReferrals.resetCacheForTests();
+  r = await send();
+  assert.deepEqual([r.status, r.body.code, r.body.reason], [501, 'FEATURE_DISABLED', 'not_configured'], 'all on');
+
+  assert.equal(acs.calls, 0, 'nothing reached ACS');
+  const row = db.table('tc_referrals').find((x) => x.referral_id === ref.referralId);
+  assert.equal(row.status, 'approved', 'nothing moved');
+});
+
+test('5: /send-email is refused for every status but approved', async (t) => {
+  switchReferrals(t);
+  const { set, acs } = emailSwitches(t);
+  set({ email: true, referralEmail: true });
+  const { baseUrl, db } = await boot(t);
+  const entry = seedEntry(db, { email: 'referrals@endo.example.test' });
+  const ref = await create(baseUrl, { caseId: seedCase(db).case_id }, { ...BODY, directoryEntryId: entry.entry_id });
+  const row = db.table('tc_referrals').find((x) => x.referral_id === ref.referralId);
+  const statuses = ['draft', 'pending_signoff', 'sent', 'acknowledged', 'patient_seen', 'closed', 'declined', 'cancelled'];
+  for (const status of statuses) {
+    row.status = status;
+    const r = await api(baseUrl, 'POST', REF(`/${ref.referralId}/send-email`), {});
+    assert.deepEqual([r.status, r.body.code, r.body.currentStatus], [409, 'REFERRAL_TRANSITION_NOT_ALLOWED', status], status);
+  }
+  assert.equal(acs.calls, 0);
+  assert.equal(db.table('tc_referral_events').some((e) => String(e.verb).startsWith('send')), false);
+});
+
+test('5: /send-email is the only route that emails a referral (manual), the approval the only auto path', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const routesDir = path.join(__dirname, '..');
+  const callers = { sendReferral: [], sendAfterApproval: [] };
+  const walk = (d) => {
+    for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, ent.name);
+      if (ent.isDirectory()) walk(p);
+      else if (/\.js$/.test(ent.name) && !/\.test\.js$/.test(ent.name)) {
+        const src = fs.readFileSync(p, 'utf8');
+        const rel = path.relative(routesDir, p).replace(/\\/g, '/');
+        for (const fn of Object.keys(callers)) {
+          const n = (src.match(new RegExp(`referralSend\\.${fn}\\(`, 'g')) || []).length;
+          if (n) callers[fn].push([rel, n]);
+        }
+      }
+    }
+  };
+  walk(routesDir);
+  assert.deepEqual(callers.sendReferral, [['tc/referrals.js', 1]]);
+  assert.deepEqual(callers.sendAfterApproval, [['tc/referralSignoff.js', 1]]);
+  const referralsSrc = fs.readFileSync(path.join(__dirname, 'referrals.js'), 'utf8');
+  const at = referralsSrc.indexOf("'/:id/send-email'");
+  assert.ok(at > -1 && referralsSrc.indexOf('referralSend.sendReferral(') > at, 'inside the /send-email handler');
+  assert.match(referralsSrc, /trigger: 'manual'/);
 });
 
 // ── cases: a case with referrals cannot be deleted ──────────────────────────

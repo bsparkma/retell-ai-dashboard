@@ -20,6 +20,9 @@ export const REFERRAL_EVENT_LABELS: Record<TcReferralEventVerb, string> = {
   mark_acknowledged: "Marked acknowledged by the specialist (outside the app)",
   mark_patient_seen: "Marked patient seen by the specialist",
   close: "Closed",
+  send: "Emailed to the specialist",
+  send_failed: "Email not sent",
+  send_conflict: "Emailed — but could not be marked sent",
 };
 
 /** One history line's label. Pure. */

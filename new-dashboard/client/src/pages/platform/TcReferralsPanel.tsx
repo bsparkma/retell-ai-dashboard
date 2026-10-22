@@ -1,6 +1,7 @@
 /**
- * The TC referrals switch, per office (queue item 52). The same shape and the
- * same honesty rules as TcCheckoutPanel (item 50).
+ * The TC referrals switches, per office: referrals itself (queue item 52) and
+ * referral EMAIL (R5). The same shape and the same honesty rules as
+ * TcCheckoutPanel (item 50), drawn by one component with two configurations.
  *
  * Mirrors the Hygiene panel's honesty rules: the state shown is what the
  * server answered after the write (never the click), the layer that answered
@@ -8,9 +9,9 @@
  * loud. Turning an office ON asks for confirmation; turning it OFF does not —
  * the fast path is the safe one.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { AlertTriangle, Loader2, Send, ShieldAlert } from "lucide-react";
+import { AlertTriangle, Loader2, Mail, Send, ShieldAlert } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -34,20 +35,34 @@ const SOURCE_LABELS: Record<TcCheckoutOfficeSwitch["source"], string> = {
   default: "Default (off)",
 };
 
-export function TcReferralsPanel() {
+interface SwitchPanelConfig {
+  /** data-testid prefix: `${prefix}-panel`, `${prefix}-office-<o>`, `${prefix}-switch-<o>`, `${prefix}-confirm-on`. */
+  prefix: string;
+  /** "Referrals" / "Referral email" — in toasts, labels and the dialog. */
+  noun: string;
+  icon: ReactNode;
+  title: string;
+  description: string;
+  confirmDescription: string;
+  load: () => Promise<TcReferralsSwitchState>;
+  save: (office: string, enabled: boolean) => Promise<TcReferralsSwitchState>;
+}
+
+function OfficeSwitchPanel({ config }: { config: SwitchPanelConfig }) {
   const [state, setState] = useState<TcReferralsSwitchState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
+  const noun = config.noun.toLowerCase();
 
   const load = useCallback(async () => {
     setError(null);
     try {
-      setState(await api.getTcReferralsOffices());
+      setState(await config.load());
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not load the referrals switch");
+      setError(e instanceof Error ? e.message : `Could not load the ${noun} switch`);
     }
-  }, []);
+  }, [config, noun]);
 
   useEffect(() => {
     void load();
@@ -56,12 +71,12 @@ export function TcReferralsPanel() {
   const commit = async (office: string, enabled: boolean) => {
     setSaving(office);
     try {
-      const next = await api.setTcReferralsOfficeEnabled(office, enabled);
+      const next = await config.save(office, enabled);
       setState(next);
       const now = next.offices.find((o) => o.office === office);
-      toast.success(`Referrals ${now?.enabled ? "on" : "off"} for ${OFFICE_LABELS[office] ?? office}`);
+      toast.success(`${config.noun} ${now?.enabled ? "on" : "off"} for ${OFFICE_LABELS[office] ?? office}`);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Could not save the referrals switch");
+      toast.error(e instanceof Error ? e.message : `Could not save the ${noun} switch`);
       await load();
     } finally {
       setSaving(null);
@@ -87,15 +102,12 @@ export function TcReferralsPanel() {
   }
 
   return (
-    <section className="space-y-4" data-testid="tc-referrals-panel">
+    <section className="space-y-4" data-testid={`${config.prefix}-panel`}>
       <div>
         <h2 className="flex items-center gap-2 text-base font-semibold text-foreground">
-          <Send className="w-4 h-4" /> TC referrals
+          {config.icon} {config.title}
         </h2>
-        <p className="text-sm text-muted-foreground">
-          When on, TC Settings shows the Referrals section: the specialist directory and the
-          referral policies. Nothing is sent yet. Per office. The TC module must also be bought.
-        </p>
+        <p className="text-sm text-muted-foreground">{config.description}</p>
       </div>
       {state.controlPlaneError && (
         <p className="flex items-center gap-2 text-sm text-amber-700 dark:text-amber-300">
@@ -104,7 +116,7 @@ export function TcReferralsPanel() {
       )}
       <div className="divide-y divide-border rounded-xl border border-border">
         {state.offices.map((o) => (
-          <div key={o.office} className="flex items-center justify-between gap-3 p-3" data-testid={`tc-referrals-office-${o.office}`}>
+          <div key={o.office} className="flex items-center justify-between gap-3 p-3" data-testid={`${config.prefix}-office-${o.office}`}>
             <div>
               <p className="font-medium text-foreground">{OFFICE_LABELS[o.office] ?? o.office}</p>
               <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -127,9 +139,9 @@ export function TcReferralsPanel() {
               <Switch
                 checked={o.enabled}
                 disabled={saving !== null}
-                aria-label={`Referrals for ${OFFICE_LABELS[o.office] ?? o.office}`}
+                aria-label={`${config.noun} for ${OFFICE_LABELS[o.office] ?? o.office}`}
                 onCheckedChange={(on) => (on ? setConfirming(o.office) : void commit(o.office, false))}
-                data-testid={`tc-referrals-switch-${o.office}`}
+                data-testid={`${config.prefix}-switch-${o.office}`}
               />
             </div>
           </div>
@@ -139,12 +151,10 @@ export function TcReferralsPanel() {
       <Dialog open={confirming !== null} onOpenChange={(open) => (open ? undefined : setConfirming(null))}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Turn referrals on for {confirming ? OFFICE_LABELS[confirming] ?? confirming : ""}?</DialogTitle>
-            <DialogDescription>
-              The TC team in this office will see the Referrals settings and can build the specialist
-              directory. Nothing is sent, and nothing is written to Open Dental. You can turn it off
-              again at any time, instantly.
-            </DialogDescription>
+            <DialogTitle>
+              Turn {noun} on for {confirming ? OFFICE_LABELS[confirming] ?? confirming : ""}?
+            </DialogTitle>
+            <DialogDescription>{config.confirmDescription}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirming(null)}>Cancel</Button>
@@ -154,7 +164,7 @@ export function TcReferralsPanel() {
                 setConfirming(null);
                 if (office) void commit(office, true);
               }}
-              data-testid="tc-referrals-confirm-on"
+              data-testid={`${config.prefix}-confirm-on`}
             >
               Turn on
             </Button>
@@ -163,4 +173,40 @@ export function TcReferralsPanel() {
       </Dialog>
     </section>
   );
+}
+
+const REFERRALS: SwitchPanelConfig = {
+  prefix: "tc-referrals",
+  noun: "Referrals",
+  icon: <Send className="w-4 h-4" />,
+  title: "TC referrals",
+  description:
+    "When on, TC Settings shows the Referrals section: the specialist directory and the referral policies. Nothing is sent yet. Per office. The TC module must also be bought.",
+  confirmDescription:
+    "The TC team in this office will see the Referrals settings and can build the specialist directory. Nothing is sent, and nothing is written to Open Dental. You can turn it off again at any time, instantly.",
+  load: () => api.getTcReferralsOffices(),
+  save: (office, enabled) => api.setTcReferralsOfficeEnabled(office, enabled),
+};
+
+const REFERRAL_EMAIL: SwitchPanelConfig = {
+  prefix: "tc-referral-email",
+  noun: "Referral email",
+  icon: <Mail className="w-4 h-4" />,
+  title: "TC referral email",
+  description:
+    "When on, approved referrals can be emailed to the specialist from the Referrals hub — and, where the office chose it, sent automatically when the doctor approves. Needs referrals on, and this office's own sending address and reply-to set up. Per office.",
+  confirmDescription:
+    "Approved referrals in this office can then be emailed to specialists, with their letter and files. Nothing is written to Open Dental. You can turn it off again at any time, instantly.",
+  load: () => api.getTcReferralEmailOffices(),
+  save: (office, enabled) => api.setTcReferralEmailOfficeEnabled(office, enabled),
+};
+
+/** The referrals switch (item 52). */
+export function TcReferralsPanel() {
+  return <OfficeSwitchPanel config={REFERRALS} />;
+}
+
+/** The referral email switch (R5). */
+export function TcReferralEmailPanel() {
+  return <OfficeSwitchPanel config={REFERRAL_EMAIL} />;
 }

@@ -6,8 +6,12 @@
  * first; open one to read it — specialist, reason, teeth, how soon, the notes
  * for the specialist, its history — then Approve, or Decline with a reason.
  *
- * NOTHING SENDS. Approving says so honestly: "Ready to send — sending ships in
- * a later update." Every state shown is the server's answer after the change.
+ * Approving sends nothing from this page. Where the office emails referrals on
+ * approval (R5), the server tries right after the approval commits, and the
+ * referral it reads back says what happened: `sent`, or a send problem (the
+ * approval stands either way). Otherwise approving says "Ready to send —
+ * sending ships in a later update." Every state shown is the server's answer
+ * after the change.
  *
  * R6 (item 56): the doctor may EDIT what they are signing — specialist, how
  * soon, reason, teeth — and add their own note, and may SEND IT BACK with a
@@ -133,7 +137,16 @@ export function SignoffInner({ office }: { office: OfficeId }) {
       const r = await approveReferral(office, open.referralId);
       setDone(r);
       setOpen(null);
-      toast.success(`Approved. ${REFERRAL_READY_TO_SEND_COPY}`);
+      // R5: the referral as read back AFTER any auto-send says what it did.
+      if (r.status === "sent") {
+        toast.success(`Approved and emailed to ${r.practiceName ?? "the specialist"}.`);
+      } else if (r.sendProblem?.kind === "failed") {
+        toast.error(`Approved — but the automatic email did not go out. ${r.sendProblem.note} It is waiting in Referrals to be sent again.`);
+      } else if (r.sendProblem?.kind === "conflict") {
+        toast.error(`Approved. ${r.sendProblem.note}`);
+      } else {
+        toast.success(`Approved. ${REFERRAL_READY_TO_SEND_COPY}`);
+      }
     } catch (e) {
       toast.error(tcErrorMessage(e));
     } finally {
@@ -218,7 +231,12 @@ export function SignoffInner({ office }: { office: OfficeId }) {
             {done.status === "draft"
               ? `${done.patientName}: sent back with your question.`
               : `${done.patientName}: ${TC_REFERRAL_STATUS_LABELS[done.status].toLowerCase()}.`}
-            {done.status === "approved" ? ` ${REFERRAL_READY_TO_SEND_COPY}` : ""}
+            {done.status === "approved"
+              ? done.sendProblem
+                ? ` The automatic email did not go out — it is waiting in Referrals to be sent again.`
+                : ` ${REFERRAL_READY_TO_SEND_COPY}`
+              : ""}
+            {done.status === "sent" ? ` Emailed to ${done.practiceName ?? "the specialist"}.` : ""}
           </span>
           <ReferralStatusBadge status={done.status} />
         </div>

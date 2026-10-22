@@ -32,6 +32,14 @@
  *       still running      -> 'queued' (accepted; we stopped asking)
  *     A status read that fails after the 202 is NOT a failure of the send:
  *     ACS accepted the email, so the row is honestly 'queued'.
+ *
+ * (R5) ATTACHMENTS: a message may carry `attachments` — [{ name, contentType,
+ * contentInBase64 }] — which go into the request as ACS takes them. Patient
+ * email never sets it. The whole request (attachments' base64 included) must
+ * fit ACS's cap (config/acsEmail.js ACS_MAX_REQUEST_BYTES); a bigger one is
+ * refused here, before anything is sent. requestBytes() measures a message
+ * with the SAME payload builder send() uses, so a caller packing attachments
+ * measures exactly what would go out.
  */
 
 const { MessagingError } = require('../errors');
@@ -63,6 +71,63 @@ const DISABLED_SENTENCE = Object.freeze({
   not_configured: 'Email sending is not connected yet.',
   office_not_configured: 'This office has no sending address set up yet.',
 });
+
+/**
+ * The attachments as ACS takes them, or [] when the message has none. Throws
+ * on a malformed entry: a file we cannot describe is not sent half-described.
+ * @param {unknown} raw
+ * @returns {Array<{ name: string, contentType: string, contentInBase64: string }>}
+ */
+function attachmentsOf(raw) {
+  if (raw === undefined || raw === null) return [];
+  const ok =
+    Array.isArray(raw) &&
+    raw.every(
+      (a) =>
+        a &&
+        typeof a.name === 'string' &&
+        a.name.length > 0 &&
+        a.name.length <= 255 &&
+        typeof a.contentType === 'string' &&
+        /^[a-z]+\/[a-z0-9.+-]+$/.test(a.contentType) &&
+        typeof a.contentInBase64 === 'string' &&
+        a.contentInBase64.length > 0
+    );
+  if (!ok) {
+    throw new MessagingError('SEND_FAILED', 'An attachment could not be prepared, so the email was not sent.', {
+      providerCode: 'EMAIL_ATTACHMENT_INVALID',
+    });
+  }
+  return raw.map((a) => ({ name: a.name, contentType: a.contentType, contentInBase64: a.contentInBase64 }));
+}
+
+/**
+ * THE request body, built in one place for send() and requestBytes().
+ * @param {import('./index').AdapterMessage & { attachments?: unknown }} message
+ * @param {string} from
+ * @param {string|null} replyTo
+ */
+function payloadFor(message, from, replyTo) {
+  const attachments = attachmentsOf(message.attachments);
+  return {
+    senderAddress: from,
+    recipients: { to: [{ address: message.toAddress }] },
+    content: { subject: message.subject, plainText: message.body, html: message.html },
+    ...(replyTo ? { replyTo: [{ address: replyTo }] } : {}),
+    headers: {
+      'List-Unsubscribe': `<${message.unsubscribeUrl}>`,
+      'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+    },
+    ...(attachments.length ? { attachments } : {}),
+    // No open/click tracking on a patient email.
+    userEngagementTrackingDisabled: true,
+  };
+}
+
+/** UTF-8 bytes of the JSON the client would POST. @param {object} payload */
+function bytesOf(payload) {
+  return Buffer.byteLength(JSON.stringify(payload), 'utf8');
+}
 
 /**
  * Map ACS's operation status to ours, or null for "still going".
@@ -98,6 +163,18 @@ module.exports = {
   unavailableReason,
 
   /**
+   * (R5) The size, in bytes, of the request send() would POST for this
+   * message from this office — attachments' base64 included. No I/O.
+   * @param {import('./index').AdapterMessage & { attachments?: unknown }} message
+   * @param {string} officeKey
+   * @returns {number}
+   */
+  requestBytes(message, officeKey) {
+    const from = acsConfig.fromAddressFor(officeKey) || '';
+    return bytesOf(payloadFor(message, from, acsConfig.replyToFor(officeKey)));
+  },
+
+  /**
    * @param {import('./index').AdapterMessage} message
    * @param {import('./index').AdapterOffice} office
    * @returns {Promise<import('./index').AdapterResult>}
@@ -129,18 +206,13 @@ module.exports = {
 
     const acsCfg = { mode: cfg.mode, endpoint: cfg.endpoint, accessKey: cfg.accessKey };
     const replyTo = acsConfig.replyToFor(office.officeKey);
-    const payload = {
-      senderAddress: from,
-      recipients: { to: [{ address: message.toAddress }] },
-      content: { subject: message.subject, plainText: message.body, html: message.html },
-      ...(replyTo ? { replyTo: [{ address: replyTo }] } : {}),
-      headers: {
-        'List-Unsubscribe': `<${message.unsubscribeUrl}>`,
-        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
-      },
-      // No open/click tracking on a patient email.
-      userEngagementTrackingDisabled: true,
-    };
+    const payload = payloadFor(message, from, replyTo);
+    // (R5) Never past ACS's cap: refused here, so nothing is attempted.
+    if (bytesOf(payload) > acsConfig.ACS_MAX_REQUEST_BYTES) {
+      throw new MessagingError('SEND_FAILED', 'The email is larger than the email service accepts, so it was not sent.', {
+        providerCode: 'EMAIL_TOO_LARGE',
+      });
+    }
 
     const accepted = await client.sendEmail({ cfg: acsCfg, operationId: message.messageId, payload });
 

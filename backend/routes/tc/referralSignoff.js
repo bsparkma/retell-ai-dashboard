@@ -30,7 +30,10 @@
  * The minimum for a doctor, on purpose: they can read only referrals and
  * only from here. What else a doctor may see is not decided in this slice.
  *
- * NOTHING SENDS. Approved is where R2 stops; the UI says so.
+ * R5: approving may EMAIL it, after the approval committed, when the office
+ * has referral email on and its policy says to send on approval
+ * (./referralSend.js sendAfterApproval). The approval succeeds either way; the
+ * answer carries `autoSend` saying what the email did.
  */
 
 const express = require('express');
@@ -41,6 +44,7 @@ const tcReferrals = require('../../config/tcReferrals');
 const store = require('./referralStore');
 const transitions = require('./referralTransitions');
 const attachments = require('./referralAttachments');
+const referralSend = require('./referralSend');
 
 const { z, TcReferralDeclineRequest, TcReferralDoctorEdit, TcReferralReturnRequest } = contract;
 
@@ -156,7 +160,14 @@ router.post(
     const id = ReferralId.safeParse(req.params.id);
     if (!id.success) return res.status(400).json({ success: false, error: 'Invalid referral id', code: 'INVALID_ID' });
     const out = await transitions.applyVerb(req, { referralId: id.data, verb: 'approve' });
-    return res.status(out.status).json(out.body);
+    if (out.status !== 200) return res.status(out.status).json(out.body);
+    // R5: the approval has COMMITTED. If the office emails on approval (and
+    // email is on), try now; whatever happens, the approval stands and the
+    // answer says what the email did. A failure leaves it approved, with a
+    // visible send_failed row and a retry in the hub.
+    const auto = await referralSend.sendAfterApproval(req, { office: req.tcOffice, referralId: id.data });
+    if (!auto) return res.json(out.body);
+    return res.json({ ...out.body, referral: auto.referral || out.body.referral, autoSend: auto.outcome });
   })
 );
 

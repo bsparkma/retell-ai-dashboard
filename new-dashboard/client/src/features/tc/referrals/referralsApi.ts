@@ -13,6 +13,7 @@ import {
   TcReferral,
   TcReferralSignoffSummary,
   TcReferralAttachment,
+  TcReferralSendOutcome,
   type TcReferralDirectoryInput,
   type TcReferralDoctorEdit,
   type TcReferralFieldsEdit,
@@ -229,6 +230,27 @@ export async function markReferral(
     ReferralResponse,
     await tcRequest<unknown>(`/tc/referrals/${referralId}/${MARK_PATHS[mark]}`, { office, method: "POST", body }),
   ).referral;
+}
+
+// ── R5: email it to the specialist ──────────────────────────────────────────
+
+const SendResponse = z.object({ success: z.literal(true), referral: TcReferral, outcome: TcReferralSendOutcome });
+
+/**
+ * Email an approved referral to its specialist. No body: the server derives
+ * the office, the recipient and the letter. Resolves only once ACS accepted it
+ * and the referral reads `sent`; anything else throws with the server's
+ * sentence (a 409 REFERRAL_EMAIL_CONFLICT says the email went out anyway).
+ */
+export async function sendReferralEmail(
+  office: OfficeId,
+  referralId: string,
+): Promise<{ referral: TcReferral; outcome: TcReferralSendOutcome }> {
+  const res = parse(
+    SendResponse,
+    await tcRequest<unknown>(`/tc/referrals/${referralId}/send-email`, { office, method: "POST", body: {} }),
+  );
+  return { referral: res.referral, outcome: res.outcome };
 }
 
 /** The doctor's view of the office's active specialists (the directory itself is tc.full). */

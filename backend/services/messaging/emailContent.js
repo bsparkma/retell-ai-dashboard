@@ -110,4 +110,29 @@ function renderRow(row, office, unsubscribeUrl) {
   });
 }
 
-module.exports = { mergeValues, practiceValues, footerFor, snapshotTemplate, renderRow };
+/**
+ * (R5) A referral letter, rendered by the same shared renderer with the same
+ * system footer (practice name, address, phone, the unsubscribe link). Two
+ * differences, both for who receives it: the footer says WHY a specialist's
+ * office got it (it is not the practice's patient), and the body may run to
+ * the renderer's ceiling, because the letter carries the clinical notes and
+ * the doctor's note verbatim — cutting them at the patient-email limit would
+ * drop clinical text without a word.
+ *
+ * The text is composed by the caller (routes/tc/referralLetterText.js); no
+ * merge token is filled here.
+ * @param {{ office: string, subject: string, text: string, unsubscribeUrl: string|null }} input
+ * @returns {{ subject: string, html: string, text: string }}
+ */
+function renderReferralLetter({ office, subject, text, unsubscribeUrl }) {
+  const footer = footerFor(office, unsubscribeUrl);
+  return contract.renderEmail({
+    subject,
+    preheader: '',
+    content: { kind: 'text', body: text, maxChars: contract.EMAIL_TEXT_BODY_CEILING, literal: true },
+    values: {},
+    footer: { ...footer, practiceName: acsConfig.practiceNameFor(office) || footer.practiceName, audience: 'referral' },
+  });
+}
+
+module.exports = { mergeValues, practiceValues, footerFor, snapshotTemplate, renderRow, renderReferralLetter };

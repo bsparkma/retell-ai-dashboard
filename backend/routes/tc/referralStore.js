@@ -179,6 +179,16 @@ async function effectivePolicies(q, office) {
   return resolvePolicies(office, await readSettingsRow(q, office));
 }
 
+/**
+ * (R5) Does this office email a referral the moment a doctor approves it?
+ * The policy is read here and only here (the routes ask this, not the column).
+ * Whether email is switched on at all is the caller's separate question.
+ */
+async function sendsOnApproval(q, office) {
+  const policies = await effectivePolicies(q, office);
+  return policies.autosendOnApproval.value === true;
+}
+
 /** Upsert the office's stored choice; returns the stored row. */
 async function upsertSettings(q, office, next, actor) {
   const res = await q.query(
@@ -258,6 +268,8 @@ function toReferral(r, practiceName = null, events = undefined) {
   if (events) {
     out.events = events;
     out.returned = contract.referralLastReturn(events);
+    // R5: only an approved referral can be (re)sent, so only it carries one.
+    out.sendProblem = r.status === 'approved' ? contract.referralLastSendProblem(events) : null;
   }
   return out;
 }
@@ -521,9 +533,124 @@ async function openReturns(q, office, rows) {
   return out;
 }
 
+// ── R5: the email send ──────────────────────────────────────────────────────
+
+/**
+ * entry id → its email, for the directory entries these rows name, when the
+ * stored value is usable (the directory's own rule). One query, no JOIN.
+ */
+async function directoryEmails(q, office, rows) {
+  const ids = [...new Set(rows.map((r) => r.directory_entry_id).filter(Boolean).map(String))];
+  if (ids.length === 0) return new Map();
+  const res = await q.query(
+    'SELECT entry_id, email FROM tc_referral_directory WHERE office_id = $1 AND entry_id = ANY($2)',
+    [office, ids]
+  );
+  const out = new Map();
+  for (const r of res.rows) {
+    const email = typeof r.email === 'string' ? r.email.trim() : '';
+    if (email && contract.DIRECTORY_EMAIL_RE.test(email)) out.set(String(r.entry_id), email);
+  }
+  return out;
+}
+
+/**
+ * referral id → its email trouble (failed / conflict), for the APPROVED
+ * referrals among `rows`. One query over their events, oldest first.
+ */
+async function openSendProblems(q, office, rows) {
+  const ids = rows.filter((r) => r.status === 'approved').map((r) => String(r.referral_id));
+  if (ids.length === 0) return new Map();
+  const res = await q.query(
+    `SELECT ${EVENT_COLS.join(', ')} FROM tc_referral_events WHERE office_id = $1 AND referral_id = ANY($2) ORDER BY at ASC`,
+    [office, ids]
+  );
+  const byId = new Map();
+  for (const e of res.rows) {
+    const k = String(e.referral_id);
+    if (!byId.has(k)) byId.set(k, []);
+    byId.get(k).push(toEvent(e));
+  }
+  const out = new Map();
+  for (const [k, events] of byId) {
+    const problem = contract.referralLastSendProblem(events);
+    if (problem) out.set(k, problem);
+  }
+  return out;
+}
+
+/**
+ * Forget a claim older than `staleBefore` (an ISO instant): the request that
+ * took it died without releasing it. A live send never runs that long.
+ */
+async function releaseStaleSendClaim(q, { office, referralId, staleBefore }) {
+  const res = await q.query(
+    'UPDATE tc_referrals SET send_attempt_id = $3, send_attempt_at = $4 WHERE office_id = $1 AND referral_id = $2 AND send_attempt_at < $5',
+    [office, referralId, null, null, staleBefore]
+  );
+  return res.rowCount || 0;
+}
+
+/**
+ * CLAIM the referral for one email attempt, conditional on it being approved
+ * and unclaimed: of two clicks (or a click and an auto-send), exactly one
+ * UPDATE matches. true = this attempt holds it.
+ */
+async function claimSend(q, { office, referralId, attemptId, at }) {
+  const res = await q.query(
+    'UPDATE tc_referrals SET send_attempt_id = $4, send_attempt_at = $5 WHERE office_id = $1 AND referral_id = $2 AND status = $3 AND send_attempt_id IS NULL RETURNING referral_id',
+    [office, referralId, 'approved', attemptId, at]
+  );
+  return res.rows.length === 1;
+}
+
+/** Let go of THIS attempt's claim (a no-op if it is no longer ours). */
+async function releaseSendClaim(q, { office, referralId, attemptId }) {
+  await q.query(
+    'UPDATE tc_referrals SET send_attempt_id = $4, send_attempt_at = $5 WHERE office_id = $1 AND referral_id = $2 AND send_attempt_id = $3',
+    [office, referralId, attemptId, null, null]
+  );
+}
+
+/**
+ * approved → sent, and the claim released in the same statement, CONDITIONAL
+ * on the referral still being approved AND still held by this attempt. null =
+ * it moved (or lost the claim) while the email was going out.
+ */
+async function finishSend(q, { office, referralId, attemptId, to, actor, at }) {
+  const res = await q.query(
+    `UPDATE tc_referrals SET status = $5, status_changed_at = $6, status_changed_by = $7, send_attempt_id = $8, send_attempt_at = $9, updated_at = now() WHERE office_id = $1 AND referral_id = $2 AND status = $3 AND send_attempt_id = $4 RETURNING ${REFERRAL_COLS.join(', ')}`,
+    [office, referralId, 'approved', attemptId, to, at, actor, null, null]
+  );
+  return res.rows[0] || null;
+}
+
+/**
+ * A history row for an email: `send` and `send_conflict` carry which email
+ * (ACS id), to whom, and its unsubscribe link's hash; `send_failed` carries
+ * none of them (the database pins this).
+ */
+async function insertSendEvent(
+  q,
+  { office, referralId, from, to, actor, at, note, verb, acsMessageId = null, recipientAddress = null, unsubscribeTokenHash = null }
+) {
+  await q.query(
+    'INSERT INTO tc_referral_events (event_id, office_id, referral_id, from_status, to_status, actor, at, note, verb, acs_message_id, recipient_address, unsubscribe_token_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)',
+    [randomUUID(), office, referralId, from, to, actor, at, note || '', verb, acsMessageId, recipientAddress, unsubscribeTokenHash]
+  );
+}
+
 module.exports = {
   DIRECTORY_COLS,
   POLICIES,
+  sendsOnApproval,
+  directoryEmails,
+  openSendProblems,
+  releaseStaleSendClaim,
+  claimSend,
+  releaseSendClaim,
+  finishSend,
+  insertSendEvent,
   toEntry,
   listDirectory,
   findEntry,

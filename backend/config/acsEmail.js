@@ -40,6 +40,21 @@
  *   TC_EMAIL_PRACTICE_ADDRESS_<OFFICE>, TC_EMAIL_PRACTICE_PHONE_<OFFICE>
  *                                 optional, plain text, for the footer and the
  *                                 {{practice.address}} / {{practice.phone}} tokens
+ *   TC_EMAIL_PRACTICE_NAME_<OFFICE>  (R5) optional: the practice's name as a
+ *                                 referral letter signs it ("Valley Family
+ *                                 Dental"). Absent = the office label. Read by
+ *                                 the referral letter only.
+ *
+ * REFERRAL EMAIL (R5) uses PER-OFFICE senders only: ownFromAddressFor never
+ * falls back to the shared ACS_EMAIL_FROM, so a referral cannot go out under
+ * another office's (or the deployment's) name. It also needs that office's
+ * Reply-To, because the letter asks the specialist to reply and a sender
+ * address is not a mailbox.
+ *
+ * SIZE. ACS caps one email request at 10 MB INCLUDING the base64 of its
+ * attachments (service limits, checked 2026-10-21). ACS_MAX_REQUEST_BYTES is
+ * that cap in bytes of the JSON request this transport sends; the adapter
+ * refuses anything over it before a byte leaves.
  *
  * ═════════════════════════════════════════════════════════════════════════════
  * THE UNSUBSCRIBE LINK NEEDS TWO MORE
@@ -58,6 +73,9 @@ const AUTH_MODES = Object.freeze(['managed_identity', 'connection_string']);
 
 /** The Entra scope for ACS data-plane calls. */
 const ACS_SCOPE = 'https://communication.azure.com/.default';
+
+/** ACS's "total email request size (including attachments)" — 10 MB, read as decimal bytes (the smaller reading). */
+const ACS_MAX_REQUEST_BYTES = 10_000_000;
 
 /** @param {string} name */
 function envValue(name) {
@@ -187,6 +205,18 @@ function fromAddressFor(officeKey) {
   return isEmailAddress(shared) ? /** @type {string} */ (shared).toLowerCase() : null;
 }
 
+/**
+ * THIS office's own sender, or null. Never the shared ACS_EMAIL_FROM: the
+ * referral send (R5) uses per-office senders only.
+ * @param {string} officeKey
+ * @returns {string|null}
+ */
+function ownFromAddressFor(officeKey) {
+  if (!isKnownOffice(officeKey)) return null;
+  const own = envValue(`ACS_EMAIL_FROM_${officeEnvSuffix(officeKey)}`);
+  return isEmailAddress(own) ? /** @type {string} */ (own).toLowerCase() : null;
+}
+
 /** @param {string} officeKey @returns {string|null} */
 function replyToFor(officeKey) {
   if (!isKnownOffice(officeKey)) return null;
@@ -201,6 +231,13 @@ function practiceDetailsFor(officeKey) {
   const address = envValue(`TC_EMAIL_PRACTICE_ADDRESS_${sfx}`);
   const phone = envValue(`TC_EMAIL_PRACTICE_PHONE_${sfx}`);
   return { address: address ? address.slice(0, 300) : null, phone: phone ? phone.slice(0, 40) : null };
+}
+
+/** (R5) The practice name a referral letter signs with, or null (the caller uses the office label). @param {string} officeKey */
+function practiceNameFor(officeKey) {
+  if (!isKnownOffice(officeKey)) return null;
+  const name = envValue(`TC_EMAIL_PRACTICE_NAME_${officeEnvSuffix(officeKey)}`);
+  return name ? name.replace(/[\r\n]+/g, ' ').slice(0, 120) : null;
 }
 
 /**
@@ -218,6 +255,7 @@ function unsubscribeUrl(token) {
 module.exports = {
   AUTH_MODES,
   ACS_SCOPE,
+  ACS_MAX_REQUEST_BYTES,
   isKnownOffice,
   isEmailAddress,
   authMode,
@@ -228,7 +266,9 @@ module.exports = {
   missingAccountConfig,
   accountConfigured,
   fromAddressFor,
+  ownFromAddressFor,
   replyToFor,
   practiceDetailsFor,
+  practiceNameFor,
   unsubscribeUrl,
 };
