@@ -14842,6 +14842,8 @@ __export(contract_entry_exports, {
   DividerBlock: () => DividerBlock,
   DraftMessageBody: () => DraftMessageBody,
   EMAIL_MERGE_TOKENS: () => EMAIL_MERGE_TOKENS,
+  EMAIL_TEXT_BODY_CEILING: () => EMAIL_TEXT_BODY_CEILING,
+  EMAIL_TEXT_BODY_MAX: () => EMAIL_TEXT_BODY_MAX,
   EditDraftBody: () => EditDraftBody,
   EmailBlock: () => EmailBlock,
   EmailBlocks: () => EmailBlocks,
@@ -14908,8 +14910,11 @@ __export(contract_entry_exports, {
   REFERRAL_ATTACHMENT_HINT: () => REFERRAL_ATTACHMENT_HINT,
   REFERRAL_DOCTOR_EDITABLE_STATUSES: () => REFERRAL_DOCTOR_EDITABLE_STATUSES,
   REFERRAL_EDITABLE_STATUSES: () => REFERRAL_EDITABLE_STATUSES,
+  REFERRAL_EMAIL_UNAVAILABLE_COPY: () => REFERRAL_EMAIL_UNAVAILABLE_COPY,
   REFERRAL_FIELD_EDITABLE_STATUSES: () => REFERRAL_FIELD_EDITABLE_STATUSES,
   REFERRAL_MARK_LABELS: () => REFERRAL_MARK_LABELS,
+  REFERRAL_NO_EMAIL_COPY: () => REFERRAL_NO_EMAIL_COPY,
+  REFERRAL_READY_TO_EMAIL_COPY: () => REFERRAL_READY_TO_EMAIL_COPY,
   REFERRAL_READY_TO_SEND_COPY: () => REFERRAL_READY_TO_SEND_COPY,
   Radiograph: () => Radiograph,
   RecallType: () => RecallType,
@@ -14928,6 +14933,7 @@ __export(contract_entry_exports, {
   TC_INTAKE_KIND_LABELS: () => TC_INTAKE_KIND_LABELS,
   TC_NOTIFICATION_EVENT_LABELS: () => TC_NOTIFICATION_EVENT_LABELS,
   TC_NOTIFICATION_LEVEL_LABELS: () => TC_NOTIFICATION_LEVEL_LABELS,
+  TC_REFERRAL_ALL_EVENT_VERBS: () => TC_REFERRAL_ALL_EVENT_VERBS,
   TC_REFERRAL_ATTACHMENT_MAX_BYTES: () => TC_REFERRAL_ATTACHMENT_MAX_BYTES,
   TC_REFERRAL_ATTACHMENT_MAX_FILES: () => TC_REFERRAL_ATTACHMENT_MAX_FILES,
   TC_REFERRAL_ATTACHMENT_TYPES: () => TC_REFERRAL_ATTACHMENT_TYPES,
@@ -14935,6 +14941,7 @@ __export(contract_entry_exports, {
   TC_REFERRAL_DOCTOR_NOTE_MAX: () => TC_REFERRAL_DOCTOR_NOTE_MAX,
   TC_REFERRAL_EVENT_VERBS: () => TC_REFERRAL_EVENT_VERBS,
   TC_REFERRAL_HUB_GROUPS: () => TC_REFERRAL_HUB_GROUPS,
+  TC_REFERRAL_SEND_EVENT_VERBS: () => TC_REFERRAL_SEND_EVENT_VERBS,
   TC_REFERRAL_STATUS_LABELS: () => TC_REFERRAL_STATUS_LABELS,
   TC_REFERRAL_URGENCY_LABELS: () => TC_REFERRAL_URGENCY_LABELS,
   TERMINAL_CASE_STATUSES: () => TERMINAL_CASE_STATUSES,
@@ -14984,6 +14991,7 @@ __export(contract_entry_exports, {
   TcReferralDirectoryEntry: () => TcReferralDirectoryEntry,
   TcReferralDirectoryInput: () => TcReferralDirectoryInput,
   TcReferralDoctorEdit: () => TcReferralDoctorEdit,
+  TcReferralEmailUnavailable: () => TcReferralEmailUnavailable,
   TcReferralEvent: () => TcReferralEvent,
   TcReferralEventVerb: () => TcReferralEventVerb,
   TcReferralFieldsEdit: () => TcReferralFieldsEdit,
@@ -14994,6 +15002,9 @@ __export(contract_entry_exports, {
   TcReferralPolicy: () => TcReferralPolicy,
   TcReferralReopenRequest: () => TcReferralReopenRequest,
   TcReferralReturnRequest: () => TcReferralReturnRequest,
+  TcReferralSendOutcome: () => TcReferralSendOutcome,
+  TcReferralSendRequest: () => TcReferralSendRequest,
+  TcReferralSendVerb: () => TcReferralSendVerb,
   TcReferralSettingsRequest: () => TcReferralSettingsRequest,
   TcReferralSettingsResponse: () => TcReferralSettingsResponse,
   TcReferralSignoffSummary: () => TcReferralSignoffSummary,
@@ -15042,8 +15053,10 @@ __export(contract_entry_exports, {
   referralEditSummary: () => referralEditSummary,
   referralHubGroup: () => referralHubGroup,
   referralLastReturn: () => referralLastReturn,
+  referralLastSendProblem: () => referralLastSendProblem,
   referralNextStatus: () => referralNextStatus,
   referralReturnedLine: () => referralReturnedLine,
+  referralSendBlocker: () => referralSendBlocker,
   referralStatusAge: () => referralStatusAge,
   renderEmail: () => renderEmail,
   resolveNotificationLevel: () => resolveNotificationLevel,
@@ -16592,17 +16605,24 @@ function blockText(b) {
       return [b.address, b.phone, b.fineText].filter(Boolean).join("\n");
   }
 }
+var EMAIL_TEXT_BODY_MAX = 8e3;
+var EMAIL_TEXT_BODY_CEILING = 2e4;
+function footerReason(f, name) {
+  if (!name) return "";
+  return f.audience === "referral" ? `You are receiving this email because ${name} sent your office a patient referral.` : `You are receiving this email because you are a patient of ${name}.`;
+}
 function systemFooterHtml(f) {
   const name = str(f.practiceName, "", 200).trim();
   const contact = [str(f.practiceAddress, "", 400).trim(), str(f.practicePhone, "", 60).trim()].filter(Boolean);
   const link = f.unsubscribeUrl ? safeUrl(f.unsubscribeUrl) : null;
   const unsub = link ? `<a href="${escapeHtml(link)}" style="color:#475569;text-decoration:underline">Unsubscribe from these emails</a>` : `<span style="color:#475569;text-decoration:underline">Unsubscribe from these emails</span>`;
-  return `<tr><td style="padding:20px 32px;color:#64748b;font-size:12px;line-height:1.6;text-align:center;font-family:${FONT}">` + (name ? `<div>You are receiving this email because you are a patient of ${escapeHtml(name)}.</div>` : "") + contact.map((c) => `<div>${lines(c)}</div>`).join("") + `<div style="margin-top:8px">${unsub}</div></td></tr>`;
+  const reason = footerReason(f, name);
+  return `<tr><td style="padding:20px 32px;color:#64748b;font-size:12px;line-height:1.6;text-align:center;font-family:${FONT}">` + (reason ? `<div>${escapeHtml(reason)}</div>` : "") + contact.map((c) => `<div>${lines(c)}</div>`).join("") + `<div style="margin-top:8px">${unsub}</div></td></tr>`;
 }
 function systemFooterText(f) {
   const name = str(f.practiceName, "", 200).trim();
   const parts = [
-    name ? `You are receiving this email because you are a patient of ${name}.` : "",
+    footerReason(f, name),
     str(f.practiceAddress, "", 400).trim(),
     str(f.practicePhone, "", 60).trim(),
     f.unsubscribeUrl ? `Unsubscribe: ${f.unsubscribeUrl}` : "Unsubscribe: (link added when sent)"
@@ -16618,6 +16638,9 @@ function emailBodyText(content, values) {
   if (c && c.kind === "text") return fillMergeTokens(str(c.body, "", 8e3), v).trim();
   return "";
 }
+function textBodyLimit(maxChars) {
+  return typeof maxChars === "number" && Number.isInteger(maxChars) && maxChars > 0 ? Math.min(maxChars, EMAIL_TEXT_BODY_CEILING) : EMAIL_TEXT_BODY_MAX;
+}
 function renderEmail(input) {
   const values = asRecord(input && input.values) ?? {};
   const footer = asRecord(input && input.footer) ? input.footer : { practiceName: "", unsubscribeUrl: null };
@@ -16631,7 +16654,8 @@ function renderEmail(input) {
     bodyRows = blocks.map(blockHtml).join("");
     bodyText = blocks.map(blockText).filter(Boolean).join("\n\n");
   } else if (content && content.kind === "text") {
-    const text2 = fillMergeTokens(str(content.body, "", 8e3), values).trim();
+    const raw = str(content.body, "", textBodyLimit(content.maxChars));
+    const text2 = (content.literal === true ? raw : fillMergeTokens(raw, values)).trim();
     bodyRows = text2 ? row(paragraphs(text2, "color:#0f172a;font-size:15px;line-height:1.6"), "#ffffff", "24px 32px") : "";
     bodyText = text2;
   }
@@ -17420,10 +17444,22 @@ var TcReferralSettingsRequest = import_zod8.z.object({
   signoffRequired: import_zod8.z.boolean().optional(),
   autosendOnApproval: import_zod8.z.boolean().optional()
 }).strict().refine((v) => v.signoffRequired !== void 0 || v.autosendOnApproval !== void 0, "Nothing to change");
+var TcReferralEmailUnavailable = import_zod8.z.enum([
+  "switched_off",
+  "not_configured",
+  "office_not_configured"
+]);
 var TcReferralsStatus = import_zod8.z.object({
   success: import_zod8.z.literal(true),
   office: import_zod8.z.enum(["roland", "valley"]),
-  enabled: import_zod8.z.boolean()
+  enabled: import_zod8.z.boolean(),
+  /**
+   * R5: referral email. `enabled` is the per-office dark-launch switch
+   * (tc_referral_email_enabled) — off means no send UI at all. `unavailable`
+   * says why an enabled office still cannot send. Absent from an older server
+   * = off.
+   */
+  emailSend: import_zod8.z.object({ enabled: import_zod8.z.boolean(), unavailable: TcReferralEmailUnavailable.nullable() }).optional()
 });
 var TcReferralSourceKind = import_zod8.z.enum(["case", "checkout", "hyg_visit", "call"]);
 var TcReferralTeeth = import_zod8.z.union([
@@ -17463,7 +17499,9 @@ var TC_REFERRAL_EVENT_VERBS = [
   "mark_patient_seen",
   "close"
 ];
-var TcReferralEventVerb = import_zod8.z.enum(TC_REFERRAL_EVENT_VERBS);
+var TC_REFERRAL_SEND_EVENT_VERBS = ["send", "send_failed", "send_conflict"];
+var TC_REFERRAL_ALL_EVENT_VERBS = [...TC_REFERRAL_EVENT_VERBS, ...TC_REFERRAL_SEND_EVENT_VERBS];
+var TcReferralEventVerb = import_zod8.z.enum(TC_REFERRAL_ALL_EVENT_VERBS);
 var TcReferralEvent = import_zod8.z.object({
   eventId: import_zod8.z.string().uuid(),
   fromStatus: TcReferralStatus.nullable(),
@@ -17507,7 +17545,19 @@ var TcReferral = import_zod8.z.object({
    * R6: set while a draft's latest STATUS MOVE is the doctor's `return` — the
    * question the submitter must answer. null otherwise. On list and detail reads.
    */
-  returned: import_zod8.z.object({ note: import_zod8.z.string(), actor: import_zod8.z.string(), at: import_zod8.z.string() }).nullable().optional()
+  returned: import_zod8.z.object({ note: import_zod8.z.string(), actor: import_zod8.z.string(), at: import_zod8.z.string() }).nullable().optional(),
+  /**
+   * R5: the chosen specialist's email as the directory holds it NOW, when it is
+   * a usable address; null when there is none. On list and detail reads. The
+   * send always re-reads the directory row; this is only for the button.
+   */
+  specialistEmail: import_zod8.z.string().nullable().optional(),
+  /**
+   * R5: while it is approved, the last email attempt that did not end in
+   * `sent` — a failure (retry allowed) or a conflict (the email went out but
+   * the referral was not marked sent; no retry). null otherwise.
+   */
+  sendProblem: import_zod8.z.object({ kind: import_zod8.z.enum(["failed", "conflict"]), note: import_zod8.z.string(), actor: import_zod8.z.string(), at: import_zod8.z.string() }).nullable().optional()
 });
 var TcReferralVerb = import_zod8.z.enum([
   "submit",
@@ -17522,8 +17572,13 @@ var TcReferralVerb = import_zod8.z.enum([
   "mark_patient_seen",
   "close"
 ]);
+var TcReferralSendVerb = import_zod8.z.literal("send");
 function referralNextStatus(from, verb, opts) {
   switch (verb) {
+    // R5: only from approved, and only once ACS has accepted the email. The
+    // same edge as mark_sent; the event's verb says which one happened.
+    case "send":
+      return from === "approved" ? "sent" : null;
     case "submit":
       return from === "draft" ? opts.signoffRequired ? "pending_signoff" : "approved" : null;
     case "withdraw":
@@ -17612,10 +17667,25 @@ var REFERRAL_MARK_LABELS = {
   close: "Close referral"
 };
 function referralLastReturn(events) {
-  const moves = (events ?? []).filter((e) => e.verb !== "edit" && e.verb !== "doctor_edit" && e.verb !== "create");
+  const moves = (events ?? []).filter(isStatusMove);
   const last = moves[moves.length - 1];
   if (!last || last.verb !== "return") return null;
   return { note: last.note, actor: last.actor, at: last.at };
+}
+var NON_MOVE_VERBS = ["create", "edit", "doctor_edit", "send_failed", "send_conflict"];
+function isStatusMove(e) {
+  return !e.verb || !NON_MOVE_VERBS.includes(e.verb);
+}
+function referralLastSendProblem(events) {
+  const list = events ?? [];
+  let start = 0;
+  for (let i = 0; i < list.length; i += 1) if (isStatusMove(list[i])) start = i + 1;
+  const since = list.slice(start);
+  const conflict = [...since].reverse().find((e) => e.verb === "send_conflict");
+  if (conflict) return { kind: "conflict", note: conflict.note, actor: conflict.actor, at: conflict.at };
+  const failed = [...since].reverse().find((e) => e.verb === "send_failed");
+  if (failed) return { kind: "failed", note: failed.note, actor: failed.actor, at: failed.at };
+  return null;
 }
 function referralReturnedLine(returned) {
   return returned ? `Returned by Dr. \u2014 ${returned.note}` : null;
@@ -17650,6 +17720,30 @@ function referralChipFor(referrals) {
   return "approved";
 }
 var REFERRAL_READY_TO_SEND_COPY = "Ready to send \u2014 sending ships in a later update.";
+var TcReferralSendRequest = import_zod8.z.object({}).strict();
+var TcReferralSendOutcome = import_zod8.z.object({
+  status: import_zod8.z.enum(["sent", "failed", "conflict", "skipped"]),
+  /** The honest sentence: why it failed, or where it went. */
+  message: import_zod8.z.string(),
+  code: import_zod8.z.string().nullable()
+});
+var REFERRAL_READY_TO_EMAIL_COPY = "Approved \u2014 ready to email to the specialist.";
+var REFERRAL_NO_EMAIL_COPY = "No email on file \u2014 add it in Settings \u2192 Referrals, or mark sent outside the app";
+var REFERRAL_EMAIL_UNAVAILABLE_COPY = {
+  switched_off: "Email sending is switched off for the practice right now.",
+  not_configured: "Email sending is not connected yet.",
+  office_not_configured: "This office has no referral sending address set up yet."
+};
+function referralSendBlocker(r, email) {
+  if (r.status !== "approved") return "Only an approved referral can be emailed.";
+  if (!email || !email.enabled) return "Referral email is not switched on for this office.";
+  if (r.sendProblem && r.sendProblem.kind === "conflict") {
+    return "This referral was already emailed but could not be marked sent. Check with the specialist, then mark it sent.";
+  }
+  if (email.unavailable) return REFERRAL_EMAIL_UNAVAILABLE_COPY[email.unavailable];
+  if (!r.specialistEmail) return REFERRAL_NO_EMAIL_COPY;
+  return null;
+}
 var TcReferralSignoffSummary = import_zod8.z.object({
   success: import_zod8.z.literal(true),
   office: import_zod8.z.enum(["roland", "valley"]),
@@ -17704,6 +17798,8 @@ var import_zod9 = __toESM(require_zod());
   DividerBlock,
   DraftMessageBody,
   EMAIL_MERGE_TOKENS,
+  EMAIL_TEXT_BODY_CEILING,
+  EMAIL_TEXT_BODY_MAX,
   EditDraftBody,
   EmailBlock,
   EmailBlocks,
@@ -17770,8 +17866,11 @@ var import_zod9 = __toESM(require_zod());
   REFERRAL_ATTACHMENT_HINT,
   REFERRAL_DOCTOR_EDITABLE_STATUSES,
   REFERRAL_EDITABLE_STATUSES,
+  REFERRAL_EMAIL_UNAVAILABLE_COPY,
   REFERRAL_FIELD_EDITABLE_STATUSES,
   REFERRAL_MARK_LABELS,
+  REFERRAL_NO_EMAIL_COPY,
+  REFERRAL_READY_TO_EMAIL_COPY,
   REFERRAL_READY_TO_SEND_COPY,
   Radiograph,
   RecallType,
@@ -17790,6 +17889,7 @@ var import_zod9 = __toESM(require_zod());
   TC_INTAKE_KIND_LABELS,
   TC_NOTIFICATION_EVENT_LABELS,
   TC_NOTIFICATION_LEVEL_LABELS,
+  TC_REFERRAL_ALL_EVENT_VERBS,
   TC_REFERRAL_ATTACHMENT_MAX_BYTES,
   TC_REFERRAL_ATTACHMENT_MAX_FILES,
   TC_REFERRAL_ATTACHMENT_TYPES,
@@ -17797,6 +17897,7 @@ var import_zod9 = __toESM(require_zod());
   TC_REFERRAL_DOCTOR_NOTE_MAX,
   TC_REFERRAL_EVENT_VERBS,
   TC_REFERRAL_HUB_GROUPS,
+  TC_REFERRAL_SEND_EVENT_VERBS,
   TC_REFERRAL_STATUS_LABELS,
   TC_REFERRAL_URGENCY_LABELS,
   TERMINAL_CASE_STATUSES,
@@ -17846,6 +17947,7 @@ var import_zod9 = __toESM(require_zod());
   TcReferralDirectoryEntry,
   TcReferralDirectoryInput,
   TcReferralDoctorEdit,
+  TcReferralEmailUnavailable,
   TcReferralEvent,
   TcReferralEventVerb,
   TcReferralFieldsEdit,
@@ -17856,6 +17958,9 @@ var import_zod9 = __toESM(require_zod());
   TcReferralPolicy,
   TcReferralReopenRequest,
   TcReferralReturnRequest,
+  TcReferralSendOutcome,
+  TcReferralSendRequest,
+  TcReferralSendVerb,
   TcReferralSettingsRequest,
   TcReferralSettingsResponse,
   TcReferralSignoffSummary,
@@ -17904,8 +18009,10 @@ var import_zod9 = __toESM(require_zod());
   referralEditSummary,
   referralHubGroup,
   referralLastReturn,
+  referralLastSendProblem,
   referralNextStatus,
   referralReturnedLine,
+  referralSendBlocker,
   referralStatusAge,
   renderEmail,
   resolveNotificationLevel,

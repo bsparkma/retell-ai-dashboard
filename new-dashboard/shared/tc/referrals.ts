@@ -157,11 +157,32 @@ export const TcReferralSettingsRequest = z
   .refine((v) => v.signoffRequired !== undefined || v.autosendOnApproval !== undefined, "Nothing to change");
 export type TcReferralSettingsRequest = z.infer<typeof TcReferralSettingsRequest>;
 
+/**
+ * R5: why referral email cannot go out from this office right now, or null
+ * when it can. `switched_off` is the transport's own kill switch
+ * (tc_email_enabled); the rest name a missing setting.
+ */
+export const TcReferralEmailUnavailable = z.enum([
+  "switched_off",
+  "not_configured",
+  "office_not_configured",
+]);
+export type TcReferralEmailUnavailable = z.infer<typeof TcReferralEmailUnavailable>;
+
 /** GET /api/tc/referrals/status — is the feature on here? Never refused. */
 export const TcReferralsStatus = z.object({
   success: z.literal(true),
   office: z.enum(["roland", "valley"]),
   enabled: z.boolean(),
+  /**
+   * R5: referral email. `enabled` is the per-office dark-launch switch
+   * (tc_referral_email_enabled) — off means no send UI at all. `unavailable`
+   * says why an enabled office still cannot send. Absent from an older server
+   * = off.
+   */
+  emailSend: z
+    .object({ enabled: z.boolean(), unavailable: TcReferralEmailUnavailable.nullable() })
+    .optional(),
 });
 export type TcReferralsStatus = z.infer<typeof TcReferralsStatus>;
 
@@ -240,7 +261,27 @@ export const TC_REFERRAL_EVENT_VERBS = [
   "mark_patient_seen",
   "close",
 ] as const;
-export const TcReferralEventVerb = z.enum(TC_REFERRAL_EVENT_VERBS);
+/**
+ * R5 (referral email send): the event verbs sending adds. The CHECK on
+ * tc_referral_events.verb (1792100000000) carries TC_REFERRAL_EVENT_VERBS
+ * followed by exactly these; that migration's test pins the equality.
+ *
+ *   send           the app emailed it and ACS accepted it: approved → sent
+ *   send_failed    an email was attempted and did not go out; nothing moved
+ *                  (from = to = approved). The hub offers a retry.
+ *   send_conflict  ACS ACCEPTED the email but the referral could not be marked
+ *                  sent (it moved meanwhile, or the audit write failed). The
+ *                  email is out; this row says so instead of hiding it.
+ *
+ * Kept as their own list (not appended above) because R6's migration test
+ * pins ITS CHECK to TC_REFERRAL_EVENT_VERBS, and that migration is history.
+ */
+export const TC_REFERRAL_SEND_EVENT_VERBS = ["send", "send_failed", "send_conflict"] as const;
+
+/** Every event verb, in CHECK order: what tc_referral_events.verb may hold today. */
+export const TC_REFERRAL_ALL_EVENT_VERBS = [...TC_REFERRAL_EVENT_VERBS, ...TC_REFERRAL_SEND_EVENT_VERBS] as const;
+
+export const TcReferralEventVerb = z.enum(TC_REFERRAL_ALL_EVENT_VERBS);
 export type TcReferralEventVerb = z.infer<typeof TcReferralEventVerb>;
 
 /** One transition (or, since R6, one edit), as the referral's history shows it. */
@@ -291,6 +332,21 @@ export const TcReferral = z.object({
    * question the submitter must answer. null otherwise. On list and detail reads.
    */
   returned: z.object({ note: z.string(), actor: z.string(), at: z.string() }).nullable().optional(),
+  /**
+   * R5: the chosen specialist's email as the directory holds it NOW, when it is
+   * a usable address; null when there is none. On list and detail reads. The
+   * send always re-reads the directory row; this is only for the button.
+   */
+  specialistEmail: z.string().nullable().optional(),
+  /**
+   * R5: while it is approved, the last email attempt that did not end in
+   * `sent` — a failure (retry allowed) or a conflict (the email went out but
+   * the referral was not marked sent; no retry). null otherwise.
+   */
+  sendProblem: z
+    .object({ kind: z.enum(["failed", "conflict"]), note: z.string(), actor: z.string(), at: z.string() })
+    .nullable()
+    .optional(),
 });
 export type TcReferral = z.infer<typeof TcReferral>;
 
@@ -313,9 +369,15 @@ export type TcReferral = z.infer<typeof TcReferral>;
  *   mark_patient_seen  acknowledged → patient_seen │ for the world before
  *   close              patient_seen → closed    ┘ sending exists     (tc.full)
  *
- * NOTHING SENDS. The four marks record what a person says happened; none of
- * them emails, faxes or triggers anything, and `autosend_on_approval` stays
- * consumed by nothing. They are the ONLY way into sent and beyond.
+ * The four marks record what a person says happened; none of them emails,
+ * faxes or triggers anything.
+ *
+ * R5 adds ONE more move, `send` (approved → sent), below as TcReferralSendVerb
+ * rather than in this enum: these are the verbs a person SAYS, recorded as
+ * they say them, while `send` is the app's own act — it happens only after
+ * ACS has accepted the email, and only the send code may perform it. Keeping
+ * it out of this enum keeps every route that takes "a verb" from being able to
+ * claim a send that never happened.
  */
 export const TcReferralVerb = z.enum([
   "submit",
@@ -332,16 +394,27 @@ export const TcReferralVerb = z.enum([
 ]);
 export type TcReferralVerb = z.infer<typeof TcReferralVerb>;
 
+/** R5: the app emailed it and ACS accepted it (see TcReferralVerb's note). */
+export const TcReferralSendVerb = z.literal("send");
+export type TcReferralSendVerb = z.infer<typeof TcReferralSendVerb>;
+
+/** Every verb that moves a status: what a person says, and the app's send. */
+export type TcReferralMoveVerb = TcReferralVerb | TcReferralSendVerb;
+
 /**
  * THE transition table. Pure; the server enforces it, the client uses it only
  * to decide which buttons to draw. null = not allowed from here.
  */
 export function referralNextStatus(
   from: TcReferralStatus,
-  verb: TcReferralVerb,
+  verb: TcReferralMoveVerb,
   opts: { signoffRequired: boolean },
 ): TcReferralStatus | null {
   switch (verb) {
+    // R5: only from approved, and only once ACS has accepted the email. The
+    // same edge as mark_sent; the event's verb says which one happened.
+    case "send":
+      return from === "approved" ? "sent" : null;
     case "submit":
       return from === "draft" ? (opts.signoffRequired ? "pending_signoff" : "approved") : null;
     case "withdraw":
@@ -497,10 +570,39 @@ export const REFERRAL_MARK_LABELS = {
 export function referralLastReturn(
   events: readonly TcReferralEvent[] | undefined,
 ): { note: string; actor: string; at: string } | null {
-  const moves = (events ?? []).filter((e) => e.verb !== "edit" && e.verb !== "doctor_edit" && e.verb !== "create");
+  const moves = (events ?? []).filter(isStatusMove);
   const last = moves[moves.length - 1];
   if (!last || last.verb !== "return") return null;
   return { note: last.note, actor: last.actor, at: last.at };
+}
+
+/** The event verbs that record something WITHOUT moving the status. */
+const NON_MOVE_VERBS: readonly TcReferralEventVerb[] = ["create", "edit", "doctor_edit", "send_failed", "send_conflict"];
+
+/** Did this history row move the status? (Pre-R6 rows carry no verb and always did.) */
+function isStatusMove(e: TcReferralEvent): boolean {
+  return !e.verb || !NON_MOVE_VERBS.includes(e.verb);
+}
+
+/**
+ * R5: the email trouble since the referral last MOVED (so a reopen and
+ * re-approval starts clean). A conflict wins over a failure: it means the
+ * email already went out, and sending again would send it twice. Events are
+ * oldest first. Pure; the server uses it to refuse a second send, the client
+ * to draw the retry or the warning.
+ */
+export function referralLastSendProblem(
+  events: readonly TcReferralEvent[] | undefined,
+): { kind: "failed" | "conflict"; note: string; actor: string; at: string } | null {
+  const list = events ?? [];
+  let start = 0;
+  for (let i = 0; i < list.length; i += 1) if (isStatusMove(list[i])) start = i + 1;
+  const since = list.slice(start);
+  const conflict = [...since].reverse().find((e) => e.verb === "send_conflict");
+  if (conflict) return { kind: "conflict", note: conflict.note, actor: conflict.actor, at: conflict.at };
+  const failed = [...since].reverse().find((e) => e.verb === "send_failed");
+  if (failed) return { kind: "failed", note: failed.note, actor: failed.actor, at: failed.at };
+  return null;
 }
 
 /** The submitter's line for a referral the doctor sent back. Pure. */
@@ -557,6 +659,53 @@ export function referralChipFor(
 
 /** The honest line under an approved referral, until sending exists. */
 export const REFERRAL_READY_TO_SEND_COPY = "Ready to send — sending ships in a later update.";
+
+// ── R5: referral email send ─────────────────────────────────────────────────
+
+/** POST /api/tc/referrals/:id/send — no body. Everything is derived server-side. */
+export const TcReferralSendRequest = z.object({}).strict();
+export type TcReferralSendRequest = z.infer<typeof TcReferralSendRequest>;
+
+/** What a send (or the auto-send after an approval) did. */
+export const TcReferralSendOutcome = z.object({
+  status: z.enum(["sent", "failed", "conflict", "skipped"]),
+  /** The honest sentence: why it failed, or where it went. */
+  message: z.string(),
+  code: z.string().nullable(),
+});
+export type TcReferralSendOutcome = z.infer<typeof TcReferralSendOutcome>;
+
+/** The line under an approved referral once email is switched on for the office. */
+export const REFERRAL_READY_TO_EMAIL_COPY = "Approved — ready to email to the specialist.";
+
+/** Why the Send button is disabled when the directory row has no email. Exactly as the PM wrote it. */
+export const REFERRAL_NO_EMAIL_COPY =
+  "No email on file — add it in Settings → Referrals, or mark sent outside the app";
+
+/** The disabled-button sentence for each reason email cannot go out. */
+export const REFERRAL_EMAIL_UNAVAILABLE_COPY: Record<TcReferralEmailUnavailable, string> = {
+  switched_off: "Email sending is switched off for the practice right now.",
+  not_configured: "Email sending is not connected yet.",
+  office_not_configured: "This office has no referral sending address set up yet.",
+};
+
+/**
+ * Should this approved referral offer Send, and if not, why not? Pure — the
+ * server re-checks everything at the click.
+ */
+export function referralSendBlocker(
+  r: Pick<TcReferral, "status" | "specialistEmail" | "sendProblem">,
+  email: { enabled: boolean; unavailable: TcReferralEmailUnavailable | null } | null | undefined,
+): string | null {
+  if (r.status !== "approved") return "Only an approved referral can be emailed.";
+  if (!email || !email.enabled) return "Referral email is not switched on for this office.";
+  if (r.sendProblem && r.sendProblem.kind === "conflict") {
+    return "This referral was already emailed but could not be marked sent. Check with the specialist, then mark it sent.";
+  }
+  if (email.unavailable) return REFERRAL_EMAIL_UNAVAILABLE_COPY[email.unavailable];
+  if (!r.specialistEmail) return REFERRAL_NO_EMAIL_COPY;
+  return null;
+}
 
 /** GET /api/tc/referrals/signoff/summary — the nav badge and the arrival alert. */
 export const TcReferralSignoffSummary = z.object({
