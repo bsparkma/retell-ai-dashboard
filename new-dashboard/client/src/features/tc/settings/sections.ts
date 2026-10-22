@@ -13,6 +13,7 @@ import {
   Building2,
   Crown,
   LayoutList,
+  Mail,
   Percent,
   Plug,
   Send,
@@ -20,6 +21,7 @@ import {
   Users,
   type LucideIcon,
 } from "lucide-react";
+import type { PermissionAction } from "@/lib/permissions";
 
 export type TcSettingsSectionKey =
   | "practice"
@@ -31,6 +33,7 @@ export type TcSettingsSectionKey =
   | "integrations"
   | "data"
   | "notifications"
+  | "email_identity"
   | "referrals";
 
 export interface TcSettingsSection {
@@ -45,6 +48,11 @@ export interface TcSettingsSection {
    * nav when it is off, or when the answer cannot be had.
    */
   requiresReferrals?: boolean;
+  /**
+   * Shown only to a caller who holds this action (R5c). UX only: the server
+   * refuses everyone else regardless.
+   */
+  requiresPermission?: PermissionAction;
 }
 
 export const TC_SETTINGS_SECTIONS: readonly TcSettingsSection[] = [
@@ -58,6 +66,14 @@ export const TC_SETTINGS_SECTIONS: readonly TcSettingsSection[] = [
   { key: "data", label: "Data & Backup", icon: ShieldCheck, needsLibrary: false },
   // Item 51: in-app alert preferences — yours, and the office default (admin).
   { key: "notifications", label: "Notifications", icon: Bell, needsLibrary: false },
+  // R5c: the office's email reply-to, practice name and phone. Admin + office.
+  {
+    key: "email_identity",
+    label: "Email identity",
+    icon: Mail,
+    needsLibrary: false,
+    requiresPermission: "tc.notification_defaults",
+  },
   // Item 52: the specialist directory and the referral policies. Dark per office.
   { key: "referrals", label: "Referrals", icon: Send, needsLibrary: false, requiresReferrals: true },
 ];

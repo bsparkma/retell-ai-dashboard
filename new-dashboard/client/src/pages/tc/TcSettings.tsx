@@ -4,8 +4,9 @@
  * This is DentaFlow's Settings ARRANGEMENT over the platform's existing
  * capabilities: a sticky left section nav with hash deep links
  * (/tc/settings#pricing), the same eight sections in the same order — plus
- * Notifications (item 51), which DentaFlow never had, and Referrals (item 52),
- * which appears only while referrals is switched on for the office.
+ * Notifications (item 51), which DentaFlow never had, Email identity (R5c),
+ * shown to admin and office only, and Referrals (item 52), which appears only
+ * while referrals is switched on for the office.
  *
  * What is behind each section is platform reality, not a port:
  *  - Pricing / Financing / Stages / Library reuse the existing office-library
@@ -42,6 +43,9 @@ import { PracticeSection } from "@/features/tc/settings/PracticeSection";
 import { TeamSection } from "@/features/tc/settings/TeamSection";
 import { NotificationsSection } from "@/features/tc/settings/NotificationsSection";
 import { ReferralsSection } from "@/features/tc/settings/ReferralsSection";
+import { EmailIdentitySection } from "@/features/tc/settings/EmailIdentitySection";
+import { useAuth } from "@/contexts/AuthContext";
+import { can } from "@/lib/permissions";
 import { getReferralsStatus } from "@/features/tc/referrals/referralsApi";
 import {
   DEFAULT_TC_SETTINGS_SECTION,
@@ -90,7 +94,14 @@ function SettingsInner({ office }: { office: OfficeId }) {
     };
   }, [office]);
 
-  const sections = TC_SETTINGS_SECTIONS.filter((s) => !s.requiresReferrals || referralsOn);
+  // R5c: a section that needs an action is shown only to a caller who holds it.
+  const auth = useAuth();
+  const permissions = auth.status === "authenticated" ? auth.user.permissions : undefined;
+  const sections = TC_SETTINGS_SECTIONS.filter(
+    (s) =>
+      (!s.requiresReferrals || referralsOn) &&
+      (!s.requiresPermission || can(permissions, s.requiresPermission)),
+  );
   const shown: TcSettingsSectionKey = sections.some((s) => s.key === active) ? active : DEFAULT_TC_SETTINGS_SECTION;
 
   // Deep links: /tc/settings#pricing opens Pricing, and Back/Forward between
@@ -230,6 +241,8 @@ function renderStaticSection(key: TcSettingsSectionKey, office: OfficeId) {
       return <NotificationsSection office={office} />;
     case "referrals":
       return <ReferralsSection office={office} />;
+    case "email_identity":
+      return <EmailIdentitySection office={office} />;
     default:
       return null;
   }
