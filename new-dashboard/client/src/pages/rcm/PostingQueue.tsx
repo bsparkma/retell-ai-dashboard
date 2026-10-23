@@ -295,6 +295,13 @@ function OfficePostingQueue({ office }: { office: RcmOfficeId }) {
             <span className="text-sm text-muted-foreground" data-testid={`posting-counts-${office}`}>
               All time: {waiting} waiting · {page.byStatus.posted} posted ·{" "}
               {page.byStatus.blocked} stuck · {page.total} total
+              {/* W-21c: said apart, never folded into "waiting" — a press cannot settle these. */}
+              {(page.claimGone ?? 0) > 0 && (
+                <span data-testid={`posting-claim-gone-count-${office}`}>
+                  {" "}
+                  · {page.claimGone} whose claim is no longer in Open Dental
+                </span>
+              )}
             </span>
           )}
         </div>
@@ -1040,13 +1047,19 @@ function PlanCard({
  *
  * `?? 0` on the new key only: a server mid-deploy, one revision older than
  * this client, does not send it yet, and NaN would read as "work waiting".
+ *
+ * W-21c: LESS the plans over a deleted claim (`claimGone`, counted by the
+ * server). They stay drainable, but a press settles nothing for them — counting
+ * them kept the button lit, "Post 1 to Open Dental", over a page with nothing a
+ * press could do. `?? 0` for the same mid-deploy reason as above.
  */
 function waitingToPost(page: PostingQueuePage): number {
   return (
     page.byStatus.approved +
     page.byStatus.failed +
     page.byStatus.partially_posted +
-    (page.byStatus.outcome_unknown ?? 0)
+    (page.byStatus.outcome_unknown ?? 0) -
+    (page.claimGone ?? 0)
   );
 }
 
@@ -1057,6 +1070,26 @@ function waitingToPost(page: PostingQueuePage): number {
  * that the payment must not be entered by hand, and that the next press reads
  * the chart first. No figure, no fix, and never the run's own error text.
  */
+/**
+ * A PLAN OVER A DELETED CLAIM, on the history screen — `outcome_unknown`
+ * (W-21b) or `partially_posted` (W-21c). The row's hint names the situation and
+ * the hand action; this keeps only what is on record. Never "press Post again".
+ */
+function ClaimGonePanel({ row }: { row: PostingQueueRow }) {
+  return (
+    <div
+      className="mt-2 rounded-md border border-border bg-muted/40 p-2 text-sm"
+      data-testid={`posting-claim-gone-${row.queueId}`}
+    >
+      <p className="text-foreground">
+        {row.odClaimPaymentNum != null
+          ? `Open Dental already holds check #${row.odClaimPaymentNum} from an earlier posting run — do not enter the payment by hand.`
+          : "Part of this payment may already be in Open Dental."}
+      </p>
+    </div>
+  );
+}
+
 function OutcomeUnknown({ row }: { row: PostingQueueRow }) {
   /*
    * W-21b: THE CLAIM IS GONE, so no press can settle this. The row's hint
@@ -1064,20 +1097,7 @@ function OutcomeUnknown({ row }: { row: PostingQueueRow }) {
    * this panel keeps only what is on record — and drops "press Post again",
    * which here would be a dead press offered as the way out.
    */
-  if (claimGone(row)) {
-    return (
-      <div
-        className="mt-2 rounded-md border border-border bg-muted/40 p-2 text-sm"
-        data-testid={`posting-claim-gone-${row.queueId}`}
-      >
-        <p className="text-foreground">
-          {row.odClaimPaymentNum != null
-            ? `Open Dental already holds check #${row.odClaimPaymentNum} from an earlier posting run — do not enter the payment by hand.`
-            : "Part of this payment may already be in Open Dental."}
-        </p>
-      </div>
-    );
-  }
+  if (claimGone(row)) return <ClaimGonePanel row={row} />;
   return (
     <div
       className="mt-2 rounded-md border border-border bg-muted/40 p-2 text-sm"
@@ -1137,6 +1157,10 @@ function PartlyPosted({ office, row }: { office: RcmOfficeId; row: PostingQueueR
       </div>
     );
   }
+
+  // W-21c: stopped over a deleted claim — the same panel W-21b gave
+  // `outcome_unknown`, and never "press Post again".
+  if (claimGone(row)) return <ClaimGonePanel row={row} />;
 
   return (
     <div

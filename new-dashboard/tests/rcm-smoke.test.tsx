@@ -93,6 +93,8 @@ import {
   type BatchMatchResponse,
 } from "@/features/rcm/api";
 import {
+  CLAIM_GONE_COPY,
+  CLAIM_GONE_STEP,
   POST_AGAIN_SAFE,
   QUEUE_STATE_COPY,
   SHADOW_MODE_COPY,
@@ -1304,6 +1306,8 @@ const POSTING_VOCAB: string[] = (() => {
   s.add(queueHint({ statusLabel: "queued", step: null, attemptCount: 0 }));
   s.add(queueHint({ statusLabel: "queued", step: null, attemptCount: 1 }));
   s.add(POSTED_CARD_HINT);
+  // PM ruling 2026-10-23 (W-21c): the claim-gone sentence is an explicit member.
+  s.add(CLAIM_GONE_COPY);
   return [...s];
 })();
 
@@ -3272,6 +3276,8 @@ describe("3 · posting truth, on the Posting history — every row at once", () 
     }
     expect(screen.getByTestId("posting-measured-q-measured")).toBeTruthy();
     for (const [i] of STOPPED_STEPS.entries()) {
+      // PM ruling 2026-10-23 (W-21c): the ONE excepted step — a deleted claim renders the claim-gone panel.
+      if (STOPPED_STEPS[i] === CLAIM_GONE_STEP) continue;
       expect(screen.getByTestId(`posting-stopped-q-stopped-${i}`).textContent).toContain(
         "Nothing on this screen is a reason to change a chart.",
       );
