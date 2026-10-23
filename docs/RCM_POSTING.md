@@ -953,20 +953,24 @@ ClaimNum, so every later press reads the same 404 and settles the same ending.
 The status stays legal and drainable (D-15); what the step changes is what the
 screens offer:
 
-- no Post button on the check's page; the hint, the rail step and the disabled
-  call-to-action all read *"The claim this payment was for is no longer in Open
-  Dental, so posting can never confirm what reached the chart — pressing Post
-  again will not change that. Check the patient's chart in Open Dental, and post
-  this payment by hand only if the money isn't there."*;
-- the history row shows only what is on record (the check number and
-  do-not-re-enter when there is one) and never "press Post again";
-- a `partially_posted` check page shows its own claim-gone screen instead of the
-  stopped one: no "press Post again", no "do not change anything in Open
-  Dental", no tomorrow card (it can never finish);
-- the list route returns `claimGone` — how many plans sit at this step in those
-  two statuses — and the Posting screen's "waiting to post" and its Drain button
-  leave them out, naming them apart (*"· N whose claim is no longer in Open
-  Dental"*). `byStatus` still counts them under their own state.
+- **`outcome_unknown` at this step (W-21b):** no Post button on the check's page;
+  the hint, the rail step and the disabled call-to-action all read *"The claim
+  this payment was for is no longer in Open Dental, so posting can never confirm
+  what reached the chart — pressing Post again will not change that. Check the
+  patient's chart in Open Dental, and post this payment by hand only if the money
+  isn't there."*; the history row shows only what is on record (the check number
+  and do-not-re-enter when there is one) and never "press Post again".
+- **`partially_posted` at this step: NOT YET.** It still renders the ordinary
+  W-16 stopped screen, including "press Post again". The W-16 suites
+  (`rcm-ui-s5.test.tsx` "W-16 · STOPPED", and `rcm-smoke.test.tsx` 3.5 / 3.8's
+  one-state-sentence sweep) assert that screen at **every** step in
+  `POSTING_STEPS`, this one included, and they may not be edited without a ruling.
+  Open item from W-21c.
+- **The office-wide count (W-21c):** the list route returns `claimGone` — how
+  many plans sit at this step in either status — and the Posting screen's
+  "waiting to post" and its Drain button leave them out, naming them apart
+  (*"· N whose claim is no longer in Open Dental"*). `byStatus` still counts them
+  under their own state.
 
 Nothing auto-retries, auto-settles or withdraws such a plan, and no Open Dental
 call or write was added for it.

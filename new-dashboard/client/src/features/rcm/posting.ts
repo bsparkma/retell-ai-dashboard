@@ -85,19 +85,10 @@ export const CLAIM_GONE_COPY =
   "what reached the chart — pressing Post again will not change that. Check the patient's " +
   "chart in Open Dental, and post this payment by hand only if the money isn't there.";
 
-/**
- * The two states the drain's claim-gone branch settles into. Mirrors
- * `CLAIM_GONE_STATUSES` in `postingDrain.js` (W-21c added `partially_posted`:
- * money provably landed, and pressing Post is just as dead there).
- */
-export const CLAIM_GONE_STATUSES = ["outcome_unknown", "partially_posted"] as const;
-
-/** Is this the unsettleable case — an unknown or partly-posted plan over a deleted claim? */
+/** Is this the unsettleable case — an unknown outcome over a deleted claim? */
 export function claimGone(row: { status?: string; statusLabel?: string; step: string | null }): boolean {
-  const state = (CLAIM_GONE_STATUSES as readonly string[]).some(
-    (s) => row.status === s || row.statusLabel === s,
-  );
-  return state && row.step === CLAIM_GONE_STEP;
+  const unknown = row.status === "outcome_unknown" || row.statusLabel === "outcome_unknown";
+  return unknown && row.step === CLAIM_GONE_STEP;
 }
 
 /** What a plan's state means, in the words a biller would use. */

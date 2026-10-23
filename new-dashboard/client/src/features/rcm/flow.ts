@@ -1078,9 +1078,6 @@ export function postStepFor(row: PostingQueueRow): StepView {
         here,
       );
     case "partially_posted":
-      // W-21c: over a deleted claim the rail (and so the disabled CTA) names
-      // the situation, never a press that cannot settle it.
-      if (claimGone(row)) return view("post", "blocked", CLAIM_GONE_COPY, here);
       return view(
         "post",
         "blocked",
