@@ -199,13 +199,13 @@ async function navLabels(): Promise<string[]> {
 }
 
 describe("sidebar nav per role", () => {
-  it("HYGIENE sees exactly three items: TC Inbox, Intake, Submissions", async () => {
+  it("HYGIENE sees exactly three items: TC Inbox, Hygiene handoff, Submissions", async () => {
     authState.role = "hygiene";
     authState.permissions = PERMS.hygiene;
     renderShell("/tc/hygiene/inbox");
 
     await waitFor(async () => {
-      expect(await navLabels()).toEqual(["TC Inbox", "Intake", "Submissions"]);
+      expect(await navLabels()).toEqual(["TC Inbox", "Hygiene handoff", "Submissions"]);
     });
   });
 

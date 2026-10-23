@@ -217,7 +217,7 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
       title: "Hygiene",
       items: [
         { path: "/tc/hygiene/inbox", label: "TC Inbox", icon: Inbox },
-        { path: "/tc/hygiene", label: "Intake", icon: ClipboardList },
+        { path: "/tc/hygiene", label: "Hygiene handoff", icon: ClipboardList },
         { path: "/tc/hygiene/submissions", label: "Submissions", icon: ClipboardCheck },
       ],
     },

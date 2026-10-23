@@ -79,7 +79,7 @@ const KIND_LABELS: Record<StagedWriteKind, string> = {
   router: "Routing slip",
   perio: "Perio chart",
   note: "Visit note",
-  "tc-handoff": "Treatment handoff",
+  "tc-handoff": "Hygiene handoff",
 };
 
 const KIND_BLURBS: Record<StagedWriteKind, string> = {

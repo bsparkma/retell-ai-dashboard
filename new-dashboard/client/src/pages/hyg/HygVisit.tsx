@@ -554,7 +554,7 @@ export default function HygVisit() {
       setCheckoutError(
         err instanceof HygApiError
           ? err.message
-          : "The front desk still did not get your final notes. Try again.",
+          : "Checkout still did not get your final notes. Try again.",
       );
     } finally {
       setCheckoutSending(false);
