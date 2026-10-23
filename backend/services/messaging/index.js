@@ -32,6 +32,11 @@
  *                    phone matches, else unlinked; START/HELP are recorded, never
  *                    acted on; a re-delivered provider id is not stored twice.
  *   applyStatusCallback → (item 39) a provider delivery report, monotonic.
+ *   skipNurtureDraft → (item 47) a human chose NOT to send a nurture draft:
+ *                    draft → skipped. Nothing else moves.
+ *   (item 47) recordInbound / recordOptOut / recordUnsubscribeLink also run
+ *                    the nurture exit hooks: a reply PAUSES a running
+ *                    enrollment, an opt-out STOPS it. Neither sends anything.
  *   countUnseen / markSeen / listUnseenOnCases → (item 39) the "new text" badge.
  *   (item 40, email) draftMessage may build an email from a LIBRARY template
  *                    (a snapshot on the row); sendMessage gives every email a
@@ -66,7 +71,11 @@ const { isQuietHours } = require('./quietHours');
 const adapters = require('./adapters');
 const templates = require('./templates');
 const twilioStatus = require('./twilio/status');
+const acsSmsStatus = require('./acs/smsStatus');
 const emailContent = require('./emailContent');
+// (item 47) The nurture exit hooks. They only ever stop drafting; nothing in
+// them sends.
+const nurtureHooks = require('../tcNurture/hooks');
 const acsConfig = require('../../config/acsEmail');
 
 const MESSAGE_COLS = [
@@ -539,6 +548,12 @@ async function sendMessage(req, office, messageId) {
   if (!existing.case_id) {
     throw new MessagingError('MESSAGE_NOT_SENDABLE', 'This draft is no longer attached to a case.');
   }
+  // (item 47) A nurture draft written while the case had no usable address
+  // carries no to_address. Refuse it here, before the address comparison
+  // below — which would otherwise read null === null as "unchanged".
+  if (!existing.to_address) {
+    throw noAddressError(existing.channel);
+  }
 
   const channel = existing.channel;
   const decision = await db(req, async (q) => {
@@ -586,6 +601,9 @@ async function sendMessage(req, office, messageId) {
     throw new MessagingError('FEATURE_DISABLED', disabledSentence(channel, reason), {
       feature: channel === 'sms' ? 'tc_sms_send' : 'tc_email_send',
       reason,
+      // (item 48) Setting NAMES (never values) of what this office is missing,
+      // when the adapter can say — e.g. TC_SMS_ACS_FROM_VALLEY.
+      ...(typeof adapter.missingFor === 'function' ? { missing: adapter.missingFor(office) } : {}),
     });
   }
 
@@ -765,8 +783,13 @@ async function recordUnsubscribeLink(req, token) {
         WHERE unsubscribe_token_hash = $1 AND channel = 'email' AND direction = 'outbound'`,
       [hash]
     );
-    if (res.rows.length !== 1) return { outcome: 'no_match' };
-    const m = res.rows[0];
+    if (res.rows.length > 1) return { outcome: 'no_match' };
+    // (R5) Not a patient email: perhaps a referral letter, whose link's hash
+    // sits on the referral history row that records the email
+    // (services/messaging/referralLetter.js). Same rule: the token names
+    // exactly one sent email, and that row's office and address are opted out.
+    const m = res.rows.length === 1 ? res.rows[0] : await referralEmailByToken(q, hash);
+    if (!m) return { outcome: 'no_match' };
     const address = normalizeAddress('email', m.to_address);
     if (!address || !['roland', 'valley'].includes(m.office_id)) return { outcome: 'no_match' };
     const existing = await consent.getConsentRow(q, m.office_id, 'email', address);
@@ -782,13 +805,59 @@ async function recordUnsubscribeLink(req, token) {
       note: null,
       updatedBy: 'system:unsubscribe_link',
     });
-    return { outcome: 'recorded', office: m.office_id, messageId: m.message_id, consentId: row.consent_id };
+    // (item 47) And any running nurture enrollment on that address stops.
+    const stoppedEnrollments = await nurtureHooks.onOptOut(q, {
+      office: m.office_id,
+      channel: 'email',
+      address,
+      actor: 'system:unsubscribe_link',
+    });
+    return {
+      outcome: 'recorded',
+      office: m.office_id,
+      messageId: m.message_id,
+      referralEventId: m.referral_event_id || null,
+      consentId: row.consent_id,
+      stoppedEnrollments,
+    };
   });
   if (out.outcome === 'recorded') {
     await auditMessage(req, 'UPDATE', 'tc_contact_consent', out.consentId, out.office);
-    await auditMessage(req, 'UPDATE', 'tc_message.unsubscribe_link', out.messageId, out.office);
+    if (out.referralEventId) {
+      await auditMessage(req, 'UPDATE', 'tc_referral_event.unsubscribe_link', out.referralEventId, out.office);
+    } else {
+      await auditMessage(req, 'UPDATE', 'tc_message.unsubscribe_link', out.messageId, out.office);
+    }
+    for (const id of out.stoppedEnrollments || []) {
+      await auditMessage(req, 'UPDATE', 'tc_nurture_enrollment.stopped', id, out.office);
+    }
   }
   return out.outcome;
+}
+
+/**
+ * (R5) The referral email a token's hash names, shaped like the tc_messages
+ * row recordUnsubscribeLink reads, or null. Only the rows that record an
+ * email that went out (send, send_conflict, and R5b's patient_email_sent —
+ * the patient's notice) carry a hash.
+ * @param {{ query: Function }} q
+ * @param {string} hash
+ */
+async function referralEmailByToken(q, hash) {
+  const res = await q.query(
+    `SELECT event_id, office_id, recipient_address FROM tc_referral_events
+      WHERE unsubscribe_token_hash = $1 AND verb = ANY($2)`,
+    [hash, ['send', 'send_conflict', 'patient_email_sent']]
+  );
+  if (res.rows.length !== 1) return null;
+  const e = res.rows[0];
+  return {
+    message_id: null,
+    referral_event_id: String(e.event_id),
+    office_id: e.office_id,
+    channel: 'email',
+    to_address: e.recipient_address,
+  };
 }
 
 // ── consent writes ──────────────────────────────────────────────────────────
@@ -818,7 +887,7 @@ async function recordOptOut(req, office, { caseId, channel, note }) {
     if (!tcCase) throw new MessagingError('CASE_NOT_FOUND', 'Case not found');
     const address = addressFromCase(channel, tcCase);
     if (!address) throw noAddressError(channel);
-    return upsertConsent(q, {
+    const consentRow = await upsertConsent(q, {
       office,
       channel,
       address,
@@ -827,9 +896,15 @@ async function recordOptOut(req, office, { caseId, channel, note }) {
       note: note || null,
       updatedBy: actor,
     });
+    // (item 47) Any running nurture enrollment on this address is stopped too.
+    const stoppedEnrollments = await nurtureHooks.onOptOut(q, { office, channel, address, actor });
+    return { consentRow, stoppedEnrollments };
   });
-  await auditMessage(req, 'UPDATE', 'tc_contact_consent', row.consent_id, office);
-  return toConsent(row);
+  await auditMessage(req, 'UPDATE', 'tc_contact_consent', row.consentRow.consent_id, office);
+  for (const id of row.stoppedEnrollments) {
+    await auditMessage(req, 'UPDATE', 'tc_nurture_enrollment.stopped', id, office);
+  }
+  return toConsent(row.consentRow);
 }
 
 /** The single word an inbound body reduces to, upper-cased, or ''. */
@@ -933,13 +1008,25 @@ async function recordInbound(
         updatedBy: 'system:inbound',
       });
     }
-    return { row: await loadMessage(q, office, messageId), optOut, duplicate: false };
+    // (item 47) The patient wrote back: a running nurture enrollment on a case
+    // in THIS office with this number pauses for a human; a STOP stops it.
+    // Matched by address rather than by the linked case, so a reply that landed
+    // unlinked (two open cases share the number) still pauses both.
+    const nurture = await nurtureHooks.onInboundMessage(q, {
+      office,
+      channel,
+      fromAddress: from,
+      stop: family === 'stop',
+    });
+    return { row: await loadMessage(q, office, messageId), optOut, nurture, duplicate: false };
   });
   if (out.duplicate) {
     return { message: toMessage(out.row), optedOut: false, duplicate: true, keyword: family };
   }
   await auditMessage(req, 'CREATE', 'tc_message', messageId, office);
   if (out.optOut) await auditMessage(req, 'UPDATE', 'tc_contact_consent', out.optOut.consent_id, office);
+  for (const id of out.nurture.paused) await auditMessage(req, 'UPDATE', 'tc_nurture_enrollment.paused', id, office);
+  for (const id of out.nurture.stopped) await auditMessage(req, 'UPDATE', 'tc_nurture_enrollment.stopped', id, office);
   if (family === 'start' || family === 'help') {
     // On the record, so "the patient texted START and we still would not text
     // them" is answerable from the trail. Nothing else happens.
@@ -954,7 +1041,8 @@ async function recordInbound(
  * Apply ONE provider status report to the outbound message it names.
  *
  * Idempotent and out-of-order safe: the UPDATE only matches a row whose stored
- * status ranks strictly BELOW the incoming one (twilio/status.js), so a
+ * status ranks strictly BELOW the incoming one (twilio/status.js — the ONE
+ * ladder; item 48's acs/smsStatus.js reuses it), so a
  * re-delivered or stale report changes nothing, and `delivered` is never
  * regressed. A row still `sending` (its own Send request has not finished) or
  * a draft is never touched. Office-scoped: the office comes from the callback
@@ -966,16 +1054,19 @@ async function recordInbound(
  * @returns {Promise<{ outcome: 'applied'|'ignored_status'|'not_found_or_stale', status: string|null }>}
  */
 async function applyStatusCallback(req, office, { provider, providerMessageId, providerStatus, errorCode = null }) {
-  const ours = twilioStatus.mapStatus(providerStatus);
+  // (item 48) Each provider names its statuses its own way; the ladder they
+  // map onto (and the conditional UPDATE below) is the same one.
+  const map = provider === 'acs' ? acsSmsStatus : twilioStatus;
+  const ours = map.mapStatus(providerStatus);
   if (!ours) return { outcome: 'ignored_status', status: null };
-  const error = ours === 'failed' ? twilioStatus.errorText(errorCode, providerStatus) : null;
+  const error = ours === 'failed' ? map.errorText(errorCode, providerStatus) : null;
   const res = await db(req, (q) =>
     q.query(
       `UPDATE tc_messages SET status = $1, error = $2
         WHERE office_id = $3 AND provider = $4 AND provider_message_id = $5 AND direction = 'outbound'
           AND status = ANY($6)
         RETURNING message_id, status`,
-      [ours, error, office, provider, providerMessageId, twilioStatus.replaceableBy(ours)]
+      [ours, error, office, provider, providerMessageId, map.replaceableBy(ours)]
     )
   );
   if (!res.rows.length) return { outcome: 'not_found_or_stale', status: ours };
@@ -988,6 +1079,45 @@ async function applyStatusCallback(req, office, { provider, providerMessageId, p
     ours === 'failed' ? 'ERROR' : 'SUCCESS'
   );
   return { outcome: 'applied', status: ours };
+}
+
+// ── the Nurture Outbox's Skip (item 47) ────────────────────────────────────
+
+/**
+ * A human looked at a NURTURE draft and chose not to send it: draft → skipped.
+ * Logged (an audit row, plus who and when on the row) and nothing else moves:
+ * the enrollment's schedule already advanced when the draft was written, so a
+ * skip neither re-drafts this touch nor pulls the next one forward. Only a
+ * draft the generator wrote (enrollment_id set) can be skipped; a TC's own
+ * draft is discarded, not skipped.
+ * @param {import('express').Request} req
+ * @param {'roland'|'valley'} office
+ * @param {string} messageId
+ */
+async function skipNurtureDraft(req, office, messageId) {
+  const actor = actorOf(req);
+  const row = await db(req, async (q) => {
+    const meta = await q.query(
+      `SELECT message_id, status, enrollment_id FROM tc_messages WHERE office_id = $1 AND message_id = $2`,
+      [office, messageId]
+    );
+    if (!meta.rows.length) throw new MessagingError('MESSAGE_NOT_FOUND', 'Message not found');
+    if (!meta.rows[0].enrollment_id) {
+      throw new MessagingError('MESSAGE_NOT_EDITABLE', 'Only a nurture draft can be skipped. Discard this one instead.');
+    }
+    const res = await q.query(
+      `UPDATE tc_messages SET status = 'skipped', skipped_by = $1, skipped_at = now()
+        WHERE office_id = $2 AND message_id = $3 AND status = 'draft'
+        RETURNING ${MESSAGE_COLS.join(', ')}`,
+      [actor, office, messageId]
+    );
+    if (!res.rows.length) {
+      throw new MessagingError('MESSAGE_NOT_EDITABLE', 'Only a draft can be skipped.', { status: meta.rows[0].status });
+    }
+    return res.rows[0];
+  });
+  await auditMessage(req, 'UPDATE', 'tc_message.skipped', messageId, office);
+  return toMessage(row);
 }
 
 // ── the "new text" badge (item 39) ──────────────────────────────────────────
@@ -1061,6 +1191,7 @@ async function markSeen(req, office, caseId) {
 module.exports = {
   MESSAGE_COLS,
   CONSENT_COLS,
+  toMessage,
   STOP_KEYWORDS,
   listMessages,
   listInbox,
@@ -1077,6 +1208,7 @@ module.exports = {
   recordOptOut,
   recordInbound,
   applyStatusCallback,
+  skipNurtureDraft,
   countUnseen,
   listUnseenOnCases,
   markSeen,

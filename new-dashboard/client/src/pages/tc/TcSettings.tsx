@@ -3,7 +3,10 @@
  *
  * This is DentaFlow's Settings ARRANGEMENT over the platform's existing
  * capabilities: a sticky left section nav with hash deep links
- * (/tc/settings#pricing), the same eight sections in the same order.
+ * (/tc/settings#pricing), the same eight sections in the same order — plus
+ * Notifications (item 51), which DentaFlow never had, Email identity (R5c),
+ * shown to admin and office only, and Referrals (item 52), which appears only
+ * while referrals is switched on for the office.
  *
  * What is behind each section is platform reality, not a port:
  *  - Pricing / Financing / Stages / Library reuse the existing office-library
@@ -38,7 +41,14 @@ import {
 } from "@/features/tc/settings/LibrarySections";
 import { PracticeSection } from "@/features/tc/settings/PracticeSection";
 import { TeamSection } from "@/features/tc/settings/TeamSection";
+import { NotificationsSection } from "@/features/tc/settings/NotificationsSection";
+import { ReferralsSection } from "@/features/tc/settings/ReferralsSection";
+import { EmailIdentitySection } from "@/features/tc/settings/EmailIdentitySection";
+import { useAuth } from "@/contexts/AuthContext";
+import { can } from "@/lib/permissions";
+import { getReferralsStatus } from "@/features/tc/referrals/referralsApi";
 import {
+  DEFAULT_TC_SETTINGS_SECTION,
   TC_SETTINGS_SECTIONS,
   currentSectionFromLocation,
   sectionMeta,
@@ -66,6 +76,33 @@ function SettingsInner({ office }: { office: OfficeId }) {
   const [library, setLibrary] = useState<TcLibrary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Item 52: referrals is dark per office. Until /status says it is on, the
+  // Referrals section is not in the nav; a failed check reads as off.
+  const [referralsOn, setReferralsOn] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getReferralsStatus(office)
+      .then((s) => {
+        if (!cancelled) setReferralsOn(s.enabled);
+      })
+      .catch(() => {
+        if (!cancelled) setReferralsOn(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [office]);
+
+  // R5c: a section that needs an action is shown only to a caller who holds it.
+  const auth = useAuth();
+  const permissions = auth.status === "authenticated" ? auth.user.permissions : undefined;
+  const sections = TC_SETTINGS_SECTIONS.filter(
+    (s) =>
+      (!s.requiresReferrals || referralsOn) &&
+      (!s.requiresPermission || can(permissions, s.requiresPermission)),
+  );
+  const shown: TcSettingsSectionKey = sections.some((s) => s.key === active) ? active : DEFAULT_TC_SETTINGS_SECTION;
 
   // Deep links: /tc/settings#pricing opens Pricing, and Back/Forward between
   // sections works because picking one writes the hash.
@@ -95,7 +132,7 @@ function SettingsInner({ office }: { office: OfficeId }) {
     if (typeof window !== "undefined") window.location.hash = key;
   }
 
-  const meta = sectionMeta(active);
+  const meta = sectionMeta(shown);
 
   function patchLibrary(patch: TcLibrary) {
     setLibrary((prev) => ({ ...(prev ?? {}), ...patch }));
@@ -114,8 +151,8 @@ function SettingsInner({ office }: { office: OfficeId }) {
           className="bg-card rounded-xl border border-border p-2 shadow-sm md:sticky md:top-4"
         >
           <ul className="flex md:flex-col gap-1 overflow-x-auto md:overflow-visible">
-            {TC_SETTINGS_SECTIONS.map(({ key, label, icon: Icon }) => {
-              const isActive = key === active;
+            {sections.map(({ key, label, icon: Icon }) => {
+              const isActive = key === shown;
               return (
                 <li key={key} className="shrink-0">
                   <button
@@ -158,10 +195,10 @@ function SettingsInner({ office }: { office: OfficeId }) {
                 </Button>
               </div>
             ) : (
-              renderLibrarySection(active, office, library, patchLibrary)
+              renderLibrarySection(shown, office, library, patchLibrary)
             )
           ) : (
-            renderStaticSection(active, office)
+            renderStaticSection(shown, office)
           )}
         </section>
       </div>
@@ -200,6 +237,12 @@ function renderStaticSection(key: TcSettingsSectionKey, office: OfficeId) {
       return <IntegrationsSection office={office} />;
     case "data":
       return <DataSection office={office} />;
+    case "notifications":
+      return <NotificationsSection office={office} />;
+    case "referrals":
+      return <ReferralsSection office={office} />;
+    case "email_identity":
+      return <EmailIdentitySection office={office} />;
     default:
       return null;
   }

@@ -106,7 +106,15 @@ import type {
   WorkbenchClaim,
 } from "@/features/rcm/api";
 import { matchStatusLabel, money } from "@/features/rcm/format";
-import { blockedCopy, stoppedWhile, POST_AGAIN_SAFE, withdrawnCopy } from "@/features/rcm/posting";
+import {
+  blockedCopy,
+  CLAIM_GONE_COPY,
+  claimGone,
+  OUTCOME_UNKNOWN_COPY,
+  stoppedWhile,
+  POST_AGAIN_SAFE,
+  withdrawnCopy,
+} from "@/features/rcm/posting";
 import { officeDay, officeStamp } from "@/features/rcm/time";
 
 export const RCM_STEPS = ["upload", "match", "review", "post", "deposit"] as const;
@@ -1070,12 +1078,26 @@ export function postStepFor(row: PostingQueueRow): StepView {
         here,
       );
     case "partially_posted":
+      // W-21c: over a deleted claim the rail (and so the disabled CTA) names
+      // the situation, never a press that cannot settle it.
+      if (claimGone(row)) return view("post", "blocked", CLAIM_GONE_COPY, here);
       return view(
         "post",
         "blocked",
         "Money reached the chart and the posting stopped part-way. The lines below say exactly where.",
         here,
       );
+    case "outcome_unknown":
+      /*
+       * W-21: neither "it landed" nor "it did not" — and never the run's own
+       * text. An obligation like the two around it: somebody presses Post, and
+       * the press reads the chart before it does anything else.
+       *
+       * W-21b: EXCEPT over a deleted claim, where no press can ever settle it.
+       * The rail's sentence is the disabled CTA's reason too, so it must not
+       * name Post as the way out.
+       */
+      return view("post", "blocked", claimGone(row) ? CLAIM_GONE_COPY : OUTCOME_UNKNOWN_COPY, here);
     case "failed":
       /*
        * S5 round 1: where it stopped, and why pressing again is safe — never

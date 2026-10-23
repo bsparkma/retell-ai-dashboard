@@ -172,6 +172,8 @@ test('GET /: an admin sees the tenant roster, the role vocabulary, and their own
       'hygiene',
       'reviewer',
       'rcm_biller',
+      // Item 53 (PM ruling 2026-10-14): signs off referrals.
+      'doctor',
     ]);
     assert.equal(res.body.actor, 'boss@carein.ai');
     // last_login_at is surfaced as an ISO string or null — never a raw Date.

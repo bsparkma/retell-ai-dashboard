@@ -307,7 +307,21 @@ router.get(
         `SELECT status, count(*)::int AS n FROM rcm_posting_queue WHERE office_id = $1 GROUP BY status`,
         [office]
       );
+      /*
+       * W-21c: the plans pressing Post can never settle — their claim was
+       * deleted from Open Dental (`CLAIM_GONE_STEP`). Still drainable (D-15)
+       * and still counted under their own status in `byStatus`; this is the
+       * number the screen takes OUT of "waiting to post".
+       */
+      const goneTally = await pool.query(
+        `SELECT status, count(*)::int AS n FROM rcm_posting_queue ` +
+          `WHERE office_id = $1 AND drain_step = $2 GROUP BY status`,
+        [office, postingDrain.CLAIM_GONE_STEP]
+      );
       return {
+        claimGone: goneTally.rows
+          .filter((r) => postingDrain.CLAIM_GONE_STATUSES.includes(String(r.status)))
+          .reduce((a, r) => a + num(r.n), 0),
         rows: page.rows,
         labels: new Map(batches.rows.map((b) => [String(b.batch_id), b])),
         // ONE statement for the whole page, joined to the keys already in hand
@@ -324,7 +338,7 @@ router.get(
         settings: await postingGate.readOfficeSettings(pool, office),
       };
     });
-    const { rows, labels, actors, counts, total, settings } = loaded;
+    const { rows, labels, actors, counts, total, settings, claimGone } = loaded;
 
     /*
      * ZERO-FILLED over the CHECK's own vocabulary, so a state this office
@@ -343,6 +357,12 @@ router.get(
       office,
       rows: rows.map((r) => toQueueRow(r, labels.get(String(r.batch_id)), actors)),
       byStatus,
+      /**
+       * W-21c: how many of the `outcome_unknown` / `partially_posted` plans in
+       * `byStatus` sit over a deleted claim. A screen's "waiting to post"
+       * subtracts these: a press would pick them up and settle nothing.
+       */
+      claimGone,
       total,
       limit,
       offset,
@@ -826,7 +846,12 @@ router.post(
             'queue disagree with Open Dental — reverse it in Open Dental instead.'
           : outcome.status === 'posting'
             ? 'A run holds this plan right now. Wait for it to finish.'
-            : `A plan in '${outcome.status}' cannot be retired.`,
+            : outcome.status === 'outcome_unknown'
+              ? // W-21: it may have put money in the chart, and nothing has read
+                // the chart since. Retiring it would hide that possibility.
+                'This plan sent a write to Open Dental that has not been confirmed either way. ' +
+                'Press Post first — it re-reads Open Dental and settles what landed.'
+              : `A plan in '${outcome.status}' cannot be retired.`,
         code: 'WITHDRAW_NOT_ALLOWED',
         status: outcome.status,
       });
@@ -1068,6 +1093,21 @@ router.post(
     }
 
     const status = String(plan.queue.status);
+    if (status === 'outcome_unknown') {
+      /*
+       * W-21: "Nothing has been posted" would be false here — something may
+       * have been, and that is the whole meaning of the state. Its own code,
+       * so nothing that switches on `NOTHING_POSTED_YET` reads it as that.
+       */
+      return res.status(409).json({
+        success: false,
+        error:
+          'Whether this check reached Open Dental is not settled yet. Press Post — it re-reads ' +
+          'Open Dental and settles what landed before anything else happens.',
+        code: 'OUTCOME_NOT_SETTLED',
+        status,
+      });
+    }
     if (status !== 'posted' && status !== 'partially_posted') {
       return res.status(409).json({
         success: false,

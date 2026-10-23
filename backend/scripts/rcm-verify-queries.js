@@ -30,6 +30,7 @@
 const { Client } = require('pg');
 
 const postingDrain = require('../services/rcm/postingDrain');
+const postingIntent = require('../services/rcm/postingIntent');
 const postingGate = require('../services/rcm/postingGate');
 
 /** A uuid that will never be a real key. Valid syntax; matches nothing. */
@@ -92,6 +93,23 @@ function statements() {
       name: 'postingDrain.recordVerdict',
       text: postingDrain.CONFIRM_QUERIES.recordVerdict,
       params: [NO_SUCH_OFFICE, NO_SUCH_UUID, JSON.stringify({ state: 'green' })],
+    },
+    /*
+     * W-21: the drain's write-ahead log. The list read runs on every press and
+     * in the startup sweep; the settle is a compare-and-set UPDATE matching no
+     * row here. The INSERT is NOT run — it would have to name a real plan (the
+     * FK), which would break this script's touch-nothing rule; its column list
+     * is held against the schema by `rcmQueryColumns`-style review instead.
+     */
+    {
+      name: 'postingIntent.listForPlan',
+      text: postingIntent.INTENT_QUERIES.listForPlan,
+      params: [NO_SUCH_OFFICE, NO_SUCH_UUID],
+    },
+    {
+      name: 'postingIntent.resolve',
+      text: postingIntent.INTENT_QUERIES.resolve,
+      params: [NO_SUCH_UUID, NO_SUCH_OFFICE, 'absent', JSON.stringify({ via: 're_read' })],
     },
     {
       name: 'postingGate.setWriteoffMode',

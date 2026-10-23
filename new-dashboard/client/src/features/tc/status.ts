@@ -27,9 +27,9 @@ export interface StatusMeta {
 export const CASE_STATUSES: Record<CaseStatusId, StatusMeta> = {
   hygiene_review: {
     id: "hygiene_review",
-    label: "Hygiene Review",
+    label: "New from hygiene",
     badgeClass: "bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300",
-    boardOrder: null, // lives in the Hygiene Inbox until claimed
+    boardOrder: null, // lives in the TC Inbox until claimed
   },
   diagnosed: {
     id: "diagnosed",

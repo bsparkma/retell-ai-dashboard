@@ -83,7 +83,7 @@ test('the map is frozen — authorization config cannot be mutated at runtime', 
   assert.ok(Object.isFrozen(PERMISSIONS['admin.all']));
 });
 
-test('admin holds every action; office holds everything except the two admin ones', () => {
+test('admin holds every action; office holds everything except the two admin ones and sign-off', () => {
   for (const action of Object.keys(PERMISSIONS)) {
     assert.ok(roleHasPermission('admin', action), `admin should hold ${action}`);
   }
@@ -94,12 +94,41 @@ test('admin holds every action; office holds everything except the two admin one
    * whether pressing it may reach a chart at all.
    */
   const ADMIN_ONLY = ['admin.all', 'rcm.settings'];
-  for (const action of ADMIN_ONLY) {
+  /*
+   * Item 53 (PM ruling 2026-10-14): a referral is signed off by a `doctor` or an
+   * `admin`. Not `office`: the person who writes a referral is not the one who
+   * approves it. Listed beside the admin-only pair because office must not
+   * hold it either; it is not admin-only (the doctor role holds it).
+   */
+  const NOT_OFFICE = [...ADMIN_ONLY, 'tc.referral_signoff'];
+  for (const action of NOT_OFFICE) {
     assert.equal(roleHasPermission('office', action), false, `office must NOT hold ${action}`);
   }
   for (const action of Object.keys(PERMISSIONS)) {
-    if (ADMIN_ONLY.includes(action)) continue;
+    if (NOT_OFFICE.includes(action)) continue;
     assert.ok(roleHasPermission('office', action), `office should hold ${action}`);
+  }
+});
+
+test('doctor holds the referral sign-off and NOTHING else (item 53)', () => {
+  assert.deepEqual(permissionsForRole('doctor'), ['tc.referral_signoff']);
+  // ... and sign-off is exactly doctor + admin.
+  for (const role of TENANT_ROLES) {
+    assert.equal(
+      roleHasPermission(role, 'tc.referral_signoff'),
+      role === 'admin' || role === 'doctor',
+      `${role} and tc.referral_signoff`
+    );
+  }
+});
+
+test('the office notification default is admin + office only (item 53 / PM addition)', () => {
+  for (const role of TENANT_ROLES) {
+    assert.equal(
+      roleHasPermission(role, 'tc.notification_defaults'),
+      role === 'admin' || role === 'office',
+      `${role} and tc.notification_defaults`
+    );
   }
 });
 

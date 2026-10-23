@@ -16,7 +16,7 @@ export type SectionValue<K extends LibrarySection> = z.infer<
 >;
 
 export const DEFAULT_STAGES: SectionValue<"stages"> = [
-  { key: "hygiene_review", label: "New from Hygiene", color: "oklch(0.70 0.17 330)", slaWarnDays: 1, slaCriticalDays: 2, order: 0, system: true },
+  { key: "hygiene_review", label: "New from hygiene", color: "oklch(0.70 0.17 330)", slaWarnDays: 1, slaCriticalDays: 2, order: 0, system: true },
   { key: "diagnosed", label: "Diagnosed", color: "oklch(0.62 0.12 250)", slaWarnDays: 2, slaCriticalDays: 5, order: 1, system: true },
   { key: "pending_tc", label: "Pending TC", color: "oklch(0.78 0.16 75)", slaWarnDays: 1, slaCriticalDays: 3, order: 2, system: true },
   { key: "pending_pt", label: "Pending PT", color: "oklch(0.72 0.18 55)", slaWarnDays: 2, slaCriticalDays: 5, order: 3, system: true },

@@ -52,6 +52,7 @@ import {
   hygienistRoster,
   odAttachSearch,
   submitHygieneIntake,
+  newIntakeSourceKey,
   tcErrorMessage,
   type OdPatient,
   type TcHygienistOption,
@@ -214,6 +215,8 @@ export function IntakeForm({ office }: IntakeFormProps) {
   const [roster, setRoster] = useState<TcHygienistOption[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [lastSubmitted, setLastSubmitted] = useState<string | null>(null);
+  /** Item 49: one key per filled-in form, so a retried submit is not a second case. */
+  const [sourceKey, setSourceKey] = useState<string>(newIntakeSourceKey);
 
   // Default the attribution to the signed-in user, and load the roster the
   // datalist offers. Both are conveniences; neither blocks the form.
@@ -334,18 +337,22 @@ export function IntakeForm({ office }: IntakeFormProps) {
       flagUrgent: draft.flagUrgent,
       // Empty is fine — the server falls back to the signed-in display name.
       hygienistName: draft.hygienistName.trim(),
+      kind: "hygiene",
+      sourceKey,
     };
 
     setSubmitting(true);
     try {
       await submitHygieneIntake(office, payload);
-      toast.success("Sent to TC inbox");
+      toast.success("Sent to the TC Inbox");
       setLastSubmitted(patientName);
       // Keep the hygienist across submissions: it's the same person seeing the
       // next patient, and re-picking it every time is the kind of friction that
       // makes people stop filling a field in.
       setDraft({ ...emptyDraft(), hygienistName: draft.hygienistName });
       setOdPatient(null);
+      // The next patient is a new submission, with a key of its own.
+      setSourceKey(newIntakeSourceKey());
     } catch (e) {
       // Keep the form values so nothing typed chairside is lost.
       toast.error(tcErrorMessage(e));
@@ -360,7 +367,7 @@ export function IntakeForm({ office }: IntakeFormProps) {
         <div className="rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950 p-3 flex items-center justify-between gap-3">
           <span className="flex items-center gap-2 text-sm text-emerald-800 dark:text-emerald-300">
             <CheckCircle2 className="w-4 h-4 shrink-0" />
-            {lastSubmitted} sent to the TC inbox.
+            {lastSubmitted} sent to the TC Inbox.
           </span>
           <Link
             href="/tc/hygiene/submissions"
@@ -693,7 +700,7 @@ export function IntakeForm({ office }: IntakeFormProps) {
           }`}
         >
           <Label htmlFor={fid("urgent")} className="font-normal">
-            Flag urgent — jumps to the top of the TC inbox
+            Flag urgent — jumps to the top of the TC Inbox
           </Label>
           <Switch
             id={fid("urgent")}

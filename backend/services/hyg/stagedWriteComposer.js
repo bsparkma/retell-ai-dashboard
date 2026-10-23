@@ -429,7 +429,7 @@ function composeRaw(kind, { visit, items, actor, signature, draft }) {
     }
     lines.push(...recordsLines(items, slip.recordsStatus || {}));
     return {
-      title: 'Treatment handoff',
+      title: 'Hygiene handoff',
       summary: `${items.length} ${items.length === 1 ? 'item' : 'items'} to the treatment coordinator (${category})`,
       preview: lines,
       payload: {

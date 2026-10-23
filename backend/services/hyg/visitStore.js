@@ -82,6 +82,7 @@ const STAGED_COLUMNS = `
 const VISIT_COLUMNS = `
   visit_id, office, apt_num, pat_num, visit_date, slip,
   appointment_snapshot, ortho_tc_case_id, ortho_sent_at, ortho_sent_by, ortho_send_claimed_at,
+  checkout_handoff_id, checkout_sent_at, checkout_sent_by, checkout_send_claimed_at, checkout_final_at,
   created_by, created_at, updated_by, updated_at
 `;
 
@@ -222,6 +223,16 @@ function toVisit(visitRow, itemRows, stagedRows) {
             caseId: String(visitRow.ortho_tc_case_id),
             sentAt: iso(visitRow.ortho_sent_at),
             sentBy: visitRow.ortho_sent_by ?? '',
+          }
+        : null,
+    // Item 49. Server-set after TC answered with a handoff; null until then.
+    checkoutSend:
+      visitRow.checkout_handoff_id !== null && visitRow.checkout_handoff_id !== undefined
+        ? {
+            handoffId: String(visitRow.checkout_handoff_id),
+            sentAt: iso(visitRow.checkout_sent_at),
+            sentBy: visitRow.checkout_sent_by ?? '',
+            finalAt: iso(visitRow.checkout_final_at),
           }
         : null,
     createdBy: visitRow.created_by,
@@ -432,6 +443,64 @@ async function releaseOrthoClaim(pool, { office, aptNum }) {
   await pool.query(
     `UPDATE hyg_visit SET ortho_send_claimed_at = NULL
       WHERE office = $1 AND apt_num = $2 AND ortho_tc_case_id IS NULL`,
+    [office, aptNum]
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The checkout alert (item 49) — the ortho send's three statements, again
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Take the early alert. Conditional, so two presses racing each other cannot
+ * both reach TC: only a visit with no handoff and no FRESH claim is claimed.
+ * (The visit Send's final update takes no claim: TC's source key makes a second
+ * submit for the same visit an update of the same handoff, never a new one.)
+ *
+ * @returns {Promise<boolean>} true when THIS call holds the claim
+ */
+async function claimCheckoutSend(pool, { office, aptNum }) {
+  const res = await pool.query(
+    `UPDATE hyg_visit SET checkout_send_claimed_at = now()
+      WHERE office = $1 AND apt_num = $2
+        AND checkout_handoff_id IS NULL
+        AND (checkout_send_claimed_at IS NULL
+             OR checkout_send_claimed_at < now() - ${ORTHO_CLAIM_STALE_SQL})
+      RETURNING visit_id`,
+    [office, aptNum]
+  );
+  return res.rowCount === 1;
+}
+
+/**
+ * TC answered with a handoff: record it and release the claim, in one
+ * statement. The handoff id, once written, is never replaced by a different
+ * one; `final` stamps `checkout_final_at` (the visit Send's update landed).
+ *
+ * @returns {Promise<Record<string, any>|null>} the visit, or null when no row took it
+ */
+async function markCheckoutSent(pool, { office, aptNum, handoffId, actor, final }) {
+  const res = await pool.query(
+    `UPDATE hyg_visit
+        SET checkout_handoff_id = COALESCE(checkout_handoff_id, $3),
+            checkout_sent_at = COALESCE(checkout_sent_at, now()),
+            checkout_sent_by = COALESCE(checkout_sent_by, $4),
+            checkout_send_claimed_at = NULL,
+            checkout_final_at = CASE WHEN $5::boolean THEN now() ELSE checkout_final_at END
+      WHERE office = $1 AND apt_num = $2
+        AND (checkout_handoff_id IS NULL OR checkout_handoff_id = $3)
+      RETURNING ${VISIT_COLUMNS}`,
+    [office, aptNum, handoffId, actor, final === true]
+  );
+  if (res.rowCount === 0) return null;
+  return hydrate(pool, res.rows[0]);
+}
+
+/** TC did not take it: release the claim. Nothing else is touched. */
+async function releaseCheckoutClaim(pool, { office, aptNum }) {
+  await pool.query(
+    `UPDATE hyg_visit SET checkout_send_claimed_at = NULL
+      WHERE office = $1 AND apt_num = $2 AND checkout_handoff_id IS NULL`,
     [office, aptNum]
   );
 }
@@ -1079,6 +1148,9 @@ module.exports = {
   claimOrthoSend,
   markOrthoSent,
   releaseOrthoClaim,
+  claimCheckoutSend,
+  markCheckoutSent,
+  releaseCheckoutClaim,
   addItem,
   updateItem,
   removeItem,

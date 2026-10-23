@@ -471,11 +471,67 @@ export interface EmailSystemFooter {
   practicePhone?: string | null;
   /** The one-click unsubscribe link. Null only in a preview. */
   unsubscribeUrl: string | null;
+  /**
+   * Who the email is to, for the footer's "why you got this" line. Absent =
+   * a patient (every email before R5). `referral` = a specialist's office
+   * receiving a referral letter, who is not the practice's patient.
+   */
+  audience?: "patient" | "referral";
 }
+
+/** The longest text body a render will carry when the caller asks for no limit of its own. */
+export const EMAIL_TEXT_BODY_MAX = 8000;
+/** The ceiling a caller may raise a text body's limit to (a referral letter carries clinical notes). */
+export const EMAIL_TEXT_BODY_CEILING = 20000;
 
 export type EmailContent =
   | { kind: "blocks"; blocks: unknown }
-  | { kind: "text"; body: unknown };
+  /**
+   * `maxChars` defaults to EMAIL_TEXT_BODY_MAX and is clamped to
+   * EMAIL_TEXT_BODY_CEILING. `literal: true` = the body is final text: no
+   * `{{token}}` in it is filled or removed (a referral letter quotes a
+   * doctor's note verbatim). Absent = tokens are filled, as before.
+   */
+  | {
+      kind: "text";
+      body: unknown;
+      maxChars?: number;
+      literal?: boolean;
+      actions?: readonly EmailTextAction[];
+      /** (R5b) Text drawn BELOW the buttons (the patient notice's closing). Same limit and `literal` rule as `body`. */
+      after?: unknown;
+    };
+
+/**
+ * (R5b) A button under a text body: the referral letter's "We received this
+ * referral" / "The patient is scheduled", the patient's "I've scheduled my
+ * appointment". https only (anything else is dropped, not drawn), at most
+ * EMAIL_TEXT_ACTIONS_MAX, label one line. The plain-text part carries
+ * "label: url". Absent = no buttons, as before.
+ */
+export interface EmailTextAction {
+  label: string;
+  href: string;
+}
+export const EMAIL_TEXT_ACTIONS_MAX = 3;
+
+function readActions(raw: unknown): { label: string; href: string }[] {
+  if (!Array.isArray(raw)) return [];
+  const out: { label: string; href: string }[] = [];
+  for (const a of raw.slice(0, EMAIL_TEXT_ACTIONS_MAX)) {
+    const r = asRecord(a);
+    if (!r) continue;
+    const label = str(r.label, "", 80).replace(/[\r\n]+/g, " ").trim();
+    const href = safeUrl(r.href, ["https:"]);
+    if (label && href) out.push({ label, href });
+  }
+  return out;
+}
+
+function actionRow(a: { label: string; href: string }): string {
+  const link = `<a href="${escapeHtml(a.href)}" style="display:inline-block;background-color:#0f172a;color:#ffffff;padding:12px 28px;border-radius:8px;font-size:15px;font-weight:600;text-align:center;text-decoration:none">${escapeHtml(a.label)}</a>`;
+  return row(link, "#ffffff", "8px 32px", "text-align:left");
+}
 
 export interface RenderEmailInput {
   subject: unknown;
@@ -491,6 +547,14 @@ export interface RenderedEmail {
   text: string;
 }
 
+/** The footer's "why you got this" sentence, or "" without a practice name. */
+function footerReason(f: EmailSystemFooter, name: string): string {
+  if (!name) return "";
+  return f.audience === "referral"
+    ? `You are receiving this email because ${name} sent your office a patient referral.`
+    : `You are receiving this email because you are a patient of ${name}.`;
+}
+
 function systemFooterHtml(f: EmailSystemFooter): string {
   const name = str(f.practiceName, "", 200).trim();
   const contact = [str(f.practiceAddress, "", 400).trim(), str(f.practicePhone, "", 60).trim()].filter(Boolean);
@@ -498,9 +562,10 @@ function systemFooterHtml(f: EmailSystemFooter): string {
   const unsub = link
     ? `<a href="${escapeHtml(link)}" style="color:#475569;text-decoration:underline">Unsubscribe from these emails</a>`
     : `<span style="color:#475569;text-decoration:underline">Unsubscribe from these emails</span>`;
+  const reason = footerReason(f, name);
   return (
     `<tr><td style="padding:20px 32px;color:#64748b;font-size:12px;line-height:1.6;text-align:center;font-family:${FONT}">` +
-    (name ? `<div>You are receiving this email because you are a patient of ${escapeHtml(name)}.</div>` : "") +
+    (reason ? `<div>${escapeHtml(reason)}</div>` : "") +
     contact.map((c) => `<div>${lines(c)}</div>`).join("") +
     `<div style="margin-top:8px">${unsub}</div>` +
     `</td></tr>`
@@ -510,7 +575,7 @@ function systemFooterHtml(f: EmailSystemFooter): string {
 function systemFooterText(f: EmailSystemFooter): string {
   const name = str(f.practiceName, "", 200).trim();
   const parts = [
-    name ? `You are receiving this email because you are a patient of ${name}.` : "",
+    footerReason(f, name),
     str(f.practiceAddress, "", 400).trim(),
     str(f.practicePhone, "", 60).trim(),
     f.unsubscribeUrl ? `Unsubscribe: ${f.unsubscribeUrl}` : "Unsubscribe: (link added when sent)",
@@ -530,6 +595,13 @@ export function emailBodyText(content: EmailContent, values: EmailMergeValues): 
   }
   if (c && c.kind === "text") return fillMergeTokens(str(c.body, "", 8000), v).trim();
   return "";
+}
+
+/** A text body's character limit: the default, or the caller's, clamped to the ceiling. */
+function textBodyLimit(maxChars: unknown): number {
+  return typeof maxChars === "number" && Number.isInteger(maxChars) && maxChars > 0
+    ? Math.min(maxChars, EMAIL_TEXT_BODY_CEILING)
+    : EMAIL_TEXT_BODY_MAX;
 }
 
 /**
@@ -553,9 +625,19 @@ export function renderEmail(input: RenderEmailInput): RenderedEmail {
     bodyRows = blocks.map(blockHtml).join("");
     bodyText = blocks.map(blockText).filter(Boolean).join("\n\n");
   } else if (content && content.kind === "text") {
-    const text = fillMergeTokens(str(content.body, "", 8000), values).trim();
+    const raw = str(content.body, "", textBodyLimit(content.maxChars));
+    const text = (content.literal === true ? raw : fillMergeTokens(raw, values)).trim();
     bodyRows = text ? row(paragraphs(text, "color:#0f172a;font-size:15px;line-height:1.6"), "#ffffff", "24px 32px") : "";
     bodyText = text;
+    const actions = readActions(content.actions);
+    bodyRows += actions.map(actionRow).join("");
+    if (actions.length) bodyText = [bodyText, actions.map((a) => `${a.label}: ${a.href}`).join("\n")].filter(Boolean).join("\n\n");
+    const afterRaw = str(content.after, "", textBodyLimit(content.maxChars));
+    const after = (content.literal === true ? afterRaw : fillMergeTokens(afterRaw, values)).trim();
+    if (after) {
+      bodyRows += row(paragraphs(after, "color:#0f172a;font-size:15px;line-height:1.6"), "#ffffff", "16px 32px 24px 32px");
+      bodyText = [bodyText, after].filter(Boolean).join("\n\n");
+    }
   }
 
   const html =

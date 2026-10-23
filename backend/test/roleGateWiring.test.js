@@ -125,10 +125,26 @@ test('server.js: /api/tc mounts the TC router, whose gates live in routes/tc/ind
     assert.equal(found[2], "requirePermission('tc.hygiene')", `${p} is the hygiene grant`);
   }
 
+  // Item 53: the referral sign-off queue is the ONE mount on its own grant,
+  // tc.referral_signoff (doctor + admin). Exactly this path, exactly that gate.
+  const SIGNOFF_MOUNTS = ['/referrals/signoff'];
+  for (const p of SIGNOFF_MOUNTS) {
+    const found = uses.find(([, mountPath]) => mountPath === p);
+    assert.ok(found, `${p} must be mounted`);
+    assert.equal(found[2], "requirePermission('tc.referral_signoff')", `${p} is the sign-off grant`);
+  }
+
   for (const [, mountPath, guard] of uses) {
-    if (HYGIENE_MOUNTS.includes(mountPath)) continue;
+    if (HYGIENE_MOUNTS.includes(mountPath) || SIGNOFF_MOUNTS.includes(mountPath)) continue;
     assert.equal(guard, 'tcFull', `${mountPath} must be gated on tc.full, saw ${guard}`);
   }
+
+  // Same registration-order rule as /od/patient-search: '/referrals' mounted
+  // first would put the doctor's queue behind tc.full.
+  const signoffAt = tcIndex.indexOf("router.use('/referrals/signoff'");
+  const referralsAt = tcIndex.indexOf("router.use('/referrals',");
+  assert.ok(signoffAt > -1 && referralsAt > -1);
+  assert.ok(signoffAt < referralsAt, '/referrals/signoff must be registered BEFORE /referrals');
 
   // Registration order is load-bearing: '/od' mounted first would swallow
   // '/od/patient-search' and put it behind tc.full.

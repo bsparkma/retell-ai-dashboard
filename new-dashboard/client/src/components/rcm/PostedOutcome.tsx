@@ -75,7 +75,7 @@ import {
 import { money } from "@/features/rcm/format";
 import { officeStamp } from "@/features/rcm/time";
 import { claimHref } from "@/features/rcm/flow";
-import { stoppedWhile, stuckKind } from "@/features/rcm/posting";
+import { claimGone, stoppedWhile, stuckKind } from "@/features/rcm/posting";
 import {
   chartsPhrase,
   consequenceSentence,
@@ -461,6 +461,7 @@ function TomorrowCard() {
  */
 function StuckStopped({ detail, office }: { detail: PostingQueueDetail; office: RcmOfficeId }) {
   const { plan } = detail;
+  if (claimGone(plan)) return <StuckClaimGone detail={detail} office={office} />;
   return (
     <div className="mt-3" data-testid="stuck-stopped">
       <div className="rounded-lg border border-border bg-muted/40 p-4">
@@ -498,6 +499,61 @@ function StuckStopped({ detail, office }: { detail: PostingQueueDetail; office: 
       </div>
 
       <TomorrowCard />
+    </div>
+  );
+}
+
+/**
+ * W-21c — STOPPED, AND THE CLAIM IS GONE. A partly-posted check whose claim was
+ * deleted from Open Dental after money landed on it.
+ *
+ * The stopped screen's three promises do not hold here, so it is its own shape
+ * rather than a stopped card with words swapped:
+ *
+ *   · "press Post again — it resumes" — every press reads the same 404 and
+ *     settles the same ending, forever. Not offered.
+ *   · "do not change anything in Open Dental" — the next step IS in Open
+ *     Dental: look at the chart, and post by hand only if the money isn't there.
+ *   · "it stays until it is finished" (the tomorrow card) — it can never finish.
+ *
+ * What stays: where it stopped, that nothing was compared, the check number
+ * when one is on record — and no figure and no chart-correction steps, because
+ * nothing measured this chart.
+ */
+function StuckClaimGone({ detail, office }: { detail: PostingQueueDetail; office: RcmOfficeId }) {
+  const { plan } = detail;
+  return (
+    <div className="mt-3" data-testid="stuck-stopped">
+      <div className="rounded-lg border border-border bg-muted/40 p-4">
+        <p className="text-base font-semibold text-foreground">
+          Posting stopped part-way through this check, and its claim is gone
+        </p>
+        <p className="mt-1 text-sm text-foreground" data-testid="stuck-stopped-step">
+          It stopped {stoppedWhile(plan.step)}
+          {plan.finishedAt ? `, at ${officeStamp(plan.finishedAt, office)}` : ""} — before it compared
+          any patient&rsquo;s balance with what this check promised.
+        </p>
+        <p className="mt-1 text-sm text-foreground" data-testid="stuck-stopped-no-reentry">
+          {plan.odClaimPaymentNum != null ? (
+            <>
+              Open Dental already holds check{" "}
+              <span className="font-mono font-semibold">#{plan.odClaimPaymentNum}</span> from this
+              run — do not enter the payment by hand.
+            </>
+          ) : (
+            "Part of it may already be in Open Dental."
+          )}
+        </p>
+      </div>
+
+      <div className="mt-3 rounded-lg border border-border bg-card p-4" data-testid="stuck-claim-gone-next">
+        <h3 className="text-sm font-semibold text-foreground">What to do</h3>
+        <p className="mt-1 text-sm text-foreground">
+          The claim this check was for has been deleted from Open Dental, so posting can never finish
+          it. Look at the patient&rsquo;s chart in Open Dental, and enter the payment by hand only if
+          the money isn&rsquo;t there.
+        </p>
+      </div>
     </div>
   );
 }

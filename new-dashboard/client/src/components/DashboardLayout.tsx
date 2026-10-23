@@ -50,6 +50,9 @@ import {
   Archive,
   EyeOff,
   MessageSquare,
+  DoorOpen,
+  Stamp,
+  Forward,
 } from "lucide-react";
 import { api, isRateLimited } from "@/lib/api";
 import { usePolling } from "@/hooks/usePolling";
@@ -59,9 +62,13 @@ import { useModule } from "@/contexts/ModuleContext";
 import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
 import { isTcSharedRoute, resolveTcOfficeScope } from "@/features/tc/officeScope";
 import { getUnseenTotal } from "@/features/tc/messaging/messagingApi";
+import { useCheckoutWatch } from "@/features/tc/checkout/useCheckoutWatch";
+import { useSignoffWatch } from "@/features/tc/referrals/useSignoffWatch";
+import { useReferralsOn } from "@/features/tc/referrals/useReferralsOn";
 import type { OfficeId } from "@shared/tc/contract";
 import { TcGlobalSearch } from "@/features/tc/search/TcGlobalSearch";
 import { can, canVisit } from "@/lib/permissions";
+import { hasModule } from "@/lib/modules";
 import { officeHealthDisplay } from "@/lib/odHealth";
 import { useRcmShadow } from "@/features/rcm/shadowMode";
 import type { ModuleId } from "@/lib/modules";
@@ -191,6 +198,18 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
         { path: "/tc/followups", label: "Follow-Ups", icon: BellRing },
         { path: "/tc/texts", label: "Texts", icon: MessageSquare },
         { path: "/tc/opportunities", label: "Opportunities", icon: Telescope },
+        // Item 50. Shown only while checkout is switched on for an office in
+        // scope (see `checkout.enabled` below), with a waiting-count badge.
+        { path: "/tc/checkout", label: "Checkout", icon: DoorOpen },
+        // Item 53. Gated on tc.referral_signoff (doctor + admin) through
+        // ROUTE_PERMISSIONS, and shown only while referrals is on for an office
+        // in scope (see `signoff.enabled` below), with a waiting-count badge.
+        // For a `doctor` it is the whole TC nav.
+        { path: "/tc/referrals/signoff", label: "Awaiting sign-off", icon: Stamp },
+        // Item 56: the Referrals hub. tc.full through ROUTE_PERMISSIONS ("/tc"),
+        // so a `doctor` never sees it; shown only while referrals is on for an
+        // office in scope (see `referralsOn` below).
+        { path: "/tc/referrals", label: "Referrals", icon: Forward },
         { path: "/tc/preauth", label: "Pre-Auth", icon: ShieldCheck },
       ],
     },
@@ -198,7 +217,7 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
       title: "Hygiene",
       items: [
         { path: "/tc/hygiene/inbox", label: "TC Inbox", icon: Inbox },
-        { path: "/tc/hygiene", label: "Intake", icon: ClipboardList },
+        { path: "/tc/hygiene", label: "Hygiene handoff", icon: ClipboardList },
         { path: "/tc/hygiene/submissions", label: "Submissions", icon: ClipboardCheck },
       ],
     },
@@ -427,6 +446,38 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
   usePolling(check, 60_000);
 
+  /**
+   * Pre-IA fix F4 (Beau ratified): the checkout and sign-off alerts are about a
+   * patient at the desk or a doctor's queue, so they run APP-WIDE — on Calls,
+   * Home, Hygiene, anywhere — for whoever may act on them, not only on /tc
+   * pages. The Texts badge above stays TC-only. Off a TC route nothing else
+   * vouches for the module, so it is checked here: a voice-only practice must
+   * not poll a TC endpoint that 403s every minute.
+   */
+  const tcEntitled = hasModule(auth.status === "authenticated" ? auth.user.tenant?.modules : undefined, "tc");
+  const watchScopeFor = (action: "tc.full" | "tc.referral_signoff"): OfficeId[] =>
+    tcEntitled && can(permissionsForTexts, action)
+      ? resolveTcOfficeScope({ selection: office, roster: offices }).offices
+      : [];
+
+  /**
+   * Item 50: the Checkout nav item, its badge and the arrival toast, for
+   * someone holding tc.full (F4: on any route). An office with checkout
+   * switched off contributes nothing; with none on, the nav item is not drawn
+   * at all. The arrival alert still obeys the checkout_handoff preference.
+   */
+  const checkout = useCheckoutWatch(watchScopeFor("tc.full"));
+
+  /**
+   * Item 53: the "Awaiting sign-off" badge and alert, on its OWN action: a
+   * doctor holds tc.referral_signoff and not tc.full, so the tc.full scope
+   * would leave them with nothing. F4: on any route, like Checkout.
+   */
+  const signoffInScope = watchScopeFor("tc.referral_signoff");
+  const signoff = useSignoffWatch(signoffInScope, can(permissionsForTexts, "tc.full"));
+  /** Item 56: the hub nav item, for tc.full holders while referrals is on somewhere in scope. */
+  const referralsOn = useReferralsOn(tcTextsInScope);
+
   const handleNavClick = () => {
     setSidebarOpen(false);
   };
@@ -461,11 +512,18 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
    */
   const showPostingHistory = navModule === "rcm" && can(permissions, "admin.all");
   const navGroups = [
-    ...visibleNav(NAV_BY_MODULE[navModule] ?? NAV_BY_MODULE.voice ?? [], permissions).map((g) =>
-      showPostingHistory && g.title === "Revenue Cycle"
-        ? { ...g, items: [...g.items, RCM_POSTING_HISTORY] }
-        : g,
-    ),
+    ...visibleNav(NAV_BY_MODULE[navModule] ?? NAV_BY_MODULE.voice ?? [], permissions)
+      .map((g) =>
+        showPostingHistory && g.title === "Revenue Cycle"
+          ? { ...g, items: [...g.items, RCM_POSTING_HISTORY] }
+          : g,
+      )
+      // Checkout ships dark per office: no office on ⇒ no nav item.
+      .map((g) => ({ ...g, items: g.items.filter((i) => i.path !== "/tc/checkout" || checkout.enabled) }))
+      // Referrals ships dark per office too: no office on ⇒ no sign-off item.
+      .map((g) => ({ ...g, items: g.items.filter((i) => i.path !== "/tc/referrals/signoff" || signoff.enabled) }))
+      .map((g) => ({ ...g, items: g.items.filter((i) => i.path !== "/tc/referrals" || referralsOn) }))
+      .filter((g) => g.items.length > 0),
     ...(isSuperAdmin ? [PLATFORM_GROUP] : []),
   ];
   // wouter's `location` is the pathname only, so the query — which is what
@@ -678,6 +736,26 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                           aria-label={`${unseenTexts.capped ? "99 or more" : unseenTexts.count} unread texts`}
                         >
                           {unseenTexts.capped ? "99+" : unseenTexts.count}
+                        </span>
+                      )}
+                      {path === "/tc/checkout" && checkout.waiting > 0 && (
+                        <span
+                          className="rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none"
+                          style={{ backgroundColor: "oklch(0.62 0.15 186)", color: "oklch(0.15 0.02 250)" }}
+                          data-testid="tc-checkout-waiting"
+                          aria-label={`${checkout.waiting} waiting at checkout`}
+                        >
+                          {checkout.waiting > 99 ? "99+" : checkout.waiting}
+                        </span>
+                      )}
+                      {path === "/tc/referrals/signoff" && signoff.waiting > 0 && (
+                        <span
+                          className="rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none"
+                          style={{ backgroundColor: "oklch(0.62 0.15 186)", color: "oklch(0.15 0.02 250)" }}
+                          data-testid="tc-signoff-waiting"
+                          aria-label={`${signoff.waiting} awaiting sign-off`}
+                        >
+                          {signoff.waiting > 99 ? "99+" : signoff.waiting}
                         </span>
                       )}
                     </div>

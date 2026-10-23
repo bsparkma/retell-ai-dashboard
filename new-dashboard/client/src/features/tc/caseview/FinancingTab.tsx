@@ -29,11 +29,17 @@ export interface FinancingTabProps {
   tcCase: TcCase;
 }
 
-/** Patient portion = sum of item patientPortionCents; caseValueCents fallback. */
+/**
+ * Patient portion = sum of item patientPortionCents, falling back to
+ * caseValueCents when that sum is 0. The same rule the presentation slides use
+ * (`casePatientPortionCents`): a plan of unpriced items (a checkout's staged
+ * treatment lands at $0, C2b) must not zero out a case's known value.
+ */
 export function patientPortionCentsOf(tcCase: TcCase): number {
-  const items = tcCase.phases.flatMap((p) => p.items);
-  if (items.length === 0) return tcCase.caseValueCents;
-  return items.reduce((sum, i) => sum + i.patientPortionCents, 0);
+  const itemized = tcCase.phases
+    .flatMap((p) => p.items)
+    .reduce((sum, i) => sum + i.patientPortionCents, 0);
+  return itemized > 0 ? itemized : tcCase.caseValueCents;
 }
 
 export function FinancingTab({ office, tcCase }: FinancingTabProps) {

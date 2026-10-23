@@ -7,6 +7,11 @@
  *
  * All-offices: the inbox fans out over every office in scope and badges each
  * row; Claim writes back to the office that owns the intake.
+ *
+ * Who may act (pre-IA fix F3): the page is on the Hygiene grant (tc.hygiene),
+ * but Claim needs tc.full on the server and a case page is behind the tc.full
+ * route gate. So a hygienist sees the queue read-only: no Claim, no Open case,
+ * and the patient's name is plain text rather than a link that bounces home.
  */
 import { useCallback, useEffect, useState } from "react";
 import { Link, useLocation } from "wouter";
@@ -24,6 +29,8 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/contexts/AuthContext";
+import { can } from "@/lib/permissions";
 import {
   TcOfficeGate,
   TcPageHeader,
@@ -83,12 +90,26 @@ function formatSubmittedAt(iso: string): string {
   });
 }
 
+/**
+ * May this viewer work the Inbox — Claim and open cases (tc.full)? UX only: the
+ * server re-checks Claim, and /tc/cases is gated on the route. Until /auth/me
+ * answers, nothing is offered.
+ */
+export function useInboxCanWork(): boolean {
+  const auth = useAuth();
+  if (auth.status !== "authenticated") return false;
+  const { isSuperAdmin, permissions } = auth.user;
+  return isSuperAdmin || can(permissions, "tc.full");
+}
+
 function InboxList({
   offices,
   showOfficeBadges,
+  canWork,
 }: {
   offices: OfficeId[];
   showOfficeBadges: boolean;
+  canWork: boolean;
 }) {
   const [, navigate] = useLocation();
   const [rows, setRows] = useState<WithOffice<TcInboxIntake>[]>([]);
@@ -192,12 +213,16 @@ function InboxList({
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <Link
-                    href={`/tc/cases/${r.caseId}`}
-                    className="text-base font-semibold text-foreground hover:underline truncate"
-                  >
-                    {r.patientName}
-                  </Link>
+                  {canWork ? (
+                    <Link
+                      href={`/tc/cases/${r.caseId}`}
+                      className="text-base font-semibold text-foreground hover:underline truncate"
+                    >
+                      {r.patientName}
+                    </Link>
+                  ) : (
+                    <span className="text-base font-semibold text-foreground truncate">{r.patientName}</span>
+                  )}
                   {r.flagUrgent && (
                     <Badge
                       variant="outline"
@@ -266,24 +291,26 @@ function InboxList({
               </div>
             </div>
 
-            <div className="flex items-center gap-2 mt-3 pt-3 border-t border-border">
-              <Button
-                size="sm"
-                className="gap-1.5"
-                disabled={claimingId === r.caseId}
-                onClick={() => void claim(r)}
-              >
-                {claimingId === r.caseId ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <UserCheck className="w-4 h-4" />
-                )}
-                Claim
-              </Button>
-              <Button asChild size="sm" variant="outline">
-                <Link href={`/tc/cases/${r.caseId}`}>Open case</Link>
-              </Button>
-            </div>
+            {canWork && (
+              <div className="flex items-center gap-2 mt-3 pt-3 border-t border-border">
+                <Button
+                  size="sm"
+                  className="gap-1.5"
+                  disabled={claimingId === r.caseId}
+                  onClick={() => void claim(r)}
+                >
+                  {claimingId === r.caseId ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <UserCheck className="w-4 h-4" />
+                  )}
+                  Claim
+                </Button>
+                <Button asChild size="sm" variant="outline">
+                  <Link href={`/tc/cases/${r.caseId}`}>Open case</Link>
+                </Button>
+              </div>
+            )}
           </div>
         );
       })}
@@ -293,6 +320,7 @@ function InboxList({
 
 export default function TcHygieneInbox() {
   const scope = useTcOfficeScope();
+  const canWork = useInboxCanWork();
   if (scope.offices.length === 0) {
     return (
       <div className="p-6">
@@ -304,17 +332,20 @@ export default function TcHygieneInbox() {
   return (
     <div className="p-6 max-w-4xl mx-auto">
       <TcPageHeader
-        title="Hygiene Inbox"
+        title="TC Inbox"
         subtitle={
-          scope.showOfficeBadges
-            ? "Unclaimed handoffs from every office — claim one to start working it"
-            : "Unclaimed handoffs from hygiene — claim one to start working it"
+          !canWork
+            ? "Hygiene handoffs waiting for a treatment coordinator to claim them"
+            : scope.showOfficeBadges
+              ? "Unclaimed handoffs from every office — claim one to start working it"
+              : "Unclaimed handoffs from hygiene — claim one to start working it"
         }
       />
       <InboxList
         key={officeScopeKey(scope.offices)}
         offices={scope.offices}
         showOfficeBadges={scope.showOfficeBadges}
+        canWork={canWork}
       />
     </div>
   );

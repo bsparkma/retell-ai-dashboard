@@ -84,8 +84,14 @@ const perioSend = require('../../services/hyg/perioSend');
 const perioDrift = require('../../services/hyg/perioDrift');
 const hygStaff = require('../../config/hygStaff');
 const tcHandoff = require('../../services/hyg/tcHandoffClient');
+const tcCheckout = require('../../config/tcCheckout');
 const { snapshotFromAppointment } = require('../../services/hyg/appointmentSnapshot');
 const contract = require('../../hyg/contract.gen.cjs');
+const tcContract = require('../../tc/contract.gen.cjs');
+const referralCreate = require('../tc/referralCreate');
+const referralStore = require('../tc/referralStore');
+const referralAttachments = require('../tc/referralAttachments');
+const transitions = require('../tc/referralTransitions');
 
 const router = express.Router();
 
@@ -433,6 +439,9 @@ router.get(
       // on first open, and `office` here is the REQUEST's office, which the
       // module gate has already checked.
       doctorOptions: hygStaff.doctorOptions(office),
+      // Item 49: whether this office shows "Alert checkout" at all. The switch
+      // is re-checked on every send; this only decides what the page draws.
+      checkoutEnabled: await tcCheckout.isEnabled(office),
     });
   })
 );
@@ -1783,6 +1792,15 @@ router.post(
       });
     }
 
+    // ITEM 49: THE CHECKOUT HANDOFF RIDES THE SEND — AFTER every chart write,
+    // and it can never fail the Send. It creates the handoff when there is
+    // none, and replaces the early alert's snapshot with the final one when
+    // there is (TC's source key makes it the SAME handoff either way). Off for
+    // this office → `checkout: null`, nothing sent.
+    const checkout = (await tcCheckout.isEnabled(office))
+      ? await deliverCheckout(req, { office, aptNum, final: true })
+      : null;
+
     const after = await tenantDb.withTenantDb(req, (pool) =>
       visitStore.getVisit(pool, { office, aptNum })
     );
@@ -1803,6 +1821,7 @@ router.post(
       outcomes: outcome.outcomes,
       written,
       failed,
+      checkout: checkout ? checkout.delivery : null,
     });
   })
 );
@@ -2051,6 +2070,434 @@ router.post(
       (await tenantDb.withTenantDb(req, (pool) => visitStore.getVisit(pool, { office, aptNum })));
     return res.json({ ...visitPayload(visit), alreadySent: false });
   })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The checkout handoff (item 49)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Send this visit's checkout snapshot to TC and record it on the visit.
+ *
+ * Shared by the early "Alert checkout" (final: false, AFTER the route took the
+ * claim) and the visit Send's update (final: true, no claim — TC's source key
+ * makes it the same handoff). NEVER THROWS: every outcome is a typed answer.
+ *
+ * ⚠️ ZERO OPEN DENTAL CALLS. ⚠️ The visit row, its items and the appointment
+ * snapshot are all this reads; the snapshot was recorded by a route that had
+ * ALREADY read the appointment.
+ *
+ * @returns {Promise<{ ok: boolean, status: number, code: string|null, error: string|null,
+ *                     visit: Record<string, any>|null,
+ *                     delivery: { state: 'delivered'|'not_delivered', code: string|null, message: string|null } }>}
+ */
+async function deliverCheckout(req, { office, aptNum, final }) {
+  const refuse = (status, code, error) => ({
+    ok: false,
+    status,
+    code,
+    error,
+    visit: null,
+    delivery: { state: 'not_delivered', code, message: error },
+  });
+  try {
+    const ctx = await tenantDb.withTenantDb(req, (pool) =>
+      visitStore.getOrthoSendContext(pool, { office, aptNum })
+    );
+    if (!ctx) return refuse(404, 'VISIT_NOT_FOUND', 'No visit has been started for this appointment yet');
+
+    const date = ctx.visit.visitDate || new Date().toISOString().slice(0, 10);
+    const built = tcHandoff.buildCheckoutIntake({ visit: ctx.visit, snapshot: ctx.snapshot, date, final });
+    if (!built.ok) return refuse(409, built.code, built.error);
+
+    const submit = req.app.get('hygCheckoutSubmit') || tcHandoff.submitCheckoutHandoff;
+    let sent;
+    try {
+      // The office is the STORED visit's, never a request's.
+      sent = await submit(req, { office: ctx.visit.office, body: built.body });
+    } catch (err) {
+      sent = { ok: false, code: 'TC_UNREACHABLE', error: (err && err.message) || 'The TC app did not respond' };
+    }
+    if (!sent.ok) {
+      await audit(req, {
+        action: final ? 'UPDATE' : 'CREATE',
+        resourceType: 'hyg_checkout_alert',
+        resourceId: aptNum,
+        result: 'ERROR',
+        office,
+        sourceRef: null,
+      });
+      console.warn(`[hygcheckout] office=${office} apt=${aptNum} final=${final} TC refused: ${sent.code}`);
+      return refuse(
+        502,
+        sent.code,
+        `The checkout alert was NOT ${final ? 'updated' : 'sent'}: ${sent.error}. ` +
+          'Nothing is lost on this visit; try again.'
+      );
+    }
+
+    // A FINAL send is delivered only if TC says it now holds a final snapshot.
+    // A 200 carrying somebody else's older snapshot is not that, and stamping
+    // checkout_final_at for it would tell the hygienist the front desk has
+    // notes it does not have.
+    if (final && sent.final !== true) {
+      await audit(req, {
+        action: 'UPDATE',
+        resourceType: 'hyg_checkout_alert',
+        resourceId: aptNum,
+        result: 'ERROR',
+        office,
+        sourceRef: null,
+      });
+      return refuse(
+        409,
+        'CHECKOUT_NOT_FINAL',
+        'The checkout alert was NOT updated: TC still holds the earlier snapshot. ' +
+          'Nothing is lost on this visit; try again.'
+      );
+    }
+
+    // "Delivered" only once the handoff id is recorded on the visit.
+    const after = await tenantDb.withTenantDb(req, (pool) =>
+      visitStore.markCheckoutSent(pool, {
+        office,
+        aptNum,
+        handoffId: sent.handoffId,
+        actor: actorEmail(req),
+        final,
+      })
+    );
+    if (!after) {
+      return refuse(
+        409,
+        'SOURCE_KEY_CONFLICT',
+        'TC answered with a different handoff than the one this visit already points at. Nothing was changed here.'
+      );
+    }
+    await audit(req, {
+      action: final ? 'UPDATE' : 'CREATE',
+      resourceType: 'hyg_checkout_alert',
+      resourceId: aptNum,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+    console.log(`[hygcheckout] office=${office} apt=${aptNum} final=${final} handoff ${sent.handoffId}`);
+    return {
+      ok: true,
+      status: 200,
+      code: null,
+      error: null,
+      visit: after,
+      delivery: { state: 'delivered', code: null, message: null },
+    };
+  } catch (err) {
+    console.error(`[hygcheckout] office=${office} apt=${aptNum} failed:`, err && err.message);
+    return refuse(500, 'CHECKOUT_ERROR', 'The checkout alert could not be sent. Nothing is lost on this visit; try again.');
+  }
+}
+
+/** The 403 an office with the handoff switched off answers. */
+function checkoutDisabled(res, office) {
+  return res.status(403).json({
+    success: false,
+    error: 'The checkout handoff is not switched on for this office',
+    code: 'CHECKOUT_DISABLED',
+    office,
+  });
+}
+
+/**
+ * POST /api/hyg/visit/:aptNum/checkout/alert — "Alert checkout", NOW.
+ *
+ * The ortho send's shape exactly: NOTHING in the body is read; one handoff per
+ * visit (an alerted visit answers 200 `alreadySent: true` and sends nothing);
+ * two racing presses are serialised by a conditional claim; the claim goes
+ * stale after two minutes; a TC refusal releases it and answers 502.
+ */
+router.post(
+  '/:aptNum/checkout/alert',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) {
+      return res.status(400).json({
+        success: false,
+        error: 'aptNum must be a positive whole number',
+        code: 'INVALID_APT_NUM',
+        office,
+      });
+    }
+    if (parseBody(res, contract.CheckoutAlertRequestSchema, req.body ?? {}) === null) return undefined;
+    if (!(await tcCheckout.isEnabled(office))) return checkoutDisabled(res, office);
+
+    const current = await tenantDb.withTenantDb(req, (pool) =>
+      visitStore.getVisit(pool, { office, aptNum })
+    );
+    if (!current) {
+      return res.status(404).json({
+        success: false,
+        error: 'No visit has been started for this appointment yet',
+        code: 'VISIT_NOT_FOUND',
+        office,
+      });
+    }
+    // Already alerted: say so, send nothing.
+    if (current.checkoutSend) return res.json({ ...visitPayload(current), alreadySent: true });
+
+    const claimed = await tenantDb.withTenantDb(req, (pool) =>
+      visitStore.claimCheckoutSend(pool, { office, aptNum })
+    );
+    if (!claimed) {
+      const now = await tenantDb.withTenantDb(req, (pool) => visitStore.getVisit(pool, { office, aptNum }));
+      if (now && now.checkoutSend) return res.json({ ...visitPayload(now), alreadySent: true });
+      return res.status(409).json({
+        success: false,
+        error: 'Checkout is already being alerted for this visit. Wait a moment and reload.',
+        code: 'CHECKOUT_SEND_IN_PROGRESS',
+        office,
+      });
+    }
+
+    const result = await deliverCheckout(req, { office, aptNum, final: false });
+    if (!result.ok) {
+      await tenantDb.withTenantDb(req, (pool) => visitStore.releaseCheckoutClaim(pool, { office, aptNum }));
+      return res.status(result.status).json({ success: false, error: result.error, code: result.code, office });
+    }
+    return res.json({ ...visitPayload(result.visit), alreadySent: false });
+  })
+);
+
+/**
+ * POST /api/hyg/visit/:aptNum/checkout/finalize — the visit Send's checkout
+ * update, again. For when the Send's own attempt answered "not delivered":
+ * the chart writes are done and must not be re-sent, so this retries ONLY the
+ * handoff. Idempotent by TC's source key.
+ */
+router.post(
+  '/:aptNum/checkout/finalize',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) {
+      return res.status(400).json({
+        success: false,
+        error: 'aptNum must be a positive whole number',
+        code: 'INVALID_APT_NUM',
+        office,
+      });
+    }
+    if (parseBody(res, contract.CheckoutAlertRequestSchema, req.body ?? {}) === null) return undefined;
+    if (!(await tcCheckout.isEnabled(office))) return checkoutDisabled(res, office);
+
+    const result = await deliverCheckout(req, { office, aptNum, final: true });
+    if (!result.ok) {
+      return res.status(result.status).json({ success: false, error: result.error, code: result.code, office });
+    }
+    return res.json({ ...visitPayload(result.visit), alreadySent: false });
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Referrals from the chair (queue item 54, R3)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The hygienist drafts a referral beside the visit and it goes straight to the
+// doctor's sign-off (or to approved, when this office does not require one).
+// ONE producer with TC (routes/tc/referralCreate.js): the same record, the same
+// event + audit, the same transition engine.
+//
+// THE PATIENT IS THE VISIT'S: office + PatNum from the stored visit row, the
+// name from its stored appointment snapshot. Nothing in the body names a
+// patient or an office (the body schema is strict). Zero Open Dental: no OD
+// read happens here. Dark unless the practice has TC and referrals is on for
+// the office.
+
+/** The stored visit and the patient it is for, or the refusal to send. */
+async function referralPatient(req, office, aptNum) {
+  const ctx = await tenantDb.withTenantDb(req, (pool) => visitStore.getOrthoSendContext(pool, { office, aptNum }));
+  if (!ctx) {
+    return { refusal: [404, { success: false, error: 'No visit has been started for this appointment yet', code: 'VISIT_NOT_FOUND', office }] };
+  }
+  const patientName = ctx.snapshot && typeof ctx.snapshot.patientName === 'string' ? ctx.snapshot.patientName.trim() : '';
+  const odPatientId = Number(ctx.visit.patNum);
+  if (!Number.isFinite(odPatientId) || odPatientId <= 0) {
+    return { refusal: [409, { success: false, error: 'This visit has no patient yet', code: 'APPOINTMENT_HAS_NO_PATIENT', office }] };
+  }
+  if (!patientName) {
+    return {
+      refusal: [
+        409,
+        {
+          success: false,
+          error: "Open Dental has not given this visit's patient a name yet — reload the visit and try again",
+          code: 'PATIENT_NAME_UNAVAILABLE',
+          office,
+        },
+      ],
+    };
+  }
+  return {
+    ctx,
+    patient: {
+      odPatientId,
+      patientName,
+      tcCaseId: null,
+      sourceKind: 'hyg_visit',
+      sourceRef: String(ctx.visit.visitId),
+    },
+  };
+}
+
+/** The usual :aptNum refusal, or the number. */
+function aptNumOr400(req, res, office) {
+  const aptNum = aptNumFrom(req);
+  if (aptNum === null) {
+    res.status(400).json({ success: false, error: 'aptNum must be a positive whole number', code: 'INVALID_APT_NUM', office });
+  }
+  return aptNum;
+}
+
+/** POST /api/hyg/visit/:aptNum/referral — draft it here, straight to sign-off. */
+router.post(
+  '/:aptNum/referral',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumOr400(req, res, office);
+    if (aptNum === null) return undefined;
+    const input = parseBody(res, tcContract.TcReferralInput, req.body ?? {});
+    if (input === null) return undefined;
+    const gate = await referralCreate.referralsGate(req, office);
+    if (gate) return res.status(gate[0]).json(gate[1]);
+    const who = await referralPatient(req, office, aptNum);
+    if (who.refusal) return res.status(who.refusal[0]).json(who.refusal[1]);
+    // The office is the STORED visit's, never a request's.
+    // `?submit=false` (item 55): the form has X-rays to attach, so the draft is
+    // created, the files land on it, and THEN it is submitted (below) — files
+    // are only taken before a decision, and an office without sign-off would
+    // otherwise approve it before its X-ray arrived. Default: create + submit,
+    // in one transaction.
+    const out = await referralCreate.startReferral(req, {
+      office: who.ctx.visit.office,
+      patient: who.patient,
+      input,
+      submit: String(req.query.submit ?? 'true') !== 'false',
+    });
+    return res.status(out.status).json(out.body);
+  })
+);
+
+/**
+ * POST /api/hyg/visit/:aptNum/referrals/:referralId/submit — send a draft THIS
+ * visit started for the doctor's sign-off (item 55): after its X-rays are
+ * attached, or to retry a submit that failed. The shared transition engine.
+ */
+router.post(
+  '/:aptNum/referrals/:referralId/submit',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumOr400(req, res, office);
+    if (aptNum === null) return undefined;
+    const gate = await referralCreate.referralsGate(req, office);
+    if (gate) return res.status(gate[0]).json(gate[1]);
+    const referralId = tcContract.z.string().uuid().safeParse(req.params.referralId);
+    if (!referralId.success) {
+      return res.status(400).json({ success: false, error: 'Invalid referral id', code: 'INVALID_ID', office });
+    }
+    const ctx = await tenantDb.withTenantDb(req, (pool) => visitStore.getOrthoSendContext(pool, { office, aptNum }));
+    const ref = ctx
+      ? await tenantDb.withTenantDb(req, (pool) => referralStore.findReferral(pool, office, referralId.data))
+      : null;
+    if (!ref || ref.source_kind !== 'hyg_visit' || String(ref.source_ref) !== String(ctx.visit.visitId)) {
+      return res.status(404).json({ success: false, error: 'Referral not found', code: 'NOT_FOUND', office });
+    }
+    const out = await transitions.applyVerb(req, { referralId: referralId.data, verb: 'submit', office });
+    return res.status(out.status).json(out.body);
+  })
+);
+
+/** GET /api/hyg/visit/:aptNum/referrals — the referrals started from this visit. */
+router.get(
+  '/:aptNum/referrals',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumOr400(req, res, office);
+    if (aptNum === null) return undefined;
+    const gate = await referralCreate.referralsGate(req, office);
+    if (gate) return res.status(gate[0]).json(gate[1]);
+    const ctx = await tenantDb.withTenantDb(req, (pool) => visitStore.getOrthoSendContext(pool, { office, aptNum }));
+    if (!ctx) return res.json({ success: true, referrals: [] });
+    const referrals = await tenantDb.withTenantDb(req, async (pool) => {
+      const rows = await referralStore.listReferrals(pool, office, {
+        sourceKind: 'hyg_visit',
+        sourceRef: String(ctx.visit.visitId),
+      });
+      const names = await referralStore.practiceNames(pool, office, rows);
+      // R6: a draft the doctor sent back carries the question, for the hygienist.
+      const returns = await referralStore.openReturns(pool, office, rows);
+      return rows.map((r) => ({
+        ...referralStore.toReferral(r, names.get(String(r.directory_entry_id)) ?? null),
+        returned: returns.get(String(r.referral_id)) ?? null,
+      }));
+    });
+    await audit(req, { action: 'READ', resourceType: 'tc_referral', resourceId: null, result: 'SUCCESS', office, sourceRef: `hyg_visit:${aptNum}` });
+    return res.json({ success: true, referrals });
+  })
+);
+
+/**
+ * GET /api/hyg/visit/:aptNum/referral-directory — the office's ACTIVE
+ * specialists, for the chairside form's picker. Non-PHI office configuration;
+ * a hygienist holds no TC action, so this is the read they get.
+ */
+router.get(
+  '/:aptNum/referral-directory',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumOr400(req, res, office);
+    if (aptNum === null) return undefined;
+    const gate = await referralCreate.referralsGate(req, office);
+    if (gate) return res.status(gate[0]).json(gate[1]);
+    const rows = await tenantDb.withTenantDb(req, (pool) =>
+      referralStore.listDirectory(pool, office, { includeInactive: false })
+    );
+    return res.json({ success: true, entries: rows.map(referralStore.toEntry) });
+  })
+);
+
+/**
+ * POST /api/hyg/visit/:aptNum/referrals/:referralId/attachments — the X-ray
+ * snipped chairside (R4). ONLY onto a referral THIS visit started; the shared
+ * handler does the rest (bytes sniffed, ≤10 MB, ≤5, stored before the row,
+ * fail closed, audited). The gate runs before the body is read.
+ */
+router.post(
+  '/:aptNum/referrals/:referralId/attachments',
+  async (req, res, next) => {
+    try {
+      const gate = await referralCreate.referralsGate(req, req.hygOffice);
+      if (gate) return res.status(gate[0]).json(gate[1]);
+      return next();
+    } catch (err) {
+      return next(err);
+    }
+  },
+  referralAttachments.receiveFile,
+  h(
+    referralAttachments.uploadHandler({
+      officeOf: (req) => req.hygOffice,
+      referralIdOf: (req) => req.params.referralId,
+      guard: async (req, ref) => {
+        const aptNum = aptNumFrom(req);
+        if (aptNum === null) return [400, 'aptNum must be a positive whole number', 'INVALID_APT_NUM'];
+        const ctx = await tenantDb.withTenantDb(req, (pool) =>
+          visitStore.getOrthoSendContext(pool, { office: req.hygOffice, aptNum })
+        );
+        const mine = ctx && ref.source_kind === 'hyg_visit' && String(ref.source_ref) === String(ctx.visit.visitId);
+        return mine ? null : [404, 'Referral not found', 'NOT_FOUND'];
+      },
+    })
+  )
 );
 
 module.exports = router;

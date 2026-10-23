@@ -91,6 +91,18 @@ const SECRET_MAP = Object.freeze([
   // Absent in the vault -> skipped, and email stays FEATURE_DISABLED
   // (config/acsEmail.js).
   { secretName: 'acs-email-connection', envKey: 'ACS_EMAIL_CONNECTION' },
+  // Azure Communication Services SMS, TC text messaging (queue item 48 — the
+  // default TC_SMS_PROVIDER). ALL optional: absent in the vault -> skipped, and
+  // texting stays FEATURE_DISABLED (config/acsSms.js). The connection string is
+  // only USED when TC_SMS_ACS_AUTH_MODE=connection_string (the default is
+  // managed identity + TC_SMS_ACS_ENDPOINT, a plain app setting). The
+  // from-numbers are per office and never borrowed. The webhook token is what
+  // authenticates Event Grid on /api/webhooks/acs-sms — without it every
+  // event is refused.
+  { secretName: 'tc-sms-acs-connection', envKey: 'TC_SMS_ACS_CONNECTION' },
+  { secretName: 'tc-sms-acs-from-roland', envKey: 'TC_SMS_ACS_FROM_ROLAND' },
+  { secretName: 'tc-sms-acs-from-valley', envKey: 'TC_SMS_ACS_FROM_VALLEY' },
+  { secretName: 'tc-sms-acs-webhook-token', envKey: 'TC_SMS_ACS_WEBHOOK_TOKEN' },
   // Optional / not yet wired into this backend. Absent in the vault -> skipped.
   { secretName: 'stedi-api-key', envKey: 'STEDI_API_KEY' },
 ]);

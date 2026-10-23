@@ -151,7 +151,8 @@ describe("homeForRole", () => {
       // TWO actions an office user does not hold. `rcm.settings` joined
       // `admin.all` with the shadow gate: running the day and deciding what the
       // day is allowed to do are different authorities.
-      office: ACTIONS.filter((a) => a !== "admin.all" && a !== "rcm.settings"),
+      // Item 53: nor `tc.referral_signoff`, which is doctor + admin.
+      office: ACTIONS.filter((a) => a !== "admin.all" && a !== "rcm.settings" && a !== "tc.referral_signoff"),
       tc: ["voice.read", "tc.full", "tc.hygiene"],
       // `hyg.read` as well as `tc.hygiene`: her home is now the hygiene
       // module's day view, and this test exists to prove a role's home is
@@ -162,6 +163,8 @@ describe("homeForRole", () => {
       // The biller tier: everything the reviewer holds, plus the write tier —
       // and NOT rcm.post or rcm.settings.
       rcm_biller: ["rcm.read", "rcm.queue", "rcm.write"],
+      // Item 53: the doctor tier is the sign-off queue and nothing else.
+      doctor: ["tc.referral_signoff"],
     };
     for (const role of Object.keys(ROLE_HOME) as (keyof typeof ROLE_HOME)[]) {
       // Otherwise the redirect would bounce forever between "not allowed here"

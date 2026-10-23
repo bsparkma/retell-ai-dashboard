@@ -48,6 +48,9 @@ const QUEUE_STATUSES = Object.freeze([
   'posted',
   'failed',
   'partially_posted',
+  // W-21: a write's outcome is not known yet. Counted so it can never be
+  // missing from the totals a screen adds up.
+  'outcome_unknown',
 ]);
 
 /**
@@ -56,7 +59,13 @@ const QUEUE_STATUSES = Object.freeze([
  * 'failed' are terminal — a failed row is finished, not waiting, and counting
  * it as depth would make the number never reach zero.
  */
-const QUEUE_OPEN_STATUSES = Object.freeze(['approved', 'posting', 'partially_posted']);
+const QUEUE_OPEN_STATUSES = Object.freeze([
+  'approved',
+  'posting',
+  'partially_posted',
+  // W-21: owes work — the next press re-reads Open Dental and settles it.
+  'outcome_unknown',
+]);
 
 /** `SELECT status, COUNT(*) … GROUP BY status`, scoped to one office. */
 function countByStatus(pool, table, office, extraWhere = '') {

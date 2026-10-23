@@ -31,6 +31,7 @@ export const STATUS_LABEL: Record<MessageStatus, string> = {
   delivered: "Delivered",
   failed: "Not sent",
   received: "Received",
+  skipped: "Skipped — not sent",
 };
 
 /** Tone for the status chip. Only `delivered` is green. */
@@ -42,6 +43,7 @@ export const STATUS_TONE: Record<MessageStatus, "muted" | "info" | "ok" | "bad">
   delivered: "ok",
   failed: "bad",
   received: "info",
+  skipped: "muted",
 };
 
 /**
@@ -55,7 +57,7 @@ const EMAIL_STATUS_LABEL: Partial<Record<MessageStatus, string>> = {
 };
 
 /**
- * The chip's words for one message. A `failed` TEXT that Twilio had accepted
+ * The chip's words for one message. A `failed` TEXT the texting service had accepted
  * (it has a provider id) DID leave — the carrier then refused it — so it reads
  * "Not delivered", not "Not sent". An email is never "Not delivered": ACS
  * refusing it means it did not go out.
@@ -77,7 +79,7 @@ export function statusTooltip(m: Pick<TcMessage, "status" | "channel">): string 
     return "The email service accepted this email but had not finished sending it when we stopped checking. Delivery is not tracked.";
   }
   if (m.channel === "sms" && m.status === "sent") {
-    return "Twilio sent this text. It turns green only when the carrier confirms delivery.";
+    return "The texting service sent this text. It turns green only when the carrier confirms delivery.";
   }
   return undefined;
 }

@@ -6,13 +6,16 @@ You are the **orchestrator AND the builder**. One slice per run. Read `CLAUDE.md
 **§8 (the build loop) governs this command**, and §1–§7 govern the code.
 
 1. **Pick the slice (read-only).** List
-   `C:\Users\beau\carein cursor dashboard\pm-prompts\queue\` in filename order (ignore
-   `done/`). Take the FIRST file that is **unswept**: its named branch has no PR yet
+   `C:\Users\beau\carein cursor dashboard-dev\pm-prompts\queue\` (the DEV clone, untracked;
+   it moved out of the PROD folder on 2026-10-15) in filename order (ignore `done/`).
+   Take the FIRST file that is **unswept**: its named branch has no PR yet
    (`gh pr list --state all --head <branch>`) and `docs/reports/<branch>.md` is not on
    `origin/develop`. Skip a file whose PR is already open, and say so. **Never write,
-   move or rename anything in that folder or anywhere in the PROD folder** — the PM
-   sweeps the queue.
-   Read the queue file in full, plus `pm-prompts\README.md` (standing rules).
+   move or rename anything in that folder** unless the PM tells you to (the PM sweeps the
+   queue), and **never create or change any file anywhere in the PROD folder**
+   (`C:\Users\beau\carein cursor dashboard`).
+   Read the queue file in full, plus the standing rules in
+   `C:\Users\beau\carein cursor dashboard\pm-prompts\README.md` (read-only).
 2. **Worktree + branch exactly as the queue file names them**, off fresh `origin/develop`:
    ```bash
    git -C "C:/Users/beau/carein cursor dashboard" fetch origin

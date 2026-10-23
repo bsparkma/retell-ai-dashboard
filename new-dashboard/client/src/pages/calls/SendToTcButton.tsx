@@ -23,6 +23,7 @@ import { toast } from "sonner";
 import { api, ApiError, type UnifiedCall } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { hasModule } from "@/lib/modules";
+import { can } from "@/lib/permissions";
 import {
   sendToTcState, tcErrorMessage, tcPatientLabel, tcSuccessMessage,
 } from "@/lib/sendToTc";
@@ -50,11 +51,15 @@ export function SendToTcButton({ call, onSent, variant = "row" }: SendToTcButton
   const [, navigate] = useLocation();
   const [sending, setSending] = useState(false);
 
-  const tcEntitled = hasModule(
-    auth.status === "authenticated" ? auth.user.tenant?.modules : undefined,
-    "tc",
-  );
-  const state = sendToTcState(call, tcEntitled);
+  const user = auth.status === "authenticated" ? auth.user : null;
+  const tcEntitled = hasModule(user?.tenant?.modules, "tc");
+  // The same permission the server's send-to-tc route enforces (F2). /auth/me
+  // always carries the list (lib/auth.ts normalizes a missing one to []), so in
+  // the app this is the strict check. A user object with no list at all is not
+  // something /auth/me produces; it is left to the server, which enforces the
+  // same permission and now says so in plain words (tcErrorMessage).
+  const mayHandOff = user?.permissions === undefined || can(user.permissions, "voice.send_to_tc");
+  const state = sendToTcState(call, tcEntitled, mayHandOff);
 
   if (state.kind === "hidden") return null;
 

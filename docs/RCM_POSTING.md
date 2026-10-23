@@ -117,19 +117,22 @@ value the CHECK constraint can hold, in both directions.
 
 ```
 approved ──┐                          (the brief's "queued")
-failed ────┼─► posting ──► posted             (the brief's "running")
-partially_posted ─┘   ├─► partially_posted
+failed ────┤
+partially_posted ─┼─► posting ──► posted             (the brief's "running")
+blocked ───┤          ├─► partially_posted
+outcome_unknown ─┘    ├─► outcome_unknown   (W-21)
                       ├─► failed
                       └─► blocked
 ```
 
 | Stored | Screen | Means |
 | --- | --- | --- |
-| `approved` | Queued | A human approved it. **Nothing has been written to Open Dental.** |
+| `approved` | Queued | A human approved it. With `attempt_count = 0`, **nothing has been written to Open Dental**; a row the startup sweep re-queued keeps its raised count and makes no such claim. |
 | `posting` | Running | A drain owns this plan right now. |
 | `posted` | Posted | The money is on the chart, the check exists, and the reconciliation read confirmed the check carries exactly this plan's lines. |
 | `partially_posted` | Partly posted | Some of the sequence reached the chart and some did not. The lines say exactly where. |
-| `failed` | Failed | Nothing was written. |
+| `failed` | Failed | The evidence shows no write landed: either none was attempted, or every one was proven not to have landed (W-21). The screens still never print "nothing was written" over it. |
+| `outcome_unknown` | Not confirmed yet | **W-21.** A write was sent to Open Dental and nothing has read the chart since, so whether it landed is not known. Never folded into `failed` or `posted`. Drainable — the next press re-reads Open Dental and settles it before anything is retried. Not withdrawable. |
 | `blocked` | Blocked | **No Open Dental call was made** and none will be until a human changes something. |
 | `withdrawn` | Retired | **TERMINAL.** This plan will never post. Not in `DRAINABLE_STATUSES`, so it cannot be pressed at all. |
 
@@ -232,8 +235,8 @@ any plan past `approved`). A transient `office_config_unresolved`, an
 valley is enabled were all permanently stuck, with the screen telling them to do
 something that could not be done.
 
-So `approved`, `failed`, `partially_posted` and `blocked` are all drainable.
-**`posted` is the only terminal state.**
+So `approved`, `failed`, `partially_posted`, `blocked` and (W-21)
+`outcome_unknown` are all drainable. **`posted` is the only terminal state.**
 
 Re-pressing a plan whose cause persists is cheap and honest: it blocks again with
 the same reason and an incremented `attempt_count`. For a POLICY block — valley,
@@ -891,17 +894,126 @@ because Open Dental cannot participate in it.
 not the cursor — and exists so a stuck row is legible to a human without an OD
 round trip.
 
-### 4.2 Where it failed decides what the row says
+### 4.2 What the evidence proves decides what the row says (W-21)
+
+This section used to be a table of *where it failed*: a fixed list of steps that
+"touched the chart" meant `partially_posted`, and anything else meant `failed`.
+The list left out `office_writeoffs` and `confirm_patient` — both of which run
+**after** the check exists — so a crash in either wrote `failed` over a payment
+already in the chart, and a biller reading "failed" reads "nothing was written".
+That is W-21, and the table is gone.
+
+**Write-ahead intent.** Before every Open Dental write, `postingIntent.recordIntent`
+commits a row to `rcm_posting_intent` naming the write (office, plan, line, claim,
+kind, and the ids and cents needed to find it again). `odPostingWrites.js`
+refuses to issue a write without the receipt that INSERT returns. The intent is
+settled from evidence only:
+
+| Outcome | Means |
+| --- | --- |
+| `pending` | The write may or may not have landed. What a crash leaves. |
+| `landed` | A read of the chart after the write shows it, as sent (or, for the check, its number is stored on the row). |
+| `disagreed` | A read shows the target, not as sent — G2. Still proof something reached it. |
+| `absent` | A re-read on a later press found no trace of it. |
+| `refused` | Open Dental answered a named 4xx refusal to the write itself. |
+
+**Classification, claim by claim** (`postingIntent.classifyPlan`):
+
+| Evidence for a claim | Claim is | Plan becomes |
+| --- | --- | --- |
+| zero intents, no stored proof on its lines | clean | `failed` — the only case allowed to mean "nothing was written" |
+| any `pending` intent | unknown | `outcome_unknown` (dominates) |
+| a `landed`/`disagreed` intent, or stored proof from before intents existed | proven | `partially_posted` |
+| intents, every one `absent`/`refused` | not landed | `failed` |
+
+**Settle before retry.** At `read_od_truth`, every `pending` intent from an
+earlier attempt is matched against what the chart holds now and settled. An id
+the chart proves this plan created (a write-off adjustment, a takeback) is
+written back onto its line, so adopt-before-create can never book it twice.
+Anything the re-read cannot decide — a vanished target, two candidates — stays
+`pending`, and the run ends `outcome_unknown` **having written nothing**.
+
+**The startup sweep classifies too.** A row a dead process left at `posting`
+goes back to `approved` only when nothing provably landed and nothing is
+unknown; otherwise it becomes `outcome_unknown` or `partially_posted`.
+
+**`confirm_patient_interrupted` (PM ruling 2026-10-12).** The screens' W-16 key
+reads `partially_posted` at `confirm_patient` as "the patient-balance
+measurement completed". A run that stops during that step is `partially_posted`
+(the check exists) but measured nothing, so every ending settled from evidence
+records this step instead — restoring the proxy structurally. Only the measured
+branch's own finalise ever records `confirm_patient`.
+
+**`read_od_truth_claim_gone` (W-21b #259, extended by W-21c).** When
+`read_od_truth` 404s on a claim and the plan's evidence says it may already have
+written, the plan is NOT withdrawn (that would say "this never happened"). It
+settles from evidence into `outcome_unknown` or `partially_posted` — the two
+`CLAIM_GONE_STATUSES` — and records this step. Open Dental never reissues a
+ClaimNum, so every later press reads the same 404 and settles the same ending.
+The status stays legal and drainable (D-15); what the step changes is what the
+screens offer:
+
+- no Post button on the check's page; the hint, the rail step and the disabled
+  call-to-action all read *"The claim this payment was for is no longer in Open
+  Dental, so posting can never confirm what reached the chart — pressing Post
+  again will not change that. Check the patient's chart in Open Dental, and post
+  this payment by hand only if the money isn't there."*;
+- the history row shows only what is on record (the check number and
+  do-not-re-enter when there is one) and never "press Post again";
+- a `partially_posted` check page shows its own claim-gone screen instead of the
+  stopped one: no "press Post again", no "do not change anything in Open
+  Dental", no tomorrow card (it can never finish). The W-16 suites
+  (`rcm-ui-s5` "W-16 · STOPPED", `rcm-smoke` 3.8) except exactly this step from
+  their press-again assertions, and `rcm-smoke`'s sentence list carries the
+  claim-gone sentence — PM ruling 2026-10-23. `rcm-w21c-dead-presses.test.tsx`
+  holds the mirror: no press at this step in either status, the ordinary screen
+  at every other;
+- the list route returns `claimGone` — how many plans sit at this step in those
+  two statuses — and the Posting screen's "waiting to post" and its Drain button
+  leave them out, naming them apart (*"· N whose claim is no longer in Open
+  Dental"*). `byStatus` still counts them under their own state.
+
+Nothing auto-retries, auto-settles or withdraws such a plan, and no Open Dental
+call or write was added for it.
+
+**Blocked after a write carries the proof block (W-21b #259).** `blocked`
+promises nothing was attempted. A `no_adj_type` refusal that fires once the
+plan's check is in the chart — on a resume, now that the preflight below
+refuses it before any write for a plan with nothing written — breaks that
+promise, so `blockRow` records the check number (created OR adopted; an adopted
+check otherwise lived only in a local until `finalizeRow`, which a block never
+reaches). A `blocked` row carrying `od_claim_payment_num` renders the shared
+proof block (`EarlierCheckProof`) on the check page and the history: *"An Open
+Dental check #N from an earlier run exists. Do not enter this payment again by
+hand."* — the number, no amount, no remediation, ahead of the reason. The
+history does not offer to retire it (`rcm_posting_queue_withdrawn_no_money_check`
+would refuse anyway). A blocked row with no check renders as it always did.
+
+**Definitions are resolved before the first write (W-21c).** The payment type
+(when the plan owes a check) and the recoupment adjustment type (when a takeback
+line takes the `adjustment` path) are checked in the pre-write block, against
+the configuration it has already resolved — no extra Open Dental call. The call
+order is now: load plan → preconditions → resolve the office configuration
+(`/definitions`, `/preferences`) → office write-off type → **payment type and
+recoupment type** → record `requires_check` → `read_od_truth` (`/claims`,
+`/claimprocs`) → the first write. A missing one is `blocked` with the same
+reason and sentence as before, with nothing written.
+
+That preflight applies **only when the evidence says nothing has been written**.
+A resume carrying an earlier write must settle its pending intents by re-reading
+the chart, and a check it may already hold needs no payment type, so blocking it
+early would hide that write behind `blocked`. The in-run lookups stay as the
+safety net, and `refuseFromEvidence` classifies their refusal: the check is in
+the chart → `blocked` + check number (the proof block); nothing written →
+`blocked`, as before; anything else → the ending the intents prove
+(`partially_posted` / `outcome_unknown` / `failed`), never a bare `blocked` over
+a write.
+
+The pre-flight row below is unchanged:
 
 | Failed at | Row becomes |
 | --- | --- |
 | **before `resolve_config`** — loading the plan, its preconditions, recording its shape | **back to `approved`**, `drain_step` null, the message in `last_error`, `attempt_count` returned to what it was. The exception is still re-thrown. |
-| `resolve_config`, `read_od_truth` | `failed` — no write was issued, so nothing moved. |
-| `claimproc_writes` onwards | `partially_posted` — a request that threw **may** have reached Open Dental. |
-
-A dead socket does not say whether the server acted, so "the first PUT was
-attempted" and "the first PUT landed" are indistinguishable from inside. Claiming
-`failed` would be claiming nothing moved. `postingDrain.test.js` pins this.
 
 **The first row is 2026-08-26's.** `drainOffice` claims a plan before
 `drainRow` runs, so from that instant it reads `posting` to every screen in the
@@ -952,10 +1064,16 @@ what a restarted container gets:
 
 | Killed | Mid-state | After resume |
 | --- | --- | --- |
-| before the claimproc PUT lands | `partially_posted` | `posted`, 1 landed claimproc write, **1 check** |
-| after the claimproc PUT, before the claim PUT | `partially_posted` | `posted`, 1 landed claimproc write, **1 check** |
-| after the claim PUT, before the check (**the §8 window**) | `partially_posted` | `posted`, 1 landed claimproc write, **1 check** |
-| **the check LANDED and the response was lost** | `partially_posted`, `od_claim_payment_num` null, check really in the chart | `posted` by **adopting** it — the resume issues **zero writes** |
+| before the claimproc PUT lands | `outcome_unknown` (W-21) | `posted`, 1 landed claimproc write, **1 check** |
+| after the claimproc PUT, before the claim PUT | `outcome_unknown` (W-21) | `posted`, 1 landed claimproc write, **1 check** |
+| after the claim PUT, before the check (**the §8 window**) | `outcome_unknown` (W-21) | `posted`, 1 landed claimproc write, **1 check** |
+| **the check LANDED and the response was lost** | `outcome_unknown`, `od_claim_payment_num` null, check really in the chart | `posted` by **adopting** it — the resume issues **zero writes** |
+
+W-21 widened this to every write AND every step boundary of the full B2
+sequence (claimproc PUT, claim PUT, check POST, write-off adjustment; seven
+step cursors), plus `kill -9` with the database gone and the startup sweep
+classifying the remains. Each must resume to `posted` with one check, one
+concession and no intent left pending. See the W-21 section of the test file.
 
 Duplicate writes are counted as writes that **landed**, not calls attempted: a
 call that never reached the database changed nothing, and the two differ by

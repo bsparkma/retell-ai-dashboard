@@ -1,0 +1,150 @@
+/**
+ * The Checkout inbox's api (queue item 50). One function per route in
+ * backend/routes/tc/checkout.js; every answer is parsed through the shared
+ * contract, so a server that drifted is a loud error here, not a quiet blank.
+ */
+import { z } from "zod";
+
+import { tcRequest, TcApiError } from "@/features/tc/api";
+import {
+  TcCheckoutHandoff,
+  TcCheckoutSummary,
+  TcCheckoutCaseTreatment,
+  TcCheckoutPanelItem,
+  type TcCheckoutOutcome,
+} from "@shared/tc/checkout";
+import type { OfficeId } from "@shared/tc/contract";
+
+export type CheckoutView = "waiting" | "done";
+
+const ListResponse = z.object({
+  success: z.literal(true),
+  today: z.string(),
+  view: z.enum(["waiting", "done"]),
+  handoffs: z.array(TcCheckoutHandoff),
+});
+
+const OneResponse = z.object({ success: z.literal(true), handoff: TcCheckoutHandoff });
+
+const OutcomeResponse = z.object({
+  success: z.literal(true),
+  handoff: TcCheckoutHandoff,
+  caseId: z.string().uuid().nullable(),
+  url: z.string().nullable(),
+  attached: z.boolean(),
+});
+export type CheckoutOutcomeResult = z.infer<typeof OutcomeResponse>;
+
+/** Parse, or throw the mismatch in words. */
+function parse<T>(schema: z.ZodType<T>, raw: unknown): T {
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) {
+    throw new TcApiError("The checkout answer could not be read", 0, "CONTRACT_MISMATCH", null, []);
+  }
+  return parsed.data;
+}
+
+export async function listCheckout(office: OfficeId, view: CheckoutView) {
+  return parse(ListResponse, await tcRequest<unknown>("/tc/checkout", { office, params: { view } }));
+}
+
+export async function getCheckoutSummary(office: OfficeId): Promise<TcCheckoutSummary> {
+  return parse(TcCheckoutSummary, await tcRequest<unknown>("/tc/checkout/summary", { office }));
+}
+
+export async function getCheckoutHandoff(office: OfficeId, handoffId: string): Promise<TcCheckoutHandoff> {
+  const res = parse(OneResponse, await tcRequest<unknown>(`/tc/checkout/${handoffId}`, { office }));
+  return res.handoff;
+}
+
+export async function claimCheckout(office: OfficeId, handoffId: string): Promise<TcCheckoutHandoff> {
+  const res = parse(
+    OneResponse,
+    await tcRequest<unknown>(`/tc/checkout/${handoffId}/claim`, { office, method: "POST", body: {} }),
+  );
+  return res.handoff;
+}
+
+export async function dismissCheckout(
+  office: OfficeId,
+  handoffId: string,
+  reason: string,
+): Promise<TcCheckoutHandoff> {
+  const res = parse(
+    OneResponse,
+    await tcRequest<unknown>(`/tc/checkout/${handoffId}/dismiss`, {
+      office,
+      method: "POST",
+      body: { reason },
+    }),
+  );
+  return res.handoff;
+}
+
+export async function recordCheckoutOutcome(
+  office: OfficeId,
+  handoffId: string,
+  outcome: TcCheckoutOutcome,
+  appointmentNote: string,
+): Promise<CheckoutOutcomeResult> {
+  return parse(
+    OutcomeResponse,
+    await tcRequest<unknown>(`/tc/checkout/${handoffId}/outcome`, {
+      office,
+      method: "POST",
+      body: { outcome, appointmentNote },
+    }),
+  );
+}
+
+// ── C2b (item 50b): the staff panel and "entered in Open Dental" ────────────
+
+const EnteredResponse = z.object({
+  success: z.literal(true),
+  handoffId: z.string().uuid(),
+  item: TcCheckoutPanelItem,
+  alreadyEntered: z.boolean().optional(),
+});
+export type CheckoutEnteredResult = z.infer<typeof EnteredResponse>;
+
+/** The staff-only "Treatment from hygiene" panel for one case. */
+export async function getCaseHygieneTreatment(
+  office: OfficeId,
+  caseId: string,
+): Promise<TcCheckoutCaseTreatment> {
+  return parse(
+    TcCheckoutCaseTreatment,
+    await tcRequest<unknown>(`/tc/checkout/by-case/${caseId}`, { office }),
+  );
+}
+
+/** Attest that one staged item has been entered in Open Dental (by hand). */
+export async function markItemEntered(
+  office: OfficeId,
+  handoffId: string,
+  index: number,
+): Promise<CheckoutEnteredResult> {
+  return parse(
+    EnteredResponse,
+    await tcRequest<unknown>(`/tc/checkout/${handoffId}/items/${index}/entered`, {
+      office,
+      method: "POST",
+      body: {},
+    }),
+  );
+}
+
+/** Undo that attestation (admin only; the server enforces it). */
+export async function undoItemEntered(
+  office: OfficeId,
+  handoffId: string,
+  index: number,
+): Promise<CheckoutEnteredResult> {
+  return parse(
+    EnteredResponse,
+    await tcRequest<unknown>(`/tc/checkout/${handoffId}/items/${index}/entered`, {
+      office,
+      method: "DELETE",
+    }),
+  );
+}

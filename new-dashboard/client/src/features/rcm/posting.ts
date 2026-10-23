@@ -26,11 +26,14 @@ import type { PostingLineStatus, PostingQueueLabel, PostingStep } from "@/featur
  * ═════════════════════════════════════════════════════════════════════════════
  * SAY LESS: "NOTHING WAS WRITTEN" IS SAID ONLY WHERE IT IS KNOWN (S5 round 1)
  * ═════════════════════════════════════════════════════════════════════════════
- * The failed state used to read "Nothing was written." The drain marks a run
- * `failed` when it crashes at `office_writeoffs` or `confirm_patient` — both
+ * The failed state used to read "Nothing was written." The drain marked a run
+ * `failed` when it crashed at `office_writeoffs` or `confirm_patient` — both
  * AFTER the check was created — so in exactly those crashes the sentence was
  * false, and false in the direction that invites somebody to hand-enter a
- * payment that already partly exists.
+ * payment that already partly exists. W-21 fixed the drain (those crashes now
+ * end `partially_posted` or `outcome_unknown`, classified from evidence), and
+ * the rule below stays anyway: a screen should never be the last line of
+ * defence for a state the server might one day get wrong again.
  *
  * So no failed or stopped state asserts that nothing was written, sent or
  * called — not in this file, not in the rail, and not by echoing the run's own
@@ -46,6 +49,56 @@ import type { PostingLineStatus, PostingQueueLabel, PostingStep } from "@/featur
  */
 export const POST_AGAIN_SAFE =
   "Press Post again — posting re-reads Open Dental first and starts from what the chart shows.";
+
+/**
+ * W-21 — A WRITE WAS SENT AND NOTHING HAS READ THE CHART SINCE.
+ *
+ * The one state that may say neither "it landed" nor "it did not". It says the
+ * two things that ARE known — a write left for Open Dental, and the next press
+ * reads the chart before it does anything else — and the one instruction that
+ * matters most here: do not enter the payment by hand. A second, hand-entered
+ * payment is the exact double-post W-21 exists to prevent.
+ */
+export const OUTCOME_UNKNOWN_COPY =
+  "A write was sent to Open Dental and the run stopped before it could confirm whether it " +
+  "landed. Do not enter this payment by hand. Press Post again — posting reads Open Dental " +
+  "first and settles what landed before it does anything else.";
+
+/**
+ * W-21b — THE STEP THE DRAIN RECORDS WHEN A PLAN'S CLAIM IS GONE.
+ *
+ * Mirrors `CLAIM_GONE_STEP` in `services/rcm/postingDrain.js`. The plan stays
+ * `outcome_unknown` (legal, drainable — D-15), but every press reads the same
+ * 404, because Open Dental never reissues a ClaimNum. So pressing Post is not a
+ * way out of this row, and the screens stop saying it is.
+ */
+export const CLAIM_GONE_STEP = "read_od_truth_claim_gone";
+
+/**
+ * What an unsettleable plan says instead of "press Post again". The situation,
+ * where to look, and the one hand action that is right — only if the money is
+ * not already there. No figure and no chart-correction steps: nothing measured
+ * this chart.
+ */
+export const CLAIM_GONE_COPY =
+  "The claim this payment was for is no longer in Open Dental, so posting can never confirm " +
+  "what reached the chart — pressing Post again will not change that. Check the patient's " +
+  "chart in Open Dental, and post this payment by hand only if the money isn't there.";
+
+/**
+ * The two states the drain's claim-gone branch settles into. Mirrors
+ * `CLAIM_GONE_STATUSES` in `postingDrain.js` (W-21c added `partially_posted`:
+ * money provably landed, and pressing Post is just as dead there).
+ */
+export const CLAIM_GONE_STATUSES = ["outcome_unknown", "partially_posted"] as const;
+
+/** Is this the unsettleable case — an unknown or partly-posted plan over a deleted claim? */
+export function claimGone(row: { status?: string; statusLabel?: string; step: string | null }): boolean {
+  const state = (CLAIM_GONE_STATUSES as readonly string[]).some(
+    (s) => row.status === s || row.statusLabel === s,
+  );
+  return state && row.step === CLAIM_GONE_STEP;
+}
 
 /** What a plan's state means, in the words a biller would use. */
 export const QUEUE_STATE_COPY: Record<PostingQueueLabel, { label: string; hint: string }> = {
@@ -82,6 +135,10 @@ export const QUEUE_STATE_COPY: Record<PostingQueueLabel, { label: string; hint: 
       "This check will never post through CareIN. It is kept so there is still a record, but " +
       "it can never be posted from here again.",
   },
+  outcome_unknown: {
+    label: "Not confirmed yet",
+    hint: OUTCOME_UNKNOWN_COPY,
+  },
 };
 
 /**
@@ -106,6 +163,8 @@ export function queueHint(row: {
   if (row.statusLabel === "failed") {
     return `The run stopped ${stoppedWhile(row.step)}. ${POST_AGAIN_SAFE}`;
   }
+  // W-21b: never "press Post again" over a claim no press can ever find.
+  if (claimGone(row)) return CLAIM_GONE_COPY;
   return QUEUE_STATE_COPY[row.statusLabel].hint;
 }
 
@@ -117,6 +176,8 @@ export function queueStateTone(label: PostingQueueLabel): string {
       return "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300";
     case "failed":
     case "partially_posted":
+    // W-21: money may have moved, and somebody has to press Post to find out.
+    case "outcome_unknown":
       return "bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300";
     case "blocked":
       return "bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300";
@@ -381,8 +442,13 @@ export const POSTING_RUNNING_COPY =
  * disagreement down the "nothing was measured" path. (PM ruling, 2026-09-10.)
  *
  * The step can: the ONLY way a check is left `partially_posted` with its step at
- * `confirm_patient` is that branch — a crash at `confirm_patient` is not in the
- * drain's touched-chart list and finalises `failed`, not `partially_posted`.
+ * `confirm_patient` is that branch. A run that stops DURING `confirm_patient`
+ * — after the check exists, before the measurement completes — is also
+ * `partially_posted` (W-21: there is proof money landed), but the drain records
+ * its step as `confirm_patient_interrupted`, never `confirm_patient`, so this
+ * key reads it as `stopped`. That slug exists to keep the proxy STRUCTURAL:
+ * `confirm_patient` means "the measurement completed" because nothing else may
+ * write it, not because a flag says so (PM ruling, 2026-10-12).
  * Every other `partially_posted` step, including `null`, is `stopped`, which is
  * the safe direction: the worst it can do is under-instruct.
  */
@@ -452,6 +518,11 @@ export const STEP_COPY: Record<PostingStep, string> = {
   office_writeoffs: "Writing the write-offs this office decided on",
   recoupment: "Writing the takeback",
   confirm_patient: "Checking what the patient owes now",
+  // W-21 / W-16: it STARTED that check and did not finish it. Nothing was
+  // compared, which is exactly what the stopped screen goes on to say.
+  confirm_patient_interrupted: "Starting to check what the patient owes now",
+  // W-21b: the read found the claim deleted, after this plan had written.
+  read_od_truth_claim_gone: "Reading Open Dental and finding the claim no longer there",
   document_attach: "Filing the EOB into the patient chart",
 };
 

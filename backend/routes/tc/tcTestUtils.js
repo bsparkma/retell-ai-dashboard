@@ -24,7 +24,7 @@ const userContext = require('../../platform/userContext');
 const { tenantContext, requireModule } = require('../../middleware/tenantContext');
 
 /** Columns stored as jsonb — real pg returns objects, so the fake must too. */
-const JSONB_COLS = new Set(['blocks', 'value', 'detail', 'legacy_snapshot', 'email_blocks']);
+const JSONB_COLS = new Set(['blocks', 'value', 'detail', 'legacy_snapshot', 'email_blocks', 'payload']);
 
 /** Comparable scalar for a cell (Date → epoch ms, null → sorts last like pg's default). */
 function sortKey(v) {
@@ -128,6 +128,18 @@ class FakeTenantDb {
       if ((m = term.match(/^(\w+) = \$(\d+)$/))) {
         const [, col, idx] = m;
         return (r) => r[col] === params[idx - 1];
+      }
+      // Strict `<`, for the checkout expiry sweep (`visit_date < $3`). Dates are
+      // 'YYYY-MM-DD' strings here, which order like dates.
+      if ((m = term.match(/^(\w+) < \$(\d+)$/))) {
+        const [, col, idx] = m;
+        return (r) => r[col] != null && String(r[col]) < String(params[idx - 1]);
+      }
+      // Strict `>`, for a link token's expiry (`expires_at > $3`). ISO
+      // instants order like instants as strings.
+      if ((m = term.match(/^(\w+) > \$(\d+)$/))) {
+        const [, col, idx] = m;
+        return (r) => r[col] != null && String(r[col] instanceof Date ? r[col].toISOString() : r[col]) > String(params[idx - 1]);
       }
       if ((m = term.match(/^(\w+) <= \$(\d+)$/))) {
         const [, col, idx] = m;

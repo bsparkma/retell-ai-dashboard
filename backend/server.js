@@ -38,7 +38,9 @@ async function bootstrap() {
   const openDentalSyncRouter = require('./routes/openDentalSync');
   const webhooksRouter = require('./routes/webhooks');
   const twilioWebhooksRouter = require('./routes/twilioWebhooks');
+  const acsSmsWebhooksRouter = require('./routes/acsSmsWebhooks');
   const emailWebhooksRouter = require('./routes/emailWebhooks');
+  const referralLinkWebhooksRouter = require('./routes/referralLinkWebhooks');
   const liveCallsRouter = require('./routes/liveCalls');
   const adminRouter = require('./routes/admin');
   const mangoRouter = require('./routes/mango');
@@ -59,9 +61,13 @@ async function bootstrap() {
   const odHealthCheck = require('./services/odHealthCheck');
   const hygDayWarm = require('./services/hygDayWarm');
   const tcOpportunitiesSync = require('./services/tcOpportunities/scheduler');
+  // Requiring it runs the nurture preset/cap assertion: a preset that breaks a
+  // hard cap stops the server here, at boot (config/tcNurture.js).
+  const tcNurtureGenerator = require('./services/tcNurture/scheduler');
   const hygPilot = require('./config/hygPilot');
   const tcSms = require('./config/tcSms');
   const tcEmail = require('./config/tcEmail');
+  const emailIdentity = require('./config/emailIdentity');
   const { requireDashboardAuth, socketAuth } = require('./middleware/auth');
   const { tenantContext, requireModule } = require('./middleware/tenantContext');
   const { requirePermission, requireReadWrite, requireSuperAdmin } = require('./config/permissions');
@@ -274,6 +280,14 @@ async function bootstrap() {
   // It authenticates every request itself (X-Twilio-Signature) and resolves its
   // tenant from TWILIO_TENANT_SLUG through the registry — see the router header.
   app.use('/api/webhooks/twilio', twilioWebhooksRouter);
+  // ACS SMS (TC text messaging, item 48 — the default provider). Same
+  // placement and reasoning as Twilio: Event Grid carries no user identity, so
+  // it rides the /api/webhooks exemptions with no module guard. It
+  // authenticates every request itself (X-CareIN-Webhook-Token, a Key Vault
+  // shared secret Event Grid sends as a secret delivery header) and resolves
+  // its tenant from TC_SMS_ACS_TENANT_SLUG — see the router header. It never
+  // sends.
+  app.use('/api/webhooks/acs-sms', acsSmsWebhooksRouter);
   // TC email unsubscribe link (item 40). Same placement and the same reasoning
   // as Twilio: a patient's browser or mail client carries no user identity, so
   // it rides the /api/webhooks exemptions with no module guard. It needs no
@@ -281,6 +295,16 @@ async function bootstrap() {
   // stored hashed); it answers every token outcome with one constant page and
   // resolves its tenant from TC_EMAIL_TENANT_SLUG — see the router header.
   app.use('/api/webhooks/email', emailWebhooksRouter);
+  // Referral email links (R5b): the specialist's "We received this referral" /
+  // "The patient is scheduled" and the patient's "I've scheduled my
+  // appointment". Same placement and reasoning as the unsubscribe link: the
+  // clicker carries no user identity, so it rides the /api/webhooks exemptions
+  // with no module guard. Its token IS the credential (32 random bytes, stored
+  // hashed, single use, 60 days); it answers every dead token with one
+  // constant page, carries its OWN rate limiter (the app-wide one exempts
+  // /api/webhooks), audits every hit, and resolves its tenant from
+  // TC_EMAIL_TENANT_SLUG — see the router header.
+  app.use('/api/webhooks/referral-link', referralLinkWebhooksRouter);
   app.use('/api/webhooks', webhooksRouter);
   app.use('/api/live-calls', voiceModule, voiceSurface, liveCallsRouter);
   // The Admin page: scheduler start/stop, cost ceilings, queues, config. Tenant
@@ -612,6 +636,14 @@ async function bootstrap() {
     tcEmail.startRefreshTimer();
     console.log(`[tcEmail] email sending ${tcEmail.emailEnabled() ? 'ON' : 'OFF'} (source=${tcEmail.source()})`);
 
+    //    The offices' in-app email identity (R5c): reply-to, practice name and
+    //    phone saved in Settings beat the app settings. Read before anything
+    //    could send, then keep fresh (5 min); a save refreshes it inline.
+    //    Never throws; an unreadable control plane leaves the app settings
+    //    answering, exactly as before this existed.
+    await emailIdentity.refreshFromDb();
+    emailIdentity.startRefreshTimer();
+
     hygDayWarm.start();
 
     // 7. Arm the nightly TC Opportunities sync (default 02:30 America/Chicago,
@@ -619,6 +651,12 @@ async function bootstrap() {
     //    first and does nothing until an office is switched on there. No pass at
     //    boot. See services/tcOpportunities/scheduler.js.
     tcOpportunitiesSync.start();
+
+    // 8. Arm the nightly TC nurture generator (default 05:00 America/Chicago,
+    //    item 47). DRAFTS ONLY — it writes tc_messages drafts a human approves;
+    //    it never sends. DARK: each pass reads platform_setting['tc_nurture_enabled']
+    //    first. No pass at boot. See services/tcNurture/scheduler.js.
+    tcNurtureGenerator.start();
 
     // (M3) The startup `transcribeUntranscribedMango` backfill was removed: it keyed on
     // `recording_path`, which the API ingest path never sets, so it found zero candidates
@@ -637,6 +675,7 @@ async function bootstrap() {
     odHealthCheck.stop();
     hygDayWarm.stop();
     tcOpportunitiesSync.stop();
+    tcNurtureGenerator.stop();
     hygPilot.stopRefreshTimer();
     tcSms.stopRefreshTimer();
     tcEmail.stopRefreshTimer();
@@ -650,6 +689,7 @@ async function bootstrap() {
     odHealthCheck.stop();
     hygDayWarm.stop();
     tcOpportunitiesSync.stop();
+    tcNurtureGenerator.stop();
     hygPilot.stopRefreshTimer();
     tcSms.stopRefreshTimer();
     tcEmail.stopRefreshTimer();

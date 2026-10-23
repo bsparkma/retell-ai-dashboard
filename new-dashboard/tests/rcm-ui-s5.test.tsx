@@ -36,6 +36,7 @@ import { memoryLocation } from "wouter/memory-location";
 import type { ClaimVerdict, PostingQueueDetail } from "@/features/rcm/api";
 import { POSTING_STEPS } from "@/features/rcm/api";
 import {
+  CLAIM_GONE_STEP,
   POSTING_RUNNING_COPY,
   SHADOW_MODE_COPY,
   blockedCopy,
@@ -475,15 +476,20 @@ describe("W-16 · STOPPED: nothing from the fix path is reachable", () => {
         );
         expect(text).not.toMatch(/\bCorrect\b/);
 
-        // It offers the next posting pass, and says not to change the chart.
-        expect(screen.getByTestId("stuck-stopped-next").textContent).toContain(
-          "resumes from what the chart shows",
-        );
-        expect(screen.getByTestId("stuck-stopped-nothing-measured").textContent).toContain(
-          "Do not change anything there",
-        );
+        // PM ruling 2026-10-23 (W-21c): the ONE excepted step. Over a deleted claim no
+        // press can settle it, so the claim-gone screen offers no next pass, no
+        // "do not change the chart", no tomorrow card (tests/rcm-w21c-dead-presses).
+        if (step !== CLAIM_GONE_STEP) {
+          // It offers the next posting pass, and says not to change the chart.
+          expect(screen.getByTestId("stuck-stopped-next").textContent).toContain(
+            "resumes from what the chart shows",
+          );
+          expect(screen.getByTestId("stuck-stopped-nothing-measured").textContent).toContain(
+            "Do not change anything there",
+          );
+        }
         expect(screen.getByTestId("stuck-stopped-no-reentry").textContent).toContain("#21436");
-        expect(screen.getByTestId("stuck-tomorrow")).toBeTruthy();
+        if (step !== CLAIM_GONE_STEP) expect(screen.getByTestId("stuck-tomorrow")).toBeTruthy();
 
         // It never went LOOKING for a measurement, either.
         await act(async () => {});

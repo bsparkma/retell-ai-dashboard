@@ -27,6 +27,25 @@
  *   /opportunities    Open Dental treatment planned + unscheduled, surfaced by
  *                     the nightly sync as candidates a TC claims or dismisses
  *                     (item 41). Postgres-only: no route here reaches OD.
+ *   /nurture          nurture campaigns v1 (item 47): four fixed tracks, a
+ *                     per-office intensity dial, and an outbox of DRAFTS the
+ *                     nightly generator wrote. Nothing here sends; Approve is
+ *                     the ordinary /messages/:id/send. Postgres-only.
+ *   /checkout         the front desk's Checkout inbox (item 50): today's
+ *                     checkout handoffs from the hygiene visit, claim / dismiss
+ *                     / outcome, day-scoped expiry. Dark behind the per-office
+ *                     tc_checkout_enabled switch. Postgres-only.
+ *   /notification-prefs  in-app alert preferences (item 51): the caller's own
+ *                     override and the office default (admin). Postgres-only.
+ *   /email-identity   the office's email reply-to, practice name and phone
+ *                     (R5c), saved in the app over the app settings. tc.full
+ *                     at the mount, then tc.notification_defaults (admin +
+ *                     office) inside. The From address is shown, never editable.
+ *   /referrals        referral foundations (item 52): the specialist directory
+ *                     and the two referral policies. Nothing sends. Dark behind
+ *                     the per-office tc_referrals_enabled switch. Postgres-only.
+ *   /referrals/signoff the doctor's sign-off queue (item 53): approve / decline.
+ *                     tc.referral_signoff (doctor + admin), registered first.
  *   /od/patient-search the ONE Open Dental read hygiene holds: attach a patient
  *                     to an intake (PatNum + name + DOB, per-office client)
  *   /od               Open Dental READS (Slice 5) — patient search, treatment
@@ -79,6 +98,19 @@ router.use('/media', tcFull, require('./media'));
 router.use('/library', tcFull, require('./library'));
 router.use('/reports', tcFull, require('./reports'));
 router.use('/opportunities', tcFull, require('./opportunities'));
+router.use('/nurture', tcFull, require('./nurture'));
+router.use('/checkout', tcFull, require('./checkout'));
+router.use('/notification-prefs', tcFull, require('./notifications'));
+// R5c: the office's email identity (reply-to, practice name, practice phone).
+// tc.full here like every TC mount; the router itself then requires
+// tc.notification_defaults (admin + office), as notifications.js does.
+router.use('/email-identity', tcFull, require('./emailIdentity'));
+// MUST precede the /referrals mount (item 53), for the same registration-order
+// reason as /cases/from-call and /od/patient-search: a `doctor` holds
+// tc.referral_signoff and NOT tc.full, so the tc.full mount would refuse the
+// sign-off queue first. Admin holds both and reaches it either way.
+router.use('/referrals/signoff', requirePermission('tc.referral_signoff'), require('./referralSignoff'));
+router.use('/referrals', tcFull, require('./referrals'));
 // MUST precede the /od mount, for the same registration-order reason as
 // /cases/from-call above: registering it first is what keeps the attach search
 // on tc.hygiene while the rest of the Open Dental family stays tc.full. Doing

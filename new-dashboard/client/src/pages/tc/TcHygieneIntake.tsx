@@ -23,8 +23,8 @@ export default function TcHygieneIntake() {
   return (
     <div className="p-6 max-w-3xl mx-auto">
       <TcPageHeader
-        title="Hygiene Handoff"
-        subtitle="~60-second chairside handoff — creates a case in the TC inbox"
+        title="Hygiene handoff"
+        subtitle="~60-second chairside handoff — creates a case in the TC Inbox"
         actions={
           <>
             <Button asChild variant="outline" size="sm" className="gap-1.5">
@@ -34,7 +34,7 @@ export default function TcHygieneIntake() {
             </Button>
             <Button asChild variant="outline" size="sm" className="gap-1.5">
               <Link href="/tc/hygiene/inbox">
-                <Inbox className="w-4 h-4" /> TC inbox
+                <Inbox className="w-4 h-4" /> TC Inbox
               </Link>
             </Button>
           </>

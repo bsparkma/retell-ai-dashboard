@@ -34,11 +34,47 @@
  * row cannot be re-sent, and un-staging one is refused. That is a weaker
  * guarantee than a unique index (it holds within this app, not against a second
  * caller) and it is worth knowing before somebody adds a retry loop above it.
+ *
+ * ITEM 49 CLOSES THAT GAP. Every body built here now carries a `sourceKey`
+ * derived from the VISIT id (`hyg-visit:<visitId>:<kind>`), and TC answers a
+ * key it has already seen with the case or handoff it already made — enforced
+ * by a unique index, so it holds against a lost response and a resend, not
+ * only within this app. The key names a visit, never a patient.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * THE CHECKOUT HANDOFF (ITEM 49)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * `buildCheckoutIntake` + `submitCheckoutHandoff`: the same endpoint, `kind:
+ * 'checkout'`, which TC stores as a handoff and NOT a case. The snapshot is
+ * the visit's staged treatment as it stands; `final` marks the visit Send's
+ * update, which supersedes the early alert's snapshot.
  */
 
 const contract = require('../../hyg/contract.gen.cjs');
 
 const DEFAULT_TIMEOUT_MS = 10000;
+
+/**
+ * The idempotency key for one handoff of one visit. Machine-shaped (TC's
+ * `TcIntakeSourceKey`), stable across retries, and free of PHI: a visit id is
+ * a CareIN row id, never a PatNum or a name. `undefined` when the visit has no
+ * id (a pure-function test), which sends no key — the pre-item-49 behaviour.
+ *
+ * @param {{ visitId?: unknown }} visit
+ * @param {'handoff'|'ortho'|'checkout'} kind
+ * @returns {string|undefined}
+ */
+function sourceKeyFor(visit, kind) {
+  const id = visit && typeof visit.visitId === 'string' ? visit.visitId : '';
+  if (!/^[A-Za-z0-9_-]{1,120}$/.test(id)) return undefined;
+  return `hyg-visit:${id}:${kind}`;
+}
+
+/** TC refusal codes this module reports as themselves rather than TC_ERROR. */
+const PASSTHROUGH_CODES = new Set(['CHECKOUT_DISABLED', 'SOURCE_KEY_CONFLICT', 'CHECKOUT_UPDATE_CONFLICT']);
+
+/** Highest first, the order TC's `checkoutPriorityOf` uses. */
+const PRIORITY_ORDER = Object.freeze(['urgent', 'preventative', 'cosmetic']);
 
 /** Same derivation as services/tcCaseClient.js — one process, one port. */
 function internalBaseUrl() {
@@ -206,6 +242,8 @@ function buildIntake({ visit, appointment, handoffCategory, date }) {
       // TC who picks the case up is the one who finds out.
       patientInterestLevel: 'unknown',
       flagUrgent: priorities.has('urgent'),
+      kind: 'hygiene',
+      sourceKey: sourceKeyFor(visit, 'handoff'),
     },
   };
 }
@@ -341,6 +379,99 @@ function buildOrthoIntake({ visit, snapshot, date }) {
       patientInterestLevel: INTEREST_MAP[screening.interest] || 'unknown',
       flagUrgent: false,
       orthoScreening: screening,
+      kind: 'ortho',
+      sourceKey: sourceKeyFor(visit, 'ortho'),
+    },
+  };
+}
+
+/** A string field, trimmed and capped, or ''. */
+function capped(value, max) {
+  return String(value ?? '').trim().slice(0, max);
+}
+
+/**
+ * Build TC's CHECKOUT body from a visit (item 49).
+ *
+ * PURE, like the two above. Office and PatNum come off the visit row; who the
+ * patient is, the chair and the provider off `snapshot` (what this server
+ * recorded the last time it read the appointment from Open Dental); the
+ * procedures off the stored items. Nothing comes from a request.
+ *
+ * A visit with NO treatment is still sendable: "nothing staged, check them
+ * out" is the commonest checkout there is, and the front desk's answer to it
+ * ("Nothing needed", item 50) needs the handoff to exist.
+ *
+ * `notesPending` is true until the clinical note has been Written to the
+ * chart — always true on an early alert; the visit Send's final update says
+ * whether the note landed.
+ *
+ * @param {{ visit: object, snapshot: object|null, date: string, final: boolean }} ctx
+ * @returns {{ ok: true, body: Record<string, unknown> }
+ *          | { ok: false, code: string, error: string }}
+ */
+function buildCheckoutIntake({ visit, snapshot, date, final }) {
+  const snap = snapshot || {};
+  const patientName = capped(snap.patientName, 200);
+  if (!patientName) {
+    return {
+      ok: false,
+      code: 'PATIENT_NAME_UNAVAILABLE',
+      error:
+        'Open Dental has not given a name for this patient on this visit yet, so the front ' +
+        'desk would not know who to look for. Reload the visit and alert checkout again.',
+    };
+  }
+  const sourceKey = sourceKeyFor(visit, 'checkout');
+  if (!sourceKey) {
+    return { ok: false, code: 'VISIT_NOT_FOUND', error: 'This visit has no id to alert checkout for' };
+  }
+
+  const items = Array.isArray(visit.items) ? visit.items : [];
+  const procedures = items.slice(0, 100).map((item) => ({
+    teeth: item.teeth === 'mouth' ? 'mouth' : Array.isArray(item.teeth) ? item.teeth : [],
+    code: capped(item.code, 60) || 'Other',
+    category: capped(item.category, 40) || 'Other',
+    priority: PRIORITY_ORDER.includes(item.priority) ? item.priority : 'preventative',
+    status: capped(item.status, 40) || 'proposed',
+    surfaces: (Array.isArray(item.surfaces) ? item.surfaces : []).slice(0, 10).map((x) => capped(x, 4)),
+    scheduleNext: item.scheduleNext === true,
+    note: capped(item.note, 500),
+  }));
+  const priority = PRIORITY_ORDER.find((p) => procedures.some((x) => x.priority === p)) ?? null;
+
+  const slip = visit.slip || {};
+  const next = slip.nextVisit || {};
+  const staged = Array.isArray(visit.stagedWrites) ? visit.stagedWrites : [];
+  const noteWritten = staged.some((w) => w && w.kind === 'note' && w.state === 'Written');
+
+  const seen = capped(snap.providerName, 200);
+  return {
+    ok: true,
+    body: {
+      kind: 'checkout',
+      sourceKey,
+      final: final === true,
+      patientName,
+      odPatientId: visit.patNum,
+      provider: capped(snap.doctorName, 200) || seen,
+      providerSeen: seen,
+      operatory: capped(snap.opName, 200),
+      visitDate: date,
+      snapshot: {
+        procedures,
+        priority,
+        nextVisit: {
+          type: next.type ?? null,
+          intervalMonths: next.intervalMonths ?? null,
+          lengthMin: next.lengthMin ?? null,
+          withDoctor: next.withDoctor === true,
+          rtc: capped(slip.rtc, 4000),
+        },
+        notesPending: !noteWritten,
+        frontDeskNote: capped(slip.frontDeskNote, 4000),
+        financialNote: capped(slip.financialNote, 4000),
+      },
     },
   };
 }
@@ -353,6 +484,56 @@ function buildOrthoIntake({ visit, snapshot, date }) {
  *          | { ok: false, code: string, error: string }>}
  */
 async function submitHygieneIntake(req, { office, body }, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+  const posted = await postIntake(req, { office, body }, { timeoutMs });
+  if (!posted.ok) return posted;
+  const payload = posted.payload;
+  const caseId = payload && payload.case && payload.case.caseId;
+  if (typeof caseId !== 'string' || caseId.length === 0) {
+    // A 200 with no case in it is a REFUSAL, not a success: persisting a
+    // half-known linkage would be worse than reporting that nothing landed.
+    return {
+      ok: false,
+      code: 'TC_BAD_RESPONSE',
+      error: 'TC accepted the handoff but did not return a case, so nothing can be pointed at',
+    };
+  }
+  return { ok: true, caseId };
+}
+
+/**
+ * Send a checkout handoff (item 49). NEVER THROWS, like `submitHygieneIntake`.
+ *
+ * @returns {Promise<{ ok: true, handoffId: string, replayed: boolean, final: boolean }
+ *          | { ok: false, code: string, error: string }>}
+ */
+async function submitCheckoutHandoff(req, { office, body }, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+  const posted = await postIntake(req, { office, body }, { timeoutMs });
+  if (!posted.ok) return posted;
+  const payload = posted.payload;
+  const handoffId = payload && payload.handoff && payload.handoff.handoffId;
+  if (typeof handoffId !== 'string' || handoffId.length === 0) {
+    return {
+      ok: false,
+      code: 'TC_BAD_RESPONSE',
+      error: 'TC accepted the checkout alert but did not return a handoff, so nothing is recorded',
+    };
+  }
+  return {
+    ok: true,
+    handoffId,
+    replayed: payload.replayed === true,
+    // Whether TC now holds a FINAL snapshot. A final submit must see true here
+    // before anybody may call it delivered (routes/hyg/visit.js deliverCheckout).
+    final: payload.handoff.final === true,
+  };
+}
+
+/**
+ * The loopback POST both submits share. Forwards the caller's own credential.
+ *
+ * @returns {Promise<{ ok: true, payload: any } | { ok: false, code: string, error: string }>}
+ */
+async function postIntake(req, { office, body }, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   /** @type {Record<string,string>} */
   const headers = { 'Content-Type': 'application/json' };
   const incoming = (req && req.headers) || {};
@@ -389,26 +570,21 @@ async function submitHygieneIntake(req, { office, body }, { timeoutMs = DEFAULT_
       `TC responded ${response.status}`;
     // A 403 here is TC's own entitlement or permission answer, and saying so is
     // more useful than "the handoff failed".
+    // TC's own refusal code passes through when it is one this module names
+    // (CHECKOUT_DISABLED, SOURCE_KEY_CONFLICT, CHECKOUT_UPDATE_CONFLICT), so
+    // the screen can say which.
+    const passthrough = payload && PASSTHROUGH_CODES.has(payload.code) ? payload.code : null;
     const code =
-      response.status === 403
+      passthrough ||
+      (response.status === 403
         ? 'TC_FORBIDDEN'
         : response.status === 404
           ? 'TC_ENDPOINT_MISSING'
-          : 'TC_ERROR';
+          : 'TC_ERROR');
     return { ok: false, code, error: message };
   }
 
-  const caseId = payload && payload.case && payload.case.caseId;
-  if (typeof caseId !== 'string' || caseId.length === 0) {
-    // A 200 with no case in it is a REFUSAL, not a success: persisting a
-    // half-known linkage would be worse than reporting that nothing landed.
-    return {
-      ok: false,
-      code: 'TC_BAD_RESPONSE',
-      error: 'TC accepted the handoff but did not return a case, so nothing can be pointed at',
-    };
-  }
-  return { ok: true, caseId };
+  return { ok: true, payload };
 }
 
 module.exports = {
@@ -416,7 +592,10 @@ module.exports = {
   buildOrthoIntake,
   INTEREST_MAP,
   buildIntake,
+  buildCheckoutIntake,
+  sourceKeyFor,
   submitHygieneIntake,
+  submitCheckoutHandoff,
   CATEGORY_MAP,
   PERIO_MAP,
   RADIOGRAPH_MAP,

@@ -235,6 +235,16 @@ function parseBound(raw, fallback, max) {
 }
 
 /**
+ * Plan statuses that put a remittance on somebody's list (`posting_failed`).
+ *
+ * One list for both readers below, so the obligation and the "queued"
+ * observation can never disagree about a status. W-21 added
+ * `outcome_unknown`: a plan that may have moved money and has not been settled
+ * is the last thing that should sit quietly on a list nobody opens.
+ */
+const POSTING_NEEDS_SOMEBODY = Object.freeze(['failed', 'partially_posted', 'blocked', 'outcome_unknown']);
+
+/**
  * Does this batch still owe a human an ACTION?
  *
  * ─────────────────────────────────────────────────────────────────────────────
@@ -421,7 +431,9 @@ function attentionFor(batch, claims, approval = {}) {
    * One plan, three different things to say, and only one of them is work:
    *
    *   posting_failed  an OBLIGATION. A drain ran and the plan did not finish —
-   *                   `failed`, `partially_posted` or `blocked`. Somebody owes an
+   *                   `failed`, `partially_posted`, `blocked` or (W-21)
+   *                   `outcome_unknown`, where a write may or may not have
+   *                   landed and the next press has to settle it. Somebody owes an
    *                   action: fix what blocked it, or look at what half-posted.
    *                   `partially_posted` in particular MUST reach this view:
    *                   money moved and a check may not exist, which is the §8
@@ -439,7 +451,7 @@ function attentionFor(batch, claims, approval = {}) {
   const planStatuses = Array.isArray(approval.queueStatuses) ? approval.queueStatuses : [];
   const anyClaimQueued = claims.some((c) => c.postingQueueId);
 
-  if (planStatuses.some((s) => s === 'failed' || s === 'partially_posted' || s === 'blocked')) {
+  if (planStatuses.some((s) => POSTING_NEEDS_SOMEBODY.includes(s))) {
     reasons.push('posting_failed');
   }
   // ── The observations ──────────────────────────────────────────────────────
@@ -450,7 +462,7 @@ function attentionFor(batch, claims, approval = {}) {
     // with work outstanding.
     if (planStatuses.length > 0 && planStatuses.every((s) => s === 'posted')) {
       observations.push('claims_posted');
-    } else if (!planStatuses.some((s) => s === 'failed' || s === 'partially_posted' || s === 'blocked')) {
+    } else if (!planStatuses.some((s) => POSTING_NEEDS_SOMEBODY.includes(s))) {
       observations.push('claims_queued');
     }
   }
@@ -2653,6 +2665,13 @@ router.post(
  * this whole exercise is about.
  */
 const COMPARISON_CLOSED_STATUSES = Object.freeze(['posted', 'partially_posted']);
+/*
+ * W-21: `outcome_unknown` is deliberately NOT here either. It is not proof that
+ * money reached a chart — it is the absence of proof either way — and closing
+ * the question on it would print "This check has posted" over a check that may
+ * not have. The next press settles it; if it settles to `partially_posted`, the
+ * question closes then.
+ */
 
 /**
  * POST /:id/comparison — "did the app get this check right?"
@@ -2914,3 +2933,4 @@ module.exports.SET_ASIDE_REASONS = SET_ASIDE_REASONS;
 module.exports.COMPARISON_VERDICTS = COMPARISON_VERDICTS;
 module.exports.COMPARISON_REASONS = COMPARISON_REASONS;
 module.exports.COMPARISON_CLOSED_STATUSES = COMPARISON_CLOSED_STATUSES;
+module.exports.POSTING_NEEDS_SOMEBODY = POSTING_NEEDS_SOMEBODY;

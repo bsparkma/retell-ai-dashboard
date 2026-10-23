@@ -7,9 +7,12 @@
  * bundle), the ONE implementation. This file only decides WHICH values go in:
  *
  *   patient.firstName   the case's patient first name. The only case fact.
- *   practice.name       the office's display name (config/officeAgents)
+ *   practice.name       the office's practice name (R5c: Settings -> Email
+ *                       identity, else TC_EMAIL_PRACTICE_NAME_<OFFICE>), else
+ *                       its display name (config/officeAgents)
  *   practice.address    TC_EMAIL_PRACTICE_ADDRESS_<OFFICE>, optional
- *   practice.phone      TC_EMAIL_PRACTICE_PHONE_<OFFICE>, optional
+ *   practice.phone      the office's phone (R5c: Settings -> Email identity,
+ *                       else TC_EMAIL_PRACTICE_PHONE_<OFFICE>), optional
  *   sender.name         the TC who wrote the draft (their SSO display name)
  *   sender.email        the office's Reply-To, if one is set. NEVER the TC's
  *                       own mailbox: a patient's reply should reach the
@@ -29,11 +32,20 @@ const odOffices = require('../../config/odOffices');
 const acsConfig = require('../../config/acsEmail');
 const { firstNameOf } = require('./templates');
 
+/**
+ * (R5c) The name an email from this office signs with: ONE identity per
+ * office, the same for a patient email and a referral letter.
+ * @param {string} office
+ */
+function practiceNameOf(office) {
+  return acsConfig.practiceNameFor(office) || odOffices.describeOffice(office).officeName;
+}
+
 /** @param {string} office */
 function practiceValues(office) {
   const details = acsConfig.practiceDetailsFor(office);
   return {
-    'practice.name': odOffices.describeOffice(office).officeName,
+    'practice.name': practiceNameOf(office),
     'practice.address': details.address,
     'practice.phone': details.phone,
     'sender.email': acsConfig.replyToFor(office),
@@ -57,7 +69,7 @@ function mergeValues(office, { patientName = null, senderName = null } = {}) {
 function footerFor(office, unsubscribeUrl) {
   const details = acsConfig.practiceDetailsFor(office);
   return {
-    practiceName: odOffices.describeOffice(office).officeName,
+    practiceName: practiceNameOf(office),
     practiceAddress: details.address,
     practicePhone: details.phone,
     unsubscribeUrl,
@@ -110,4 +122,60 @@ function renderRow(row, office, unsubscribeUrl) {
   });
 }
 
-module.exports = { mergeValues, practiceValues, footerFor, snapshotTemplate, renderRow };
+/**
+ * (R5) A referral letter, rendered by the same shared renderer with the same
+ * system footer (practice name, address, phone, the unsubscribe link). Two
+ * differences, both for who receives it: the footer says WHY a specialist's
+ * office got it (it is not the practice's patient), and the body may run to
+ * the renderer's ceiling, because the letter carries the clinical notes and
+ * the doctor's note verbatim — cutting them at the patient-email limit would
+ * drop clinical text without a word.
+ *
+ * The text is composed by the caller (routes/tc/referralLetterText.js); no
+ * merge token is filled here.
+ * (R5b) `actions` are the letter's two link buttons, drawn under the text.
+ * @param {{ office: string, subject: string, text: string, unsubscribeUrl: string|null,
+ *           actions?: Array<{ label: string, href: string }> }} input
+ * @returns {{ subject: string, html: string, text: string }}
+ */
+function renderReferralLetter({ office, subject, text, unsubscribeUrl, actions = [] }) {
+  const footer = footerFor(office, unsubscribeUrl);
+  return contract.renderEmail({
+    subject,
+    preheader: '',
+    content: { kind: 'text', body: text, maxChars: contract.EMAIL_TEXT_BODY_CEILING, literal: true, actions },
+    values: {},
+    footer: { ...footer, audience: 'referral' },
+  });
+}
+
+/**
+ * (R5b) The patient's notice that they were referred: the same renderer with
+ * the PATIENT footer ("you are a patient of …"), the default text limit, and
+ * its one button. Composed by the caller (routes/tc/referralLetterText.js);
+ * no merge token is filled.
+ * `after` is the closing drawn below the button.
+ * @param {{ office: string, subject: string, text: string, after?: string, unsubscribeUrl: string|null,
+ *           actions: Array<{ label: string, href: string }> }} input
+ * @returns {{ subject: string, html: string, text: string }}
+ */
+function renderReferralPatientNotice({ office, subject, text, after = '', unsubscribeUrl, actions }) {
+  return contract.renderEmail({
+    subject,
+    preheader: '',
+    content: { kind: 'text', body: text, literal: true, actions, after },
+    values: {},
+    footer: footerFor(office, unsubscribeUrl),
+  });
+}
+
+module.exports = {
+  mergeValues,
+  practiceValues,
+  practiceNameOf,
+  footerFor,
+  snapshotTemplate,
+  renderRow,
+  renderReferralLetter,
+  renderReferralPatientNotice,
+};

@@ -69,9 +69,12 @@ import { ACTIONS } from "@/lib/permissions";
 
 const PERMS: Record<string, string[]> = {
   admin: [...ACTIONS],
-  office: ACTIONS.filter((a) => a !== "admin.all"),
+  // Item 53: an office user does not sign off referrals (doctor + admin do).
+  office: ACTIONS.filter((a) => a !== "admin.all" && a !== "tc.referral_signoff"),
   tc: ["voice.read", "tc.full", "tc.hygiene"],
   hygiene: ["tc.hygiene"],
+  // Item 53: the doctor tier holds exactly the sign-off.
+  doctor: ["tc.referral_signoff"],
 };
 
 beforeEach(() => {
@@ -132,6 +135,33 @@ describe("visibleNav", () => {
     },
   ];
 
+  it("a doctor sees ONLY the sign-off queue in the TC nav; tc and office do not see it (item 53)", () => {
+    const TC_GROUPS = [
+      {
+        title: "Casework",
+        items: [
+          { path: "/tc/dashboard", label: "Dashboard", icon: (() => null) as never },
+          { path: "/tc", label: "Pipeline", icon: (() => null) as never },
+          { path: "/tc/checkout", label: "Checkout", icon: (() => null) as never },
+          { path: "/tc/referrals/signoff", label: "Awaiting sign-off", icon: (() => null) as never },
+        ],
+      },
+      {
+        title: "Tools",
+        items: [{ path: "/tc/settings", label: "Settings", icon: (() => null) as never }],
+      },
+    ];
+    const doctor = visibleNav(TC_GROUPS, PERMS.doctor);
+    expect(doctor.map((g) => g.title)).toEqual(["Casework"]);
+    expect(doctor[0].items.map((i) => i.label)).toEqual(["Awaiting sign-off"]);
+    for (const role of ["tc", "office"]) {
+      const labels = visibleNav(TC_GROUPS, PERMS[role]).flatMap((g) => g.items.map((i) => i.label));
+      expect(labels, role).not.toContain("Awaiting sign-off");
+      expect(labels, role).toContain("Pipeline");
+    }
+    expect(visibleNav(TC_GROUPS, PERMS.admin).flatMap((g) => g.items.map((i) => i.label))).toContain("Awaiting sign-off");
+  });
+
   it("drops a group once every item in it is hidden", () => {
     const visible = visibleNav(GROUPS, PERMS.office);
     expect(visible.map((g) => g.title)).toEqual(["Operations", "Insights"]);
@@ -169,13 +199,13 @@ async function navLabels(): Promise<string[]> {
 }
 
 describe("sidebar nav per role", () => {
-  it("HYGIENE sees exactly three items: TC Inbox, Intake, Submissions", async () => {
+  it("HYGIENE sees exactly three items: TC Inbox, Hygiene handoff, Submissions", async () => {
     authState.role = "hygiene";
     authState.permissions = PERMS.hygiene;
     renderShell("/tc/hygiene/inbox");
 
     await waitFor(async () => {
-      expect(await navLabels()).toEqual(["TC Inbox", "Intake", "Submissions"]);
+      expect(await navLabels()).toEqual(["TC Inbox", "Hygiene handoff", "Submissions"]);
     });
   });
 

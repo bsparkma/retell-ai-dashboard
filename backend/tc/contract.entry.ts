@@ -36,6 +36,16 @@ export * from "../../new-dashboard/shared/tc/messaging";
 // Email rendering (item 40): the ONE block-model → HTML implementation, shared
 // with the dashboard's preview helpers.
 export * from "../../new-dashboard/shared/tc/emailRender";
+// Nurture campaigns v1 (item 47): the frozen tracks, presets, caps and copy.
+export * from "../../new-dashboard/shared/tc/nurture";
+// The checkout handoff and the intake-kind / source-key vocabulary (item 49).
+export * from "../../new-dashboard/shared/tc/checkout";
+// In-app alert preferences (item 51).
+export * from "../../new-dashboard/shared/tc/notifications";
+// Referrals (items 52-55): status/urgency vocabulary, directory, settings.
+export * from "../../new-dashboard/shared/tc/referrals";
+// The office email identity (R5c): reply-to, practice name and phone.
+export * from "../../new-dashboard/shared/tc/emailIdentity";
 // The routes compose small request shapes (status-transition bodies, complete/
 // reschedule payloads) from contract pieces; export the SAME zod instance so
 // those shapes and the contract schemas share one library version.

@@ -168,6 +168,9 @@ async function auditTc(req, action, resourceType, resourceId, extra = {}) {
     result: 'SUCCESS',
     office: extra.office ?? null,
     sourceRef: extra.sourceRef ?? null,
+    // Item 50: what the thing WAS before this action — a slug, never prose
+    // (audit_log_prior_state_check enforces it). Absent ⇒ NULL, as before.
+    priorState: extra.priorState ?? null,
   });
 }
 

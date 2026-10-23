@@ -1295,6 +1295,17 @@ test('6c: every already-ran status gets a sentence that is true of it', async ()
   assert.ok(!approvalGate.TERMINAL_QUEUE_STATUSES.includes('approved'));
 });
 
+test('W-21: an outcome_unknown plan takes no more claims, and its sentence claims neither answer', () => {
+  assert.ok(approvalGate.TERMINAL_QUEUE_STATUSES.includes('outcome_unknown'));
+  const msg = approvalGate.alreadyRanMessage('outcome_unknown');
+  // It may have moved money, and it may not have. The sentence says neither.
+  assert.doesNotMatch(msg, /already finished|already put money|nothing (was|has been) written/i);
+  assert.match(msg, /not confirmed/i);
+  assert.match(msg, /Do not enter/);
+  assert.match(msg, /by hand in Open Dental/i);
+  assert.notEqual(msg, approvalGate.alreadyRanMessage('failed'));
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // D-6 — the typed confirmation (6d)
 // ═══════════════════════════════════════════════════════════════════════════

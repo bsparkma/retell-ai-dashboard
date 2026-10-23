@@ -14824,6 +14824,9 @@ var require_zod = __commonJS({
 var contract_entry_exports = {};
 __export(contract_entry_exports, {
   CORRECTED_OPTION_SPELLINGS: () => CORRECTED_OPTION_SPELLINGS,
+  CheckoutAlertRequestSchema: () => CheckoutAlertRequestSchema,
+  CheckoutDeliverySchema: () => CheckoutDeliverySchema,
+  CheckoutSendSchema: () => CheckoutSendSchema,
   DONE_TODAY_OPTIONS: () => DONE_TODAY_OPTIONS,
   DX_LABELS: () => DX_LABELS,
   DxCodeSchema: () => DxCodeSchema,
@@ -14835,6 +14838,7 @@ __export(contract_entry_exports, {
   HYG_VISIT_ERROR_CODES: () => HYG_VISIT_ERROR_CODES,
   HandoffCategorySchema: () => HandoffCategorySchema,
   HygAppointmentSchema: () => HygAppointmentSchema,
+  HygCheckoutAlertResponseSchema: () => HygCheckoutAlertResponseSchema,
   HygDayFlagsSchema: () => HygDayFlagsSchema,
   HygDayIdentitiesResponseSchema: () => HygDayIdentitiesResponseSchema,
   HygDayResponseSchema: () => HygDayResponseSchema,
@@ -16281,6 +16285,12 @@ var OrthoSendSchema = import_zod3.z.object({
   sentAt: import_zod3.z.string(),
   sentBy: import_zod3.z.string()
 });
+var CheckoutSendSchema = import_zod3.z.object({
+  handoffId: import_zod3.z.string().min(1),
+  sentAt: import_zod3.z.string(),
+  sentBy: import_zod3.z.string(),
+  finalAt: import_zod3.z.string().nullable()
+});
 var HygVisitSchema = import_zod3.z.object({
   visitId: import_zod3.z.string().min(1),
   office: OfficeIdSchema,
@@ -16293,6 +16303,8 @@ var HygVisitSchema = import_zod3.z.object({
   stagedWrites: import_zod3.z.array(StagedWriteSchema),
   /** Item 33. Defaulted so a response from an older server still parses. */
   orthoSend: OrthoSendSchema.nullable().default(null),
+  /** Item 49. Defaulted so a response from an older server still parses. */
+  checkoutSend: CheckoutSendSchema.nullable().default(null),
   createdBy: import_zod3.z.string(),
   createdAt: import_zod3.z.string(),
   updatedBy: import_zod3.z.string().nullable(),
@@ -16340,6 +16352,11 @@ var SendOutcomeSchema = import_zod3.z.object({
   /** The precise reason, for a screen that wants to switch on it. */
   code: import_zod3.z.string().nullable()
 });
+var CheckoutDeliverySchema = import_zod3.z.object({
+  state: import_zod3.z.enum(["delivered", "not_delivered"]),
+  code: import_zod3.z.string().nullable(),
+  message: import_zod3.z.string().nullable()
+});
 var HygSendResponseSchema = import_zod3.z.object({
   success: import_zod3.z.literal(true),
   visit: HygVisitSchema,
@@ -16357,7 +16374,9 @@ var HygSendResponseSchema = import_zod3.z.object({
   outcomes: import_zod3.z.array(SendOutcomeSchema),
   /** Counts, not a verdict. A perio chart still `Sending` is in neither. */
   written: import_zod3.z.number().int(),
-  failed: import_zod3.z.number().int()
+  failed: import_zod3.z.number().int(),
+  /** Item 49. Null when the checkout handoff is switched off for the office. */
+  checkout: CheckoutDeliverySchema.nullable().default(null)
 });
 var OrthoSendRequestSchema = import_zod3.z.object({}).strip();
 var HygOrthoSendResponseSchema = import_zod3.z.object({
@@ -16367,6 +16386,16 @@ var HygOrthoSendResponseSchema = import_zod3.z.object({
   handoffCategory: HandoffCategorySchema,
   doctorOptions: import_zod3.z.array(import_zod3.z.string()),
   /** True when this press found it already sent and created nothing. */
+  alreadySent: import_zod3.z.boolean()
+});
+var CheckoutAlertRequestSchema = import_zod3.z.object({}).strip();
+var HygCheckoutAlertResponseSchema = import_zod3.z.object({
+  success: import_zod3.z.literal(true),
+  visit: HygVisitSchema,
+  recordsNeeded: import_zod3.z.array(import_zod3.z.string()),
+  handoffCategory: HandoffCategorySchema,
+  doctorOptions: import_zod3.z.array(import_zod3.z.string()),
+  /** True when this press found it already alerted and sent nothing. */
   alreadySent: import_zod3.z.boolean()
 });
 var HYG_VISIT_ERROR_CODES = [
@@ -16417,7 +16446,30 @@ var HYG_VISIT_ERROR_CODES = [
   "TC_FORBIDDEN",
   "TC_ENDPOINT_MISSING",
   "TC_ERROR",
-  "TC_BAD_RESPONSE"
+  "TC_BAD_RESPONSE",
+  // Item 49: the checkout alert.
+  "CHECKOUT_DISABLED",
+  "CHECKOUT_SEND_IN_PROGRESS",
+  "SOURCE_KEY_CONFLICT",
+  "CHECKOUT_NOT_FINAL",
+  "CHECKOUT_UPDATE_CONFLICT",
+  "CHECKOUT_ERROR",
+  // Item 54: a referral from the chair (the shared TC producer's refusals).
+  "MODULE_NOT_ENTITLED",
+  "REFERRALS_DISABLED",
+  "DIRECTORY_ENTRY_NOT_FOUND",
+  "DIRECTORY_ENTRY_INACTIVE",
+  // Item 55: the chairside X-ray upload, and the submit after it.
+  "INVALID_ID",
+  "NOT_FOUND",
+  "NO_TENANT",
+  "INVALID_UPLOAD",
+  "ATTACHMENT_TOO_LARGE",
+  "ATTACHMENT_TYPE_NOT_ALLOWED",
+  "ATTACHMENT_LIMIT",
+  "REFERRAL_LOCKED",
+  "REFERRAL_STORAGE_UNAVAILABLE",
+  "REFERRAL_TRANSITION_NOT_ALLOWED"
 ];
 
 // shared/hyg/records.ts
@@ -17707,6 +17759,9 @@ var import_zod6 = __toESM(require_zod());
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   CORRECTED_OPTION_SPELLINGS,
+  CheckoutAlertRequestSchema,
+  CheckoutDeliverySchema,
+  CheckoutSendSchema,
   DONE_TODAY_OPTIONS,
   DX_LABELS,
   DxCodeSchema,
@@ -17718,6 +17773,7 @@ var import_zod6 = __toESM(require_zod());
   HYG_VISIT_ERROR_CODES,
   HandoffCategorySchema,
   HygAppointmentSchema,
+  HygCheckoutAlertResponseSchema,
   HygDayFlagsSchema,
   HygDayIdentitiesResponseSchema,
   HygDayResponseSchema,

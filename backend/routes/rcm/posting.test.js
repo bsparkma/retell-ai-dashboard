@@ -925,6 +925,27 @@ test('a plan that already put money in a chart cannot be retired', async () => {
   }
 });
 
+test('W-21: a plan whose write is unconfirmed cannot be retired, and is told why', async () => {
+  const db = seedQueue(new FakeRcmDb());
+  queueRow(db).status = 'outcome_unknown';
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    const res = await api(
+      app.baseUrl,
+      'POST',
+      `/api/rcm/posting/queue/${queueRow(db).queue_id}/withdraw?office=roland`,
+      { body: JSON.stringify({ note: 'retire it' }), json: true }
+    );
+    assert.equal(res.status, 409);
+    assert.equal(res.body.code, 'WITHDRAW_NOT_ALLOWED');
+    assert.equal(res.body.status, 'outcome_unknown');
+    assert.match(res.body.error, /not been confirmed either way/);
+    assert.equal(queueRow(db).status, 'outcome_unknown');
+  } finally {
+    await app.close();
+  }
+});
+
 test('the queue read carries the withdrawal, so a screen can account for it', async () => {
   const db = seedQueue(new FakeRcmDb());
   const app = await bootRcmApp({ db, od: readOnlyOd() });
@@ -963,5 +984,57 @@ test('a plan from another office is a 404, not a refusal', async () => {
     assert.equal(queueRow(db).status, 'approved');
   } finally {
     await app.close();
+  }
+});
+
+// ── W-21c: plans over a deleted claim are counted apart from "waiting" ─────
+
+test('W-21c: GET /posting/queue counts claim-gone plans apart, and leaves byStatus exactly as it was', async () => {
+  const db = seedQueue(new FakeRcmDb());
+  const base = db.table('rcm_posting_queue')[0];
+  const extra = (id, status, step) => ({
+    ...base,
+    queue_id: id,
+    status,
+    drain_step: step,
+    attempt_count: 1,
+    finished_at: new Date(),
+  });
+  db.seed('rcm_posting_queue', [
+    extra('21c00000-0000-4000-8000-000000000001', 'outcome_unknown', postingDrain.CLAIM_GONE_STEP),
+    extra('21c00000-0000-4000-8000-000000000002', 'partially_posted', postingDrain.CLAIM_GONE_STEP),
+    // The SAME statuses at ordinary steps: still waiting, never subtracted.
+    extra('21c00000-0000-4000-8000-000000000003', 'outcome_unknown', 'check'),
+    extra('21c00000-0000-4000-8000-000000000004', 'partially_posted', 'confirm_patient_interrupted'),
+  ]);
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    const res = await api(app.baseUrl, 'GET', '/api/rcm/posting/queue?office=roland');
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.claimGone, 2, 'one unknown and one partly posted, both over a deleted claim');
+    // Statuses are untouched: claim-gone rows are still counted under their own state.
+    assert.equal(res.body.byStatus.outcome_unknown, 2);
+    assert.equal(res.body.byStatus.partially_posted, 2);
+    assert.equal(res.body.byStatus.approved, 1);
+    assert.equal(res.body.total, 5);
+  } finally {
+    await app.close();
+  }
+});
+
+test('W-21c: an office with no claim-gone plan reports a measured 0', async () => {
+  const db = seedQueue(new FakeRcmDb());
+  const app = await bootRcmApp({ db, od: readOnlyOd() });
+  try {
+    const res = await api(app.baseUrl, 'GET', '/api/rcm/posting/queue?office=roland');
+    assert.equal(res.body.claimGone, 0);
+  } finally {
+    await app.close();
+  }
+});
+
+test('W-21c: claim-gone rows stay DRAINABLE (D-15) — only the arithmetic changed', () => {
+  for (const s of postingDrain.CLAIM_GONE_STATUSES) {
+    assert.ok(postingDrain.DRAINABLE_STATUSES.includes(s), s);
   }
 });

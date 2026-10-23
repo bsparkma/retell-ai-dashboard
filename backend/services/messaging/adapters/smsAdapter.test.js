@@ -19,6 +19,9 @@ const sms = require('./smsAdapter');
 
 const ENV = {
   TC_SMS_ENABLED: 'true',
+  // (item 48) ACS is the default provider; these tests exercise the Twilio
+  // adapter, which is selected only when named.
+  TC_SMS_PROVIDER: 'twilio',
   TWILIO_ACCOUNT_SID: 'ACtest0000',
   TWILIO_API_KEY_SID: 'SKtest0000',
   TWILIO_API_KEY_SECRET: 'not-a-real-secret',

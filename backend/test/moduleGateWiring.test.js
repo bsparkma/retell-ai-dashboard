@@ -76,6 +76,21 @@ test('server.js: the Twilio webhook mount (item 39) is unguarded, inside the /we
   );
 });
 
+test('server.js: the ACS SMS Event Grid mount (item 48) is unguarded, inside the /webhooks exemption, and ahead of /api/webhooks', () => {
+  const line = mountLine('/api/webhooks/acs-sms');
+  // Same reasoning as Twilio: Event Grid carries no user, so a module or
+  // permission guard would refuse every inbound STOP and delivery report. It
+  // authenticates itself (X-CareIN-Webhook-Token) and resolves its own tenant.
+  assert.ok(
+    !/requireModule|voiceModule|requirePermission|requireReadWrite|requireSuperAdmin/.test(line),
+    `/api/webhooks/acs-sms must carry no module or permission guard: ${line}`
+  );
+  assert.ok(
+    serverSrc.indexOf("app.use('/api/webhooks/acs-sms'") < serverSrc.indexOf("app.use('/api/webhooks', webhooksRouter)"),
+    '/api/webhooks/acs-sms must be mounted before /api/webhooks'
+  );
+});
+
 test('server.js: the email unsubscribe mount (item 40) is unguarded, inside the /webhooks exemption, and ahead of /api/webhooks', () => {
   const line = mountLine('/api/webhooks/email');
   // A patient's browser or mail client carries no user: a module or permission
@@ -93,6 +108,24 @@ test('server.js: the email unsubscribe mount (item 40) is unguarded, inside the 
     serverSrc.indexOf("app.use('/api/webhooks/email'") < serverSrc.indexOf("app.use('/api/webhooks', webhooksRouter)"),
     '/api/webhooks/email must be mounted before /api/webhooks'
   );
+});
+
+test('server.js: the referral link mount (R5b) is unguarded, inside the /webhooks exemption, ahead of /api/webhooks, and rate-limits itself', () => {
+  const line = mountLine('/api/webhooks/referral-link');
+  // A specialist's or patient's browser carries no user: a module or
+  // permission guard would refuse every click. The token authenticates it, and
+  // the router resolves its own tenant (TC_EMAIL_TENANT_SLUG).
+  assert.ok(
+    !/requireModule|voiceModule|requirePermission|requireReadWrite|requireSuperAdmin/.test(line),
+    `/api/webhooks/referral-link must carry no module or permission guard: ${line}`
+  );
+  assert.ok(
+    serverSrc.indexOf("app.use('/api/webhooks/referral-link'") < serverSrc.indexOf("app.use('/api/webhooks', webhooksRouter)"),
+    '/api/webhooks/referral-link must be mounted before /api/webhooks'
+  );
+  // The app-wide limiter exempts /api/webhooks, so the router must carry its own.
+  const routerSrc = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'routes', 'referralLinkWebhooks.js'), 'utf8');
+  assert.match(routerSrc, /router\.use\(\s*rateLimit\(/);
 });
 
 test('server.js: every tenant-scoped voice mount carries the voice module guard', () => {

@@ -10,7 +10,7 @@
  *     channels in this slice) or the consent gate would refuse. The server
  *     re-checks everything on the click; this screen only previews it.
  *
- * Item 39 (Twilio): a channel is live when the SERVER says so for this office
+ * Item 39: a channel is live when the SERVER says so for this office
  * (readiness.adapterEnabled — the kill switch AND this office's own number);
  * when it is not, `adapterReason` says why. Delivery is shown honestly: "Sent"
  * is not "Delivered", and only a carrier receipt turns the chip green. Opening
@@ -315,7 +315,7 @@ export function MessagesTab({ office, tcCase, seed = null, onSeedConsumed }: Mes
       const sent = await sendMessage(office, m.messageId);
       toast.success(
         sent.channel === "sms"
-          ? `Text handed to Twilio (${statusLabel(sent).toLowerCase()}).`
+          ? `Text handed to the texting service (${statusLabel(sent).toLowerCase()}).`
           : `Email handed to the email service (${statusLabel(sent).toLowerCase()}).`,
       );
       await load();
