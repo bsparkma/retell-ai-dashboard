@@ -66,7 +66,13 @@ import {
   hubActionPlan,
   type HubViewer,
 } from "@/features/tc/referrals/hubActions";
-import { AttachmentList, ReferralStatusBadge, teethLabel, viewAttachment } from "@/features/tc/referrals/ReferralsPanel";
+import {
+  AttachmentList,
+  ReferralResponseSignals,
+  ReferralStatusBadge,
+  teethLabel,
+  viewAttachment,
+} from "@/features/tc/referrals/ReferralsPanel";
 import { AddAttachments } from "@/features/tc/referrals/AddAttachments";
 import { NewHubReferral } from "@/features/tc/referrals/NewHubReferral";
 import { ReferralFieldsForm, type ReferralFieldsChange } from "@/features/tc/referrals/ReferralFieldsForm";
@@ -82,8 +88,10 @@ import {
   TC_REFERRAL_URGENCY_LABELS,
   TcReferralSourceKind,
   TcReferralStatus,
+  referralDateLabel,
   referralHubGroup,
   referralNextStatus,
+  referralResponseBadges,
   referralReturnedLine,
   referralSendBlocker,
   referralStatusAge,
@@ -377,10 +385,7 @@ export function sendErrorMessage(e: unknown): string {
 
 /** R5b: "Tue, Nov 3, 2026" for the 'YYYY-MM-DD' a link gave; the raw value if it does not parse. */
 export function scheduledDateLabel(ymd: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
-  if (!m) return ymd;
-  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
-  return d.toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric", year: "numeric" });
+  return referralDateLabel(ymd);
 }
 
 /**
@@ -488,6 +493,7 @@ function FilterSelect({
 
 export function HubCard({ referral: r, now, onOpen }: { referral: TcReferral; now: Date; onOpen: () => void }) {
   const returned = referralReturnedLine(r.returned);
+  const patientEmailLine = referralResponseBadges(r).patientEmail;
   return (
     <button
       type="button"
@@ -510,7 +516,14 @@ export function HubCard({ referral: r, now, onOpen }: { referral: TcReferral; no
         <span className="flex items-center gap-0.5 text-muted-foreground" data-testid="tc-hub-attachments">
           <Paperclip className="w-3 h-3" /> {r.attachmentCount ?? 0}
         </span>
+        {/* The responses we collect, without opening the card. */}
+        <ReferralResponseSignals referral={r} withPatientEmail={false} />
       </div>
+      {patientEmailLine && (
+        <p className="text-xs text-muted-foreground truncate" title={patientEmailLine} data-testid="referral-response-patient-email">
+          {patientEmailLine}
+        </p>
+      )}
       {returned && (
         <p className="text-xs font-medium text-amber-800 dark:text-amber-300" data-testid="tc-hub-returned">
           {returned}

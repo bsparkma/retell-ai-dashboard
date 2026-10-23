@@ -372,6 +372,22 @@ export const TcReferralEvent = z.object({
 });
 export type TcReferralEvent = z.infer<typeof TcReferralEvent>;
 
+/** The specialist's receipt, as a list read carries it (see TcReferral.received). */
+export const TcReferralReceived = z.object({
+  at: z.string(),
+  via: z.enum(["link", "staff"]),
+});
+export type TcReferralReceived = z.infer<typeof TcReferralReceived>;
+
+/** The patient email's outcome, as a list read carries it (see TcReferral.patientEmail). */
+export const TcReferralPatientEmailRecord = z.object({
+  status: z.enum(["sent", "skipped", "failed"]),
+  /** The history row's own words ("Patient not emailed: ..."). No address, no PHI. */
+  note: z.string(),
+  at: z.string(),
+});
+export type TcReferralPatientEmailRecord = z.infer<typeof TcReferralPatientEmailRecord>;
+
 /** A referral, as the API returns it. */
 export const TcReferral = z.object({
   referralId: z.string().uuid(),
@@ -428,6 +444,18 @@ export const TcReferral = z.object({
    * nobody gave a date. The history row says who and when.
    */
   scheduledDate: z.string().nullable().optional(),
+  /**
+   * The specialist confirmed receipt since the referral was last sent: the
+   * `mark_acknowledged` move, from their email link (`via: "link"`) or marked
+   * by staff (`via: "staff"`). null when nobody has. On list reads.
+   */
+  received: TcReferralReceived.nullable().optional(),
+  /**
+   * What happened to the patient's notification email after the latest send:
+   * sent, skipped (the note names why), or failed. null when none was
+   * recorded. On list reads.
+   */
+  patientEmail: TcReferralPatientEmailRecord.nullable().optional(),
 });
 export type TcReferral = z.infer<typeof TcReferral>;
 
@@ -693,6 +721,81 @@ export function referralLastSendProblem(
   return null;
 }
 
+/** The moves that put a referral in `sent`: the app's send, or staff marking it sent. */
+const SENT_VERBS: readonly TcReferralEventVerb[] = ["send", "mark_sent"];
+
+/**
+ * The responses a referral has collected since it was LAST sent (a reopen and
+ * re-send starts clean): the specialist's receipt and the patient email's
+ * outcome. Events are oldest first. Rows written before R6 carry no verb; for
+ * them a move sent -> acknowledged is the receipt. Pure; the server derives
+ * the list fields with it.
+ */
+export function referralResponses(events: readonly TcReferralEvent[] | undefined): {
+  received: TcReferralReceived | null;
+  patientEmail: TcReferralPatientEmailRecord | null;
+} {
+  const list = events ?? [];
+  let start = 0;
+  list.forEach((e, i) => {
+    const intoSent = e.verb ? SENT_VERBS.includes(e.verb) : e.toStatus === "sent" && e.fromStatus !== "sent";
+    if (intoSent) start = i;
+  });
+  const since = list.slice(start).reverse();
+  const ack = since.find((e) =>
+    e.verb ? e.verb === "mark_acknowledged" : e.toStatus === "acknowledged" && e.fromStatus === "sent",
+  );
+  const mail = since.find(
+    (e) => e.verb === "patient_email_sent" || e.verb === "patient_email_skipped" || e.verb === "patient_email_failed",
+  );
+  return {
+    received: ack ? { at: ack.at, via: ack.actor === REFERRAL_LINK_ACTORS.specialist ? "link" : "staff" } : null,
+    patientEmail: mail
+      ? {
+          status: mail.verb === "patient_email_sent" ? "sent" : mail.verb === "patient_email_skipped" ? "skipped" : "failed",
+          note: mail.note,
+          at: mail.at,
+        }
+      : null,
+  };
+}
+
+/** "Tue, Nov 3, 2026" for a 'YYYY-MM-DD'; the raw value if it does not parse. Pure. */
+export function referralDateLabel(ymd: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
+  if (!m) return ymd;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return d.toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric", year: "numeric" });
+}
+
+/**
+ * What a referral's card says about the responses, without opening it — two
+ * badges and one quiet line, each null when there is nothing to say:
+ *   received       "Received": the specialist confirmed (link or staff)
+ *   scheduled      "Patient scheduled <date>": a scheduled_date exists,
+ *                  whoever gave it
+ *   patientEmail   the patient email's outcome, in the history's own words
+ * Pure.
+ */
+export function referralResponseBadges(r: {
+  received?: TcReferralReceived | null;
+  scheduledDate?: string | null;
+  patientEmail?: TcReferralPatientEmailRecord | null;
+}): { received: string | null; receivedTitle: string | null; scheduled: string | null; patientEmail: string | null } {
+  const received = r.received ?? null;
+  const mail = r.patientEmail ?? null;
+  return {
+    received: received ? "Received" : null,
+    receivedTitle: received
+      ? received.via === "link"
+        ? "The specialist's office confirmed it from the email link"
+        : "Marked received by staff"
+      : null,
+    scheduled: r.scheduledDate ? `Patient scheduled ${referralDateLabel(r.scheduledDate)}` : null,
+    patientEmail: mail ? (mail.status === "sent" ? "Patient emailed." : mail.note) : null,
+  };
+}
+
 /** The submitter's line for a referral the doctor sent back. Pure. */
 export function referralReturnedLine(returned: { note: string } | null | undefined): string | null {
   return returned ? `Returned by Dr. — ${returned.note}` : null;
@@ -720,29 +823,52 @@ export function referralEditSummary(
  * The checkout sidebar's chip (item 50's placeholder goes live): what this
  * checkout's referral, if any, is waiting on. Cancelled ones do not count.
  */
-export type TcReferralChip = "none" | "staged" | "pending_signoff" | "approved" | "declined";
+export type TcReferralChip =
+  | "none"
+  | "staged"
+  | "pending_signoff"
+  | "approved"
+  | "sent"
+  | "acknowledged"
+  | "patient_seen"
+  | "closed"
+  | "declined";
 
 export const TC_REFERRAL_CHIP_LABELS: Record<TcReferralChip, string> = {
   none: "None",
   staged: "Staged",
   pending_signoff: "Pending Dr. sign-off",
   approved: "Approved",
+  sent: TC_REFERRAL_STATUS_LABELS.sent,
+  acknowledged: TC_REFERRAL_STATUS_LABELS.acknowledged,
+  patient_seen: TC_REFERRAL_STATUS_LABELS.patient_seen,
+  closed: TC_REFERRAL_STATUS_LABELS.closed,
   declined: "Declined",
 };
+
+/**
+ * The newest live referral and its chip, so a compact surface can show the
+ * same received / scheduled signals beside it. null when there is none. The
+ * chip names the REAL status: everything past approval used to read
+ * "Approved", so a referral the specialist had already received looked
+ * unsent. Pure.
+ */
+export function referralChipTop<R extends { status: TcReferralStatus; createdAt: string }>(
+  referrals: readonly R[],
+): { chip: Exclude<TcReferralChip, "none">; referral: R } | null {
+  const live = referrals
+    .filter((r) => r.status !== "cancelled")
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  const top = live[0];
+  if (!top || top.status === "cancelled") return null;
+  return { chip: top.status === "draft" ? "staged" : top.status, referral: top };
+}
 
 /** The chip for a set of referrals (newest wins). Pure. */
 export function referralChipFor(
   referrals: readonly { status: TcReferralStatus; createdAt: string }[],
 ): TcReferralChip {
-  const live = referrals
-    .filter((r) => r.status !== "cancelled")
-    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
-  const top = live[0];
-  if (!top) return "none";
-  if (top.status === "draft") return "staged";
-  if (top.status === "pending_signoff") return "pending_signoff";
-  if (top.status === "declined") return "declined";
-  return "approved";
+  return referralChipTop(referrals)?.chip ?? "none";
 }
 
 /** The honest line under an approved referral, until sending exists. */

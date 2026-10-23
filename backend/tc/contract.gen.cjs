@@ -15015,7 +15015,9 @@ __export(contract_entry_exports, {
   TcReferralMarkRequest: () => TcReferralMarkRequest,
   TcReferralMarkSentRequest: () => TcReferralMarkSentRequest,
   TcReferralPatientEmailOutcome: () => TcReferralPatientEmailOutcome,
+  TcReferralPatientEmailRecord: () => TcReferralPatientEmailRecord,
   TcReferralPolicy: () => TcReferralPolicy,
+  TcReferralReceived: () => TcReferralReceived,
   TcReferralReopenRequest: () => TcReferralReopenRequest,
   TcReferralReturnRequest: () => TcReferralReturnRequest,
   TcReferralSendOutcome: () => TcReferralSendOutcome,
@@ -15066,11 +15068,15 @@ __export(contract_entry_exports, {
   readBlock: () => readBlock,
   readBlocks: () => readBlocks,
   referralChipFor: () => referralChipFor,
+  referralChipTop: () => referralChipTop,
+  referralDateLabel: () => referralDateLabel,
   referralEditSummary: () => referralEditSummary,
   referralHubGroup: () => referralHubGroup,
   referralLastReturn: () => referralLastReturn,
   referralLastSendProblem: () => referralLastSendProblem,
   referralNextStatus: () => referralNextStatus,
+  referralResponseBadges: () => referralResponseBadges,
+  referralResponses: () => referralResponses,
   referralReturnedLine: () => referralReturnedLine,
   referralSendBlocker: () => referralSendBlocker,
   referralStatusAge: () => referralStatusAge,
@@ -17573,6 +17579,16 @@ var TcReferralEvent = import_zod8.z.object({
   /** R6: what happened. null on rows written before R6. */
   verb: TcReferralEventVerb.nullable().optional()
 });
+var TcReferralReceived = import_zod8.z.object({
+  at: import_zod8.z.string(),
+  via: import_zod8.z.enum(["link", "staff"])
+});
+var TcReferralPatientEmailRecord = import_zod8.z.object({
+  status: import_zod8.z.enum(["sent", "skipped", "failed"]),
+  /** The history row's own words ("Patient not emailed: ..."). No address, no PHI. */
+  note: import_zod8.z.string(),
+  at: import_zod8.z.string()
+});
 var TcReferral = import_zod8.z.object({
   referralId: import_zod8.z.string().uuid(),
   officeId: import_zod8.z.enum(["roland", "valley"]),
@@ -17624,7 +17640,19 @@ var TcReferral = import_zod8.z.object({
    * the link in their email ("YYYY-MM-DD"), the latest one given. null when
    * nobody gave a date. The history row says who and when.
    */
-  scheduledDate: import_zod8.z.string().nullable().optional()
+  scheduledDate: import_zod8.z.string().nullable().optional(),
+  /**
+   * The specialist confirmed receipt since the referral was last sent: the
+   * `mark_acknowledged` move, from their email link (`via: "link"`) or marked
+   * by staff (`via: "staff"`). null when nobody has. On list reads.
+   */
+  received: TcReferralReceived.nullable().optional(),
+  /**
+   * What happened to the patient's notification email after the latest send:
+   * sent, skipped (the note names why), or failed. null when none was
+   * recorded. On list reads.
+   */
+  patientEmail: TcReferralPatientEmailRecord.nullable().optional()
 });
 var TcReferralVerb = import_zod8.z.enum([
   "submit",
@@ -17761,6 +17789,46 @@ function referralLastSendProblem(events) {
   if (failed) return { kind: "failed", note: failed.note, actor: failed.actor, at: failed.at };
   return null;
 }
+var SENT_VERBS = ["send", "mark_sent"];
+function referralResponses(events) {
+  const list = events ?? [];
+  let start = 0;
+  list.forEach((e, i) => {
+    const intoSent = e.verb ? SENT_VERBS.includes(e.verb) : e.toStatus === "sent" && e.fromStatus !== "sent";
+    if (intoSent) start = i;
+  });
+  const since = list.slice(start).reverse();
+  const ack = since.find(
+    (e) => e.verb ? e.verb === "mark_acknowledged" : e.toStatus === "acknowledged" && e.fromStatus === "sent"
+  );
+  const mail = since.find(
+    (e) => e.verb === "patient_email_sent" || e.verb === "patient_email_skipped" || e.verb === "patient_email_failed"
+  );
+  return {
+    received: ack ? { at: ack.at, via: ack.actor === REFERRAL_LINK_ACTORS.specialist ? "link" : "staff" } : null,
+    patientEmail: mail ? {
+      status: mail.verb === "patient_email_sent" ? "sent" : mail.verb === "patient_email_skipped" ? "skipped" : "failed",
+      note: mail.note,
+      at: mail.at
+    } : null
+  };
+}
+function referralDateLabel(ymd) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
+  if (!m) return ymd;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return d.toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric", year: "numeric" });
+}
+function referralResponseBadges(r) {
+  const received = r.received ?? null;
+  const mail = r.patientEmail ?? null;
+  return {
+    received: received ? "Received" : null,
+    receivedTitle: received ? received.via === "link" ? "The specialist's office confirmed it from the email link" : "Marked received by staff" : null,
+    scheduled: r.scheduledDate ? `Patient scheduled ${referralDateLabel(r.scheduledDate)}` : null,
+    patientEmail: mail ? mail.status === "sent" ? "Patient emailed." : mail.note : null
+  };
+}
 function referralReturnedLine(returned) {
   return returned ? `Returned by Dr. \u2014 ${returned.note}` : null;
 }
@@ -17782,16 +17850,20 @@ var TC_REFERRAL_CHIP_LABELS = {
   staged: "Staged",
   pending_signoff: "Pending Dr. sign-off",
   approved: "Approved",
+  sent: TC_REFERRAL_STATUS_LABELS.sent,
+  acknowledged: TC_REFERRAL_STATUS_LABELS.acknowledged,
+  patient_seen: TC_REFERRAL_STATUS_LABELS.patient_seen,
+  closed: TC_REFERRAL_STATUS_LABELS.closed,
   declined: "Declined"
 };
-function referralChipFor(referrals) {
+function referralChipTop(referrals) {
   const live = referrals.filter((r) => r.status !== "cancelled").sort((a, b) => a.createdAt < b.createdAt ? 1 : -1);
   const top = live[0];
-  if (!top) return "none";
-  if (top.status === "draft") return "staged";
-  if (top.status === "pending_signoff") return "pending_signoff";
-  if (top.status === "declined") return "declined";
-  return "approved";
+  if (!top || top.status === "cancelled") return null;
+  return { chip: top.status === "draft" ? "staged" : top.status, referral: top };
+}
+function referralChipFor(referrals) {
+  return referralChipTop(referrals)?.chip ?? "none";
 }
 var REFERRAL_READY_TO_SEND_COPY = "Ready to send \u2014 sending ships in a later update.";
 var TcReferralSendRequest = import_zod8.z.object({}).strict();
@@ -18127,7 +18199,9 @@ var import_zod10 = __toESM(require_zod());
   TcReferralMarkRequest,
   TcReferralMarkSentRequest,
   TcReferralPatientEmailOutcome,
+  TcReferralPatientEmailRecord,
   TcReferralPolicy,
+  TcReferralReceived,
   TcReferralReopenRequest,
   TcReferralReturnRequest,
   TcReferralSendOutcome,
@@ -18178,11 +18252,15 @@ var import_zod10 = __toESM(require_zod());
   readBlock,
   readBlocks,
   referralChipFor,
+  referralChipTop,
+  referralDateLabel,
   referralEditSummary,
   referralHubGroup,
   referralLastReturn,
   referralLastSendProblem,
   referralNextStatus,
+  referralResponseBadges,
+  referralResponses,
   referralReturnedLine,
   referralSendBlocker,
   referralStatusAge,
