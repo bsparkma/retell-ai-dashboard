@@ -68,6 +68,7 @@ import { useReferralsOn } from "@/features/tc/referrals/useReferralsOn";
 import type { OfficeId } from "@shared/tc/contract";
 import { TcGlobalSearch } from "@/features/tc/search/TcGlobalSearch";
 import { can, canVisit } from "@/lib/permissions";
+import { hasModule } from "@/lib/modules";
 import { officeHealthDisplay } from "@/lib/odHealth";
 import { useRcmShadow } from "@/features/rcm/shadowMode";
 import type { ModuleId } from "@/lib/modules";
@@ -446,22 +447,33 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   usePolling(check, 60_000);
 
   /**
-   * Item 50: the Checkout nav item, its badge and the arrival toast. Same scope
-   * and the same gate as the Texts badge — a TC route, someone holding tc.full.
-   * An office with checkout switched off contributes nothing; with none on,
-   * the nav item is not drawn at all.
+   * Pre-IA fix F4 (Beau ratified): the checkout and sign-off alerts are about a
+   * patient at the desk or a doctor's queue, so they run APP-WIDE — on Calls,
+   * Home, Hygiene, anywhere — for whoever may act on them, not only on /tc
+   * pages. The Texts badge above stays TC-only. Off a TC route nothing else
+   * vouches for the module, so it is checked here: a voice-only practice must
+   * not poll a TC endpoint that 403s every minute.
    */
-  const checkout = useCheckoutWatch(tcTextsInScope);
-
-  /**
-   * Item 53: the "Awaiting sign-off" badge and alert. Scoped like the Texts
-   * badge but on its OWN action: a doctor holds tc.referral_signoff and not
-   * tc.full, so the tc.full scope above would leave them with nothing.
-   */
-  const signoffInScope =
-    isTcRoute && can(permissionsForTexts, "tc.referral_signoff")
+  const tcEntitled = hasModule(auth.status === "authenticated" ? auth.user.tenant?.modules : undefined, "tc");
+  const watchScopeFor = (action: "tc.full" | "tc.referral_signoff"): OfficeId[] =>
+    tcEntitled && can(permissionsForTexts, action)
       ? resolveTcOfficeScope({ selection: office, roster: offices }).offices
       : [];
+
+  /**
+   * Item 50: the Checkout nav item, its badge and the arrival toast, for
+   * someone holding tc.full (F4: on any route). An office with checkout
+   * switched off contributes nothing; with none on, the nav item is not drawn
+   * at all. The arrival alert still obeys the checkout_handoff preference.
+   */
+  const checkout = useCheckoutWatch(watchScopeFor("tc.full"));
+
+  /**
+   * Item 53: the "Awaiting sign-off" badge and alert, on its OWN action: a
+   * doctor holds tc.referral_signoff and not tc.full, so the tc.full scope
+   * would leave them with nothing. F4: on any route, like Checkout.
+   */
+  const signoffInScope = watchScopeFor("tc.referral_signoff");
   const signoff = useSignoffWatch(signoffInScope, can(permissionsForTexts, "tc.full"));
   /** Item 56: the hub nav item, for tc.full holders while referrals is on somewhere in scope. */
   const referralsOn = useReferralsOn(tcTextsInScope);
