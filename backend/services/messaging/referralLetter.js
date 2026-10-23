@@ -253,8 +253,8 @@ async function patientMayEmail(q, { office, address }) {
 }
 
 /**
- * (R5b) Render the patient's notice (patient footer, its one button).
- * @param {{ office: string, subject: string, text: string, unsubscribeUrl: string,
+ * (R5b) Render the patient's notice (patient footer, its one button, then `after`).
+ * @param {{ office: string, subject: string, text: string, after?: string, unsubscribeUrl: string,
  *           actions: Array<{ label: string, href: string }> }} input
  */
 function renderPatientNotice(input) {

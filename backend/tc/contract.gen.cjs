@@ -16694,6 +16694,12 @@ function renderEmail(input) {
     const actions = readActions(content.actions);
     bodyRows += actions.map(actionRow).join("");
     if (actions.length) bodyText = [bodyText, actions.map((a) => `${a.label}: ${a.href}`).join("\n")].filter(Boolean).join("\n\n");
+    const afterRaw = str(content.after, "", textBodyLimit(content.maxChars));
+    const after = (content.literal === true ? afterRaw : fillMergeTokens(afterRaw, values)).trim();
+    if (after) {
+      bodyRows += row(paragraphs(after, "color:#0f172a;font-size:15px;line-height:1.6"), "#ffffff", "16px 32px 24px 32px");
+      bodyText = [bodyText, after].filter(Boolean).join("\n\n");
+    }
   }
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(subject)}</title></head><body style="margin:0;padding:0;background-color:#f1f5f9">` + (preheader ? `<div style="display:none;max-height:0;overflow:hidden;opacity:0">${escapeHtml(preheader)}</div>` : "") + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f1f5f9"><tr><td align="center" style="padding:24px 12px"><table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:100%;background-color:#ffffff;border-radius:6px;font-family:${FONT}">` + bodyRows + systemFooterHtml(footer) + `</table></td></tr></table></body></html>`;
   const text = [bodyText, systemFooterText(footer)].filter(Boolean).join("\n\n");

@@ -256,16 +256,26 @@ test('N: one message per recipient class — the letter to the specialist, the n
 
   // What it says — and what it never says.
   const text = notice.body.content.plainText;
-  assert.equal(notice.body.content.subject, 'Your referral from Roland Family Dental to River Endodontics');
-  for (const line of [
+  // The PM's approved template (2026-10-22), word for word.
+  assert.equal(notice.body.content.subject, "We've sent your referral to River Endodontics");
+  const expectedBody = [
     'Hi Stedi,',
-    'Roland Family Dental has referred you to Dr. Endo Example, DDS at River Endodontics. We have sent them your referral.',
-    'Please call River Endodontics to schedule your appointment: (479) 555-0177',
-    'Questions? Call us at (918) 555-0100.',
-    'You are receiving this email because you are a patient of Roland Family Dental.',
-  ]) {
-    assert.ok(text.includes(line), `notice has: ${line}`);
-  }
+    "As we discussed at your visit, Dr. DOC1 has referred you to River Endodontics for a specialist consultation. We've already sent them your information, so they'll know exactly why you're coming.",
+    "Here's what to do next: call them at (479) 555-0177 to set up your appointment.",
+    "Already scheduled? Tap below and tell us the date — we'll make sure everything is ready on our end.",
+  ].join('\n\n');
+  const expectedAfter = [
+    "After your specialist visit, we'll follow up to plan any remaining treatment here at Roland Family Dental. If anything comes up in the meantime, just reply to this email or call us at (918) 555-0100.",
+    "We're with you through the whole process.",
+    'Roland Family Dental',
+  ].join('\n\n');
+  assert.ok(text.startsWith(`${expectedBody}\n\nI've scheduled my appointment: ${PUBLIC_BASE}/api/webhooks/referral-link/r?t=`), text);
+  assert.ok(text.includes(`\n\n${expectedAfter}\n\n`), 'the closing comes after the button');
+  assert.ok(text.includes('You are receiving this email because you are a patient of Roland Family Dental.'));
+  // In the HTML too, the button sits between the two parts.
+  const html = notice.body.content.html;
+  assert.ok(html.indexOf('Already scheduled?') < html.indexOf('my appointment</a>'));
+  assert.ok(html.indexOf('my appointment</a>') < html.indexOf('After your specialist visit'));
   const all = notice.body.content.plainText + notice.body.content.html + notice.body.content.subject;
   // #3 not preceded by & — an escaped apostrophe (&#39;) is not a tooth.
   for (const phi of [/Test 2/, /cracked/i, /endo eval/i, /(^|[^&])#3(?!\d)/, /Sensitive/, /assess/, /1980/, /Urgency|Soon/, /bitewing|pano/i]) {
@@ -296,6 +306,32 @@ test('N: one message per recipient class — the letter to the specialist, the n
   const sendAudit = auditRows(db).find((a) => a.resource_type === 'tc_referral.patient_email_send');
   assert.equal(sendAudit.source_ref, 'acs_operation:op-2');
   for (const a of auditRows(db)) assert.doesNotMatch(JSON.stringify(a), /example\.test|Stedi/i, 'no address or name in the trail');
+});
+
+test('N: the template — X-rays only when files went, honest fallbacks for a missing phone, doctor and names (pure)', () => {
+  const office = { name: 'Roland Family Dental', phone: '(918) 555-0100' };
+  const entry = { practice_name: 'River Endodontics', phone: '(479) 555-0177' };
+  const withFiles = letterText.composePatientNotice({ patientName: 'Test 2, Stedi', referringProvider: 'Dr. Smith', entry, office, withFiles: true });
+  assert.match(withFiles.text, /Dr\. Smith has referred you to River Endodontics for a specialist consultation\. We've already sent them your information and X-rays, so/);
+  const bare = letterText.composePatientNotice({
+    patientName: '',
+    referringProvider: '',
+    entry: { practice_name: '', specialist_name: 'Dr. Endo Example', phone: '' },
+    office: { name: 'Roland Family Dental', phone: null },
+    withFiles: false,
+  });
+  assert.equal(bare.subject, "We've sent your referral to Dr. Endo Example");
+  assert.match(bare.text, /^Hello,/);
+  assert.match(bare.text, /Roland Family Dental has referred you to Dr\. Endo Example for a specialist consultation\. We've already sent them your information, so/);
+  assert.match(bare.text, /Here's what to do next: call them to set up your appointment\.\n\n/);
+  assert.match(bare.after, /just reply to this email\.\n\n/, 'no phone, no "or call us"');
+  // The clinical reason is never the patient's reason.
+  assert.equal(letterText.PATIENT_REASON_FALLBACK, 'a specialist consultation');
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, 'referralLetterText.js'), 'utf8');
+  const fn = src.slice(src.indexOf('function composePatientNotice('), src.indexOf('\nmodule.exports'));
+  assert.doesNotMatch(fn, /referral\.reason|narrative|teeth|urgency|doctor_note/, 'the notice is composed from no clinical field');
+  // The send says "and X-rays" only for files that went WITH the letter.
+  assert.match(require('node:fs').readFileSync(require('node:path').join(__dirname, 'referralSend.js'), 'utf8'), /notifyPatient\(req, \{ office, row, entry, withFiles: packed\.attached > 0 \}\)/);
 });
 
 test('N: no email on file → the letter goes, the patient is skipped by name, one message', async (t) => {

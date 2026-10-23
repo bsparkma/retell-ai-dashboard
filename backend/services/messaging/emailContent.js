@@ -154,15 +154,16 @@ function renderReferralLetter({ office, subject, text, unsubscribeUrl, actions =
  * the PATIENT footer ("you are a patient of …"), the default text limit, and
  * its one button. Composed by the caller (routes/tc/referralLetterText.js);
  * no merge token is filled.
- * @param {{ office: string, subject: string, text: string, unsubscribeUrl: string|null,
+ * `after` is the closing drawn below the button.
+ * @param {{ office: string, subject: string, text: string, after?: string, unsubscribeUrl: string|null,
  *           actions: Array<{ label: string, href: string }> }} input
  * @returns {{ subject: string, html: string, text: string }}
  */
-function renderReferralPatientNotice({ office, subject, text, unsubscribeUrl, actions }) {
+function renderReferralPatientNotice({ office, subject, text, after = '', unsubscribeUrl, actions }) {
   return contract.renderEmail({
     subject,
     preheader: '',
-    content: { kind: 'text', body: text, literal: true, actions },
+    content: { kind: 'text', body: text, literal: true, actions, after },
     values: {},
     footer: footerFor(office, unsubscribeUrl),
   });

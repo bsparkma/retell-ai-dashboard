@@ -119,14 +119,11 @@ The two-message case itself is pinned in the new `tcReferralLinks.test.js` (N): 
 
 ## Judgment calls (please rule)
 
-1. **The patient template wasn't on disk.** I couldn't find a drafted template in the repo, `pm-prompts`, the DEV queue, or the R5 PR docs. I wrote it from the brief's description (`referralLetterText.composePatientNotice`). It contains:
-   - "Hi {first},";
-   - "{office} has referred you to {specialist} at {practice}";
-   - "Please call {practice} to schedule your appointment: {phone}";
-   - the button;
-   - "Questions? Call us at {office phone}".
-
-   If you have the drafted words, I'll swap them in. The words are pinned in one test.
+1. **The patient email now uses the PM's drafted template, word for word** (`referralLetterText.composePatientNotice`). The subject is "We've sent your referral to {Specialist office name}". The button sits between "Already scheduled?…" and "After your specialist visit…", as drafted. To put it there, the shared renderer gained an optional `after` text that is drawn below the buttons. The whole template is pinned in one test. How each placeholder is filled:
+   - **{plain-language reason}: the staff-editable field doesn't exist yet.** The referral's `reason` is clinical shorthand written for the specialist, so it is never used here. The template's honest generic fallback stands in: "a specialist consultation" (`PATIENT_REASON_FALLBACK`). A test pins that the notice is built from no clinical field. **Adding the field is a follow-up for you to OK:** a column, a staff edit input in the hub, and a slot in the notice.
+   - **"and X-rays"** appears only when files went WITH the letter, not when they were only listed as available on request.
+   - **Dr. {referring provider}** falls back to the office name when the field is blank. {Specialist office name} falls back to the specialist's name, then to "the specialist". With no specialist phone, the line reads "call them to set up your appointment" and points to the office's number. With no office phone, the closing drops "or call us at …".
+   - **"As we discussed at your visit"** is kept as written, but a referral started from a call or by hand may have had no visit. Do you want different words for those sources?
 2. **No separate switch for the patient notice.** It runs whenever referral email runs (`tc_referral_email_enabled` + `tc_email_enabled`). The brief didn't ask for a switch, but it is a new patient-facing email. A per-office `tc_referral_patient_email_enabled` would be a small follow-up if you want to stage it.
 3. **Throttled hits are audited once per client per window, not on every hit.** Writing an audit row on every throttled request would turn a flood into database writes, which is what the limiter exists to prevent. Every hit that is not throttled is audited.
 4. **Date window:** 30 days back to one year ahead. "Recent" allows a specialist who confirms after the visit.
@@ -161,7 +158,7 @@ Noted but not changed:
 - `node --test` (full backend): 4001 tests, 0 failed.
 - The PG16 migration rehearsal, as described above.
 - New tests:
-  - `routes/tc/tcReferralLinks.test.js`: 31 tests covering the notice, the links at rest, the views, received, scheduled, replay, expiry, unknown tokens, cross-referral reuse, purpose binding, the double click, rate limits, fail-closed and guards;
+  - `routes/tc/tcReferralLinks.test.js`: 32 tests covering the notice, the links at rest, the views, received, scheduled, replay, expiry, unknown tokens, cross-referral reuse, purpose binding, the double click, rate limits, fail-closed and guards;
   - `test/referralLinksMigration.test.js`: 8 tests;
   - `tests/referrals-r5b-links.test.tsx`: 6 tests.
 

@@ -543,7 +543,7 @@ async function sendReferral(req, { office, referralId, trigger }) {
   }
 
   // (R5b) The letter is on the record; now — and only now — the patient's notice.
-  const patientEmail = await notifyPatient(req, { office, row, entry });
+  const patientEmail = await notifyPatient(req, { office, row, entry, withFiles: packed.attached > 0 });
 
   const practice = entry.practice_name ? `${entry.practice_name} (${recipient})` : recipient;
   const message = `Emailed to ${practice} — ${filesPhrase(packed.attached, packed.onRequest)}.`;
@@ -615,10 +615,11 @@ async function recordPatientEvent(req, { office, referralId, verb, note }) {
  * (R5b) The patient's notice, after the letter was recorded as sent. NEVER
  * throws, never changes the letter's outcome; returns what happened.
  * @param {import('express').Request} req
- * @param {{ office: string, row: Record<string, unknown>, entry: Record<string, unknown> }} args
+ * @param {{ office: string, row: Record<string, unknown>, entry: Record<string, unknown>, withFiles: boolean }} args
+ *   `withFiles`: files went WITH the letter (the notice then says "and X-rays").
  * @returns {Promise<{ status: 'sent'|'skipped'|'failed', message: string }>}
  */
-async function notifyPatient(req, { office, row, entry }) {
+async function notifyPatient(req, { office, row, entry, withFiles }) {
   const referralId = String(row.referral_id);
   const skip = async (why) => {
     await recordPatientEvent(req, { office, referralId, verb: 'patient_email_skipped', note: PATIENT_SKIP_NOTE[why] });
@@ -663,13 +664,16 @@ async function notifyPatient(req, { office, row, entry }) {
     const details = officeDetails(office);
     const composed = letterText.composePatientNotice({
       patientName: String(row.patient_name ?? ''),
+      referringProvider: row.referring_provider == null ? null : String(row.referring_provider),
       entry,
       office: { name: details.name, phone: details.phone },
+      withFiles,
     });
     const rendered = referralLetter.renderPatientNotice({
       office,
       subject: composed.subject,
       text: composed.text,
+      after: composed.after,
       unsubscribeUrl: unsubscribe.url,
       actions: [{ label: letterText.PATIENT_LINK_LABEL, href: link.url }],
     });

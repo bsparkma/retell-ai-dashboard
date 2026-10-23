@@ -492,7 +492,15 @@ export type EmailContent =
    * `{{token}}` in it is filled or removed (a referral letter quotes a
    * doctor's note verbatim). Absent = tokens are filled, as before.
    */
-  | { kind: "text"; body: unknown; maxChars?: number; literal?: boolean; actions?: readonly EmailTextAction[] };
+  | {
+      kind: "text";
+      body: unknown;
+      maxChars?: number;
+      literal?: boolean;
+      actions?: readonly EmailTextAction[];
+      /** (R5b) Text drawn BELOW the buttons (the patient notice's closing). Same limit and `literal` rule as `body`. */
+      after?: unknown;
+    };
 
 /**
  * (R5b) A button under a text body: the referral letter's "We received this
@@ -624,6 +632,12 @@ export function renderEmail(input: RenderEmailInput): RenderedEmail {
     const actions = readActions(content.actions);
     bodyRows += actions.map(actionRow).join("");
     if (actions.length) bodyText = [bodyText, actions.map((a) => `${a.label}: ${a.href}`).join("\n")].filter(Boolean).join("\n\n");
+    const afterRaw = str(content.after, "", textBodyLimit(content.maxChars));
+    const after = (content.literal === true ? afterRaw : fillMergeTokens(afterRaw, values)).trim();
+    if (after) {
+      bodyRows += row(paragraphs(after, "color:#0f172a;font-size:15px;line-height:1.6"), "#ffffff", "16px 32px 24px 32px");
+      bodyText = [bodyText, after].filter(Boolean).join("\n\n");
+    }
   }
 
   const html =

@@ -20,10 +20,11 @@
  * the renderer draws under the text from the labels below; the text only
  * says they are there.
  *
- * R5b — THE PATIENT'S NOTICE (composePatientNotice): who they are referred
- * to, the specialist's phone, and a button to say they scheduled. Minimum
- * necessary: the patient's FIRST name, the practice and specialist names and
- * phones. Never the reason, teeth, urgency, notes, DOB or files.
+ * R5b — THE PATIENT'S NOTICE (composePatientNotice), in the PM's approved
+ * words: who they are referred to, the specialist's phone, and a button to
+ * say they scheduled. Minimum necessary: the patient's FIRST name, the
+ * referring doctor, the practice names and phones, and whether X-rays went.
+ * Never the clinical reason, teeth, urgency, notes, DOB or file names.
  *
  * DOB: the referral row does not carry one, and this slice reads nothing from
  * Open Dental, so the letter says the date of birth is available on request
@@ -190,35 +191,48 @@ function composeReferralLetter({ referral, entry, office, attached, onRequest, a
 }
 
 /**
- * (R5b) The patient's notice: subject and plain-text body.
+ * (R5b) What the patient notice says the visit is FOR. The referral's
+ * `reason` is clinical shorthand written for the specialist, so it is never
+ * used here. A staff-editable plain-language reason is the PM's design; until
+ * that field exists, this honest generic phrase stands in.
+ */
+const PATIENT_REASON_FALLBACK = 'a specialist consultation';
+
+/**
+ * (R5b) The patient's notice, in the PM's approved words: subject, the text
+ * ABOVE the button, and the text BELOW it (the renderer draws the button
+ * between them).
  *
  * @param {{
  *   patientName: string,       the referral's stored name; only the first name is used
+ *   referringProvider?: string|null,
  *   entry: { practice_name?: string|null, specialist_name?: string|null, phone?: string|null },
  *   office: { name: string, phone: string|null },
+ *   withFiles: boolean,        files went WITH the letter (not just "on request")
  * }} input
- * @returns {{ subject: string, text: string }}
+ * @returns {{ subject: string, text: string, after: string }}
  */
-function composePatientNotice({ patientName, entry, office }) {
+function composePatientNotice({ patientName, referringProvider = null, entry, office, withFiles }) {
   const first = nameParts(patientName).first;
-  const practice = oneLine(entry.practice_name);
-  const specialist = oneLine(entry.specialist_name);
+  const specialistOffice = oneLine(entry.practice_name) || oneLine(entry.specialist_name) || 'the specialist';
   const phone = oneLine(entry.phone);
-  const to = specialist && practice ? `${specialist} at ${practice}` : specialist || practice || 'a specialist';
-  const where = practice || specialist || "the specialist's office";
+  const doctor = signedBy(referringProvider);
 
-  const subject = oneLine(`Your referral from ${office.name}${practice ? ` to ${practice}` : ''}`);
-  const paragraphs = [
+  const subject = oneLine(`We've sent your referral to ${specialistOffice}`);
+  const text = [
     first ? `Hi ${first},` : 'Hello,',
-    `${office.name} has referred you to ${to}. We have sent them your referral.`,
+    `As we discussed at your visit, ${doctor || office.name} has referred you to ${specialistOffice} for ${PATIENT_REASON_FALLBACK}. We've already sent them your information${withFiles ? ' and X-rays' : ''}, so they'll know exactly why you're coming.`,
     phone
-      ? `Please call ${where} to schedule your appointment: ${phone}`
-      : `Please call ${where} to schedule your appointment.${office.phone ? ` If you need their number, call us at ${office.phone}.` : ''}`,
-    'Once you have an appointment, tap the button below to let us know. You can add the date if you have it.',
-    ...(office.phone ? [`Questions? Call us at ${office.phone}.`] : []),
+      ? `Here's what to do next: call them at ${phone} to set up your appointment.`
+      : `Here's what to do next: call them to set up your appointment.${office.phone ? ` If you need their number, call us at ${office.phone}.` : ''}`,
+    "Already scheduled? Tap below and tell us the date — we'll make sure everything is ready on our end.",
+  ].join('\n\n');
+  const after = [
+    `After your specialist visit, we'll follow up to plan any remaining treatment here at ${office.name}. If anything comes up in the meantime, just reply to this email${office.phone ? ` or call us at ${office.phone}` : ''}.`,
+    "We're with you through the whole process.",
     office.name,
-  ];
-  return { subject, text: paragraphs.join('\n\n') };
+  ].join('\n\n');
+  return { subject, text, after };
 }
 
 module.exports = {
@@ -228,6 +242,7 @@ module.exports = {
   SPECIALIST_LINK_LABELS,
   LINKS_PARAGRAPH,
   PATIENT_LINK_LABEL,
+  PATIENT_REASON_FALLBACK,
   composePatientNotice,
   nameParts,
   specialistLastName,
