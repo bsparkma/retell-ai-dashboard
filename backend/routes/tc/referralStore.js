@@ -582,6 +582,33 @@ async function openSendProblems(q, office, rows) {
   return out;
 }
 
+/** The statuses a referral can have collected a response in: it has been sent. */
+const RESPONDED_STATUSES = Object.freeze(['sent', 'acknowledged', 'patient_seen', 'closed']);
+
+/**
+ * referral id → { received, patientEmail } for the rows that have been sent:
+ * the specialist's receipt and the patient email's outcome since the latest
+ * send (contract.referralResponses). Read only, one query, for the hub's and
+ * the case / checkout lists' badges.
+ */
+async function responseSignals(q, office, rows) {
+  const ids = rows.filter((r) => RESPONDED_STATUSES.includes(r.status)).map((r) => String(r.referral_id));
+  if (ids.length === 0) return new Map();
+  const res = await q.query(
+    `SELECT ${EVENT_COLS.join(', ')} FROM tc_referral_events WHERE office_id = $1 AND referral_id = ANY($2) ORDER BY at ASC`,
+    [office, ids]
+  );
+  const byId = new Map();
+  for (const e of res.rows) {
+    const k = String(e.referral_id);
+    if (!byId.has(k)) byId.set(k, []);
+    byId.get(k).push(toEvent(e));
+  }
+  const out = new Map();
+  for (const [k, events] of byId) out.set(k, contract.referralResponses(events));
+  return out;
+}
+
 /**
  * Forget a claim older than `staleBefore` (an ISO instant): the request that
  * took it died without releasing it. A live send never runs that long.
@@ -702,6 +729,7 @@ module.exports = {
   sendsOnApproval,
   directoryEmails,
   openSendProblems,
+  responseSignals,
   releaseStaleSendClaim,
   claimSend,
   releaseSendClaim,
