@@ -21,8 +21,17 @@
  * R6.2: while editing, the doctor may also ADD files (the R4 upload, through
  * the sign-off route), only while the referral awaits sign-off. Nothing removes
  * a stored file.
+ *
+ * Pre-IA fix F5: the page fans out across every office in scope, like
+ * Checkout — the nav badge counts every office, so "All offices" now lists
+ * every office's referrals (each badged) instead of asking to pick one. Every
+ * read and write after that goes to the office the referral was LISTED from.
+ * The arrival alert's link (?office=&referral=) opens that referral, the way
+ * Checkout's ?office=&handoff= opens its sidebar; an office outside the scope
+ * is ignored.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearch } from "wouter";
 import { toast } from "sonner";
 import { Check, CornerUpLeft, Loader2, Pencil, RefreshCw, X } from "lucide-react";
 
@@ -38,7 +47,16 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { tcErrorMessage } from "@/features/tc/api";
-import { TcOfficeGate, TcPageHeader, useTcOffice } from "@/features/tc/components/TcShell";
+import { TcOfficeGate, TcPageHeader, TcPartialDataNotice } from "@/features/tc/components/TcShell";
+import { OfficeBadge } from "@/features/tc/components/OfficeBadge";
+import {
+  fanOutOfficeRows,
+  hardErrorMessage,
+  officeScopeKey,
+  partialNotice,
+  useTcOfficeScope,
+  type WithOffice,
+} from "@/features/tc/officeScope";
 import {
   approveReferral,
   declineReferral,
@@ -77,21 +95,43 @@ function when(iso: string): string {
 }
 
 export default function TcReferralSignoff() {
-  const office = useTcOffice();
-  if (!office) {
+  const scope = useTcOfficeScope();
+  if (scope.offices.length === 0) {
     return (
       <div className="p-6">
-        <TcOfficeGate />
+        <TcOfficeGate loading={scope.loading} />
       </div>
     );
   }
-  return <SignoffInner key={office} office={office} />;
+  return (
+    <SignoffQueue
+      key={officeScopeKey(scope.offices)}
+      offices={scope.offices}
+      showOfficeBadges={scope.showOfficeBadges}
+    />
+  );
 }
 
+/** One office's queue — the shape the page had before F5. */
 export function SignoffInner({ office }: { office: OfficeId }) {
-  const [queue, setQueue] = useState<TcReferral[] | null>(null);
+  return <SignoffQueue offices={[office]} showOfficeBadges={false} />;
+}
+
+/** True when `v` is one of the offices a referral can live in. */
+function isOfficeId(v: string | null): v is OfficeId {
+  return v === "roland" || v === "valley";
+}
+
+export function SignoffQueue({ offices, showOfficeBadges }: { offices: OfficeId[]; showOfficeBadges: boolean }) {
+  const search = useSearch();
+  const query = useMemo(() => new URLSearchParams(search), [search]);
+  const [queue, setQueue] = useState<WithOffice<TcReferral>[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [open, setOpen] = useState<TcReferral | null>(null);
+  /** The office the open referral was listed from — where every read and write for it goes. */
+  const [office, setOffice] = useState<OfficeId | null>(null);
+  const loadSeq = useRef(0);
   const [busy, setBusy] = useState(false);
   const [declining, setDeclining] = useState(false);
   const [reason, setReason] = useState("");
@@ -105,11 +145,16 @@ export function SignoffInner({ office }: { office: OfficeId }) {
   const [question, setQuestion] = useState("");
 
   const load = useCallback(() => {
+    const seq = ++loadSeq.current;
     setError(null);
-    listSignoffQueue(office)
-      .then(setQueue)
-      .catch((e: unknown) => setError(tcErrorMessage(e)));
-  }, [office]);
+    void fanOutOfficeRows(offices, (o) => listSignoffQueue(o)).then((res) => {
+      if (seq !== loadSeq.current) return;
+      // Each office answers oldest first; keep that across the merge.
+      setQueue([...res.rows].sort((a, b) => a.statusChangedAt.localeCompare(b.statusChangedAt)));
+      setError(hardErrorMessage(res));
+      setNotice(partialNotice(res));
+    });
+  }, [offices]);
 
   useEffect(() => {
     load();
@@ -124,21 +169,31 @@ export function SignoffInner({ office }: { office: OfficeId }) {
     setQuestion("");
   }
 
-  async function openOne(r: TcReferral) {
+  const openOne = useCallback(async (from: OfficeId, referralId: string) => {
     setDone(null);
     setOpenFiles([]);
     resetPanel();
     try {
-      setOpen(await getSignoffReferral(office, r.referralId));
+      const r = await getSignoffReferral(from, referralId);
+      setOffice(from);
+      setOpen(r);
       // The X-rays the TC or hygienist attached (item 55). Each view is audited.
-      setOpenFiles(await listReferralAttachments(office, r.referralId, true).catch(() => []));
+      setOpenFiles(await listReferralAttachments(from, referralId, true).catch(() => []));
     } catch (e) {
       toast.error(tcErrorMessage(e));
     }
-  }
+  }, []);
+
+  // The arrival alert links here with ?office=&referral= — open that referral,
+  // as Checkout opens its sidebar. Only an office this page is showing.
+  useEffect(() => {
+    const referralId = query.get("referral");
+    const from = query.get("office");
+    if (referralId && isOfficeId(from) && offices.includes(from)) void openOne(from, referralId);
+  }, [query, offices, openOne]);
 
   async function approve() {
-    if (!open) return;
+    if (!open || !office) return;
     setBusy(true);
     try {
       const r = await approveReferral(office, open.referralId);
@@ -163,7 +218,7 @@ export function SignoffInner({ office }: { office: OfficeId }) {
   }
 
   async function decline() {
-    if (!open) return;
+    if (!open || !office) return;
     if (!reason.trim()) return;
     setBusy(true);
     try {
@@ -182,7 +237,7 @@ export function SignoffInner({ office }: { office: OfficeId }) {
   }
 
   function startEdit() {
-    if (!open) return;
+    if (!open || !office) return;
     setEditError(null);
     setEditing(true);
     listSignoffDirectory(office)
@@ -192,7 +247,7 @@ export function SignoffInner({ office }: { office: OfficeId }) {
 
   /** The doctor's edit. The card shows what the server stored, nothing sooner. */
   async function saveEdit(change: ReferralFieldsChange) {
-    if (!open) return;
+    if (!open || !office) return;
     setBusy(true);
     setEditError(null);
     try {
@@ -209,7 +264,7 @@ export function SignoffInner({ office }: { office: OfficeId }) {
   }
 
   async function sendBack() {
-    if (!open || !question.trim()) return;
+    if (!open || !office || !question.trim()) return;
     setBusy(true);
     try {
       const r = await returnReferral(office, open.referralId, question.trim());
@@ -227,7 +282,16 @@ export function SignoffInner({ office }: { office: OfficeId }) {
 
   return (
     <div className="p-6 space-y-4">
-      <TcPageHeader title="Awaiting sign-off" subtitle="Referrals waiting for the doctor. Nothing is sent from here yet." />
+      <TcPageHeader
+        title="Awaiting sign-off"
+        subtitle={
+          showOfficeBadges
+            ? "Referrals waiting for the doctor, from every office. Nothing is sent from here yet."
+            : "Referrals waiting for the doctor. Nothing is sent from here yet."
+        }
+      />
+
+      {notice && <TcPartialDataNotice message={notice} />}
 
       {done && (
         <div
@@ -270,12 +334,15 @@ export function SignoffInner({ office }: { office: OfficeId }) {
             <li key={r.referralId}>
               <button
                 type="button"
-                onClick={() => void openOne(r)}
+                onClick={() => void openOne(r.officeId, r.referralId)}
                 className="w-full text-left rounded-lg border border-border bg-card p-3 hover:bg-muted/50"
                 data-testid="tc-signoff-row"
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium text-foreground">{r.patientName}</span>
+                  <span className="flex items-center gap-2">
+                    <span className="font-medium text-foreground">{r.patientName}</span>
+                    {showOfficeBadges && <OfficeBadge officeId={r.officeId} />}
+                  </span>
                   <span className="text-xs text-muted-foreground">{TC_REFERRAL_URGENCY_LABELS[r.urgency]}</span>
                 </div>
                 <p className="text-sm text-muted-foreground">
@@ -290,7 +357,7 @@ export function SignoffInner({ office }: { office: OfficeId }) {
 
       <Dialog open={open !== null} onOpenChange={(o) => (!o ? setOpen(null) : undefined)}>
         <DialogContent className="max-w-xl" data-testid="tc-signoff-detail">
-          {open && (
+          {open && office && (
             <>
               <DialogHeader>
                 <DialogTitle>{open.patientName}</DialogTitle>

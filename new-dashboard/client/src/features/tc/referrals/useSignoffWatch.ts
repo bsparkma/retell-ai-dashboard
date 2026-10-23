@@ -82,8 +82,10 @@ export function useSignoffWatch(offices: readonly OfficeId[], canReadPrefs = tru
               ? (p.value.events.find((e) => e.event === "referral_signoff")?.level ?? DEFAULT_NOTIFICATION_LEVEL)
               : DEFAULT_NOTIFICATION_LEVEL;
           if (level === "silent") return; // the badge below still updates
+          // F5: the page opens this referral, as Checkout opens a handoff's sidebar.
+          const target = `/tc/referrals/signoff?office=${office}&referral=${s.newest.referralId}`;
           toast(`${s.newest.patientName}'s referral is waiting for your sign-off`, {
-            action: { label: "Open", onClick: () => navigate(`/tc/referrals/signoff?office=${office}`) },
+            action: { label: "Open", onClick: () => navigate(target) },
           });
           if (level === "sound_banner") chime = true;
         }
