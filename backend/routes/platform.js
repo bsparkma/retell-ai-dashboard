@@ -17,6 +17,8 @@
  *   PUT    /tc-checkout-offices/:office          turn one office's checkout handoff on or off
  *   GET    /tc-referrals-offices                 the TC referrals switch, per office (item 52)
  *   PUT    /tc-referrals-offices/:office         turn one office's referrals on or off
+ *   GET    /tc-referral-patient-email-offices    the referral PATIENT email switch, per office (R5b)
+ *   PUT    /tc-referral-patient-email-offices/:office  turn one office's patient email on or off
  *
  * THE GATE. Every route here sits behind `requireSuperAdmin()`, applied once at
  * the mount in server.js. There is deliberately no module guard: entitlement
@@ -55,6 +57,7 @@ const hygPilot = require('../config/hygPilot');
 const tcCheckout = require('../config/tcCheckout');
 const tcReferrals = require('../config/tcReferrals');
 const tcReferralEmail = require('../config/tcReferralEmail');
+const tcReferralPatientEmail = require('../config/tcReferralPatientEmail');
 const { realOffices } = require('../config/tcOfficeSwitch');
 const odOffices = require('../config/odOffices');
 const retentionScheduler = require('../services/retentionScheduler');
@@ -783,6 +786,59 @@ router.put('/tc-referral-email-offices/:office', async (req, res) => {
     console.error('[platform] referral email switch write failed:', err && err.message ? err.message : err);
     const status = code === 'INVALID_OFFICE' || code === 'INVALID_BODY' ? 400 : 500;
     return fail(res, status, 'Could not save the referral email switch', code);
+  }
+});
+
+// ── TC referral PATIENT email switch (R5b) — the same shape again ───────────
+// Gates only the patient's notice; the specialist letter keeps its own switch.
+
+function tcReferralPatientEmailPayload() {
+  return {
+    offices: realOffices().map((office) => tcReferralPatientEmail.officeState(office)),
+    settingKey: tcReferralPatientEmail.settingKey,
+  };
+}
+
+/** GET /tc-referral-patient-email-offices — refreshed from the control plane before answering. */
+router.get('/tc-referral-patient-email-offices', async (req, res) => {
+  const refreshed = await tcReferralPatientEmail.refreshFromDb();
+  return res.json({ success: true, ...tcReferralPatientEmailPayload(), controlPlaneError: refreshed.error });
+});
+
+/**
+ * PUT /tc-referral-patient-email-offices/:office   { enabled: boolean }
+ *
+ * Writes, re-reads from the database, answers with what was stored. Audited
+ * to the acting super_admin's own tenant, `priorState` on|off.
+ */
+router.put('/tc-referral-patient-email-offices/:office', async (req, res) => {
+  const office = String(req.params.office || '');
+  const enabled = req.body ? req.body.enabled : undefined;
+  if (typeof enabled !== 'boolean') {
+    return fail(res, 400, 'enabled must be true or false', 'INVALID_BODY');
+  }
+  if (!realOffices().includes(office)) {
+    return fail(res, 404, 'No such office', 'INVALID_OFFICE');
+  }
+
+  try {
+    await tcReferralPatientEmail.refreshFromDb();
+    const before = tcReferralPatientEmail.officeState(office);
+    await tcReferralPatientEmail.persist(office, enabled, actorEmail(req));
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'platform_setting',
+      resourceId: tcReferralPatientEmail.settingKey,
+      result: 'SUCCESS',
+      office,
+      priorState: before.enabled ? 'on' : 'off',
+    });
+    return res.json({ success: true, ...tcReferralPatientEmailPayload() });
+  } catch (err) {
+    const code = err && err.code ? err.code : 'TC_REFERRAL_PATIENT_EMAIL_SWITCH_WRITE_FAILED';
+    console.error('[platform] referral patient email switch write failed:', err && err.message ? err.message : err);
+    const status = code === 'INVALID_OFFICE' || code === 'INVALID_BODY' ? 400 : 500;
+    return fail(res, status, 'Could not save the referral patient email switch', code);
   }
 });
 

@@ -8,7 +8,7 @@
 
 const { randomUUID } = require('node:crypto');
 
-const { iso, contract } = require('./helpers');
+const { iso, isoDate, contract } = require('./helpers');
 
 const DIRECTORY_COLS = [
   'entry_id',
@@ -223,6 +223,8 @@ const REFERRAL_COLS = [
   'updated_at',
   // R6 (item 56, 1792000000000)
   'doctor_note',
+  // R5b (1792500000000)
+  'scheduled_date',
 ];
 
 const EVENT_COLS = ['event_id', 'office_id', 'referral_id', 'from_status', 'to_status', 'actor', 'at', 'note', 'verb'];
@@ -264,6 +266,7 @@ function toReferral(r, practiceName = null, events = undefined) {
     createdAt: iso(r.created_at),
     updatedAt: iso(r.updated_at),
     doctorNote: r.doctor_note ?? null,
+    scheduledDate: isoDate(r.scheduled_date),
   };
   if (events) {
     out.events = events;
@@ -640,7 +643,60 @@ async function insertSendEvent(
   );
 }
 
+// ── R5b: the links in a sent email ──────────────────────────────────────────
+
+const LINK_TOKEN_COLS = ['token_hash', 'office_id', 'referral_id', 'audience', 'purpose', 'created_at', 'expires_at', 'used_at'];
+
+/**
+ * Store the links of ONE sent email, by hash only (the tokens are in the
+ * email and nowhere else). Called inside the transaction that records the
+ * email, so a link exists exactly when its email is on the record.
+ * @param {{ query: Function }} q
+ * @param {{ office: string, referralId: string, audience: 'specialist'|'patient',
+ *           links: Array<{ hash: string, purpose: 'received'|'scheduled' }>, at: string, expiresAt: string }} input
+ */
+async function insertLinkTokens(q, { office, referralId, audience, links, at, expiresAt }) {
+  for (const link of links) {
+    await q.query(
+      'INSERT INTO tc_referral_link_tokens (token_hash, office_id, referral_id, audience, purpose, created_at, expires_at, used_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+      [link.hash, office, referralId, audience, link.purpose, at, expiresAt, null]
+    );
+  }
+}
+
+/** The token row for a hash, whatever its state, or null. */
+async function findLinkToken(q, hash) {
+  const res = await q.query(`SELECT ${LINK_TOKEN_COLS.join(', ')} FROM tc_referral_link_tokens WHERE token_hash = $1`, [hash]);
+  return res.rows.length === 1 ? res.rows[0] : null;
+}
+
+/**
+ * USE a token: conditional on it being unused and unexpired at `at`. Of two
+ * clicks exactly one UPDATE matches. null = unknown, used or expired (the
+ * caller cannot tell which, and does not need to).
+ */
+async function consumeLinkToken(q, { hash, at }) {
+  const res = await q.query(
+    `UPDATE tc_referral_link_tokens SET used_at = $2 WHERE token_hash = $1 AND used_at IS NULL AND expires_at > $3 RETURNING ${LINK_TOKEN_COLS.join(', ')}`,
+    [hash, at, at]
+  );
+  return res.rows.length === 1 ? res.rows[0] : null;
+}
+
+/** Record the appointment date someone gave from a link ('YYYY-MM-DD'). */
+async function setScheduledDate(q, { office, referralId, date }) {
+  await q.query('UPDATE tc_referrals SET scheduled_date = $3, updated_at = now() WHERE office_id = $1 AND referral_id = $2', [
+    office,
+    referralId,
+    date,
+  ]);
+}
+
 module.exports = {
+  insertLinkTokens,
+  findLinkToken,
+  consumeLinkToken,
+  setScheduledDate,
   DIRECTORY_COLS,
   POLICIES,
   sendsOnApproval,

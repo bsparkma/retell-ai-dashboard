@@ -15,7 +15,16 @@
  *              signature: Dr. {referring provider}, office, phone, reply-to.
  *
  * PLAIN TEXT ONLY. The shared renderer turns blank lines into paragraphs and
- * escapes everything; nothing here can become a link or a button.
+ * escapes everything; nothing here can become a link or a button. (R5b) The
+ * letter's two buttons, and the patient notice's one, are separate `actions`
+ * the renderer draws under the text from the labels below; the text only
+ * says they are there.
+ *
+ * R5b — THE PATIENT'S NOTICE (composePatientNotice), in the PM's approved
+ * words: who they are referred to, the specialist's phone, and a button to
+ * say they scheduled. Minimum necessary: the patient's FIRST name, the
+ * referring doctor, the practice names and phones, and whether X-rays went.
+ * Never the clinical reason, teeth, urgency, notes, DOB or file names.
  *
  * DOB: the referral row does not carry one, and this slice reads nothing from
  * Open Dental, so the letter says the date of birth is available on request
@@ -33,6 +42,19 @@ const FINDINGS_PARAGRAPH =
 
 /** How the "files that did not fit" line reads, exactly as approved. */
 const ON_REQUEST_LEAD = 'Additional images available on request';
+
+/** (R5b) The letter's two buttons, exactly as the brief named them. */
+const SPECIALIST_LINK_LABELS = Object.freeze({
+  received: 'We received this referral',
+  scheduled: 'The patient is scheduled',
+});
+
+/** (R5b) The line above the letter's buttons. */
+const LINKS_PARAGRAPH =
+  'One click lets us know where things stand: use the buttons below to tell us you received this referral, and again once the patient is scheduled. No sign-in is needed.';
+
+/** (R5b) The patient notice's one button. */
+const PATIENT_LINK_LABEL = "I've scheduled my appointment";
 
 /** One line: no CR/LF, collapsed spaces. @param {unknown} v */
 function oneLine(v) {
@@ -115,10 +137,11 @@ function letterDate(at, timeZone) {
  *   onRequest: string[],       file names that did not fit, in upload order
  *   at: Date,
  *   timeZone: string,
+ *   withLinks?: boolean,       (R5b) say the buttons are below
  * }} input
  * @returns {{ subject: string, text: string }}
  */
-function composeReferralLetter({ referral, entry, office, attached, onRequest, at, timeZone }) {
+function composeReferralLetter({ referral, entry, office, attached, onRequest, at, timeZone, withLinks = false }) {
   const patient = nameParts(referral.patient_name);
   const initial = patient.last ? `${patient.last[0].toUpperCase()}.` : '';
   const who = oneLine(`${patient.first} ${initial}`);
@@ -162,14 +185,73 @@ function composeReferralLetter({ referral, entry, office, attached, onRequest, a
     files.join('\n'),
     FINDINGS_PARAGRAPH,
     signature,
+    ...(withLinks ? [LINKS_PARAGRAPH] : []),
   ];
   return { subject, text: paragraphs.join('\n\n') };
+}
+
+/**
+ * (R5b) What the patient notice says the visit is FOR. The referral's
+ * `reason` is clinical shorthand written for the specialist, so it is never
+ * used here. A staff-editable plain-language reason is the PM's design; until
+ * that field exists, this honest generic phrase stands in.
+ */
+const PATIENT_REASON_FALLBACK = 'a specialist consultation';
+
+/** (R5b) The sources a patient was SEEN for: the notice may say "as we discussed at your visit". */
+const VISIT_SOURCE_KINDS = Object.freeze(['hyg_visit', 'checkout']);
+
+/**
+ * (R5b) The patient's notice, in the PM's approved words: subject, the text
+ * ABOVE the button, and the text BELOW it (the renderer draws the button
+ * between them).
+ *
+ * @param {{
+ *   patientName: string,       the referral's stored name; only the first name is used
+ *   referringProvider?: string|null,
+ *   entry: { practice_name?: string|null, specialist_name?: string|null, phone?: string|null },
+ *   office: { name: string, phone: string|null },
+ *   withFiles: boolean,        files went WITH the letter (not just "on request")
+ *   sourceKind: string,        where the referral was started (tc_referrals.source_kind)
+ * }} input
+ * @returns {{ subject: string, text: string, after: string }}
+ */
+function composePatientNotice({ patientName, referringProvider = null, entry, office, withFiles, sourceKind }) {
+  const first = nameParts(patientName).first;
+  const specialistOffice = oneLine(entry.practice_name) || oneLine(entry.specialist_name) || 'the specialist';
+  const phone = oneLine(entry.phone);
+  const doctor = signedBy(referringProvider);
+  // "As we discussed at your visit," only where there WAS a visit behind it
+  // (PM ruling): a referral started from a call, a case or by hand drops it.
+  const opening = VISIT_SOURCE_KINDS.includes(sourceKind) ? 'As we discussed at your visit, ' : '';
+
+  const subject = oneLine(`We've sent your referral to ${specialistOffice}`);
+  const text = [
+    first ? `Hi ${first},` : 'Hello,',
+    `${opening}${doctor || office.name} has referred you to ${specialistOffice} for ${PATIENT_REASON_FALLBACK}. We've already sent them your information${withFiles ? ' and X-rays' : ''}, so they'll know exactly why you're coming.`,
+    phone
+      ? `Here's what to do next: call them at ${phone} to set up your appointment.`
+      : `Here's what to do next: call them to set up your appointment.${office.phone ? ` If you need their number, call us at ${office.phone}.` : ''}`,
+    "Already scheduled? Tap below and tell us the date — we'll make sure everything is ready on our end.",
+  ].join('\n\n');
+  const after = [
+    `After your specialist visit, we'll follow up to plan any remaining treatment here at ${office.name}. If anything comes up in the meantime, just reply to this email${office.phone ? ` or call us at ${office.phone}` : ''}.`,
+    "We're with you through the whole process.",
+    office.name,
+  ].join('\n\n');
+  return { subject, text, after };
 }
 
 module.exports = {
   DOB_LINE,
   FINDINGS_PARAGRAPH,
   ON_REQUEST_LEAD,
+  SPECIALIST_LINK_LABELS,
+  LINKS_PARAGRAPH,
+  PATIENT_LINK_LABEL,
+  PATIENT_REASON_FALLBACK,
+  VISIT_SOURCE_KINDS,
+  composePatientNotice,
   nameParts,
   specialistLastName,
   shortReason,

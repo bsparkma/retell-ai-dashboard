@@ -310,8 +310,51 @@ export const TC_REFERRAL_EVENT_VERBS = [
  */
 export const TC_REFERRAL_SEND_EVENT_VERBS = ["send", "send_failed", "send_conflict"] as const;
 
+/**
+ * The verbs R5's CHECK (1792100000000) was written with: R6's, then the three
+ * send verbs. Frozen, because that migration is history and its test pins
+ * THIS list; the live vocabulary is TC_REFERRAL_ALL_EVENT_VERBS below.
+ */
+export const TC_REFERRAL_R5_EVENT_VERBS = [...TC_REFERRAL_EVENT_VERBS, ...TC_REFERRAL_SEND_EVENT_VERBS] as const;
+
+/**
+ * R5b (closing the loop): the event verbs the links and the patient email
+ * add. None of them moves a status (from = to). The CHECK on
+ * tc_referral_events.verb (1792500000000) carries TC_REFERRAL_R5_EVENT_VERBS
+ * followed by exactly these; that migration's test pins the equality.
+ *
+ *   patient_scheduled      the specialist's office, or the patient, said the
+ *                          patient is scheduled (from the link in their email),
+ *                          with the date when they gave one
+ *   patient_email_sent     the patient's notification email went out (ACS
+ *                          accepted it); carries the ACS id, the address and
+ *                          its unsubscribe link's hash, like `send`
+ *   patient_email_skipped  no patient email was attempted, and why — no email
+ *                          on file, unsubscribed, Open Dental unreadable
+ *   patient_email_failed   it was attempted and did not go out
+ *
+ * "We received this referral" from the specialist's link is NOT here: it is
+ * the existing `mark_acknowledged` move (sent → acknowledged), attributed to
+ * the link instead of a person.
+ */
+export const TC_REFERRAL_LINK_EVENT_VERBS = [
+  "patient_scheduled",
+  "patient_email_sent",
+  "patient_email_skipped",
+  "patient_email_failed",
+] as const;
+
+/**
+ * R5b: who a click on a link is attributed to — never a person. The actor on
+ * the history row (and audit row) a link writes.
+ */
+export const REFERRAL_LINK_ACTORS = {
+  specialist: "system:specialist-link",
+  patient: "system:patient-link",
+} as const;
+
 /** Every event verb, in CHECK order: what tc_referral_events.verb may hold today. */
-export const TC_REFERRAL_ALL_EVENT_VERBS = [...TC_REFERRAL_EVENT_VERBS, ...TC_REFERRAL_SEND_EVENT_VERBS] as const;
+export const TC_REFERRAL_ALL_EVENT_VERBS = [...TC_REFERRAL_R5_EVENT_VERBS, ...TC_REFERRAL_LINK_EVENT_VERBS] as const;
 
 export const TcReferralEventVerb = z.enum(TC_REFERRAL_ALL_EVENT_VERBS);
 export type TcReferralEventVerb = z.infer<typeof TcReferralEventVerb>;
@@ -379,6 +422,12 @@ export const TcReferral = z.object({
     .object({ kind: z.enum(["failed", "conflict"]), note: z.string(), actor: z.string(), at: z.string() })
     .nullable()
     .optional(),
+  /**
+   * R5b: the appointment date the specialist's office or the patient gave from
+   * the link in their email ("YYYY-MM-DD"), the latest one given. null when
+   * nobody gave a date. The history row says who and when.
+   */
+  scheduledDate: z.string().nullable().optional(),
 });
 export type TcReferral = z.infer<typeof TcReferral>;
 
@@ -609,7 +658,14 @@ export function referralLastReturn(
 }
 
 /** The event verbs that record something WITHOUT moving the status. */
-const NON_MOVE_VERBS: readonly TcReferralEventVerb[] = ["create", "edit", "doctor_edit", "send_failed", "send_conflict"];
+const NON_MOVE_VERBS: readonly TcReferralEventVerb[] = [
+  "create",
+  "edit",
+  "doctor_edit",
+  "send_failed",
+  "send_conflict",
+  ...TC_REFERRAL_LINK_EVENT_VERBS,
+];
 
 /** Did this history row move the status? (Pre-R6 rows carry no verb and always did.) */
 function isStatusMove(e: TcReferralEvent): boolean {
@@ -698,12 +754,25 @@ export const REFERRAL_READY_TO_SEND_COPY = "Ready to send — sending ships in a
 export const TcReferralSendRequest = z.object({}).strict();
 export type TcReferralSendRequest = z.infer<typeof TcReferralSendRequest>;
 
+/**
+ * R5b: what happened to the patient's notification email, once the letter
+ * went out. Never changes what the send reports: the specialist send is the
+ * send, and this rides beside it.
+ */
+export const TcReferralPatientEmailOutcome = z.object({
+  status: z.enum(["sent", "skipped", "failed"]),
+  message: z.string(),
+});
+export type TcReferralPatientEmailOutcome = z.infer<typeof TcReferralPatientEmailOutcome>;
+
 /** What a send (or the auto-send after an approval) did. */
 export const TcReferralSendOutcome = z.object({
   status: z.enum(["sent", "failed", "conflict", "skipped"]),
   /** The honest sentence: why it failed, or where it went. */
   message: z.string(),
   code: z.string().nullable(),
+  /** R5b: only on a `sent` outcome. Absent from an older server. */
+  patientEmail: TcReferralPatientEmailOutcome.optional(),
 });
 export type TcReferralSendOutcome = z.infer<typeof TcReferralSendOutcome>;
 

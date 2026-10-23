@@ -40,6 +40,7 @@ async function bootstrap() {
   const twilioWebhooksRouter = require('./routes/twilioWebhooks');
   const acsSmsWebhooksRouter = require('./routes/acsSmsWebhooks');
   const emailWebhooksRouter = require('./routes/emailWebhooks');
+  const referralLinkWebhooksRouter = require('./routes/referralLinkWebhooks');
   const liveCallsRouter = require('./routes/liveCalls');
   const adminRouter = require('./routes/admin');
   const mangoRouter = require('./routes/mango');
@@ -294,6 +295,16 @@ async function bootstrap() {
   // stored hashed); it answers every token outcome with one constant page and
   // resolves its tenant from TC_EMAIL_TENANT_SLUG — see the router header.
   app.use('/api/webhooks/email', emailWebhooksRouter);
+  // Referral email links (R5b): the specialist's "We received this referral" /
+  // "The patient is scheduled" and the patient's "I've scheduled my
+  // appointment". Same placement and reasoning as the unsubscribe link: the
+  // clicker carries no user identity, so it rides the /api/webhooks exemptions
+  // with no module guard. Its token IS the credential (32 random bytes, stored
+  // hashed, single use, 60 days); it answers every dead token with one
+  // constant page, carries its OWN rate limiter (the app-wide one exempts
+  // /api/webhooks), audits every hit, and resolves its tenant from
+  // TC_EMAIL_TENANT_SLUG — see the router header.
+  app.use('/api/webhooks/referral-link', referralLinkWebhooksRouter);
   app.use('/api/webhooks', webhooksRouter);
   app.use('/api/live-calls', voiceModule, voiceSurface, liveCallsRouter);
   // The Admin page: scheduler start/stop, cost ceilings, queues, config. Tenant

@@ -492,7 +492,46 @@ export type EmailContent =
    * `{{token}}` in it is filled or removed (a referral letter quotes a
    * doctor's note verbatim). Absent = tokens are filled, as before.
    */
-  | { kind: "text"; body: unknown; maxChars?: number; literal?: boolean };
+  | {
+      kind: "text";
+      body: unknown;
+      maxChars?: number;
+      literal?: boolean;
+      actions?: readonly EmailTextAction[];
+      /** (R5b) Text drawn BELOW the buttons (the patient notice's closing). Same limit and `literal` rule as `body`. */
+      after?: unknown;
+    };
+
+/**
+ * (R5b) A button under a text body: the referral letter's "We received this
+ * referral" / "The patient is scheduled", the patient's "I've scheduled my
+ * appointment". https only (anything else is dropped, not drawn), at most
+ * EMAIL_TEXT_ACTIONS_MAX, label one line. The plain-text part carries
+ * "label: url". Absent = no buttons, as before.
+ */
+export interface EmailTextAction {
+  label: string;
+  href: string;
+}
+export const EMAIL_TEXT_ACTIONS_MAX = 3;
+
+function readActions(raw: unknown): { label: string; href: string }[] {
+  if (!Array.isArray(raw)) return [];
+  const out: { label: string; href: string }[] = [];
+  for (const a of raw.slice(0, EMAIL_TEXT_ACTIONS_MAX)) {
+    const r = asRecord(a);
+    if (!r) continue;
+    const label = str(r.label, "", 80).replace(/[\r\n]+/g, " ").trim();
+    const href = safeUrl(r.href, ["https:"]);
+    if (label && href) out.push({ label, href });
+  }
+  return out;
+}
+
+function actionRow(a: { label: string; href: string }): string {
+  const link = `<a href="${escapeHtml(a.href)}" style="display:inline-block;background-color:#0f172a;color:#ffffff;padding:12px 28px;border-radius:8px;font-size:15px;font-weight:600;text-align:center;text-decoration:none">${escapeHtml(a.label)}</a>`;
+  return row(link, "#ffffff", "8px 32px", "text-align:left");
+}
 
 export interface RenderEmailInput {
   subject: unknown;
@@ -590,6 +629,15 @@ export function renderEmail(input: RenderEmailInput): RenderedEmail {
     const text = (content.literal === true ? raw : fillMergeTokens(raw, values)).trim();
     bodyRows = text ? row(paragraphs(text, "color:#0f172a;font-size:15px;line-height:1.6"), "#ffffff", "24px 32px") : "";
     bodyText = text;
+    const actions = readActions(content.actions);
+    bodyRows += actions.map(actionRow).join("");
+    if (actions.length) bodyText = [bodyText, actions.map((a) => `${a.label}: ${a.href}`).join("\n")].filter(Boolean).join("\n\n");
+    const afterRaw = str(content.after, "", textBodyLimit(content.maxChars));
+    const after = (content.literal === true ? afterRaw : fillMergeTokens(afterRaw, values)).trim();
+    if (after) {
+      bodyRows += row(paragraphs(after, "color:#0f172a;font-size:15px;line-height:1.6"), "#ffffff", "16px 32px 24px 32px");
+      bodyText = [bodyText, after].filter(Boolean).join("\n\n");
+    }
   }
 
   const html =

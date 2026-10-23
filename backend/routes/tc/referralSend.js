@@ -50,7 +50,34 @@
  * or the approval's; the recipient comes from the directory row, never from
  * a request. The send route takes no body (strict: anything in it is a 400).
  *
- * NO OPEN DENTAL: nothing here reads or writes it.
+ * R5b — CLOSING THE LOOP. Two additions, both after the gates above:
+ *
+ *   LINKS. The letter carries two buttons, "We received this referral" and
+ *   "The patient is scheduled": one-time links minted per send
+ *   (referralLetter.mintLinks), whose HASHES are stored in step 7's
+ *   transaction — a link exists exactly when its email is on the record. A
+ *   letter that ends in send_conflict therefore has dead links (they land on
+ *   the neutral page); its conflict row already tells staff to check by hand.
+ *   The public side is routes/referralLinkWebhooks.js.
+ *
+ *   THE PATIENT'S NOTICE (notifyPatient). Only once the letter is recorded as
+ *   sent, and only where the office's own switch is on
+ *   (config/tcReferralPatientEmail.js, default OFF — off is a named skip, and
+ *   the letter, its links and buttons are unaffected): one more message, to
+ *   the patient. Its address is read from THIS
+ *   office's Open Dental, read only (services/tc/referralPatientContact.js —
+ *   the send path's only Open Dental access). No address on file, an opt-out,
+ *   or Open Dental unreadable → no email and a named `patient_email_skipped`
+ *   row; ACS refusing it → `patient_email_failed`; accepted →
+ *   `patient_email_sent` (ACS id, address, unsubscribe hash) with its link's
+ *   hash and the audit row, in one transaction. NEVER a BCC. Whatever happens
+ *   to it, the specialist's send answers as it would have: the notice rides
+ *   beside it as `outcome.patientEmail`.
+ *
+ * So a send is at most TWO messages: one letter to the specialist (with any
+ * BCC on that same message), one notice to the patient.
+ *
+ * OPEN DENTAL: only the one read above, never a write.
  */
 
 const { randomUUID } = require('node:crypto');
@@ -65,7 +92,9 @@ const letterText = require('./referralLetterText');
 const blob = require('../../services/tc/referralAttachmentStore');
 const referralLetter = require('../../services/messaging/referralLetter');
 const { MessagingError } = require('../../services/messaging/errors');
+const patientContact = require('../../services/tc/referralPatientContact');
 const tcReferralEmail = require('../../config/tcReferralEmail');
+const tcReferralPatientEmail = require('../../config/tcReferralPatientEmail');
 const acsConfig = require('../../config/acsEmail');
 const odOffices = require('../../config/odOffices');
 
@@ -162,10 +191,12 @@ function officeDetails(office) {
  * Measured with the transport's own payload builder, so the size is the size
  * of what would go out.
  */
-function composeAndPack({ office, row, entry, files, attemptId, recipient, unsubscribeUrl, at, bcc = null }) {
+function composeAndPack({ office, row, entry, files, attemptId, recipient, unsubscribeUrl, at, bcc = null, links = [] }) {
   const details = officeDetails(office);
   // The stored row, with teeth read the way every referral read reads them.
   const referral = { ...row, teeth: store.toReferral(row).teeth };
+  // (R5b) The two buttons, in the order the brief named them.
+  const actions = links.map((l) => ({ label: letterText.SPECIALIST_LINK_LABELS[l.purpose], href: l.url }));
   for (let n = files.length; n >= 0; n -= 1) {
     const attached = files.slice(0, n);
     const onRequest = files.slice(n);
@@ -177,13 +208,14 @@ function composeAndPack({ office, row, entry, files, attemptId, recipient, unsub
       onRequest: onRequest.map((f) => f.name),
       at,
       timeZone: officeTimeZone(),
+      withLinks: actions.length > 0,
     });
     if (composed.text.length > contract.EMAIL_TEXT_BODY_CEILING) {
       throw new MessagingError('SEND_FAILED', 'The referral letter is too long to email. Shorten the notes, then try again.', {
         providerCode: 'LETTER_TOO_LONG',
       });
     }
-    const rendered = referralLetter.render({ office, subject: composed.subject, text: composed.text, unsubscribeUrl });
+    const rendered = referralLetter.render({ office, subject: composed.subject, text: composed.text, unsubscribeUrl, actions });
     const message = referralLetter.messageOf({
       office,
       attemptId,
@@ -425,10 +457,13 @@ async function sendReferral(req, { office, referralId, trigger }) {
 
   let packed;
   let unsubscribe;
+  /** (R5b) The letter's two links; their hashes are stored with the send. */
+  let links = [];
   let accepted;
   try {
     const files = await readFiles(await tenantDb.withTenantDb(req, (pool) => attachmentRows(pool, office, referralId)));
     unsubscribe = referralLetter.mintUnsubscribe();
+    links = referralLetter.mintLinks(['received', 'scheduled']);
     packed = composeAndPack({
       office,
       row,
@@ -439,6 +474,7 @@ async function sendReferral(req, { office, referralId, trigger }) {
       unsubscribeUrl: unsubscribe.url,
       at: now,
       bcc,
+      links,
     });
     accepted = await referralLetter.transport(packed.message, office);
   } catch (err) {
@@ -467,6 +503,15 @@ async function sendReferral(req, { office, referralId, trigger }) {
         acsMessageId: accepted.providerMessageId,
         recipientAddress: recipient,
         unsubscribeTokenHash: unsubscribe.hash,
+      });
+      // (R5b) The letter's links, by hash only, with this email's record.
+      await store.insertLinkTokens(client, {
+        office,
+        referralId,
+        audience: 'specialist',
+        links: links.map((l) => ({ hash: l.hash, purpose: l.purpose })),
+        at,
+        expiresAt: linkExpiry(at),
       });
       // The disclosure's trail, INSIDE the transaction: a failed audit write
       // throws, and the throw rolls the move and its row back.
@@ -501,13 +546,237 @@ async function sendReferral(req, { office, referralId, trigger }) {
     };
   }
 
+  // (R5b) The letter is on the record; now — and only now — the patient's notice.
+  const patientEmail = await notifyPatient(req, { office, row, entry, withFiles: packed.attached > 0 });
+
   const practice = entry.practice_name ? `${entry.practice_name} (${recipient})` : recipient;
   const message = `Emailed to ${practice} — ${filesPhrase(packed.attached, packed.onRequest)}.`;
+  const outcome = { status: 'sent', message, code: null, patientEmail };
   return {
     status: 200,
-    body: { success: true, referral: await transitions.readBack(req, referralId, office), outcome: { status: 'sent', message, code: null } },
-    outcome: { status: 'sent', message, code: null },
+    body: { success: true, referral: await transitions.readBack(req, referralId, office), outcome },
+    outcome,
   };
+}
+
+/** (R5b) When a link minted at `at` (ISO) stops working. */
+function linkExpiry(at) {
+  return new Date(new Date(at).getTime() + referralLetter.LINK_TTL_MS).toISOString();
+}
+
+/**
+ * (R5b) The history's words for a notice that did not go — "patient has no
+ * email on file", and so on. Each names a fact; none guesses.
+ */
+const PATIENT_SKIP_NOTE = Object.freeze({
+  switched_off: 'Patient not emailed: patient email is off for this office.',
+  no_email: 'Patient not emailed: the patient has no email on file in Open Dental.',
+  not_found: "Patient not emailed: the patient was not found in this office's Open Dental.",
+  not_connected: "Patient not emailed: Open Dental isn't connected for this office, so the patient's email could not be looked up.",
+  unreadable: "Patient not emailed: Open Dental could not be read, so the patient's email could not be looked up.",
+  opted_out: 'Patient not emailed: that email address unsubscribed from our emails.',
+  unaudited: 'Patient not emailed: the lookup could not be recorded, so it was not made.',
+});
+
+/** What the hub says for each skip (short; the history row has the sentence). */
+const PATIENT_SKIP_OUTCOME = Object.freeze({
+  switched_off: 'Patient email is off for this office, so no patient email was sent.',
+  no_email: 'The patient has no email on file, so no patient email was sent.',
+  not_found: "The patient wasn't found in Open Dental, so no patient email was sent.",
+  not_connected: "Open Dental isn't connected for this office, so no patient email was sent.",
+  unreadable: "Open Dental couldn't be read, so no patient email was sent.",
+  opted_out: 'The patient unsubscribed from our emails, so no patient email was sent.',
+  unaudited: 'No patient email was sent (the lookup could not be recorded).',
+});
+
+/**
+ * Write one of the notice's non-move history rows on the status the referral
+ * holds now. Bookkeeping: a failure is logged, never thrown over the send.
+ */
+async function recordPatientEvent(req, { office, referralId, verb, note }) {
+  try {
+    await tenantDb.withTenantDb(req, async (pool) => {
+      const now = await store.findReferral(pool, office, referralId);
+      const status = now ? now.status : 'sent';
+      await store.insertEvent(pool, {
+        office,
+        referralId,
+        from: status,
+        to: status,
+        actor: actorEmail(req),
+        at: transitions.clock().toISOString(),
+        note,
+        verb,
+      });
+    });
+  } catch (err) {
+    console.error(
+      `[tc/referralSend] office=${office} referral=${referralId} could not record ${verb}:`,
+      err && err.message ? err.message : err
+    );
+  }
+}
+
+/**
+ * (R5b) The patient's notice, after the letter was recorded as sent. NEVER
+ * throws, never changes the letter's outcome; returns what happened.
+ * @param {import('express').Request} req
+ * @param {{ office: string, row: Record<string, unknown>, entry: Record<string, unknown>, withFiles: boolean }} args
+ *   `withFiles`: files went WITH the letter (the notice then says "and X-rays").
+ * @returns {Promise<{ status: 'sent'|'skipped'|'failed', message: string }>}
+ */
+async function notifyPatient(req, { office, row, entry, withFiles }) {
+  const referralId = String(row.referral_id);
+  const skip = async (why) => {
+    await recordPatientEvent(req, { office, referralId, verb: 'patient_email_skipped', note: PATIENT_SKIP_NOTE[why] });
+    return { status: 'skipped', message: PATIENT_SKIP_OUTCOME[why] };
+  };
+
+  // The office's own switch for this email, before anything else: off means
+  // no patient email and no Open Dental lookup for one. A failed read is off.
+  let patientEmailOn = false;
+  try {
+    patientEmailOn = await tcReferralPatientEmail.isEnabled(office);
+  } catch {
+    patientEmailOn = false;
+  }
+  if (!patientEmailOn) return skip('switched_off');
+
+  // The lookup reads PHI from Open Dental: on the record first, or not at all.
+  try {
+    await audit(req, {
+      action: 'READ',
+      resourceType: 'tc_referral.patient_email_lookup',
+      resourceId: referralId,
+      result: 'SUCCESS',
+      office,
+    });
+  } catch {
+    return skip('unaudited');
+  }
+  // A PatNum that is not a safe integer would read a DIFFERENT patient.
+  const patNum = Number(row.od_patient_id);
+  if (!Number.isSafeInteger(patNum) || patNum <= 0) return skip('not_found');
+  const contact = await patientContact.patientEmailFor(office, patNum);
+  if (contact.status !== 'found') return skip(contact.status);
+  const address = referralLetter.recipientOf(contact.address);
+  if (!address) return skip('no_email');
+
+  let mayEmail;
+  try {
+    mayEmail = await tenantDb.withTenantDb(req, (pool) => referralLetter.patientMayEmail(pool, { office, address }));
+  } catch {
+    mayEmail = null;
+  }
+  if (mayEmail === false) return skip('opted_out');
+
+  let unsubscribe;
+  let link;
+  let accepted;
+  try {
+    if (mayEmail !== true) throw new MessagingError('SEND_FAILED', 'Whether the patient may be emailed could not be checked.');
+    unsubscribe = referralLetter.mintUnsubscribe();
+    [link] = referralLetter.mintLinks(['scheduled']);
+    const details = officeDetails(office);
+    const composed = letterText.composePatientNotice({
+      patientName: String(row.patient_name ?? ''),
+      referringProvider: row.referring_provider == null ? null : String(row.referring_provider),
+      entry,
+      office: { name: details.name, phone: details.phone },
+      withFiles,
+      sourceKind: String(row.source_kind ?? ''),
+    });
+    const rendered = referralLetter.renderPatientNotice({
+      office,
+      subject: composed.subject,
+      text: composed.text,
+      after: composed.after,
+      unsubscribeUrl: unsubscribe.url,
+      actions: [{ label: letterText.PATIENT_LINK_LABEL, href: link.url }],
+    });
+    // Its own message id, and never a BCC — the copy inbox is for the letter only.
+    const message = referralLetter.messageOf({
+      office,
+      attemptId: randomUUID(),
+      toAddress: address,
+      rendered,
+      unsubscribeUrl: unsubscribe.url,
+    });
+    accepted = await referralLetter.transport(message, office);
+  } catch (err) {
+    const failure = failureOf(err);
+    await recordPatientEvent(req, {
+      office,
+      referralId,
+      verb: 'patient_email_failed',
+      note: `Patient email not sent: ${failure.message}`,
+    });
+    return { status: 'failed', message: `The patient email could not be sent: ${failure.message}` };
+  }
+
+  const at = transitions.clock().toISOString();
+  try {
+    await withTenantTx(req, async (client) => {
+      const now = await store.findReferral(client, office, referralId);
+      const status = now ? now.status : 'sent';
+      await store.insertSendEvent(client, {
+        office,
+        referralId,
+        from: status,
+        to: status,
+        actor: actorEmail(req),
+        at,
+        // The address is in recipient_address; the note does not repeat it.
+        note: "Patient emailed at the address on file in Open Dental — who they are referred to and the specialist's phone. The email service accepted it.",
+        verb: 'patient_email_sent',
+        acsMessageId: accepted.providerMessageId,
+        recipientAddress: address,
+        unsubscribeTokenHash: unsubscribe.hash,
+      });
+      await store.insertLinkTokens(client, {
+        office,
+        referralId,
+        audience: 'patient',
+        links: [{ hash: link.hash, purpose: 'scheduled' }],
+        at,
+        expiresAt: linkExpiry(at),
+      });
+      await auditTc(req, 'UPDATE', 'tc_referral.patient_email_send', referralId, {
+        office,
+        priorState: status,
+        sourceRef: sourceRefOf(accepted.providerMessageId),
+      });
+    });
+  } catch (err) {
+    // The notice IS out; only its record is incomplete. Say so, loudly, and
+    // keep the row if the database will take it (its link stays dead).
+    console.error(
+      `[tc/referralSend] office=${office} referral=${referralId} the second email WENT OUT but could not be recorded:`,
+      err && err.message ? err.message : err
+    );
+    try {
+      await tenantDb.withTenantDb(req, (pool) =>
+        store.insertSendEvent(pool, {
+          office,
+          referralId,
+          // The letter was recorded as sent just before this notice went.
+          from: 'sent',
+          to: 'sent',
+          actor: actorEmail(req),
+          at,
+          note: `Patient emailed at the address on file (the email service accepted it), but the record of it is incomplete, so its "I've scheduled" button will not work.`,
+          verb: 'patient_email_sent',
+          acsMessageId: accepted.providerMessageId,
+          recipientAddress: address,
+          unsubscribeTokenHash: unsubscribe.hash,
+        })
+      );
+    } catch {
+      // Logged above; nothing more to do without a database.
+    }
+    return { status: 'sent', message: 'The patient was emailed, but the record of it is incomplete — see the history.' };
+  }
+  return { status: 'sent', message: 'The patient was emailed who they are referred to and how to schedule.' };
 }
 
 /**
