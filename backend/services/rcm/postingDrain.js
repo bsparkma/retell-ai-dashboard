@@ -296,8 +296,8 @@ const CLAIM_GONE_STEP = 'read_od_truth_claim_gone';
 /**
  * W-21c: the two endings the claim-gone branch can settle into (`failed` goes
  * on to the withdrawal instead). A row in either, at `CLAIM_GONE_STEP`, is one
- * no press can settle — the screens neither offer Post on it nor count it as
- * waiting to post. Statuses are unchanged and still drainable (D-15).
+ * no press can settle, so the queue list counts it apart from "waiting to post"
+ * (W-21c). Statuses are unchanged and still drainable (D-15).
  */
 const CLAIM_GONE_STATUSES = Object.freeze(['outcome_unknown', 'partially_posted']);
 
