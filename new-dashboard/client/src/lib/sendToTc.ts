@@ -6,8 +6,10 @@
  * panel, worklist row) can never drift apart on WHEN it shows.
  *
  * The button is an offer to file a patient's call with the Treatment Coordinator.
- * It only makes sense when we know three things for certain: which patient, which
- * practice, and that this tenant actually has the TC module. Anything less is
+ * It only makes sense when we know four things for certain: which patient, which
+ * practice, that this tenant actually has the TC module, and that this USER may
+ * hand calls to TC (voice.send_to_tc — admin and office; pre-IA fix F2: a `tc`
+ * user used to see the button and get a 403). Anything less is
  * hidden — not disabled-with-an-excuse — because there is nothing the person
  * looking at it could do about it from here.
  */
@@ -46,10 +48,16 @@ export type SendToTcState =
  *
  * @param call the call, as normalized for display
  * @param tcEntitled does this tenant have the 'tc' module (from /auth/me)?
+ * @param mayHandOff does this user hold voice.send_to_tc (from /auth/me)? The
+ *   button always passes it; the server enforces the same permission.
  */
-export function sendToTcState(call: SendToTcCall, tcEntitled: boolean): SendToTcState {
+export function sendToTcState(call: SendToTcCall, tcEntitled: boolean, mayHandOff = true): SendToTcState {
   // A voice-only tenant must never see a door into a product it doesn't have.
   if (!tcEntitled) return { kind: "hidden" };
+
+  // Nor a user whose role can't hand calls to TC: the server would 403 it, and
+  // there is nothing they could do about that from here.
+  if (!mayHandOff) return { kind: "hidden" };
 
   // No resolved patient → nothing to file. The worklist's own "Unmatched" action
   // is the right next step, and it's already on the row.
@@ -92,12 +100,17 @@ export function tcSuccessMessage(patientName: string, attached: boolean | null):
 
 /**
  * Failure copy. Never optimistic: every branch states that nothing was sent, or
- * names the real blocker. The 403 shouldn't reach a user (the button is hidden
- * without the module) but is handled rather than left to a generic message.
+ * names the real blocker. A 403 shouldn't reach a user (the button is hidden
+ * without the module or the permission) but is handled rather than left to a
+ * generic message — and it names WHICH door is shut: the practice doesn't have
+ * TC, or this person's role can't send calls to it.
  */
 export function tcErrorMessage(status: number | null, code: string | null): string {
-  if (code === "MODULE_NOT_ENTITLED" || status === 403) {
+  if (code === "MODULE_NOT_ENTITLED" || code === "TC_MODULE_NOT_ENTITLED") {
     return "The TC module isn't enabled.";
+  }
+  if (code === "FORBIDDEN" || status === 403) {
+    return "Your role can't send calls to TC — nothing was sent. Ask an admin if you need to.";
   }
   if (code === "OFFICE_MISMATCH") {
     return "This call belongs to a different office — nothing was sent. Reload and try again.";

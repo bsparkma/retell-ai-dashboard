@@ -77,7 +77,7 @@ export function CheckoutAlert({
           </div>
         ) : (
           <p className="max-w-md text-sm text-muted-foreground">
-            Tell the front desk this patient is on the way, with what you staged. Send updates it
+            Tell Checkout this patient is on the way, with what you staged. Send updates it
             with your final notes.
           </p>
         )}
@@ -113,7 +113,7 @@ export function CheckoutAlert({
         >
           <span className="flex items-center gap-2">
             <AlertTriangle size={16} aria-hidden />
-            The front desk did not get your final notes. Your chart writes are not affected.
+            Checkout did not get your final notes. Your chart writes are not affected.
           </span>
           <button
             type="button"
@@ -122,7 +122,7 @@ export function CheckoutAlert({
             className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-amber-400 px-3 font-medium disabled:opacity-50 dark:border-amber-700"
             data-testid="checkout-retry-final"
           >
-            <RefreshCw size={14} aria-hidden /> Send to the front desk again
+            <RefreshCw size={14} aria-hidden /> Send to Checkout again
           </button>
         </div>
       ) : null}

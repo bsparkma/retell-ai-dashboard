@@ -15,7 +15,11 @@
  *
  * So this component keeps the legacy visual footprint — a full-width card at
  * the very top of the dashboard, so the page's vertical rhythm matches
- * DentaFlow's — and fills it with an honest "coming soon" explanation.
+ * DentaFlow's. It used to say "coming soon"; the handoff then shipped as the
+ * call's Send to TC (Mango M6), and the strip kept promising it (pre-IA fix
+ * F8, IA report §4 D8). It now says where those calls actually land: a case
+ * owned by whoever sent it, or the patient's open case — on the Pipeline, not
+ * in a list here.
  *
  * Deliberate omissions (do not "fix" these without the handoff slice):
  *   - no fetch/poll of any kind (this file imports nothing from ../api)
@@ -44,14 +48,13 @@ export function CareInHandoffsStrip() {
             className="text-sm font-semibold text-foreground"
             style={{ fontFamily: "Sora, sans-serif" }}
           >
-            Voice handoffs — coming soon
+            Voice handoffs
           </h2>
           <p className="text-xs text-muted-foreground mt-1 max-w-2xl">
-            CareIN's voice agent and Treatment Coordinator now run on the same
-            platform, so handing a caller straight into a TC case is finally a
-            single write instead of a copy-paste. That handoff arrives in its
-            own slice. Until it does, this strip stays empty — no sample
-            patients, no placeholder counts.
+            Calls come in from Voice with Send to TC on the call. Each one
+            opens a case for the person who sent it, or joins the patient's
+            open case, so you'll find it on the Pipeline rather than here.
+            This strip lists nothing itself — no sample patients, no counts.
           </p>
         </div>
       </div>

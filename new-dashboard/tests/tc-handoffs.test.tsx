@@ -39,14 +39,15 @@ afterEach(() => {
 });
 
 describe("CareInHandoffsStrip", () => {
-  it("renders the honest coming-soon state instead of handoff rows", () => {
+  it("says where call handoffs land instead of listing handoff rows", () => {
     render(<CareInHandoffsStrip />);
 
     const strip = screen.getByRole("region", { name: "Voice handoffs" });
     expect(strip).toBeTruthy();
-    expect(screen.getByText("Voice handoffs — coming soon")).toBeTruthy();
-    // Explains WHY it's dark, and promises nothing fake.
-    expect(strip.textContent).toContain("its own slice");
+    expect(screen.getByRole("heading", { name: "Voice handoffs" })).toBeTruthy();
+    // Says where Send to TC calls go (F8: no longer "coming soon"), and promises nothing fake.
+    expect(strip.textContent).toContain("Send to TC");
+    expect(strip.textContent).toContain("on the Pipeline");
     expect(strip.textContent).toContain("no sample patients");
 
     // No claim affordance — there is nothing real to claim.

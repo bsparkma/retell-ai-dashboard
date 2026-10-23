@@ -182,9 +182,9 @@ const REFERRALS: SwitchPanelConfig = {
   icon: <Send className="w-4 h-4" />,
   title: "TC referrals",
   description:
-    "When on, TC Settings shows the Referrals section: the specialist directory and the referral policies. Nothing is sent yet. Per office. The TC module must also be bought.",
+    "When on, this office uses referrals: the Referrals settings (specialist directory and policies), the Referrals hub, the Referrals panel on a case, Start referral on a hygiene visit, a call and a checkout, and the doctor's Awaiting sign-off queue. Nothing is emailed unless referral email (below) is on too. Per office. The TC module must also be bought.",
   confirmDescription:
-    "The TC team in this office will see the Referrals settings and can build the specialist directory. Nothing is sent, and nothing is written to Open Dental. You can turn it off again at any time, instantly.",
+    "This office's team will see referrals wherever they appear — Settings, the hub, cases, hygiene visits, calls and checkout — and the doctor gets the sign-off queue. Nothing is emailed to a specialist unless referral email is on too, and nothing is written to Open Dental. You can turn it off again at any time, instantly.",
   load: () => api.getTcReferralsOffices(),
   save: (office, enabled) => api.setTcReferralsOfficeEnabled(office, enabled),
 };

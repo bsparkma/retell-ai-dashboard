@@ -1,5 +1,5 @@
 /**
- * The TC checkout handoff switch, per office (queue item 50).
+ * The TC Checkout switch, per office (queue item 50).
  *
  * Mirrors the Hygiene panel's honesty rules: the state shown is what the
  * server answered after the write (never the click), the layer that answered
@@ -89,7 +89,7 @@ export function TcCheckoutPanel() {
     <section className="space-y-4" data-testid="tc-checkout-panel">
       <div>
         <h2 className="flex items-center gap-2 text-base font-semibold text-foreground">
-          <DoorOpen className="w-4 h-4" /> TC checkout handoff
+          <DoorOpen className="w-4 h-4" /> TC Checkout
         </h2>
         <p className="text-sm text-muted-foreground">
           When on, the hygiene visit can alert checkout, the visit&apos;s Send updates it, and the TC
@@ -126,7 +126,7 @@ export function TcCheckoutPanel() {
               <Switch
                 checked={o.enabled}
                 disabled={saving !== null}
-                aria-label={`Checkout handoff for ${OFFICE_LABELS[o.office] ?? o.office}`}
+                aria-label={`Checkout for ${OFFICE_LABELS[o.office] ?? o.office}`}
                 onCheckedChange={(on) => (on ? setConfirming(o.office) : void commit(o.office, false))}
                 data-testid={`tc-checkout-switch-${o.office}`}
               />

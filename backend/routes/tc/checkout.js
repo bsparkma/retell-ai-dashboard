@@ -32,6 +32,12 @@
  *                   CREATED at `pending_pt`.
  *   nothing_needed  the handoff closes and NO case is created.
  *
+ * NO CASE IS LEFT OWNERLESS (pre-IA fix F1, Beau's rule). An open case that
+ * Scheduled / Not scheduled attaches to and that nobody owns (assigned_tc '')
+ * is assigned to the person who answered the checkout, with a note on its
+ * timeline. A case created here is theirs already. An owned case keeps its
+ * owner.
+ *
  * THE TREATMENT GOES ON THE CASE (C2b). Scheduled and Not scheduled also copy
  * the staged procedures into the case's own treatment plan (the Treatment
  * tab the coordinator presents from): one phase per checkout, "Hygiene visit
@@ -531,6 +537,33 @@ router.post(
                 ts: now,
                 type: 'note_added',
                 description: `Checkout: ${label}${noteSuffix}`,
+                actor,
+                detail: null,
+                legacy_id: null,
+              });
+            }
+
+            // F1 (Beau's rule): no case is ever left ownerless by a checkout
+            // outcome. The open case is usually the same visit's UNCLAIMED
+            // hygiene_review case, and the move above takes it out of the
+            // TC Inbox — so whoever answered the checkout becomes its owner.
+            // Conditional on it still being unowned, so an Inbox Claim that
+            // lands first keeps its owner.
+            const assigned = await client.query(
+              `UPDATE tc_cases
+                  SET assigned_tc = $3, updated_at = now()
+                WHERE office_id = $1 AND case_id = $2 AND assigned_tc = ''
+                RETURNING case_id`,
+              [office, openCaseId, actor]
+            );
+            if (assigned.rows.length > 0) {
+              await store.insertEventRow(client, {
+                event_id: randomUUID(),
+                case_id: openCaseId,
+                office_id: office,
+                ts: now,
+                type: 'note_added',
+                description: 'Checkout: assigned to the person who answered it (nobody owned this case)',
                 actor,
                 detail: null,
                 legacy_id: null,

@@ -344,7 +344,7 @@ export function IntakeForm({ office }: IntakeFormProps) {
     setSubmitting(true);
     try {
       await submitHygieneIntake(office, payload);
-      toast.success("Sent to TC inbox");
+      toast.success("Sent to the TC Inbox");
       setLastSubmitted(patientName);
       // Keep the hygienist across submissions: it's the same person seeing the
       // next patient, and re-picking it every time is the kind of friction that
@@ -367,7 +367,7 @@ export function IntakeForm({ office }: IntakeFormProps) {
         <div className="rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950 p-3 flex items-center justify-between gap-3">
           <span className="flex items-center gap-2 text-sm text-emerald-800 dark:text-emerald-300">
             <CheckCircle2 className="w-4 h-4 shrink-0" />
-            {lastSubmitted} sent to the TC inbox.
+            {lastSubmitted} sent to the TC Inbox.
           </span>
           <Link
             href="/tc/hygiene/submissions"
@@ -700,7 +700,7 @@ export function IntakeForm({ office }: IntakeFormProps) {
           }`}
         >
           <Label htmlFor={fid("urgent")} className="font-normal">
-            Flag urgent — jumps to the top of the TC inbox
+            Flag urgent — jumps to the top of the TC Inbox
           </Label>
           <Switch
             id={fid("urgent")}
