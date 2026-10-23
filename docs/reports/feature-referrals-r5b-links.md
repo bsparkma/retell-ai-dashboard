@@ -117,14 +117,27 @@ The two-message case itself is pinned in the new `tcReferralLinks.test.js` (N): 
 
 **Still literally true, but read it with care:** `tcReferralSend.test.js` "guards: … and never Open Dental" still passes, because the three files it scans have no OD call. The send path as a whole now makes one read through `referralPatientContact.js`. The new G test pins that this module is the only OD access and that it is GET-only.
 
+## The patient email switch and template (final round)
+
+- **Per-office switch `tc_referral_patient_email_enabled`** (`config/tcReferralPatientEmail.js`, built with the existing `tcOfficeSwitch` factory):
+  - default OFF;
+  - `TC_REFERRAL_PATIENT_EMAIL_ENABLED_<OFFICE>=false` always wins;
+  - it gates ONLY the patient email. The specialist letter, its tokens and its buttons are unaffected (tested).
+  - When the switch is off, the patient email is skipped by name ("Patient not emailed: patient email is off for this office."), and there is no Open Dental lookup and no lookup audit row.
+  - Console routes `GET`/`PUT /api/platform/tc-referral-patient-email-offices[/:office]` take the same shape as the referral email switch (super_admin only, audited `on|off`). The toggle sits right after the referral email switch in the TC referrals tab.
+  - Pinned on and off in `tcReferralLinks.test.js` (P), `routes/tcReferralPatientEmailSwitch.test.js`, and `tests/platform-tc-referral-patient-email.test.tsx`.
+- **The opening line follows the source**, as ruled:
+  - `hyg_visit` and `checkout` keep "As we discussed at your visit,";
+  - `call`, `case` and `manual` start with "Dr. {referring provider} has referred you to…".
+  - The template pin was updated: its fixture is case-sourced (pre-ratified). A new test covers every source.
+- **The plain-language reason field is ruled off this branch.** "for a specialist consultation" ships. The test that pins that no clinical field reaches the patient email stays.
+
 ## Judgment calls (please rule)
 
-1. **The patient email now uses the PM's drafted template, word for word** (`referralLetterText.composePatientNotice`). The subject is "We've sent your referral to {Specialist office name}". The button sits between "Already scheduled?…" and "After your specialist visit…", as drafted. To put it there, the shared renderer gained an optional `after` text that is drawn below the buttons. The whole template is pinned in one test. How each placeholder is filled:
-   - **{plain-language reason}: the staff-editable field doesn't exist yet.** The referral's `reason` is clinical shorthand written for the specialist, so it is never used here. The template's honest generic fallback stands in: "a specialist consultation" (`PATIENT_REASON_FALLBACK`). A test pins that the notice is built from no clinical field. **Adding the field is a follow-up for you to OK:** a column, a staff edit input in the hub, and a slot in the notice.
+1. **The patient email uses the PM's drafted template, word for word** (`referralLetterText.composePatientNotice`). The subject is "We've sent your referral to {Specialist office name}". The button sits between "Already scheduled?…" and "After your specialist visit…", as drafted. To put it there, the shared renderer gained an optional `after` text that is drawn below the buttons. How each placeholder is filled:
    - **"and X-rays"** appears only when files went WITH the letter, not when they were only listed as available on request.
    - **Dr. {referring provider}** falls back to the office name when the field is blank. {Specialist office name} falls back to the specialist's name, then to "the specialist". With no specialist phone, the line reads "call them to set up your appointment" and points to the office's number. With no office phone, the closing drops "or call us at …".
-   - **"As we discussed at your visit"** is kept as written, but a referral started from a call or by hand may have had no visit. Do you want different words for those sources?
-2. **No separate switch for the patient notice.** It runs whenever referral email runs (`tc_referral_email_enabled` + `tc_email_enabled`). The brief didn't ask for a switch, but it is a new patient-facing email. A per-office `tc_referral_patient_email_enabled` would be a small follow-up if you want to stage it.
+2. *(resolved: the switch is built — see above.)*
 3. **Throttled hits are audited once per client per window, not on every hit.** Writing an audit row on every throttled request would turn a flood into database writes, which is what the limiter exists to prevent. Every hit that is not throttled is audited.
 4. **Date window:** 30 days back to one year ahead. "Recent" allows a specialist who confirms after the visit.
 5. **Received after a conflict:** the links are only stored with a recorded send, so a `send_conflict` letter's buttons are dead. The alternative was a link that moves an `approved` referral, which would be the app claiming a send it couldn't record.
@@ -153,17 +166,21 @@ Noted but not changed:
 ## Verification
 
 - `pnpm run check` (tsc --noEmit): clean.
-- `pnpm run test`: 173 files passed (34 skipped are the existing shot suites), including the contract bundle byte-compare. The bundle was regenerated with the pinned esbuild and `--alias:zod`.
+- `pnpm run test`: 174 files passed (34 skipped are the existing shot suites), including the contract bundle byte-compare. The bundle was regenerated with the pinned esbuild and `--alias:zod`.
 - `node --check server.js` passes.
-- `node --test` (full backend): 4001 tests, 0 failed.
+- `node --test` (full backend): 4011 tests, 0 failed.
 - The PG16 migration rehearsal, as described above.
 - New tests:
-  - `routes/tc/tcReferralLinks.test.js`: 32 tests covering the notice, the links at rest, the views, received, scheduled, replay, expiry, unknown tokens, cross-referral reuse, purpose binding, the double click, rate limits, fail-closed and guards;
+  - `routes/tc/tcReferralLinks.test.js`: 36 tests covering the notice, the switch, the opening line by source, the links at rest, the views, received, scheduled, replay, expiry, unknown tokens, cross-referral reuse, purpose binding, the double click, rate limits, fail-closed and guards;
+  - `routes/tcReferralPatientEmailSwitch.test.js`: 4 tests;
   - `test/referralLinksMigration.test.js`: 8 tests;
-  - `tests/referrals-r5b-links.test.tsx`: 6 tests.
+  - `tests/referrals-r5b-links.test.tsx`: 6 tests;
+  - `tests/platform-tc-referral-patient-email.test.tsx`: 5 tests.
 
 ACS is mocked throughout and nothing reaches a network. Open Dental is the real per-office clients with every method patched; any non-GET throws. The only fixture patient is roland 12827.
 
 ## Deploy wiring (names only)
 
-Nothing new. The links use the existing `TC_EMAIL_PUBLIC_BASE_URL` and `TC_EMAIL_TENANT_SLUG`. The patient lookup uses the office's existing Open Dental key (`OPENDENTAL_CUSTOMER_KEY` / `_VALLEY`). Without that key, every notice is skipped with "Open Dental isn't connected for this office".
+No new secrets or app settings. The links use the existing `TC_EMAIL_PUBLIC_BASE_URL` and `TC_EMAIL_TENANT_SLUG`. The patient lookup uses the office's existing Open Dental key (`OPENDENTAL_CUSTOMER_KEY` / `_VALLEY`). Without that key, every patient email is skipped with "Open Dental isn't connected for this office".
+
+**To send patient emails**, turn on **TC referral patient email** for the office in the platform console (TC referrals tab). It is OFF by default, so after deploy the specialist letter and its buttons work and no patient is emailed. Optional break-glass: `TC_REFERRAL_PATIENT_EMAIL_ENABLED_<OFFICE>=false`.

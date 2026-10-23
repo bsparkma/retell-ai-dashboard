@@ -1,7 +1,8 @@
 /**
- * The TC referrals switches, per office: referrals itself (queue item 52) and
- * referral EMAIL (R5). The same shape and the same honesty rules as
- * TcCheckoutPanel (item 50), drawn by one component with two configurations.
+ * The TC referrals switches, per office: referrals itself (queue item 52),
+ * referral EMAIL (R5) and (R5b) the PATIENT email after a send. The same
+ * shape and the same honesty rules as TcCheckoutPanel (item 50), drawn by one
+ * component with three configurations.
  *
  * Mirrors the Hygiene panel's honesty rules: the state shown is what the
  * server answered after the write (never the click), the layer that answered
@@ -11,7 +12,7 @@
  */
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { AlertTriangle, Loader2, Mail, Send, ShieldAlert } from "lucide-react";
+import { AlertTriangle, Loader2, Mail, Send, ShieldAlert, UserRound } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -201,6 +202,19 @@ const REFERRAL_EMAIL: SwitchPanelConfig = {
   save: (office, enabled) => api.setTcReferralEmailOfficeEnabled(office, enabled),
 };
 
+const REFERRAL_PATIENT_EMAIL: SwitchPanelConfig = {
+  prefix: "tc-referral-patient-email",
+  noun: "Patient referral email",
+  icon: <UserRound className="w-4 h-4" />,
+  title: "TC referral patient email",
+  description:
+    "When on, after a referral is emailed to the specialist, the patient also gets an email: who they're referred to, the specialist's phone, and an \"I've scheduled my appointment\" button. Only that email — the specialist's letter and its buttons follow the referral email switch above. The address is read from this office's Open Dental. Per office.",
+  confirmDescription:
+    "Patients in this office will be emailed each time one of their referrals is emailed to a specialist, at the address on file in Open Dental. Nothing is written to Open Dental. You can turn it off again at any time, instantly.",
+  load: () => api.getTcReferralPatientEmailOffices(),
+  save: (office, enabled) => api.setTcReferralPatientEmailOfficeEnabled(office, enabled),
+};
+
 /** The referrals switch (item 52). */
 export function TcReferralsPanel() {
   return <OfficeSwitchPanel config={REFERRALS} />;
@@ -209,4 +223,9 @@ export function TcReferralsPanel() {
 /** The referral email switch (R5). */
 export function TcReferralEmailPanel() {
   return <OfficeSwitchPanel config={REFERRAL_EMAIL} />;
+}
+
+/** The referral PATIENT email switch (R5b): only the patient's email after a send. */
+export function TcReferralPatientEmailPanel() {
+  return <OfficeSwitchPanel config={REFERRAL_PATIENT_EMAIL} />;
 }

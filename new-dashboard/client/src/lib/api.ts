@@ -2139,6 +2139,19 @@ export const api = {
     );
   },
 
+  /** The referral PATIENT email switch for every office (R5b), with the layer that answered. */
+  async getTcReferralPatientEmailOffices(): Promise<TcReferralsSwitchState> {
+    return request<TcReferralsSwitchState>("/platform/tc-referral-patient-email-offices");
+  },
+
+  /** Turn the referral patient email on or off for ONE office. Returns the state as stored. */
+  async setTcReferralPatientEmailOfficeEnabled(office: string, enabled: boolean): Promise<TcReferralsSwitchState> {
+    return request<TcReferralsSwitchState>(
+      `/platform/tc-referral-patient-email-offices/${encodeURIComponent(office)}`,
+      { method: "PUT", body: JSON.stringify({ enabled }) },
+    );
+  },
+
   // --- call-store jobs (existing /api/admin endpoints, super_admin-gated) ----
   // Deliberately NOT re-homed under /api/platform: forking a job that destroys
   // records would mean two copies of its safety rules.

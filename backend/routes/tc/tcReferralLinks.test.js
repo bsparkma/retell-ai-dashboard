@@ -38,6 +38,7 @@ const contract = require('../../tc/contract.gen.cjs');
 const registry = require('../../platform/registry');
 const tcReferrals = require('../../config/tcReferrals');
 const tcReferralEmail = require('../../config/tcReferralEmail');
+const tcReferralPatientEmail = require('../../config/tcReferralPatientEmail');
 const emailIdentity = require('../../config/emailIdentity');
 const odOffices = require('../../config/odOffices');
 const acsClient = require('../../services/messaging/acs/client');
@@ -57,6 +58,7 @@ const COPY = 'referral-copies@roland.example.test';
 const EXTRA_ENV = [
   'TC_REFERRALS_ENABLED_ROLAND',
   'TC_REFERRAL_EMAIL_ENABLED_ROLAND',
+  'TC_REFERRAL_PATIENT_EMAIL_ENABLED_ROLAND',
   'TC_EMAIL_PRACTICE_NAME_ROLAND',
   'TC_EMAIL_PRACTICE_PHONE_ROLAND',
   'OPENDENTAL_CUSTOMER_KEY',
@@ -85,6 +87,7 @@ test.afterEach(() => {
   odOffices.resetOdOfficeCache();
   tcReferrals.resetCacheForTests();
   tcReferralEmail.resetCacheForTests();
+  tcReferralPatientEmail.resetCacheForTests();
   emailIdentity.resetCacheForTests();
   transitions.setClockForTests(null);
 });
@@ -98,11 +101,15 @@ const setNow = (d) => {
 /**
  * Boot with referrals + referral email ON for roland, the transport
  * configured, and roland's Open Dental connected (patched client).
+ * `patientEmail` (default true) turns the office's patient-email switch on
+ * through its env fallback; false leaves it at its floor (OFF).
  */
-async function boot(t, { od = true, bcc = null, linkLimits = {}, ...opts } = {}) {
+async function boot(t, { od = true, bcc = null, linkLimits = {}, patientEmail = true, ...opts } = {}) {
   for (const k of EXTRA_ENV) delete process.env[k];
   process.env.TC_REFERRALS_ENABLED_ROLAND = 'true';
   process.env.TC_REFERRAL_EMAIL_ENABLED_ROLAND = 'true';
+  if (patientEmail) process.env.TC_REFERRAL_PATIENT_EMAIL_ENABLED_ROLAND = 'true';
+  tcReferralPatientEmail.resetCacheForTests();
   process.env.TC_EMAIL_PRACTICE_NAME_ROLAND = 'Roland Family Dental';
   process.env.TC_EMAIL_PRACTICE_PHONE_ROLAND = '(918) 555-0100';
   if (od) {
@@ -260,7 +267,8 @@ test('N: one message per recipient class — the letter to the specialist, the n
   assert.equal(notice.body.content.subject, "We've sent your referral to River Endodontics");
   const expectedBody = [
     'Hi Stedi,',
-    "As we discussed at your visit, Dr. DOC1 has referred you to River Endodontics for a specialist consultation. We've already sent them your information, so they'll know exactly why you're coming.",
+    // A case-sourced referral: no "As we discussed at your visit," (PM ruling).
+    "Dr. DOC1 has referred you to River Endodontics for a specialist consultation. We've already sent them your information, so they'll know exactly why you're coming.",
     "Here's what to do next: call them at (479) 555-0177 to set up your appointment.",
     "Already scheduled? Tap below and tell us the date — we'll make sure everything is ready on our end.",
   ].join('\n\n');
@@ -332,6 +340,84 @@ test('N: the template — X-rays only when files went, honest fallbacks for a mi
   assert.doesNotMatch(fn, /referral\.reason|narrative|teeth|urgency|doctor_note/, 'the notice is composed from no clinical field');
   // The send says "and X-rays" only for files that went WITH the letter.
   assert.match(require('node:fs').readFileSync(require('node:path').join(__dirname, 'referralSend.js'), 'utf8'), /notifyPatient\(req, \{ office, row, entry, withFiles: packed\.attached > 0 \}\)/);
+});
+
+test('N: the opening line follows the source — a visit keeps "As we discussed at your visit,"; call, case and manual drop it', () => {
+  const base = {
+    patientName: 'Test 2, Stedi',
+    referringProvider: 'DOC1',
+    entry: { practice_name: 'River Endodontics', phone: '(479) 555-0177' },
+    office: { name: 'Roland Family Dental', phone: '(918) 555-0100' },
+    withFiles: false,
+  };
+  const second = (sourceKind) => letterText.composePatientNotice({ ...base, sourceKind }).text.split('\n\n')[1];
+  for (const kind of ['hyg_visit', 'checkout']) {
+    assert.match(second(kind), /^As we discussed at your visit, Dr\. DOC1 has referred you to River Endodontics for a specialist consultation\./, kind);
+  }
+  for (const kind of ['call', 'case', 'manual']) {
+    assert.match(second(kind), /^Dr\. DOC1 has referred you to River Endodontics for a specialist consultation\./, kind);
+    assert.doesNotMatch(second(kind), /discussed|visit/, kind);
+  }
+  // Every source kind the contract knows is one or the other.
+  assert.deepEqual([...letterText.VISIT_SOURCE_KINDS].sort(), ['checkout', 'hyg_visit']);
+  for (const kind of contract.TcReferralSourceKind.options) assert.ok(second(kind).length > 0);
+  // No doctor on file and no visit: the office refers.
+  assert.match(letterText.composePatientNotice({ ...base, referringProvider: '', sourceKind: 'call' }).text, /\n\nRoland Family Dental has referred you to/);
+});
+
+// ── P: the patient-email switch ─────────────────────────────────────────────
+
+test('P: switch OFF (the default) → no patient email, a named skip, no Open Dental lookup; the letter, its links and buttons unaffected', async (t) => {
+  const { baseUrl, db, acsCalls } = await boot(t, { patientEmail: false });
+  const { id, r, letter, notice } = await sent(baseUrl, db, acsCalls);
+  assert.equal(notice, null);
+  assert.deepEqual(messagesByRecipient(acsCalls), { [SPECIALIST]: 1 });
+  assert.equal(r.body.referral.status, 'sent');
+  assert.deepEqual(r.body.outcome.patientEmail, {
+    status: 'skipped',
+    message: 'Patient email is off for this office, so no patient email was sent.',
+  });
+  const skipped = eventsOf(db, id).filter((e) => e.verb === 'patient_email_skipped');
+  assert.equal(skipped.length, 1);
+  assert.equal(skipped[0].note, 'Patient not emailed: patient email is off for this office.');
+  assert.equal(odCalls.length, 0, 'no lookup for an email that will not be sent');
+  assert.equal(auditRows(db).some((a) => a.resource_type === 'tc_referral.patient_email_lookup'), false);
+  // The specialist side is exactly as with the switch on.
+  const l = linksOf(letter.body);
+  assert.ok(l.received && l.scheduled, 'both buttons are in the letter');
+  assert.deepEqual(tokensOf(db, id).map((x) => [x.audience, x.purpose]).sort(), [
+    ['specialist', 'received'],
+    ['specialist', 'scheduled'],
+  ]);
+  assert.equal((await postPage(baseUrl, { t: tokenOf(l.received) })).status, 200);
+  assert.equal(referralRow(db, id).status, 'acknowledged', 'the buttons still work');
+});
+
+test('P: switch ON → the patient email goes (the same send, one message per recipient class)', async (t) => {
+  const { baseUrl, db, acsCalls } = await boot(t, { patientEmail: true });
+  const { r, notice } = await sent(baseUrl, db, acsCalls);
+  assert.ok(notice);
+  assert.equal(r.body.outcome.patientEmail.status, 'sent');
+  assert.deepEqual(messagesByRecipient(acsCalls), { [SPECIALIST]: 1, [PATIENT]: 1 });
+});
+
+test('P: a console ON is obeyed; env=false beats it; the letter switch is a different switch', async (t) => {
+  const { baseUrl, db, acsCalls } = await boot(t, { patientEmail: false });
+  const harness = registry.getPlatformSetting;
+  registry.getPlatformSetting = async (key) =>
+    key === tcReferralPatientEmail.settingKey ? { key, value: { roland: true }, updated_at: NOW, updated_by: 'boss@carein.ai' } : harness(key);
+  tcReferralPatientEmail.resetCacheForTests();
+  const on = await sent(baseUrl, db, acsCalls);
+  assert.equal(on.r.body.outcome.patientEmail.status, 'sent', 'stored ON, no env: sent');
+
+  process.env.TC_REFERRAL_PATIENT_EMAIL_ENABLED_ROLAND = 'false';
+  tcReferralPatientEmail.resetCacheForTests();
+  const broken = await sent(baseUrl, db, acsCalls);
+  assert.equal(broken.notice, null);
+  assert.equal(eventsOf(db, broken.id).at(-1).note, 'Patient not emailed: patient email is off for this office.');
+  assert.equal(broken.r.body.referral.status, 'sent', 'the letter still went');
+  assert.equal(tcReferralPatientEmail.settingKey, 'tc_referral_patient_email_enabled');
+  assert.notEqual(tcReferralPatientEmail.settingKey, tcReferralEmail.settingKey);
 });
 
 test('N: no email on file → the letter goes, the patient is skipped by name, one message', async (t) => {

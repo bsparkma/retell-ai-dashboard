@@ -198,6 +198,9 @@ function composeReferralLetter({ referral, entry, office, attached, onRequest, a
  */
 const PATIENT_REASON_FALLBACK = 'a specialist consultation';
 
+/** (R5b) The sources a patient was SEEN for: the notice may say "as we discussed at your visit". */
+const VISIT_SOURCE_KINDS = Object.freeze(['hyg_visit', 'checkout']);
+
 /**
  * (R5b) The patient's notice, in the PM's approved words: subject, the text
  * ABOVE the button, and the text BELOW it (the renderer draws the button
@@ -209,19 +212,23 @@ const PATIENT_REASON_FALLBACK = 'a specialist consultation';
  *   entry: { practice_name?: string|null, specialist_name?: string|null, phone?: string|null },
  *   office: { name: string, phone: string|null },
  *   withFiles: boolean,        files went WITH the letter (not just "on request")
+ *   sourceKind: string,        where the referral was started (tc_referrals.source_kind)
  * }} input
  * @returns {{ subject: string, text: string, after: string }}
  */
-function composePatientNotice({ patientName, referringProvider = null, entry, office, withFiles }) {
+function composePatientNotice({ patientName, referringProvider = null, entry, office, withFiles, sourceKind }) {
   const first = nameParts(patientName).first;
   const specialistOffice = oneLine(entry.practice_name) || oneLine(entry.specialist_name) || 'the specialist';
   const phone = oneLine(entry.phone);
   const doctor = signedBy(referringProvider);
+  // "As we discussed at your visit," only where there WAS a visit behind it
+  // (PM ruling): a referral started from a call, a case or by hand drops it.
+  const opening = VISIT_SOURCE_KINDS.includes(sourceKind) ? 'As we discussed at your visit, ' : '';
 
   const subject = oneLine(`We've sent your referral to ${specialistOffice}`);
   const text = [
     first ? `Hi ${first},` : 'Hello,',
-    `As we discussed at your visit, ${doctor || office.name} has referred you to ${specialistOffice} for ${PATIENT_REASON_FALLBACK}. We've already sent them your information${withFiles ? ' and X-rays' : ''}, so they'll know exactly why you're coming.`,
+    `${opening}${doctor || office.name} has referred you to ${specialistOffice} for ${PATIENT_REASON_FALLBACK}. We've already sent them your information${withFiles ? ' and X-rays' : ''}, so they'll know exactly why you're coming.`,
     phone
       ? `Here's what to do next: call them at ${phone} to set up your appointment.`
       : `Here's what to do next: call them to set up your appointment.${office.phone ? ` If you need their number, call us at ${office.phone}.` : ''}`,
@@ -243,6 +250,7 @@ module.exports = {
   LINKS_PARAGRAPH,
   PATIENT_LINK_LABEL,
   PATIENT_REASON_FALLBACK,
+  VISIT_SOURCE_KINDS,
   composePatientNotice,
   nameParts,
   specialistLastName,

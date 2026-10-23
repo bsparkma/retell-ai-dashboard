@@ -61,7 +61,10 @@
  *   The public side is routes/referralLinkWebhooks.js.
  *
  *   THE PATIENT'S NOTICE (notifyPatient). Only once the letter is recorded as
- *   sent: one more message, to the patient. Its address is read from THIS
+ *   sent, and only where the office's own switch is on
+ *   (config/tcReferralPatientEmail.js, default OFF — off is a named skip, and
+ *   the letter, its links and buttons are unaffected): one more message, to
+ *   the patient. Its address is read from THIS
  *   office's Open Dental, read only (services/tc/referralPatientContact.js —
  *   the send path's only Open Dental access). No address on file, an opt-out,
  *   or Open Dental unreadable → no email and a named `patient_email_skipped`
@@ -91,6 +94,7 @@ const referralLetter = require('../../services/messaging/referralLetter');
 const { MessagingError } = require('../../services/messaging/errors');
 const patientContact = require('../../services/tc/referralPatientContact');
 const tcReferralEmail = require('../../config/tcReferralEmail');
+const tcReferralPatientEmail = require('../../config/tcReferralPatientEmail');
 const acsConfig = require('../../config/acsEmail');
 const odOffices = require('../../config/odOffices');
 
@@ -565,6 +569,7 @@ function linkExpiry(at) {
  * email on file", and so on. Each names a fact; none guesses.
  */
 const PATIENT_SKIP_NOTE = Object.freeze({
+  switched_off: 'Patient not emailed: patient email is off for this office.',
   no_email: 'Patient not emailed: the patient has no email on file in Open Dental.',
   not_found: "Patient not emailed: the patient was not found in this office's Open Dental.",
   not_connected: "Patient not emailed: Open Dental isn't connected for this office, so the patient's email could not be looked up.",
@@ -575,6 +580,7 @@ const PATIENT_SKIP_NOTE = Object.freeze({
 
 /** What the hub says for each skip (short; the history row has the sentence). */
 const PATIENT_SKIP_OUTCOME = Object.freeze({
+  switched_off: 'Patient email is off for this office, so no patient email was sent.',
   no_email: 'The patient has no email on file, so no patient email was sent.',
   not_found: "The patient wasn't found in Open Dental, so no patient email was sent.",
   not_connected: "Open Dental isn't connected for this office, so no patient email was sent.",
@@ -626,6 +632,16 @@ async function notifyPatient(req, { office, row, entry, withFiles }) {
     return { status: 'skipped', message: PATIENT_SKIP_OUTCOME[why] };
   };
 
+  // The office's own switch for this email, before anything else: off means
+  // no patient email and no Open Dental lookup for one. A failed read is off.
+  let patientEmailOn = false;
+  try {
+    patientEmailOn = await tcReferralPatientEmail.isEnabled(office);
+  } catch {
+    patientEmailOn = false;
+  }
+  if (!patientEmailOn) return skip('switched_off');
+
   // The lookup reads PHI from Open Dental: on the record first, or not at all.
   try {
     await audit(req, {
@@ -668,6 +684,7 @@ async function notifyPatient(req, { office, row, entry, withFiles }) {
       entry,
       office: { name: details.name, phone: details.phone },
       withFiles,
+      sourceKind: String(row.source_kind ?? ''),
     });
     const rendered = referralLetter.renderPatientNotice({
       office,
