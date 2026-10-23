@@ -2050,6 +2050,13 @@ export const POSTING_STEPS = [
    * is what `stuckKind` reads (PM ruling, 2026-10-12).
    */
   "confirm_patient_interrupted",
+  /*
+   * W-21b. `read_od_truth` found the claim deleted, on a plan that may already
+   * have written, so it could not be retired. Its own slug so the screens can
+   * stop offering Post: no press can settle it (`CLAIM_GONE_STEP` in
+   * `postingDrain.js`).
+   */
+  "read_od_truth_claim_gone",
   "document_attach",
 ] as const;
 export type PostingStep = (typeof POSTING_STEPS)[number];
@@ -2183,6 +2190,14 @@ export interface PostingQueuePage {
   rows: PostingQueueRow[];
   /** Zero-filled over the whole vocabulary — a missing state is a measured 0. */
   byStatus: Record<PostingQueueStatus, number>;
+  /**
+   * W-21c. How many `outcome_unknown` / `partially_posted` plans sit over a
+   * claim deleted from Open Dental (step `read_od_truth_claim_gone`). Still in
+   * `byStatus` under their own state and still drainable — but no press can
+   * settle them, so "waiting to post" leaves them out. Optional: a server one
+   * revision older does not send it.
+   */
+  claimGone?: number;
   total: number;
   limit: number;
   offset: number;

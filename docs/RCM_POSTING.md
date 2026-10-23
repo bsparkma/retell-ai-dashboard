@@ -944,6 +944,71 @@ measurement completed". A run that stops during that step is `partially_posted`
 records this step instead — restoring the proxy structurally. Only the measured
 branch's own finalise ever records `confirm_patient`.
 
+**`read_od_truth_claim_gone` (W-21b #259, extended by W-21c).** When
+`read_od_truth` 404s on a claim and the plan's evidence says it may already have
+written, the plan is NOT withdrawn (that would say "this never happened"). It
+settles from evidence into `outcome_unknown` or `partially_posted` — the two
+`CLAIM_GONE_STATUSES` — and records this step. Open Dental never reissues a
+ClaimNum, so every later press reads the same 404 and settles the same ending.
+The status stays legal and drainable (D-15); what the step changes is what the
+screens offer:
+
+- no Post button on the check's page; the hint, the rail step and the disabled
+  call-to-action all read *"The claim this payment was for is no longer in Open
+  Dental, so posting can never confirm what reached the chart — pressing Post
+  again will not change that. Check the patient's chart in Open Dental, and post
+  this payment by hand only if the money isn't there."*;
+- the history row shows only what is on record (the check number and
+  do-not-re-enter when there is one) and never "press Post again";
+- a `partially_posted` check page shows its own claim-gone screen instead of the
+  stopped one: no "press Post again", no "do not change anything in Open
+  Dental", no tomorrow card (it can never finish). The W-16 suites
+  (`rcm-ui-s5` "W-16 · STOPPED", `rcm-smoke` 3.8) except exactly this step from
+  their press-again assertions, and `rcm-smoke`'s sentence list carries the
+  claim-gone sentence — PM ruling 2026-10-23. `rcm-w21c-dead-presses.test.tsx`
+  holds the mirror: no press at this step in either status, the ordinary screen
+  at every other;
+- the list route returns `claimGone` — how many plans sit at this step in those
+  two statuses — and the Posting screen's "waiting to post" and its Drain button
+  leave them out, naming them apart (*"· N whose claim is no longer in Open
+  Dental"*). `byStatus` still counts them under their own state.
+
+Nothing auto-retries, auto-settles or withdraws such a plan, and no Open Dental
+call or write was added for it.
+
+**Blocked after a write carries the proof block (W-21b #259).** `blocked`
+promises nothing was attempted. A `no_adj_type` refusal that fires once the
+plan's check is in the chart — on a resume, now that the preflight below
+refuses it before any write for a plan with nothing written — breaks that
+promise, so `blockRow` records the check number (created OR adopted; an adopted
+check otherwise lived only in a local until `finalizeRow`, which a block never
+reaches). A `blocked` row carrying `od_claim_payment_num` renders the shared
+proof block (`EarlierCheckProof`) on the check page and the history: *"An Open
+Dental check #N from an earlier run exists. Do not enter this payment again by
+hand."* — the number, no amount, no remediation, ahead of the reason. The
+history does not offer to retire it (`rcm_posting_queue_withdrawn_no_money_check`
+would refuse anyway). A blocked row with no check renders as it always did.
+
+**Definitions are resolved before the first write (W-21c).** The payment type
+(when the plan owes a check) and the recoupment adjustment type (when a takeback
+line takes the `adjustment` path) are checked in the pre-write block, against
+the configuration it has already resolved — no extra Open Dental call. The call
+order is now: load plan → preconditions → resolve the office configuration
+(`/definitions`, `/preferences`) → office write-off type → **payment type and
+recoupment type** → record `requires_check` → `read_od_truth` (`/claims`,
+`/claimprocs`) → the first write. A missing one is `blocked` with the same
+reason and sentence as before, with nothing written.
+
+That preflight applies **only when the evidence says nothing has been written**.
+A resume carrying an earlier write must settle its pending intents by re-reading
+the chart, and a check it may already hold needs no payment type, so blocking it
+early would hide that write behind `blocked`. The in-run lookups stay as the
+safety net, and `refuseFromEvidence` classifies their refusal: the check is in
+the chart → `blocked` + check number (the proof block); nothing written →
+`blocked`, as before; anything else → the ending the intents prove
+(`partially_posted` / `outcome_unknown` / `failed`), never a bare `blocked` over
+a write.
+
 The pre-flight row below is unchanged:
 
 | Failed at | Row becomes |

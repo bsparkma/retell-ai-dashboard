@@ -307,7 +307,21 @@ router.get(
         `SELECT status, count(*)::int AS n FROM rcm_posting_queue WHERE office_id = $1 GROUP BY status`,
         [office]
       );
+      /*
+       * W-21c: the plans pressing Post can never settle — their claim was
+       * deleted from Open Dental (`CLAIM_GONE_STEP`). Still drainable (D-15)
+       * and still counted under their own status in `byStatus`; this is the
+       * number the screen takes OUT of "waiting to post".
+       */
+      const goneTally = await pool.query(
+        `SELECT status, count(*)::int AS n FROM rcm_posting_queue ` +
+          `WHERE office_id = $1 AND drain_step = $2 GROUP BY status`,
+        [office, postingDrain.CLAIM_GONE_STEP]
+      );
       return {
+        claimGone: goneTally.rows
+          .filter((r) => postingDrain.CLAIM_GONE_STATUSES.includes(String(r.status)))
+          .reduce((a, r) => a + num(r.n), 0),
         rows: page.rows,
         labels: new Map(batches.rows.map((b) => [String(b.batch_id), b])),
         // ONE statement for the whole page, joined to the keys already in hand
@@ -324,7 +338,7 @@ router.get(
         settings: await postingGate.readOfficeSettings(pool, office),
       };
     });
-    const { rows, labels, actors, counts, total, settings } = loaded;
+    const { rows, labels, actors, counts, total, settings, claimGone } = loaded;
 
     /*
      * ZERO-FILLED over the CHECK's own vocabulary, so a state this office
@@ -343,6 +357,12 @@ router.get(
       office,
       rows: rows.map((r) => toQueueRow(r, labels.get(String(r.batch_id)), actors)),
       byStatus,
+      /**
+       * W-21c: how many of the `outcome_unknown` / `partially_posted` plans in
+       * `byStatus` sit over a deleted claim. A screen's "waiting to post"
+       * subtracts these: a press would pick them up and settle nothing.
+       */
+      claimGone,
       total,
       limit,
       offset,
