@@ -1,14 +1,19 @@
 /**
- * W-21c — THE OFFICE-WIDE DRAIN COUNT stops calling claim-gone plans waiting.
+ * W-21c — the dead presses W-21b left: a `partially_posted` plan over a deleted
+ * claim, and the office-wide Drain count that still called such plans waiting.
  *
- * The server counts plans at `read_od_truth_claim_gone` apart (`claimGone`).
- * "Waiting to post" leaves them out, and the header names them on their own.
- * They stay drainable (D-15) and keep their own state in `byStatus`.
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 2. partially_posted AT read_od_truth_claim_gone
+ * ═════════════════════════════════════════════════════════════════════════════
+ * Money provably landed, then the claim was deleted. Every press reads the same
+ * 404. It gets W-21b's treatment: situation named, the chart-check instruction,
+ * no Post offered. An ordinary partially_posted row is pinned unchanged.
  *
- * (Item 2 of the W-21c brief — the partially_posted dead-press removal — is NOT
- * here: the W-16 suites assert the ordinary stopped screen, press-again included,
- * at EVERY step in POSTING_STEPS, claim-gone among them, and they must pass
- * untouched. See the PR report.)
+ * ═════════════════════════════════════════════════════════════════════════════
+ * 3. THE OFFICE-WIDE COUNT
+ * ═════════════════════════════════════════════════════════════════════════════
+ * The server counts claim-gone plans apart (`claimGone`). "Waiting to post"
+ * leaves them out; they are named on their own. They stay drainable (D-15).
  *
  * NO REAL PATIENT DATA. Synthetic names; PatNum 12827 is the documented fixture.
  */
@@ -265,6 +270,13 @@ function queuePage(rows: Record<string, unknown>[], byStatus: Record<string, num
 
 
 
+import {
+  CLAIM_GONE_COPY,
+  CLAIM_GONE_STATUSES,
+  CLAIM_GONE_STEP,
+  POST_AGAIN_SAFE,
+  claimGone,
+} from "@/features/rcm/posting";
 
 /** A dollar figure, as `money()` prints one. */
 const FIGURE = /\$\s?\d/;
@@ -303,6 +315,107 @@ const PARTLY_GONE = {
   lastError:
     "Open Dental has no claim 53648 in this office, but this plan has already written to a chart on a previous attempt.",
 };
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 2. partially_posted OVER A DELETED CLAIM
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("W-21c · partially_posted over a deleted claim gets the claim-gone treatment", () => {
+  it("the predicate, hint and rail all name it — never a press", () => {
+    expect([...CLAIM_GONE_STATUSES]).toEqual(["outcome_unknown", "partially_posted"]);
+    const row = planRow(PARTLY_GONE) as never;
+    expect(claimGone(row)).toBe(true);
+    expect(stuckKind(row)).toBe("stopped");
+    expect(queueHint(row)).toBe(CLAIM_GONE_COPY);
+    const step = postStepFor(row);
+    expect(step.state).toBe("blocked");
+    expect(step.detail).toBe(CLAIM_GONE_COPY);
+  });
+
+  it("on the check's own page: no Post button, the situation named, the chart-check instruction, no tomorrow card", async () => {
+    state.confirmed = { "c-1": STALE_RED }; // a red verdict on record must still not surface
+    state.detail = detail(PARTLY_GONE);
+    const { container } = renderAt(<PostThisCheck office="roland" queueId="q-1" onPosted={() => {}} />);
+    await screen.findByTestId("stuck-stopped");
+
+    expect(screen.queryByTestId("post-this-check-button"), "a dead press is not offered").toBeNull();
+    expect(screen.getByTestId("post-this-check-not-postable").textContent).toBe(CLAIM_GONE_COPY);
+
+    const next = screen.getByTestId("stuck-claim-gone-next").textContent ?? "";
+    expect(next).toMatch(/deleted from Open Dental/);
+    expect(next).toMatch(/Look at the patient.s chart in Open Dental/);
+    expect(next).toMatch(/only if the money isn.t there/);
+    expect(screen.getByTestId("stuck-stopped-no-reentry").textContent).toContain("#21436");
+    expect(screen.getByTestId("stuck-stopped-step").textContent).toContain(
+      "while reading Open Dental and finding the claim no longer there",
+    );
+
+    // The ordinary stopped promises are gone: resume, don't-touch-the-chart, finishes-tomorrow.
+    expect(screen.queryByTestId("stuck-stopped-next")).toBeNull();
+    expect(screen.queryByTestId("stuck-stopped-nothing-measured")).toBeNull();
+    expect(screen.queryByTestId("stuck-tomorrow")).toBeNull();
+    for (const id of MEASURED_IDS) expect(screen.queryByTestId(id), id).toBeNull();
+
+    const stuck = screen.getByTestId("stuck-stopped").textContent ?? "";
+    expect(stuck, "no figure").not.toMatch(FIGURE);
+    expect(container.textContent).not.toMatch(PRESS_AGAIN);
+    expect(container.textContent, "never the run's own text").not.toContain("already written to a chart");
+  });
+
+  it("with no check on record it does not say 'do not enter it by hand' — the instruction is conditional", async () => {
+    state.detail = detail({ ...PARTLY_GONE, odClaimPaymentNum: null });
+    renderAt(<PostThisCheck office="roland" queueId="q-1" onPosted={() => {}} />);
+    await screen.findByTestId("stuck-stopped");
+    expect(screen.getByTestId("stuck-stopped-no-reentry").textContent).toBe(
+      "Part of it may already be in Open Dental.",
+    );
+  });
+
+  it("on the Posting history: the claim-gone panel, not the stopped one, and no press-again", async () => {
+    state.queue = queuePage([planRow(PARTLY_GONE)], { partially_posted: 1 });
+    renderAt(<PostingQueue />, "/rcm/posting");
+    const card = await screen.findByTestId("posting-plan-q-1");
+
+    expect(screen.getByTestId("posting-state-q-1").textContent).toBe("Partly posted");
+    expect(screen.getByTestId("posting-hint-q-1").textContent).toBe(CLAIM_GONE_COPY);
+    expect(screen.getByTestId("posting-claim-gone-q-1").textContent).toContain("#21436");
+    expect(screen.queryByTestId("posting-stopped-q-1")).toBeNull();
+    expect(screen.queryByTestId("posting-measured-q-1")).toBeNull();
+    expect(card.textContent).not.toMatch(PRESS_AGAIN);
+  });
+});
+
+describe("W-21c · an ORDINARY partially_posted row is unchanged", () => {
+  const ORDINARY = { ...PARTLY_GONE, step: "confirm_patient_interrupted" };
+
+  it("predicate, hint and rail", () => {
+    const row = planRow(ORDINARY) as never;
+    expect(claimGone(row)).toBe(false);
+    expect(queueHint(row)).toBe(QUEUE_STATE_COPY.partially_posted.hint);
+    expect(postStepFor(row).detail).toBe(
+      "Money reached the chart and the posting stopped part-way. The lines below say exactly where.",
+    );
+  });
+
+  it("the check page still offers Post, and the stopped screen keeps its own three promises", async () => {
+    state.detail = detail(ORDINARY);
+    renderAt(<PostThisCheck office="roland" queueId="q-1" onPosted={() => {}} />);
+    await screen.findByTestId("stuck-stopped");
+    expect((screen.getByTestId("post-this-check-button") as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByTestId("stuck-stopped-next").textContent).toMatch(/Post to Open Dental/);
+    expect(screen.getByTestId("stuck-stopped-nothing-measured")).toBeTruthy();
+    expect(screen.getByTestId("stuck-tomorrow")).toBeTruthy();
+    expect(screen.queryByTestId("stuck-claim-gone-next")).toBeNull();
+  });
+
+  it("the history still shows the stopped panel with its press-again sentence", async () => {
+    state.queue = queuePage([planRow(ORDINARY)], { partially_posted: 1 });
+    renderAt(<PostingQueue />, "/rcm/posting");
+    await screen.findByTestId("posting-plan-q-1");
+    expect(screen.getByTestId("posting-stopped-q-1").textContent).toMatch(/Press Post to Open Dental again/);
+    expect(screen.queryByTestId("posting-claim-gone-q-1")).toBeNull();
+  });
+});
 
 // ═════════════════════════════════════════════════════════════════════════════
 // 3. THE OFFICE-WIDE COUNT
@@ -356,5 +469,80 @@ describe("W-21c · the office-wide Drain count leaves claim-gone plans out", () 
       "All time: 1 waiting · 0 posted · 0 stuck · 1 total",
     );
     expect((screen.getByTestId("posting-drain-roland") as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE MIRRORED NEGATIVES (PM ruling 2026-10-23)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// The W-16 suites now except exactly CLAIM_GONE_STEP from their press-again
+// assertions. These are the other half of that carve-out: the claim-gone screen,
+// in BOTH statuses, must never offer the press; every OTHER stopped step must
+// still render the ordinary screen. Neither half may silently widen.
+
+/** Every way a screen offers the next posting pass. */
+const PRESS_SENTENCES = ["resumes from what the chart shows", POST_AGAIN_SAFE];
+
+function assertNoPress(text: string, label: string) {
+  for (const s of PRESS_SENTENCES) expect(text, `${label}: "${s}"`).not.toContain(s);
+  expect(text, label).not.toMatch(PRESS_AGAIN);
+}
+
+describe("W-21c · NEGATIVE: the claim-gone screen never offers the press — both statuses", () => {
+  for (const status of CLAIM_GONE_STATUSES) {
+    const row = { ...PARTLY_GONE, status, statusLabel: status, step: CLAIM_GONE_STEP };
+
+    it(`${status}: the check page has no Post button and no press-again sentence`, async () => {
+      state.detail = detail(row);
+      const { container } = renderAt(<PostThisCheck office="roland" queueId="q-1" onPosted={() => {}} />);
+      await screen.findByTestId("post-this-check");
+      expect(screen.queryByTestId("post-this-check-button"), status).toBeNull();
+      expect(screen.queryByTestId("stuck-stopped-next"), status).toBeNull();
+      expect(screen.getByTestId("post-this-check-not-postable").textContent).toBe(CLAIM_GONE_COPY);
+      assertNoPress(container.textContent ?? "", status);
+    });
+
+    it(`${status}: the history row and the rail offer no press either`, async () => {
+      state.queue = { ...queuePage([planRow(row)], { [status]: 1 }), claimGone: 1 };
+      renderAt(<PostingQueue />, "/rcm/posting");
+      const card = await screen.findByTestId("posting-plan-q-1");
+      assertNoPress(card.textContent ?? "", status);
+      expect(postStepFor(planRow(row) as never).detail).toBe(CLAIM_GONE_COPY);
+    });
+  }
+});
+
+describe("W-21c · POSITIVE: every OTHER stopped step still renders the ordinary screen", () => {
+  // Enumerated in full: every step the W-16 loop covers, minus ONLY the excepted one.
+  const ordinary = [null, ...POSTING_STEPS.filter((s) => s !== "confirm_patient" && s !== CLAIM_GONE_STEP)];
+
+  it("the carve-out removes exactly one step", () => {
+    expect(ordinary.length).toBe(POSTING_STEPS.length - 2 + 1);
+    expect(ordinary).not.toContain(CLAIM_GONE_STEP);
+  });
+
+  for (const step of ordinary) {
+    it(`partially_posted at ${String(step)}: the press is offered, the ordinary stopped screen renders`, async () => {
+      const row = { ...PARTLY_GONE, step };
+      expect(claimGone(planRow(row) as never)).toBe(false);
+      state.detail = detail(row);
+      renderAt(<PostThisCheck office="roland" queueId="q-1" onPosted={() => {}} />);
+      await screen.findByTestId("stuck-stopped");
+      expect((screen.getByTestId("post-this-check-button") as HTMLButtonElement).disabled).toBe(false);
+      expect(screen.getByTestId("stuck-stopped-next").textContent).toContain(
+        "resumes from what the chart shows",
+      );
+      expect(screen.getByTestId("stuck-tomorrow")).toBeTruthy();
+      expect(screen.queryByTestId("stuck-claim-gone-next")).toBeNull();
+    });
+  }
+
+  it("outcome_unknown at an ordinary step still offers the press (W-21)", async () => {
+    const row = { ...PARTLY_GONE, status: "outcome_unknown", statusLabel: "outcome_unknown", step: "check" };
+    state.detail = detail(row);
+    renderAt(<PostThisCheck office="roland" queueId="q-1" onPosted={() => {}} />);
+    await screen.findByTestId("post-this-check");
+    expect((screen.getByTestId("post-this-check-button") as HTMLButtonElement).disabled).toBe(false);
   });
 });
