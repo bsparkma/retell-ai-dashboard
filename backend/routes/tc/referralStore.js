@@ -443,6 +443,8 @@ async function insertEvent(q, { office, referralId, from, to, actor, at, note, v
 /** The fields the two R6 edit surfaces may change → their columns. */
 const FIELD_COLUMNS = [
   ['directoryEntryId', 'directory_entry_id'],
+  // Provider directory: a pick (its display name) or "Other" free text.
+  ['referringProvider', 'referring_provider'],
   ['urgency', 'urgency'],
   ['reason', 'reason'],
   ['teeth', 'teeth'],

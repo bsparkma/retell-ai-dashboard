@@ -21,6 +21,7 @@ import { Send } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
+  fetchVisitProviderDirectory,
   fetchVisitReferralDirectory,
   fetchVisitReferrals,
   HygApiError,
@@ -137,6 +138,7 @@ export function VisitReferral({ office, aptNum }: { office: OfficeId; aptNum: nu
         submitOnly
         sourceLabel="this visit"
         loadDirectory={() => fetchVisitReferralDirectory(office, aptNum)}
+        loadProviders={() => fetchVisitProviderDirectory(office, aptNum)}
         onClose={() => setOpen(false)}
         onSave={(input, _submit, files) => void save(input, files)}
       />

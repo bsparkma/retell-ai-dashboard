@@ -29,6 +29,7 @@ import {
   TcReferralDirectoryEntry,
   type TcReferralInput,
 } from "@shared/tc/referrals";
+import { TcProviderEntry } from "@shared/tc/providers";
 import {
   type HygDayScope,
   FlagSourceSchema,
@@ -919,6 +920,13 @@ function parseWith<T>(schema: z.ZodType<T>): (raw: unknown) => T {
 /** The referrals started from this visit. Refused (REFERRALS_DISABLED) while referrals is off. */
 export async function fetchVisitReferrals(office: OfficeId, aptNum: number): Promise<TcReferral[]> {
   return (await get(`/visit/${aptNum}/referrals`, { office }, parseWith(VisitReferralsResponse))).referrals;
+}
+
+const VisitProvidersResponse = z.object({ success: z.literal(true), entries: z.array(TcProviderEntry) });
+
+/** The office's active providers (provider directory), for the referring-provider pick. */
+export async function fetchVisitProviderDirectory(office: OfficeId, aptNum: number): Promise<TcProviderEntry[]> {
+  return (await get(`/visit/${aptNum}/provider-directory`, { office }, parseWith(VisitProvidersResponse))).entries;
 }
 
 /** The office's active specialists, for the chairside picker. */

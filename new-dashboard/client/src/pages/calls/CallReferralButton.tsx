@@ -30,6 +30,7 @@ import {
   uploadReferralAttachment,
 } from "@/features/tc/referrals/referralsApi";
 import { ReferralDialog, ReferralStatusBadge, reportFailedUploads, uploadAll } from "@/features/tc/referrals/ReferralsPanel";
+import { listActiveProviders } from "@/features/tc/providers/providersApi";
 import { TcReferral, referralReturnedLine, type TcReferralInput } from "@shared/tc/referrals";
 import type { OfficeId } from "@shared/tc/contract";
 
@@ -132,6 +133,7 @@ export function CallReferralButton({ call }: { call: CallReferralCall }) {
         saving={saving}
         sourceLabel="this call's matched patient"
         loadDirectory={() => listDirectory(office, false)}
+        loadProviders={() => listActiveProviders(office)}
         onClose={() => setOpen(false)}
         onSave={(input, submit, files) => void save(input, submit, files)}
       />

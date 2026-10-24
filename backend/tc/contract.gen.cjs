@@ -14813,10 +14813,10 @@ var require_zod = __commonJS({
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.z = void 0;
-    var z11 = __importStar(require_external());
-    exports2.z = z11;
+    var z12 = __importStar(require_external());
+    exports2.z = z12;
     __exportStar(require_external(), exports2);
-    exports2.default = z11;
+    exports2.default = z12;
   }
 });
 
@@ -14938,6 +14938,8 @@ __export(contract_entry_exports, {
   TC_INTAKE_KIND_LABELS: () => TC_INTAKE_KIND_LABELS,
   TC_NOTIFICATION_EVENT_LABELS: () => TC_NOTIFICATION_EVENT_LABELS,
   TC_NOTIFICATION_LEVEL_LABELS: () => TC_NOTIFICATION_LEVEL_LABELS,
+  TC_PROVIDER_NAME_MAX: () => TC_PROVIDER_NAME_MAX,
+  TC_PROVIDER_SUFFIX_MAX: () => TC_PROVIDER_SUFFIX_MAX,
   TC_REFERRAL_ALL_EVENT_VERBS: () => TC_REFERRAL_ALL_EVENT_VERBS,
   TC_REFERRAL_ATTACHMENT_MAX_BYTES: () => TC_REFERRAL_ATTACHMENT_MAX_BYTES,
   TC_REFERRAL_ATTACHMENT_MAX_FILES: () => TC_REFERRAL_ATTACHMENT_MAX_FILES,
@@ -14999,6 +15001,12 @@ __export(contract_entry_exports, {
   TcNurtureEnrollment: () => TcNurtureEnrollment,
   TcObjection: () => TcObjection,
   TcPreauthCase: () => TcPreauthCase,
+  TcPreauthStartCaseRequest: () => TcPreauthStartCaseRequest,
+  TcProviderEntry: () => TcProviderEntry,
+  TcProviderImportRequest: () => TcProviderImportRequest,
+  TcProviderImportResponse: () => TcProviderImportResponse,
+  TcProviderInput: () => TcProviderInput,
+  TcProviderListResponse: () => TcProviderListResponse,
   TcReferral: () => TcReferral,
   TcReferralAttachment: () => TcReferralAttachment,
   TcReferralCreateRequest: () => TcReferralCreateRequest,
@@ -15038,7 +15046,7 @@ __export(contract_entry_exports, {
   Urgency: () => Urgency,
   Uuid: () => Uuid,
   VoiceHandoffDetail: () => VoiceHandoffDetail,
-  ZodError: () => import_zod10.ZodError,
+  ZodError: () => import_zod11.ZodError,
   allPresetViolations: () => allPresetViolations,
   assertPresetsWithinCaps: () => assertPresetsWithinCaps,
   attachmentProblem: () => attachmentProblem,
@@ -15066,6 +15074,7 @@ __export(contract_entry_exports, {
   nurtureTrack: () => nurtureTrack,
   preauthToRow: () => preauthToRow,
   presetViolations: () => presetViolations,
+  providerDisplayName: () => providerDisplayName,
   readBlock: () => readBlock,
   readBlocks: () => readBlocks,
   referralChipFor: () => referralChipFor,
@@ -15088,7 +15097,7 @@ __export(contract_entry_exports, {
   templateToRow: () => templateToRow,
   unpricedCheckoutPhases: () => unpricedCheckoutPhases,
   userMapEntryToRow: () => userMapEntryToRow,
-  z: () => import_zod10.z
+  z: () => import_zod11.z
 });
 module.exports = __toCommonJS(contract_entry_exports);
 
@@ -17713,6 +17722,8 @@ var TC_REFERRAL_DOCTOR_NOTE_MAX = 4e3;
 var TC_REFERRAL_PATIENT_REASON_MAX = 200;
 var fieldShape = {
   directoryEntryId: import_zod8.z.string().uuid().nullable().optional(),
+  /** Provider directory: a pick from the office's list, or "Other" free text. */
+  referringProvider: import_zod8.z.string().trim().max(200).optional(),
   urgency: TcReferralUrgency.optional(),
   reason: import_zod8.z.string().trim().min(1, "Say why you are referring").max(2e3).optional(),
   teeth: TcReferralTeeth.optional(),
@@ -17843,6 +17854,9 @@ function referralReturnedLine(returned) {
 function referralEditSummary(before, change) {
   const out = [];
   if (change.directoryEntryId !== void 0 && change.directoryEntryId !== before.directoryEntryId) out.push("specialist");
+  if (change.referringProvider !== void 0 && change.referringProvider !== (before.referringProvider ?? "")) {
+    out.push("referring provider");
+  }
   if (change.urgency !== void 0 && change.urgency !== before.urgency) {
     out.push(`how soon (${TC_REFERRAL_URGENCY_LABELS[before.urgency]} \u2192 ${TC_REFERRAL_URGENCY_LABELS[change.urgency]})`);
   }
@@ -18014,8 +18028,54 @@ var TcEmailIdentityRequest = import_zod9.z.object({
   referralBcc: line(EMAIL_IDENTITY_LIMITS.referralBcc).regex(ONE_ADDRESS, "must be one plain email address").nullable().optional()
 }).strict();
 
+// shared/tc/providers.ts
+var import_zod10 = __toESM(require_zod(), 1);
+var TC_PROVIDER_NAME_MAX = 200;
+var TC_PROVIDER_SUFFIX_MAX = 40;
+var TcProviderInput = import_zod10.z.object({
+  name: import_zod10.z.string().trim().min(1, "Name is required").max(TC_PROVIDER_NAME_MAX),
+  /** "DDS", "DMD", "RDH" — printed after the name. Optional. */
+  credentialSuffix: import_zod10.z.string().trim().max(TC_PROVIDER_SUFFIX_MAX).default(""),
+  active: import_zod10.z.boolean().default(true)
+}).strict();
+var TcProviderEntry = import_zod10.z.object({
+  providerId: import_zod10.z.string().uuid(),
+  officeId: import_zod10.z.enum(["roland", "valley"]),
+  name: import_zod10.z.string(),
+  credentialSuffix: import_zod10.z.string(),
+  active: import_zod10.z.boolean(),
+  /** Open Dental's ProvNum when the row came from an import; null when added by hand. */
+  odProvNum: import_zod10.z.number().int().positive().nullable(),
+  createdBy: import_zod10.z.string(),
+  createdAt: import_zod10.z.string(),
+  updatedBy: import_zod10.z.string(),
+  updatedAt: import_zod10.z.string()
+});
+var TcProviderListResponse = import_zod10.z.object({
+  success: import_zod10.z.literal(true),
+  entries: import_zod10.z.array(TcProviderEntry),
+  canEdit: import_zod10.z.boolean().optional()
+});
+var TcProviderImportRequest = import_zod10.z.object({}).strict();
+var TcProviderImportResponse = import_zod10.z.object({
+  success: import_zod10.z.literal(true),
+  added: import_zod10.z.number().int().nonnegative(),
+  updated: import_zod10.z.number().int().nonnegative(),
+  unchanged: import_zod10.z.number().int().nonnegative(),
+  skippedHidden: import_zod10.z.number().int().nonnegative(),
+  skippedHygienists: import_zod10.z.number().int().nonnegative(),
+  skippedNoName: import_zod10.z.number().int().nonnegative(),
+  entries: import_zod10.z.array(TcProviderEntry)
+});
+function providerDisplayName(p) {
+  const name = p.name.trim();
+  const suffix = p.credentialSuffix.trim();
+  return suffix ? `${name}, ${suffix}` : name;
+}
+var TcPreauthStartCaseRequest = import_zod10.z.object({}).strict();
+
 // ../backend/tc/contract.entry.ts
-var import_zod10 = __toESM(require_zod());
+var import_zod11 = __toESM(require_zod());
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   ButtonBlock,
@@ -18133,6 +18193,8 @@ var import_zod10 = __toESM(require_zod());
   TC_INTAKE_KIND_LABELS,
   TC_NOTIFICATION_EVENT_LABELS,
   TC_NOTIFICATION_LEVEL_LABELS,
+  TC_PROVIDER_NAME_MAX,
+  TC_PROVIDER_SUFFIX_MAX,
   TC_REFERRAL_ALL_EVENT_VERBS,
   TC_REFERRAL_ATTACHMENT_MAX_BYTES,
   TC_REFERRAL_ATTACHMENT_MAX_FILES,
@@ -18194,6 +18256,12 @@ var import_zod10 = __toESM(require_zod());
   TcNurtureEnrollment,
   TcObjection,
   TcPreauthCase,
+  TcPreauthStartCaseRequest,
+  TcProviderEntry,
+  TcProviderImportRequest,
+  TcProviderImportResponse,
+  TcProviderInput,
+  TcProviderListResponse,
   TcReferral,
   TcReferralAttachment,
   TcReferralCreateRequest,
@@ -18261,6 +18329,7 @@ var import_zod10 = __toESM(require_zod());
   nurtureTrack,
   preauthToRow,
   presetViolations,
+  providerDisplayName,
   readBlock,
   readBlocks,
   referralChipFor,

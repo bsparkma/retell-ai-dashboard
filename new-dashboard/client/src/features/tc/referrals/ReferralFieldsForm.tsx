@@ -1,5 +1,6 @@
 /**
  * The four sign-off fields — specialist, how soon, reason, teeth — the
+ * referring provider (a provider directory pick, or "Other" free text), the
  * reason in plain words (for the patient's email only), and, for the doctor,
  * their own note (queue item 56, R6).
  *
@@ -29,11 +30,14 @@ import {
   type TcReferralDirectoryEntry,
   type TcReferralTeeth,
 } from "@shared/tc/referrals";
+import type { TcProviderEntry } from "@shared/tc/providers";
+import { ProviderPicker } from "@/features/tc/providers/ProviderPicker";
 
 export type ReferralFieldsChange = TcReferralDoctorEdit;
 
 interface FormState {
   directoryEntryId: string;
+  referringProvider: string;
   urgency: TcReferralUrgency;
   reason: string;
   teeth: string;
@@ -45,6 +49,7 @@ interface FormState {
 function stateOf(r: TcReferral): FormState {
   return {
     directoryEntryId: r.directoryEntryId ?? "",
+    referringProvider: r.referringProvider,
     urgency: r.urgency,
     reason: r.reason,
     teeth: r.teeth === "mouth" ? "" : r.teeth.join(", "),
@@ -75,12 +80,16 @@ export function changedFields(
     teeth: TcReferralTeeth;
     doctorNote?: string;
     patientReason?: string;
+    referringProvider?: string;
   },
   withDoctorNote: boolean,
 ): ReferralFieldsChange {
   const out: ReferralFieldsChange = {};
   const entry = s.directoryEntryId || null;
   if (entry !== r.directoryEntryId) out.directoryEntryId = entry;
+  if (s.referringProvider !== undefined && s.referringProvider.trim() !== r.referringProvider) {
+    out.referringProvider = s.referringProvider.trim();
+  }
   if (s.urgency !== r.urgency) out.urgency = s.urgency;
   if (s.reason.trim() !== r.reason) out.reason = s.reason.trim();
   if (JSON.stringify(s.teeth) !== JSON.stringify(r.teeth)) out.teeth = s.teeth;
@@ -97,6 +106,11 @@ export interface ReferralFieldsFormProps {
   referral: TcReferral;
   /** The office's ACTIVE specialists, from whichever surface may read them. */
   entries: readonly TcReferralDirectoryEntry[];
+  /**
+   * The office's ACTIVE providers for the referring provider pick; null (or
+   * absent) leaves it free text.
+   */
+  providers?: readonly TcProviderEntry[] | null;
   /** The doctor's surface: shows the doctor's note field. */
   withDoctorNote?: boolean;
   saving: boolean;
@@ -112,6 +126,7 @@ export interface ReferralFieldsFormProps {
 export function ReferralFieldsForm({
   referral,
   entries,
+  providers = null,
   withDoctorNote = false,
   saving,
   serverError,
@@ -181,6 +196,16 @@ export function ReferralFieldsForm({
               </option>
             ))}
           </select>
+        </div>
+        <div className="sm:col-span-2 space-y-1">
+          <Label htmlFor="rff-provider">Referring provider</Label>
+          <ProviderPicker
+            id="rff-provider"
+            value={s.referringProvider}
+            onChange={(v) => set("referringProvider", v)}
+            providers={providers}
+            disabled={saving}
+          />
         </div>
         <div className="space-y-1">
           <Label htmlFor="rff-urgency">How soon</Label>

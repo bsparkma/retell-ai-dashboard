@@ -44,6 +44,7 @@ import { TeamSection } from "@/features/tc/settings/TeamSection";
 import { NotificationsSection } from "@/features/tc/settings/NotificationsSection";
 import { ReferralsSection } from "@/features/tc/settings/ReferralsSection";
 import { EmailIdentitySection } from "@/features/tc/settings/EmailIdentitySection";
+import { ProvidersSection } from "@/features/tc/settings/ProvidersSection";
 import { useAuth } from "@/contexts/AuthContext";
 import { can } from "@/lib/permissions";
 import { getReferralsStatus } from "@/features/tc/referrals/referralsApi";
@@ -243,6 +244,8 @@ function renderStaticSection(key: TcSettingsSectionKey, office: OfficeId) {
       return <ReferralsSection office={office} />;
     case "email_identity":
       return <EmailIdentitySection office={office} />;
+    case "providers":
+      return <ProvidersSection office={office} />;
     default:
       return null;
   }
