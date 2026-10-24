@@ -36,6 +36,16 @@
  * field Open Dental has no value for reads "not on file"; when Open Dental
  * could not be read at all, the date of birth keeps DOB_LINE and the section
  * says so. Nothing is ever invented.
+ *
+ * THE INSURANCE BLOCK. The same send also reads the patient's insurance on
+ * file from that office's Open Dental, read only
+ * (services/tc/referralPatientInsurance.js), and hands it in as `insurance`.
+ * The letter — and ONLY the letter — shows an "Insurance on file" section:
+ * carrier, plan/group name, group number and subscriber ID for the primary
+ * plan and, when there is one, the secondary, each labeled; the subscriber's
+ * name and relationship when the subscriber is not the patient. A missing
+ * field is "not on file"; a failed read is INSURANCE_UNAVAILABLE. A subscriber
+ * ID shaped like an SSN is withheld, never printed.
  */
 
 const { contract } = require('./helpers');
@@ -52,6 +62,19 @@ const NOT_ON_FILE = 'not on file';
  */
 const CONTACT_UNAVAILABLE =
   "Patient contact: not available from our records when this letter was sent. Please call our office for the patient's phone and email.";
+
+/**
+ * The insurance section when the insurance could not be read when the letter
+ * was sent (Open Dental not connected or not answering, or the read not
+ * recorded) — the same honest fallback the date of birth uses.
+ */
+const INSURANCE_UNAVAILABLE = 'Insurance on file: available from our office on request.';
+
+/** The insurance section when Open Dental holds no plan for the patient. */
+const INSURANCE_NONE = 'Insurance on file: none.';
+
+/** A subscriber ID shaped like a Social Security number is never printed. */
+const SUBSCRIBER_ID_WITHHELD = 'withheld from this email; please call our office';
 
 /** The two-weeks paragraph, exactly as approved. */
 const FINDINGS_PARAGRAPH =
@@ -169,6 +192,41 @@ function contactLines(contact) {
   };
 }
 
+/**
+ * The letter's "Insurance on file" section, from the send-time Open Dental
+ * read (services/tc/referralPatientInsurance.js). Primary first, then
+ * secondary, each labeled. A missing field is "not on file"; the subscriber
+ * line appears only when the subscriber is not the patient; no read (or a
+ * failed one) is INSURANCE_UNAVAILABLE.
+ *
+ * @param {{ status: 'found', plans: Array<{ ordinal: number, carrier: string|null, groupName: string|null,
+ *     groupNum: string|null, subscriberId: string|null, subscriberIdWithheld: boolean,
+ *     subscriber: null | { name: string|null, relationship: string|null } }> }
+ *   | { status: string } | null | undefined} insurance
+ * @returns {string}
+ */
+function insuranceSection(insurance) {
+  if (insurance && insurance.status === 'none') return INSURANCE_NONE;
+  if (!insurance || insurance.status !== 'found') return INSURANCE_UNAVAILABLE;
+  const found = /** @type {{ plans: any[] }} */ (insurance);
+  if (!Array.isArray(found.plans) || found.plans.length === 0) return INSURANCE_NONE;
+  const f = (v) => oneLine(v) || NOT_ON_FILE;
+  const lines = ['Insurance on file:'];
+  for (const plan of found.plans) {
+    lines.push(
+      plan.ordinal === 2 ? 'Secondary insurance:' : 'Primary insurance:',
+      `Carrier: ${f(plan.carrier)}`,
+      `Plan/group name: ${f(plan.groupName)}`,
+      `Group number: ${f(plan.groupNum)}`,
+      `Subscriber ID: ${plan.subscriberIdWithheld ? SUBSCRIBER_ID_WITHHELD : f(plan.subscriberId)}`,
+    );
+    if (plan.subscriber) {
+      lines.push(`Subscriber: ${f(plan.subscriber.name)} (relationship to patient: ${f(plan.subscriber.relationship)})`);
+    }
+  }
+  return lines.join('\n');
+}
+
 /** The letter date, in the office's day. @param {Date} at @param {string} timeZone */
 function letterDate(at, timeZone) {
   return new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: 'long', day: 'numeric' }).format(at);
@@ -188,11 +246,12 @@ function letterDate(at, timeZone) {
  *   timeZone: string,
  *   withLinks?: boolean,       (R5b) say the buttons are below
  *   contact?: object|null,     the send-time Open Dental read (see contactLines);
+ *   insurance?: object|null,   the send-time Open Dental insurance read (see insuranceSection);
  *                              absent = could not be read
  * }} input
  * @returns {{ subject: string, text: string }}
  */
-function composeReferralLetter({ referral, entry, office, attached, onRequest, at, timeZone, withLinks = false, contact = null }) {
+function composeReferralLetter({ referral, entry, office, attached, onRequest, at, timeZone, withLinks = false, contact = null, insurance = null }) {
   const { dobLine, section: contactSection } = contactLines(contact);
   const patient = nameParts(referral.patient_name);
   const initial = patient.last ? `${patient.last[0].toUpperCase()}.` : '';
@@ -230,6 +289,7 @@ function composeReferralLetter({ referral, entry, office, attached, onRequest, a
     letterDate(at, timeZone),
     [`Patient: ${patient.full}`, dobLine].join('\n'),
     contactSection,
+    insuranceSection(insurance),
     `We are referring ${patient.first || 'this patient'} for ${inSentence(reason)}${/[.!?]$/.test(reason) ? '' : '.'}`,
     `Clinical summary:\n${narrative || 'None provided.'}`,
     [`Teeth: ${teethText(referral.teeth)}`, `Urgency: ${contract.TC_REFERRAL_URGENCY_LABELS[referral.urgency] || referral.urgency}`].join('\n'),
@@ -310,6 +370,9 @@ module.exports = {
   DOB_LINE,
   NOT_ON_FILE,
   CONTACT_UNAVAILABLE,
+  INSURANCE_UNAVAILABLE,
+  INSURANCE_NONE,
+  SUBSCRIBER_ID_WITHHELD,
   FINDINGS_PARAGRAPH,
   ON_REQUEST_LEAD,
   SPECIALIST_LINK_LABELS,
@@ -324,6 +387,7 @@ module.exports = {
   teethText,
   composeReferralLetter,
   contactLines,
+  insuranceSection,
   birthDateText,
   plainReason,
 };

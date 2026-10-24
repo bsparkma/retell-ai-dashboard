@@ -89,7 +89,16 @@
  * in the staff-written reason in plain words (tc_referrals.patient_reason), or
  * its generic phrase when none was written; never the clinical reason.
  *
- * OPEN DENTAL: only that one read, never a write.
+ * LETTER INSURANCE. Right after the contact read, the patient's insurance on
+ * file is read the same way (letterInsurance: its own audited READ, skipped
+ * if the audit cannot be written; services/tc/referralPatientInsurance.js).
+ * The letter shows it in an "Insurance on file" section — primary and any
+ * secondary, labeled — with "not on file" for a missing field and "available
+ * from our office on request" when it could not be read. It goes ONLY into
+ * the specialist's letter; the notice never receives it. No SSN is ever read
+ * or printed.
+ *
+ * OPEN DENTAL: only those two reads (contact; insurance), never a write.
  */
 
 const { randomUUID } = require('node:crypto');
@@ -105,6 +114,7 @@ const blob = require('../../services/tc/referralAttachmentStore');
 const referralLetter = require('../../services/messaging/referralLetter');
 const { MessagingError } = require('../../services/messaging/errors');
 const patientContact = require('../../services/tc/referralPatientContact');
+const patientInsurance = require('../../services/tc/referralPatientInsurance');
 const tcReferralEmail = require('../../config/tcReferralEmail');
 const tcReferralPatientEmail = require('../../config/tcReferralPatientEmail');
 const acsConfig = require('../../config/acsEmail');
@@ -203,7 +213,7 @@ function officeDetails(office) {
  * Measured with the transport's own payload builder, so the size is the size
  * of what would go out.
  */
-function composeAndPack({ office, row, entry, files, attemptId, recipient, unsubscribeUrl, at, bcc = null, links = [], contact = null }) {
+function composeAndPack({ office, row, entry, files, attemptId, recipient, unsubscribeUrl, at, bcc = null, links = [], contact = null, insurance = null }) {
   const details = officeDetails(office);
   // The stored row, with teeth read the way every referral read reads them.
   const referral = { ...row, teeth: store.toReferral(row).teeth };
@@ -222,6 +232,7 @@ function composeAndPack({ office, row, entry, files, attemptId, recipient, unsub
       timeZone: officeTimeZone(),
       withLinks: actions.length > 0,
       contact,
+      insurance,
     });
     if (composed.text.length > contract.EMAIL_TEXT_BODY_CEILING) {
       throw new MessagingError('SEND_FAILED', 'The referral letter is too long to email. Shorten the notes, then try again.', {
@@ -476,6 +487,9 @@ async function sendReferral(req, { office, referralId, trigger }) {
   // The patient's contact, for the LETTER (and, reused, the notice's address).
   // Never throws: whatever Open Dental says, the letter says it honestly.
   const contact = await letterContact(req, { office, row });
+  // The patient's insurance on file, for the LETTER only (never the notice).
+  // Its own audited read, after the contact's; also never throws.
+  const insurance = await letterInsurance(req, { office, row });
   try {
     const files = await readFiles(await tenantDb.withTenantDb(req, (pool) => attachmentRows(pool, office, referralId)));
     unsubscribe = referralLetter.mintUnsubscribe();
@@ -492,6 +506,7 @@ async function sendReferral(req, { office, referralId, trigger }) {
       bcc,
       links,
       contact,
+      insurance,
     });
     accepted = await referralLetter.transport(packed.message, office);
   } catch (err) {
@@ -605,6 +620,36 @@ async function letterContact(req, { office, row }) {
     return { status: 'unaudited', read: false };
   }
   return { ...(await patientContact.patientContactFor(office, patNum)), read: true };
+}
+
+/**
+ * The patient's insurance on file for the letter: this office's Open Dental,
+ * read only (services/tc/referralPatientInsurance.js), audited first — no
+ * trail, no read. Never throws. The result is the LETTER's alone: not the
+ * notice's, not a note, not an audit row.
+ *
+ *   an insurance read result   { status: 'found', plans } | none | not_connected | unreadable
+ *   { status: 'unaudited' }    the READ could not be recorded, so it was not made
+ *   { status: 'not_found' }    the stored PatNum is not a usable one (never read)
+ *
+ * @param {import('express').Request} req
+ * @param {{ office: string, row: Record<string, unknown> }} args
+ */
+async function letterInsurance(req, { office, row }) {
+  const patNum = Number(row.od_patient_id);
+  if (!Number.isSafeInteger(patNum) || patNum <= 0) return { status: 'not_found' };
+  try {
+    await audit(req, {
+      action: 'READ',
+      resourceType: 'tc_referral.letter_insurance_lookup',
+      resourceId: String(row.referral_id),
+      result: 'SUCCESS',
+      office,
+    });
+  } catch {
+    return { status: 'unaudited' };
+  }
+  return patientInsurance.patientInsuranceFor(office, patNum);
 }
 
 /** (R5b) When a link minted at `at` (ISO) stops working. */
