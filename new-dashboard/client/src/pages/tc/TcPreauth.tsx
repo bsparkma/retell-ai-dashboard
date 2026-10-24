@@ -6,12 +6,23 @@
  * board re-renders from the returned row, never from optimistic guesses.
  * That holds for drag-and-drop too: handleTransition is awaited by the board,
  * which keeps the dragged card in its original column until this resolves.
+ *
+ * "Start case" on a card puts the pre-auth's patient on the TC pipeline
+ * (attach-or-create, server-side, from the pre-auth row).
  */
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Loader2, Plus, RefreshCw } from "lucide-react";
 import type { TcPreauthCase } from "@shared/tc/contract";
-import { deletePreauth, listPreauth, tcErrorMessage, transitionPreauth } from "@/features/tc/api";
+import { useLocation } from "wouter";
+import {
+  TcApiError,
+  deletePreauth,
+  listPreauth,
+  startCaseFromPreauth,
+  tcErrorMessage,
+  transitionPreauth,
+} from "@/features/tc/api";
 import { PREAUTH_STATUSES, type PreauthStatusId } from "@/features/tc/status";
 import { TcOfficeGate, TcPageHeader, useTcOffice } from "@/features/tc/components/TcShell";
 import { PreauthBoard } from "@/features/tc/preauth/PreauthBoard";
@@ -30,6 +41,7 @@ import {
 
 export default function TcPreauth() {
   const office = useTcOffice();
+  const [, navigate] = useLocation();
   const [cases, setCases] = useState<TcPreauthCase[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -71,6 +83,28 @@ export default function TcPreauth() {
       toast.success(`${updated.patientName} moved to ${PREAUTH_STATUSES[updated.status].label}`);
     } catch (e) {
       toast.error(tcErrorMessage(e));
+    }
+  };
+
+  /**
+   * "Start case": the server puts the patient on the pipeline (a new case, or
+   * the patient's open one) from the pre-auth row. The card shows the link
+   * only once the server has stored it.
+   */
+  const handleStartCase = async (preauth: TcPreauthCase) => {
+    try {
+      const result = await startCaseFromPreauth(office, preauth.preauthId);
+      replaceRow(result.preauthCase);
+      toast.success(
+        result.attached
+          ? `Linked to ${preauth.patientName}'s open case`
+          : `Case started for ${preauth.patientName} — in Pending TC`,
+        { action: { label: "Open case", onClick: () => navigate(result.url) } },
+      );
+    } catch (e) {
+      toast.error(tcErrorMessage(e));
+      // A 409 can mean someone else linked it meanwhile: show what is stored now.
+      if (e instanceof TcApiError && e.status === 409) load();
     }
   };
 
@@ -136,6 +170,10 @@ export default function TcPreauth() {
             setDialogOpen(true);
           }}
           onDelete={setDeleteTarget}
+          onStartCase={(p) => void handleStartCase(p)}
+          onOpenCase={(p) => {
+            if (p.caseId) navigate(`/tc/cases/${p.caseId}`);
+          }}
         />
       )}
 

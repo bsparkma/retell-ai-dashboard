@@ -12,6 +12,10 @@
  * The "Move to…" menu stays as the keyboard/touch fallback — drag is an
  * additional gesture, never the only one.
  *
+ * The card's actions menu offers "Start case" (put the patient on the TC
+ * pipeline; the server derives patient + office from the pre-auth) while the
+ * pre-auth has no case, and "Open case" once it has one.
+ *
  * Layout: each column's card list scrolls on its own under a viewport cap, so
  * the board's horizontal scrollbar stays on screen instead of being pushed
  * below the fold by the tallest column. dnd-kit auto-scrolls both the column
@@ -52,6 +56,8 @@ import {
   ArrowRightLeft,
   Building2,
   CalendarClock,
+  FolderOpen,
+  FolderPlus,
   Hash,
   Loader2,
   MoreHorizontal,
@@ -96,12 +102,16 @@ function PreauthCardBody({
   onTransition,
   onEdit,
   onDelete,
+  onStartCase,
+  onOpenCase,
 }: {
   preauth: TcPreauthCase;
   pending: boolean;
   onTransition: (preauth: TcPreauthCase, status: PreauthStatusId) => void;
   onEdit: (preauth: TcPreauthCase) => void;
   onDelete: (preauth: TcPreauthCase) => void;
+  onStartCase?: (preauth: TcPreauthCase) => void;
+  onOpenCase?: (preauth: TcPreauthCase) => void;
 }) {
   // Menus sit inside a card that is both draggable and click-to-open, so they
   // have to own their own events: no drag start, no card click.
@@ -137,6 +147,17 @@ function PreauthCardBody({
               <DropdownMenuItem onClick={() => onEdit(preauth)}>
                 <Pencil className="w-3.5 h-3.5" /> Edit
               </DropdownMenuItem>
+              {preauth.caseId
+                ? onOpenCase && (
+                    <DropdownMenuItem onClick={() => onOpenCase(preauth)}>
+                      <FolderOpen className="w-3.5 h-3.5" /> Open case
+                    </DropdownMenuItem>
+                  )
+                : onStartCase && (
+                    <DropdownMenuItem onClick={() => onStartCase(preauth)} disabled={pending}>
+                      <FolderPlus className="w-3.5 h-3.5" /> Start case
+                    </DropdownMenuItem>
+                  )}
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={() => onDelete(preauth)}
@@ -205,6 +226,8 @@ function PreauthCard({
   onTransition,
   onEdit,
   onDelete,
+  onStartCase,
+  onOpenCase,
 }: {
   preauth: TcPreauthCase;
   /** A transition for this card is in flight: dimmed, and drag is disabled. */
@@ -212,6 +235,8 @@ function PreauthCard({
   onTransition: (preauth: TcPreauthCase, status: PreauthStatusId) => void;
   onEdit: (preauth: TcPreauthCase) => void;
   onDelete: (preauth: TcPreauthCase) => void;
+  onStartCase?: (preauth: TcPreauthCase) => void;
+  onOpenCase?: (preauth: TcPreauthCase) => void;
 }) {
   const { setNodeRef, listeners, attributes, isDragging } = useDraggable({
     id: preauth.preauthId,
@@ -247,6 +272,8 @@ function PreauthCard({
         onTransition={onTransition}
         onEdit={onEdit}
         onDelete={onDelete}
+        onStartCase={onStartCase}
+        onOpenCase={onOpenCase}
       />
     </div>
   );
@@ -261,6 +288,8 @@ function PreauthColumn({
   onTransition,
   onEdit,
   onDelete,
+  onStartCase,
+  onOpenCase,
 }: {
   status: PreauthStatusId;
   cases: TcPreauthCase[];
@@ -268,6 +297,8 @@ function PreauthColumn({
   onTransition: (preauth: TcPreauthCase, status: PreauthStatusId) => void;
   onEdit: (preauth: TcPreauthCase) => void;
   onDelete: (preauth: TcPreauthCase) => void;
+  onStartCase?: (preauth: TcPreauthCase) => void;
+  onOpenCase?: (preauth: TcPreauthCase) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: preauthColumnDroppableId(status) });
   return (
@@ -294,6 +325,8 @@ function PreauthColumn({
               onTransition={onTransition}
               onEdit={onEdit}
               onDelete={onDelete}
+              onStartCase={onStartCase}
+              onOpenCase={onOpenCase}
             />
           ))
         )}
@@ -309,6 +342,8 @@ export function PreauthBoard({
   onTransition,
   onEdit,
   onDelete,
+  onStartCase,
+  onOpenCase,
 }: {
   cases: TcPreauthCase[];
   /**
@@ -318,6 +353,8 @@ export function PreauthBoard({
   onTransition: (preauth: TcPreauthCase, status: PreauthStatusId) => Promise<void>;
   onEdit: (preauth: TcPreauthCase) => void;
   onDelete: (preauth: TcPreauthCase) => void;
+  onStartCase?: (preauth: TcPreauthCase) => void;
+  onOpenCase?: (preauth: TcPreauthCase) => void;
 }) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [pendingIds, setPendingIds] = useState<string[]>([]);
@@ -368,6 +405,8 @@ export function PreauthBoard({
             onTransition={(p, s) => void runTransition(p, s)}
             onEdit={onEdit}
             onDelete={onDelete}
+            onStartCase={onStartCase}
+            onOpenCase={onOpenCase}
           />
         ))}
       </div>
