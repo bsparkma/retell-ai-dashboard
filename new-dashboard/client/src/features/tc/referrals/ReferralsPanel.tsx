@@ -45,7 +45,10 @@ import {
   uploadReferralAttachment,
 } from "@/features/tc/referrals/referralsApi";
 import { AttachmentZone } from "@/features/tc/referrals/AttachmentZone";
+import { ProviderPicker } from "@/features/tc/providers/ProviderPicker";
+import { listActiveProviders } from "@/features/tc/providers/providersApi";
 import type { OfficeId } from "@shared/tc/contract";
+import type { TcProviderEntry } from "@shared/tc/providers";
 import {
   REFERRAL_READY_TO_SEND_COPY,
   TC_REFERRAL_CHIP_LABELS,
@@ -287,6 +290,12 @@ export interface ReferralDialogProps {
   /** The office's active specialists, from whichever surface may read them. */
   loadDirectory: () => Promise<TcReferralDirectoryEntry[]>;
   /**
+   * The office's active providers (provider directory) for the referring
+   * provider pick, from whichever surface may read them. Absent, or a failed
+   * read, leaves the field free text.
+   */
+  loadProviders?: () => Promise<TcProviderEntry[]>;
+  /**
    * Chairside (item 54): one button, "Send for Dr. sign-off" — the hygienist
    * does not keep drafts. Otherwise Save draft / Save & submit.
    */
@@ -306,6 +315,7 @@ export function ReferralDialog({
   onSave,
   saving,
   loadDirectory,
+  loadProviders,
   submitOnly = false,
   sourceLabel,
   alreadyAttached = 0,
@@ -313,6 +323,8 @@ export function ReferralDialog({
   const [d, setD] = useState<Draft>(draftOf(null));
   const [files, setFiles] = useState<File[]>([]);
   const [entries, setEntries] = useState<TcReferralDirectoryEntry[]>([]);
+  // null until (and unless) the provider directory answers: free text meanwhile.
+  const [providers, setProviders] = useState<TcProviderEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -323,7 +335,13 @@ export function ReferralDialog({
     loadDirectory()
       .then(setEntries)
       .catch(() => setEntries([]));
-    // loadDirectory is a fresh closure each render; `open` is the trigger.
+    setProviders(null);
+    if (loadProviders) {
+      loadProviders()
+        .then(setProviders)
+        .catch(() => setProviders(null));
+    }
+    // loadDirectory / loadProviders are fresh closures each render; `open` is the trigger.
   }, [open, editing]);
 
   function set<K extends keyof Draft>(k: K, v: Draft[K]) {
@@ -424,7 +442,12 @@ export function ReferralDialog({
           </div>
           <div className="sm:col-span-2 space-y-1">
             <Label htmlFor="rf-provider">Referring provider</Label>
-            <Input id="rf-provider" value={d.referringProvider} onChange={(e) => set("referringProvider", e.target.value)} />
+            <ProviderPicker
+              id="rf-provider"
+              value={d.referringProvider}
+              onChange={(v) => set("referringProvider", v)}
+              providers={providers}
+            />
           </div>
           <div className="sm:col-span-2 space-y-1">
             <Label htmlFor="rf-narrative">Notes for the specialist</Label>
@@ -555,6 +578,7 @@ export function ReferralsPanel({ office, source, compact = false }: ReferralsPan
   const dialog = (
     <ReferralDialog
       loadDirectory={() => listDirectory(office, false)}
+      loadProviders={() => listActiveProviders(office)}
       sourceLabel={"caseId" in source ? "this case" : "this checkout"}
       open={dialogOpen}
       editing={editing}

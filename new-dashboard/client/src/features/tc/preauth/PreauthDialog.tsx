@@ -10,6 +10,9 @@
  * New Case dialog uses. It PREFILLS name/phone/email and then gets out of the
  * way — every field stays editable, because the link is a convenience, not a
  * lock, and a pre-auth for someone not yet in Open Dental is a normal pre-auth.
+ *
+ * Doctor is a pick from the office's provider directory (Settings →
+ * Providers), with "Other…" for free text; it still stores the name as text.
  */
 import { useEffect, useState } from "react";
 import type { z } from "zod";
@@ -24,6 +27,9 @@ import {
   type TcPreauthPatch,
 } from "../api";
 import { OdPatientSearch } from "../od/OdShell";
+import { ProviderPicker } from "../providers/ProviderPicker";
+import { listActiveProviders } from "../providers/providersApi";
+import type { TcProviderEntry } from "@shared/tc/providers";
 import { fieldsFromOdPatient } from "../od/odPatient";
 import {
   Dialog,
@@ -120,13 +126,26 @@ export function PreauthDialog({
   const [form, setForm] = useState<FormState>(EMPTY);
   const [odLink, setOdLink] = useState<OdLink | null>(null);
   const [saving, setSaving] = useState(false);
+  // Provider directory for the Doctor pick: null until (and unless) it
+  // answers, so the field is free text meanwhile and never blocked by it.
+  const [providers, setProviders] = useState<TcProviderEntry[] | null>(null);
 
   // Reset the form each time the dialog opens (create) or the target changes.
   useEffect(() => {
     if (!open) return;
     setForm(editing ? fromCase(editing) : EMPTY);
     setOdLink(editing?.odPatientId ? { patNum: editing.odPatientId, patient: null } : null);
-  }, [open, editing]);
+    let cancelled = false;
+    setProviders(null);
+    listActiveProviders(office)
+      .then((p) => {
+        if (!cancelled) setProviders(p);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [open, editing, office]);
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
@@ -292,11 +311,12 @@ export function PreauthDialog({
 
           <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
             <span>Doctor *</span>
-            <Input
+            <ProviderPicker
+              id="preauth-doctor"
               value={form.doctorName}
-              maxLength={200}
-              onChange={(e) => set("doctorName", e.target.value)}
-              placeholder="Dr. Sparkman"
+              onChange={(v) => set("doctorName", v)}
+              providers={providers}
+              placeholder="Doctor's name"
             />
           </label>
 

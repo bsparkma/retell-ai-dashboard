@@ -105,6 +105,9 @@ const SECTION_LABELS = [
   "Data & Backup",
   // Item 51 adds a ninth section after DentaFlow's eight.
   "Notifications",
+  // The provider directory: shown to everyone on the TC surface (read-only
+  // unless the server says canEdit).
+  "Providers",
 ];
 
 function nav() {

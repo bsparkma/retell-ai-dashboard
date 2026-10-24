@@ -77,7 +77,9 @@ import { AddAttachments } from "@/features/tc/referrals/AddAttachments";
 import { NewHubReferral } from "@/features/tc/referrals/NewHubReferral";
 import { ReferralFieldsForm, type ReferralFieldsChange } from "@/features/tc/referrals/ReferralFieldsForm";
 import { ReferralTimeline } from "@/features/tc/referrals/ReferralTimeline";
+import { listActiveProviders } from "@/features/tc/providers/providersApi";
 import type { OfficeId } from "@shared/tc/contract";
+import type { TcProviderEntry } from "@shared/tc/providers";
 import {
   REFERRAL_FIELD_EDITABLE_STATUSES,
   REFERRAL_MARK_LABELS,
@@ -560,6 +562,8 @@ export function HubDetail({
   const [r, setR] = useState<TcReferral | null>(null);
   const [files, setFiles] = useState<TcReferralAttachment[]>([]);
   const [entries, setEntries] = useState<TcReferralDirectoryEntry[]>([]);
+  // Provider directory: null until (and unless) it answers — free text meanwhile.
+  const [providers, setProviders] = useState<TcProviderEntry[] | null>(null);
   const [editing, setEditing] = useState<Editing>(null);
   const [busy, setBusy] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
@@ -608,6 +612,9 @@ export function HubDetail({
     listDirectory(office, false)
       .then(setEntries)
       .catch(() => setEntries([]));
+    listActiveProviders(office)
+      .then(setProviders)
+      .catch(() => setProviders(null));
   }
 
   /** Run a change; show only what the server answered. */
@@ -752,6 +759,7 @@ export function HubDetail({
                 <ReferralFieldsForm
                   referral={r}
                   entries={entries}
+                  providers={providers}
                   saving={busy}
                   serverError={serverError}
                   saveLabel={editing === "reopen" ? "Save & send for re-approval" : "Save changes"}
