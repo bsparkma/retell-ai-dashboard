@@ -7,16 +7,21 @@
  * every write now parses the strict contract). Status changes go through
  * POST /:id/status, which stamps submitted_date / decision_date server-side.
  * /api/preauth/bulk is gone — bulk ingest is the Slice 2 importer.
+ *
+ * POST /:id/start-case puts the pre-auth's patient on the pipeline:
+ * attach-or-create a TC case from the ROW (never the request), and link it.
  */
 
 const express = require('express');
 const { randomUUID } = require('node:crypto');
 
-const { contract, requireOffice, parseBody, h, auditTc, iso, isoDate, num, notFound } = require('./helpers');
+const { contract, requireOffice, actorEmail, parseBody, h, auditTc, iso, isoDate, num, notFound } = require('./helpers');
 const { withTenantTx } = require('./tx');
 const tenantDb = require('../../platform/tenantDb');
+const caseStore = require('./caseStore');
+const { findOpenCase } = require('./intakeFromCall');
 
-const { z, TcPreauthCase, PreauthStatus, Uuid } = contract;
+const { z, TcPreauthCase, PreauthStatus, Uuid, TcCase, caseToRows, TcPreauthStartCaseRequest } = contract;
 
 const router = express.Router();
 router.use(requireOffice);
@@ -306,6 +311,200 @@ router.post(
 
     await auditTc(req, 'UPDATE', 'tc_preauth', preauthId);
     res.json({ success: true, preauthCase: persisted });
+  })
+);
+
+// ── POST /:id/start-case — put this pre-auth's patient on the pipeline ──────
+//
+// ATTACH-OR-CREATE, the rule the voice handoff, the Opportunities claim and the
+// checkout intake already share (intakeFromCall's `findOpenCase`): a patient
+// with an OPEN case in this office gets the pre-auth ATTACHED to it — a
+// timeline note, the case otherwise untouched — and never a second case.
+// Otherwise a new pending_tc case is created, assigned to the caller, and it
+// lands on the pipeline like any other.
+//
+// THE PATIENT IS NEVER FROM THE REQUEST. The body is the empty strict object;
+// the office is `?office=`; PatNum, name, phone, email and doctor are read from
+// the pre-auth row, office-scoped. A pre-auth with no Open Dental patient
+// linked is refused: without a PatNum there is no way to find the patient's
+// open case, and a guessed match is not a match.
+//
+// The pre-auth's case_id is the link, and the arbiter: it is written only
+// where it is still NULL, so two clicks cannot both start a case — the loser's
+// whole transaction (case included) rolls back and it is told which case won.
+// Postgres-only: no Open Dental read or write, nothing sends.
+
+const PREAUTH_CASE_DEFAULTS = Object.freeze({
+  legacyId: null,
+  patientAge: null,
+  caseType: '',
+  category: 'single_tooth',
+  status: 'pending_tc',
+  urgency: 'medium',
+  diagnosingProvider: null,
+  caseValueCents: 0,
+  readinessScore: 0,
+  financingStatus: '',
+  preferredFinancingProvider: null,
+  decisionMakers: '',
+  financialSituation: [],
+  keyMotivators: [],
+  contactPreference: null,
+  bestTimeToReach: '',
+  notes: '',
+  // A PatNum in the practice's own chart: an existing patient.
+  referralSource: 'existing_patient',
+  lostReason: null,
+  diagnosedDate: null,
+  nurtureCadence: 'standard',
+  inLongTailMode: false,
+  nurtureEnrolledAt: null,
+  nurturePhaseChangedAt: null,
+  nurturePhase1DaysOverride: null,
+  nurturePhase2DaysOverride: null,
+  nurtureUnsubscribed: false,
+  phases: [],
+  objections: [],
+  followups: [],
+  hygieneIntake: null,
+});
+
+const PREAUTH_TYPE_WORDS = Object.freeze({ treatment: 'treatment', perio: 'perio', manual: 'manual' });
+
+/** "a treatment pre-authorization (Delta Dental)" — no PHI beyond the carrier. */
+function preauthWords(p) {
+  const kind = PREAUTH_TYPE_WORDS[p.preauthType] || p.preauthType;
+  return `a ${kind} pre-authorization${p.insuranceCarrier ? ` (${p.insuranceCarrier})` : ''}`;
+}
+
+function caseUrl(caseId) {
+  return `/tc/cases/${caseId}`;
+}
+
+router.post(
+  '/:id/start-case',
+  h(async (req, res) => {
+    const preauthId = parseId(res, req.params.id);
+    if (!preauthId) return;
+    const body = parseBody(res, TcPreauthStartCaseRequest, req.body && typeof req.body === 'object' ? req.body : {});
+    if (!body) return;
+
+    const office = req.tcOffice;
+    const actor = actorEmail(req);
+    const now = new Date().toISOString();
+
+    /** @type {{ kind: 'ok', caseId: string, attached: boolean } | { kind: 'refuse', status: number, code: string, error: string, extra?: object }} */
+    const outcome = await withTenantTx(req, async (client) => {
+      const pa = await loadOne(client, office, preauthId);
+      if (!pa) return { kind: 'refuse', status: 404, code: 'NOT_FOUND', error: 'preauth case not found' };
+      if (pa.caseId) {
+        return {
+          kind: 'refuse',
+          status: 409,
+          code: 'PREAUTH_ALREADY_LINKED',
+          error: 'This pre-auth is already linked to a case',
+          extra: { caseId: pa.caseId, url: caseUrl(pa.caseId) },
+        };
+      }
+      if (pa.odPatientId == null) {
+        return {
+          kind: 'refuse',
+          status: 409,
+          code: 'NO_OD_PATIENT',
+          error: 'Link this pre-auth to an Open Dental patient first, so the case is for the right patient',
+        };
+      }
+
+      const openCaseId = await findOpenCase(client, office, pa.odPatientId);
+      const attached = openCaseId !== null;
+      const caseId = openCaseId ?? randomUUID();
+
+      if (!attached) {
+        // The full aggregate through the contract — the path POST /cases uses —
+        // so a case started here is indistinguishable from a hand-entered one.
+        const aggregate = TcCase.parse({
+          ...PREAUTH_CASE_DEFAULTS,
+          caseId,
+          officeId: office,
+          patientName: pa.patientName,
+          phone: pa.phone,
+          email: pa.email,
+          odPatientId: pa.odPatientId,
+          doctorName: pa.doctorName,
+          assignedTc: actor,
+          statusChangedAt: now,
+          events: [
+            {
+              eventId: randomUUID(),
+              legacyId: null,
+              ts: now,
+              type: 'case_created',
+              description: `Case started from ${preauthWords(pa)}`,
+              actor,
+              detail: null,
+            },
+          ],
+        });
+        const rows = caseToRows(aggregate, randomUUID);
+        await caseStore.insertCaseRow(client, rows.caseRow);
+        for (const e of rows.eventRows) await caseStore.insertEventRow(client, e);
+      } else {
+        // Attach: a timeline fact on the live case, nothing else.
+        await caseStore.insertEventRow(client, {
+          event_id: randomUUID(),
+          case_id: caseId,
+          office_id: office,
+          ts: now,
+          type: 'note_added',
+          description: `Linked ${preauthWords(pa)} to this case`,
+          actor,
+          detail: null,
+          legacy_id: null,
+        });
+      }
+
+      // The arbiter: only while the pre-auth is still unlinked.
+      const linked = await client.query(
+        `UPDATE tc_preauth_cases SET case_id = $3, updated_at = now()
+          WHERE office_id = $1 AND preauth_id = $2 AND case_id IS NULL`,
+        [office, preauthId, caseId]
+      );
+      if (!linked.rowCount) {
+        const err = new Error('START_CASE_RACE');
+        err.code = 'START_CASE_RACE';
+        throw err;
+      }
+      return { kind: 'ok', caseId, attached };
+    }).catch(async (err) => {
+      if (!err || err.code !== 'START_CASE_RACE') throw err;
+      // Someone else linked it while ours was open; ours rolled back whole.
+      const now2 = await tenantDb.withTenantDb(req, (pool) => loadOne(pool, office, preauthId));
+      return {
+        kind: 'refuse',
+        status: 409,
+        code: 'PREAUTH_ALREADY_LINKED',
+        error: 'This pre-auth was just linked to a case by someone else',
+        extra: now2 && now2.caseId ? { caseId: now2.caseId, url: caseUrl(now2.caseId) } : {},
+      };
+    });
+
+    if (outcome.kind === 'refuse') {
+      return res
+        .status(outcome.status)
+        .json({ success: false, error: outcome.error, code: outcome.code, ...(outcome.extra || {}) });
+    }
+
+    await auditTc(req, 'UPDATE', 'tc_preauth', preauthId, { office });
+    await auditTc(req, outcome.attached ? 'UPDATE' : 'CREATE', 'tc_case', outcome.caseId, { office });
+
+    const persisted = await tenantDb.withTenantDb(req, (pool) => loadOne(pool, office, preauthId));
+    res.json({
+      success: true,
+      caseId: outcome.caseId,
+      url: caseUrl(outcome.caseId),
+      attached: outcome.attached,
+      preauthCase: persisted,
+    });
   })
 );
 
