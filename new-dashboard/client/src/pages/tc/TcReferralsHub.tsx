@@ -718,6 +718,8 @@ export function HubDetail({
             <dl className="grid grid-cols-[110px_1fr] gap-x-3 gap-y-1 text-sm">
               <dt className="text-muted-foreground">Reason</dt>
               <dd>{r.reason}</dd>
+              <dt className="text-muted-foreground">For the patient</dt>
+              <dd data-testid="tc-hub-detail-patient-reason">{r.patientReason || "a specialist consultation (nothing written)"}</dd>
               <dt className="text-muted-foreground">Teeth</dt>
               <dd>{teethLabel(r.teeth) || "—"}</dd>
               <dt className="text-muted-foreground">How soon</dt>

@@ -166,6 +166,10 @@ async function editFieldsInTx(req, client, { office, referralId, fields, kind })
   if (change.doctorNote !== undefined && (change.doctorNote === null || change.doctorNote.trim() === '')) {
     change.doctorNote = null;
   }
+  // Nor is a blank reason in plain words: the patient email keeps its generic phrase.
+  if (change.patientReason !== undefined && (change.patientReason === null || change.patientReason.trim() === '')) {
+    change.patientReason = null;
+  }
   if (change.directoryEntryId) {
     const problem = await directoryProblem(client, office, change.directoryEntryId);
     if (problem) return { problem };

@@ -77,7 +77,19 @@
  * So a send is at most TWO messages: one letter to the specialist (with any
  * BCC on that same message), one notice to the patient.
  *
- * OPEN DENTAL: only the one read above, never a write.
+ * LETTER ENRICHMENT. The patient's phone, email and date of birth are read
+ * ONCE per send, from this office's Open Dental, read only, after the claim
+ * and before the letter is composed (letterContact; the read is audited first
+ * and skipped if the audit cannot be written). The letter shows them in its
+ * "Patient contact" section and date-of-birth line — "not on file" where Open
+ * Dental has nothing, and an honest "could not be read" when it could not be
+ * read. They go ONLY into the specialist's letter: never an event note, an
+ * audit row, the patient's notice or a link page. The notice reuses the same
+ * read for its address (no second GET). The notice says what the visit is for
+ * in the staff-written reason in plain words (tc_referrals.patient_reason), or
+ * its generic phrase when none was written; never the clinical reason.
+ *
+ * OPEN DENTAL: only that one read, never a write.
  */
 
 const { randomUUID } = require('node:crypto');
@@ -191,7 +203,7 @@ function officeDetails(office) {
  * Measured with the transport's own payload builder, so the size is the size
  * of what would go out.
  */
-function composeAndPack({ office, row, entry, files, attemptId, recipient, unsubscribeUrl, at, bcc = null, links = [] }) {
+function composeAndPack({ office, row, entry, files, attemptId, recipient, unsubscribeUrl, at, bcc = null, links = [], contact = null }) {
   const details = officeDetails(office);
   // The stored row, with teeth read the way every referral read reads them.
   const referral = { ...row, teeth: store.toReferral(row).teeth };
@@ -209,6 +221,7 @@ function composeAndPack({ office, row, entry, files, attemptId, recipient, unsub
       at,
       timeZone: officeTimeZone(),
       withLinks: actions.length > 0,
+      contact,
     });
     if (composed.text.length > contract.EMAIL_TEXT_BODY_CEILING) {
       throw new MessagingError('SEND_FAILED', 'The referral letter is too long to email. Shorten the notes, then try again.', {
@@ -460,6 +473,9 @@ async function sendReferral(req, { office, referralId, trigger }) {
   /** (R5b) The letter's two links; their hashes are stored with the send. */
   let links = [];
   let accepted;
+  // The patient's contact, for the LETTER (and, reused, the notice's address).
+  // Never throws: whatever Open Dental says, the letter says it honestly.
+  const contact = await letterContact(req, { office, row });
   try {
     const files = await readFiles(await tenantDb.withTenantDb(req, (pool) => attachmentRows(pool, office, referralId)));
     unsubscribe = referralLetter.mintUnsubscribe();
@@ -475,6 +491,7 @@ async function sendReferral(req, { office, referralId, trigger }) {
       at: now,
       bcc,
       links,
+      contact,
     });
     accepted = await referralLetter.transport(packed.message, office);
   } catch (err) {
@@ -547,7 +564,7 @@ async function sendReferral(req, { office, referralId, trigger }) {
   }
 
   // (R5b) The letter is on the record; now — and only now — the patient's notice.
-  const patientEmail = await notifyPatient(req, { office, row, entry, withFiles: packed.attached > 0 });
+  const patientEmail = await notifyPatient(req, { office, row, entry, withFiles: packed.attached > 0, contact });
 
   const practice = entry.practice_name ? `${entry.practice_name} (${recipient})` : recipient;
   const message = `Emailed to ${practice} — ${filesPhrase(packed.attached, packed.onRequest)}.`;
@@ -557,6 +574,37 @@ async function sendReferral(req, { office, referralId, trigger }) {
     body: { success: true, referral: await transitions.readBack(req, referralId, office), outcome },
     outcome,
   };
+}
+
+/**
+ * The patient's contact for the letter: ONE read of this office's Open
+ * Dental (services/tc/referralPatientContact.js), audited first — no trail,
+ * no read. Never throws. The result is the letter's (and, for its address,
+ * the notice's) and goes nowhere else: not a note, not an audit row.
+ *
+ *   a contact read result      { status: 'found', … } | not_found | not_connected | unreadable
+ *   { status: 'unaudited' }    the READ could not be recorded, so it was not made
+ *   { status: 'not_found' }    the stored PatNum is not a usable one (never read)
+ *
+ * @param {import('express').Request} req
+ * @param {{ office: string, row: Record<string, unknown> }} args
+ */
+async function letterContact(req, { office, row }) {
+  const patNum = Number(row.od_patient_id);
+  // A PatNum that is not a safe integer would read a DIFFERENT patient.
+  if (!Number.isSafeInteger(patNum) || patNum <= 0) return { status: 'not_found', read: false };
+  try {
+    await audit(req, {
+      action: 'READ',
+      resourceType: 'tc_referral.letter_contact_lookup',
+      resourceId: String(row.referral_id),
+      result: 'SUCCESS',
+      office,
+    });
+  } catch {
+    return { status: 'unaudited', read: false };
+  }
+  return { ...(await patientContact.patientContactFor(office, patNum)), read: true };
 }
 
 /** (R5b) When a link minted at `at` (ISO) stops working. */
@@ -621,11 +669,14 @@ async function recordPatientEvent(req, { office, referralId, verb, note }) {
  * (R5b) The patient's notice, after the letter was recorded as sent. NEVER
  * throws, never changes the letter's outcome; returns what happened.
  * @param {import('express').Request} req
- * @param {{ office: string, row: Record<string, unknown>, entry: Record<string, unknown>, withFiles: boolean }} args
+ * @param {{ office: string, row: Record<string, unknown>, entry: Record<string, unknown>, withFiles: boolean,
+ *   contact?: { status: string, read?: boolean } | null }} args
  *   `withFiles`: files went WITH the letter (the notice then says "and X-rays").
+ *   `contact`: the letter's Open Dental read (letterContact). When it was made,
+ *   the notice takes its address from it rather than reading Open Dental twice.
  * @returns {Promise<{ status: 'sent'|'skipped'|'failed', message: string }>}
  */
-async function notifyPatient(req, { office, row, entry, withFiles }) {
+async function notifyPatient(req, { office, row, entry, withFiles, contact: letterRead = null }) {
   const referralId = String(row.referral_id);
   const skip = async (why) => {
     await recordPatientEvent(req, { office, referralId, verb: 'patient_email_skipped', note: PATIENT_SKIP_NOTE[why] });
@@ -657,7 +708,11 @@ async function notifyPatient(req, { office, row, entry, withFiles }) {
   // A PatNum that is not a safe integer would read a DIFFERENT patient.
   const patNum = Number(row.od_patient_id);
   if (!Number.isSafeInteger(patNum) || patNum <= 0) return skip('not_found');
-  const contact = await patientContact.patientEmailFor(office, patNum);
+  // One Open Dental read per send: the letter's, when it was made.
+  const contact =
+    letterRead && letterRead.read
+      ? patientContact.emailOf(/** @type {any} */ (letterRead))
+      : await patientContact.patientEmailFor(office, patNum);
   if (contact.status !== 'found') return skip(contact.status);
   const address = referralLetter.recipientOf(contact.address);
   if (!address) return skip('no_email');
@@ -685,6 +740,8 @@ async function notifyPatient(req, { office, row, entry, withFiles }) {
       office: { name: details.name, phone: details.phone },
       withFiles,
       sourceKind: String(row.source_kind ?? ''),
+      // The reason in plain words, or the generic phrase. Never `reason`.
+      patientReason: row.patient_reason == null ? null : String(row.patient_reason),
     });
     const rendered = referralLetter.renderPatientNotice({
       office,

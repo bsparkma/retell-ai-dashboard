@@ -1,6 +1,7 @@
 /**
- * The four sign-off fields — specialist, how soon, reason, teeth — and, for
- * the doctor, their own note (queue item 56, R6).
+ * The four sign-off fields — specialist, how soon, reason, teeth — the
+ * reason in plain words (for the patient's email only), and, for the doctor,
+ * their own note (queue item 56, R6).
  *
  * ONE form for both edit surfaces: the hub (staff, tc.full) and the sign-off
  * card (the doctor). It hands back ONLY what changed, so the server's history
@@ -20,6 +21,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
   TC_REFERRAL_DOCTOR_NOTE_MAX,
+  TC_REFERRAL_PATIENT_REASON_MAX,
   TC_REFERRAL_URGENCY_LABELS,
   TcReferralDoctorEdit,
   TcReferralUrgency,
@@ -37,6 +39,7 @@ interface FormState {
   teeth: string;
   wholeMouth: boolean;
   doctorNote: string;
+  patientReason: string;
 }
 
 function stateOf(r: TcReferral): FormState {
@@ -47,6 +50,7 @@ function stateOf(r: TcReferral): FormState {
     teeth: r.teeth === "mouth" ? "" : r.teeth.join(", "),
     wholeMouth: r.teeth === "mouth",
     doctorNote: r.doctorNote ?? "",
+    patientReason: r.patientReason ?? "",
   };
 }
 
@@ -64,7 +68,14 @@ export function parseTeethText(text: string): number[] | null {
  */
 export function changedFields(
   r: TcReferral,
-  s: { directoryEntryId: string; urgency: TcReferralUrgency; reason: string; teeth: TcReferralTeeth; doctorNote?: string },
+  s: {
+    directoryEntryId: string;
+    urgency: TcReferralUrgency;
+    reason: string;
+    teeth: TcReferralTeeth;
+    doctorNote?: string;
+    patientReason?: string;
+  },
   withDoctorNote: boolean,
 ): ReferralFieldsChange {
   const out: ReferralFieldsChange = {};
@@ -75,6 +86,9 @@ export function changedFields(
   if (JSON.stringify(s.teeth) !== JSON.stringify(r.teeth)) out.teeth = s.teeth;
   if (withDoctorNote && (s.doctorNote ?? "").trim() !== (r.doctorNote ?? "")) {
     out.doctorNote = (s.doctorNote ?? "").trim() || null;
+  }
+  if (s.patientReason !== undefined && s.patientReason.trim() !== (r.patientReason ?? "")) {
+    out.patientReason = s.patientReason.trim() || null;
   }
   return out;
 }
@@ -210,6 +224,21 @@ export function ReferralFieldsForm({
         <div className="sm:col-span-2 space-y-1">
           <Label htmlFor="rff-reason">Reason *</Label>
           <Input id="rff-reason" value={s.reason} disabled={saving} onChange={(e) => set("reason", e.target.value)} />
+        </div>
+        <div className="sm:col-span-2 space-y-1">
+          <Label htmlFor="rff-preason">Reason in plain words (for the patient's email)</Label>
+          <Input
+            id="rff-preason"
+            value={s.patientReason}
+            maxLength={TC_REFERRAL_PATIENT_REASON_MAX}
+            disabled={saving}
+            onChange={(e) => set("patientReason", e.target.value)}
+            placeholder="e.g. an evaluation of a sore tooth"
+          />
+          <p className="text-xs text-muted-foreground">
+            The patient's email says they are referred "for" this. Leave it blank and it says "a specialist
+            consultation". The clinical reason above is never sent to the patient.
+          </p>
         </div>
         {withDoctorNote && (
           <div className="sm:col-span-2 space-y-1">
