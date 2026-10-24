@@ -10,6 +10,13 @@
  *
  * POST /:id/start-case puts the pre-auth's patient on the pipeline:
  * attach-or-create a TC case from the ROW (never the request), and link it.
+ *
+ * A CASE ID FROM THE CLIENT (create and PUT's "Linked case ID") must name a
+ * case in THIS pre-auth's office — the office from `?office=`, as everywhere
+ * here. The database cannot enforce it (the FK is on case_id alone), so the
+ * route does, in the same transaction as the write. Another office's case and
+ * an unknown id both answer 404 'Case not found' with nothing saved — the
+ * referral routes' shape, so the refusal says nothing about the other office.
  */
 
 const express = require('express');
@@ -20,6 +27,7 @@ const { withTenantTx } = require('./tx');
 const tenantDb = require('../../platform/tenantDb');
 const caseStore = require('./caseStore');
 const { findOpenCase } = require('./intakeFromCall');
+const preauthStore = require('./preauthStore');
 
 const { z, TcPreauthCase, PreauthStatus, Uuid, TcCase, caseToRows, TcPreauthStartCaseRequest } = contract;
 
@@ -127,6 +135,14 @@ const StatusChange = z.object({ status: PreauthStatus }).strict();
 /** Statuses that stamp a decision date the first time they're reached. */
 const DECISION_STATUSES = new Set(['approved', 'denied', 'expired']);
 
+/** A write refused because its case id is not a case in this office. */
+const CASE_NOT_IN_OFFICE = Symbol('CASE_NOT_IN_OFFICE');
+
+/** The referral routes' refusal, word for word: no hint which office has it. */
+function caseNotFound(res) {
+  return res.status(404).json({ success: false, error: 'Case not found', code: 'NOT_FOUND' });
+}
+
 function parseId(res, raw) {
   const parsed = Uuid.safeParse(raw);
   if (!parsed.success) {
@@ -185,6 +201,9 @@ router.post(
 
     const preauthId = randomUUID();
     const persisted = await withTenantTx(req, async (client) => {
+      if (input.caseId && !(await preauthStore.caseInOffice(client, req.tcOffice, input.caseId))) {
+        return CASE_NOT_IN_OFFICE;
+      }
       await client.query(
         `INSERT INTO tc_preauth_cases
             (${COLS.join(', ')})
@@ -211,6 +230,7 @@ router.post(
       );
       return loadOne(client, req.tcOffice, preauthId);
     });
+    if (persisted === CASE_NOT_IN_OFFICE) return caseNotFound(res);
 
     await auditTc(req, 'CREATE', 'tc_preauth', preauthId);
     res.status(201).json({ success: true, preauthCase: persisted });
@@ -261,6 +281,10 @@ router.put(
     sets.push('updated_at = now()');
 
     const persisted = await withTenantTx(req, async (client) => {
+      // null clears the link and needs no check; a case id must be this office's.
+      if (patch.caseId && !(await preauthStore.caseInOffice(client, req.tcOffice, patch.caseId))) {
+        return CASE_NOT_IN_OFFICE;
+      }
       const updated = await client.query(
         `UPDATE tc_preauth_cases SET ${sets.join(', ')}
           WHERE office_id = $1 AND preauth_id = $2 RETURNING preauth_id`,
@@ -269,6 +293,7 @@ router.put(
       if (updated.rows.length === 0) return null;
       return loadOne(client, req.tcOffice, preauthId);
     });
+    if (persisted === CASE_NOT_IN_OFFICE) return caseNotFound(res);
     if (!persisted) return notFound(res, 'preauth case');
 
     await auditTc(req, 'UPDATE', 'tc_preauth', preauthId);
