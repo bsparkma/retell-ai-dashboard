@@ -225,6 +225,8 @@ const REFERRAL_COLS = [
   'doctor_note',
   // R5b (1792500000000)
   'scheduled_date',
+  // The reason in plain words, for the patient's email only (1792600000000)
+  'patient_reason',
 ];
 
 const EVENT_COLS = ['event_id', 'office_id', 'referral_id', 'from_status', 'to_status', 'actor', 'at', 'note', 'verb'];
@@ -267,6 +269,7 @@ function toReferral(r, practiceName = null, events = undefined) {
     updatedAt: iso(r.updated_at),
     doctorNote: r.doctor_note ?? null,
     scheduledDate: isoDate(r.scheduled_date),
+    patientReason: r.patient_reason ?? null,
   };
   if (events) {
     out.events = events;
@@ -444,6 +447,7 @@ const FIELD_COLUMNS = [
   ['reason', 'reason'],
   ['teeth', 'teeth'],
   ['doctorNote', 'doctor_note'],
+  ['patientReason', 'patient_reason'],
 ];
 
 /**

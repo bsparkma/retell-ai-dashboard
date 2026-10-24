@@ -339,7 +339,7 @@ test('N: the template — X-rays only when files went, honest fallbacks for a mi
   const fn = src.slice(src.indexOf('function composePatientNotice('), src.indexOf('\nmodule.exports'));
   assert.doesNotMatch(fn, /referral\.reason|narrative|teeth|urgency|doctor_note/, 'the notice is composed from no clinical field');
   // The send says "and X-rays" only for files that went WITH the letter.
-  assert.match(require('node:fs').readFileSync(require('node:path').join(__dirname, 'referralSend.js'), 'utf8'), /notifyPatient\(req, \{ office, row, entry, withFiles: packed\.attached > 0 \}\)/);
+  assert.match(require('node:fs').readFileSync(require('node:path').join(__dirname, 'referralSend.js'), 'utf8'), /notifyPatient\(req, \{ office, row, entry, withFiles: packed\.attached > 0, contact \}\)/);
 });
 
 test('N: the opening line follows the source — a visit keeps "As we discussed at your visit,"; call, case and manual drop it', () => {
@@ -380,7 +380,9 @@ test('P: switch OFF (the default) → no patient email, a named skip, no Open De
   const skipped = eventsOf(db, id).filter((e) => e.verb === 'patient_email_skipped');
   assert.equal(skipped.length, 1);
   assert.equal(skipped[0].note, 'Patient not emailed: patient email is off for this office.');
-  assert.equal(odCalls.length, 0, 'no lookup for an email that will not be sent');
+  // Letter enrichment: the LETTER reads the patient's contact (one GET); the
+  // notice, switched off, adds none.
+  assert.deepEqual(odCalls.map((c) => [c.method, c.path]), [['apiGetRaw', '/patients/12827']], 'one read, for the letter; none for an email that will not be sent');
   assert.equal(auditRows(db).some((a) => a.resource_type === 'tc_referral.patient_email_lookup'), false);
   // The specialist side is exactly as with the switch on.
   const l = linksOf(letter.body);
@@ -533,7 +535,9 @@ test('N: a letter that ends in send_conflict sends no notice and leaves no live 
   const letter = acsCalls.find((c) => c.method === 'POST').body;
   const page = await getPage(baseUrl, linksOf(letter).received);
   assert.equal(page.html, linkRouter.NEUTRAL_PAGE, 'its links land on the neutral page');
-  assert.equal(odCalls.length, 0, 'no patient lookup for a letter not on the record');
+  // Letter enrichment: the letter's own contact read happened before it went
+  // out; the notice adds no second lookup for a letter not on the record.
+  assert.deepEqual(odCalls.map((c) => [c.method, c.path]), [['apiGetRaw', '/patients/12827']], 'only the letter read; no patient lookup for a letter not on the record');
 });
 
 /**

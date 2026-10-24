@@ -416,6 +416,11 @@ export const TcReferral = z.object({
   events: z.array(TcReferralEvent).optional(),
   /** R6: the doctor's own note, written at sign-off. null when none. */
   doctorNote: z.string().nullable().optional(),
+  /**
+   * The reason in plain words, for the PATIENT's email only (see
+   * TC_REFERRAL_PATIENT_REASON_MAX). null when none was written.
+   */
+  patientReason: z.string().nullable().optional(),
   /** R6: only on the hub list — how many files are attached. */
   attachmentCount: z.number().int().nonnegative().optional(),
   /**
@@ -567,12 +572,27 @@ export const REFERRAL_DOCTOR_EDITABLE_STATUSES: readonly TcReferralStatus[] = ["
 
 export const TC_REFERRAL_DOCTOR_NOTE_MAX = 4000;
 
-/** The four fields both edit surfaces share. At least one must be present. */
+/**
+ * The reason in plain words: what the PATIENT's email says the visit is for
+ * ("an evaluation of a sore tooth"), in place of the generic "a specialist
+ * consultation". Staff- and doctor-editable; blank = the generic phrase. Never
+ * the clinical `reason`, which is written for the specialist. The DB CHECK
+ * (1792600000000) carries the same cap.
+ */
+export const TC_REFERRAL_PATIENT_REASON_MAX = 200;
+
+/** The fields both edit surfaces share. At least one must be present. */
 const fieldShape = {
   directoryEntryId: z.string().uuid().nullable().optional(),
   urgency: TcReferralUrgency.optional(),
   reason: z.string().trim().min(1, "Say why you are referring").max(2000).optional(),
   teeth: TcReferralTeeth.optional(),
+  patientReason: z
+    .string()
+    .trim()
+    .max(TC_REFERRAL_PATIENT_REASON_MAX, `Keep the reason in plain words under ${TC_REFERRAL_PATIENT_REASON_MAX} characters`)
+    .nullable()
+    .optional(),
 };
 const hasAnyField = (v: Record<string, unknown>) => Object.values(v).some((x) => x !== undefined);
 
@@ -803,8 +823,22 @@ export function referralReturnedLine(returned: { note: string } | null | undefin
 
 /** The fields an edit changed, in words for the history ("specialist, how soon"). Pure. */
 export function referralEditSummary(
-  before: { directoryEntryId: string | null; urgency: TcReferralUrgency; reason: string; teeth: TcReferralTeeth; doctorNote?: string | null },
-  change: { directoryEntryId?: string | null; urgency?: TcReferralUrgency; reason?: string; teeth?: TcReferralTeeth; doctorNote?: string | null },
+  before: {
+    directoryEntryId: string | null;
+    urgency: TcReferralUrgency;
+    reason: string;
+    teeth: TcReferralTeeth;
+    doctorNote?: string | null;
+    patientReason?: string | null;
+  },
+  change: {
+    directoryEntryId?: string | null;
+    urgency?: TcReferralUrgency;
+    reason?: string;
+    teeth?: TcReferralTeeth;
+    doctorNote?: string | null;
+    patientReason?: string | null;
+  },
 ): string[] {
   const out: string[] = [];
   if (change.directoryEntryId !== undefined && change.directoryEntryId !== before.directoryEntryId) out.push("specialist");
@@ -815,6 +849,9 @@ export function referralEditSummary(
   if (change.teeth !== undefined && JSON.stringify(change.teeth) !== JSON.stringify(before.teeth)) out.push("teeth");
   if (change.doctorNote !== undefined && (change.doctorNote || null) !== (before.doctorNote ?? null)) {
     out.push("doctor's note");
+  }
+  if (change.patientReason !== undefined && (change.patientReason || null) !== (before.patientReason ?? null)) {
+    out.push("reason in plain words");
   }
   return out;
 }

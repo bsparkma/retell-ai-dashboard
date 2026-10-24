@@ -369,6 +369,8 @@ export function SignoffQueue({ offices, showOfficeBadges }: { offices: OfficeId[
               <dl className="grid grid-cols-[120px_1fr] gap-x-3 gap-y-1 text-sm">
                 <dt className="text-muted-foreground">Reason</dt>
                 <dd>{open.reason}</dd>
+                <dt className="text-muted-foreground">For the patient</dt>
+                <dd data-testid="tc-signoff-patient-reason">{open.patientReason || "a specialist consultation (nothing written)"}</dd>
                 <dt className="text-muted-foreground">Teeth</dt>
                 <dd>{teethLabel(open.teeth) || "—"}</dd>
                 <dt className="text-muted-foreground">How soon</dt>

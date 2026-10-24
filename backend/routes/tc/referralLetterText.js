@@ -24,17 +24,34 @@
  * words: who they are referred to, the specialist's phone, and a button to
  * say they scheduled. Minimum necessary: the patient's FIRST name, the
  * referring doctor, the practice names and phones, and whether X-rays went.
- * Never the clinical reason, teeth, urgency, notes, DOB or file names.
+ * Never the clinical reason, teeth, urgency, notes, DOB, phone or file names.
+ * What the visit is FOR is the staff-written reason in plain words, or a
+ * generic phrase when none was written.
  *
- * DOB: the referral row does not carry one, and this slice reads nothing from
- * Open Dental, so the letter says the date of birth is available on request
- * (DOB_LINE). Snapshotting it when the referral is created is a later slice.
+ * THE PATIENT CONTACT BLOCK (letter enrichment). The send reads the patient's
+ * phone, email and date of birth from THAT office's Open Dental, read only, at
+ * send time (services/tc/referralPatientContact.js) and hands it in as
+ * `contact`. The letter — and ONLY the letter — shows it: the date of birth in
+ * its slot under the name, phone and email in a "Patient contact" section. A
+ * field Open Dental has no value for reads "not on file"; when Open Dental
+ * could not be read at all, the date of birth keeps DOB_LINE and the section
+ * says so. Nothing is ever invented.
  */
 
 const { contract } = require('./helpers');
 
-/** The letter's date-of-birth line until a DOB is stored with the referral. */
+/** The letter's date-of-birth line when the date could not be read at send time. */
 const DOB_LINE = 'Date of birth: available from our office on request';
+
+/** A contact field Open Dental holds no value for. */
+const NOT_ON_FILE = 'not on file';
+
+/**
+ * The contact section when no contact could be read when the letter was sent
+ * (Open Dental not connected or not answering, or the patient not found).
+ */
+const CONTACT_UNAVAILABLE =
+  "Patient contact: not available from our records when this letter was sent. Please call our office for the patient's phone and email.";
 
 /** The two-weeks paragraph, exactly as approved. */
 const FINDINGS_PARAGRAPH =
@@ -120,6 +137,38 @@ function signedBy(provider) {
   return /^(dr\.?|doctor)\s/i.test(p) ? p : `Dr. ${p}`;
 }
 
+/** 'YYYY-MM-DD' → "January 1, 1980" (a calendar date: no zone shift); null when it is not one. @param {unknown} ymd */
+function birthDateText(ymd) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd ?? ''));
+  if (!m) return null;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  if (Number.isNaN(d.getTime()) || d.getUTCDate() !== Number(m[3])) return null;
+  return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', year: 'numeric', month: 'long', day: 'numeric' }).format(d);
+}
+
+/**
+ * The letter's date-of-birth line and its "Patient contact" section, from
+ * the send-time Open Dental read. A missing field is "not on file"; no read
+ * (or none possible) keeps DOB_LINE and says the contact could not be read.
+ *
+ * @param {{ status: 'found', phone: string|null, email: string|null, birthdate: string|null }
+ *   | { status: string } | null | undefined} contact
+ * @returns {{ dobLine: string, section: string }}
+ */
+function contactLines(contact) {
+  if (!contact || contact.status !== 'found') return { dobLine: DOB_LINE, section: CONTACT_UNAVAILABLE };
+  const found = /** @type {{ phone: string|null, email: string|null, birthdate: string|null }} */ (contact);
+  const dob = birthDateText(found.birthdate);
+  return {
+    dobLine: `Date of birth: ${dob || NOT_ON_FILE}`,
+    section: [
+      'Patient contact:',
+      `Phone: ${oneLine(found.phone) || NOT_ON_FILE}`,
+      `Email: ${oneLine(found.email) || NOT_ON_FILE}`,
+    ].join('\n'),
+  };
+}
+
 /** The letter date, in the office's day. @param {Date} at @param {string} timeZone */
 function letterDate(at, timeZone) {
   return new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: 'long', day: 'numeric' }).format(at);
@@ -138,10 +187,13 @@ function letterDate(at, timeZone) {
  *   at: Date,
  *   timeZone: string,
  *   withLinks?: boolean,       (R5b) say the buttons are below
+ *   contact?: object|null,     the send-time Open Dental read (see contactLines);
+ *                              absent = could not be read
  * }} input
  * @returns {{ subject: string, text: string }}
  */
-function composeReferralLetter({ referral, entry, office, attached, onRequest, at, timeZone, withLinks = false }) {
+function composeReferralLetter({ referral, entry, office, attached, onRequest, at, timeZone, withLinks = false, contact = null }) {
+  const { dobLine, section: contactSection } = contactLines(contact);
   const patient = nameParts(referral.patient_name);
   const initial = patient.last ? `${patient.last[0].toUpperCase()}.` : '';
   const who = oneLine(`${patient.first} ${initial}`);
@@ -176,7 +228,8 @@ function composeReferralLetter({ referral, entry, office, attached, onRequest, a
     `Please find our referral letter for ${who || 'your new patient'} below.`,
     header,
     letterDate(at, timeZone),
-    [`Patient: ${patient.full}`, DOB_LINE].join('\n'),
+    [`Patient: ${patient.full}`, dobLine].join('\n'),
+    contactSection,
     `We are referring ${patient.first || 'this patient'} for ${inSentence(reason)}${/[.!?]$/.test(reason) ? '' : '.'}`,
     `Clinical summary:\n${narrative || 'None provided.'}`,
     [`Teeth: ${teethText(referral.teeth)}`, `Urgency: ${contract.TC_REFERRAL_URGENCY_LABELS[referral.urgency] || referral.urgency}`].join('\n'),
@@ -191,12 +244,21 @@ function composeReferralLetter({ referral, entry, office, attached, onRequest, a
 }
 
 /**
- * (R5b) What the patient notice says the visit is FOR. The referral's
- * `reason` is clinical shorthand written for the specialist, so it is never
- * used here. A staff-editable plain-language reason is the PM's design; until
- * that field exists, this honest generic phrase stands in.
+ * (R5b) What the patient notice says the visit is FOR when nobody wrote a
+ * reason in plain words. The referral's `reason` is clinical shorthand
+ * written for the specialist, so it is never used here.
  */
 const PATIENT_REASON_FALLBACK = 'a specialist consultation';
+
+/**
+ * The staff-written reason in plain words (tc_referrals.patient_reason), as
+ * the sentence "…referred you to X for ___." takes it: one line, no trailing
+ * full stop (the sentence has its own). '' when there is none.
+ * @param {unknown} patientReason
+ */
+function plainReason(patientReason) {
+  return oneLine(patientReason).replace(/[.!?\s]+$/, '');
+}
 
 /** (R5b) The sources a patient was SEEN for: the notice may say "as we discussed at your visit". */
 const VISIT_SOURCE_KINDS = Object.freeze(['hyg_visit', 'checkout']);
@@ -213,10 +275,12 @@ const VISIT_SOURCE_KINDS = Object.freeze(['hyg_visit', 'checkout']);
  *   office: { name: string, phone: string|null },
  *   withFiles: boolean,        files went WITH the letter (not just "on request")
  *   sourceKind: string,        where the referral was started (tc_referrals.source_kind)
+ *   patientReason?: string|null, the reason in plain words; blank = the generic phrase
  * }} input
  * @returns {{ subject: string, text: string, after: string }}
  */
-function composePatientNotice({ patientName, referringProvider = null, entry, office, withFiles, sourceKind }) {
+function composePatientNotice({ patientName, referringProvider = null, entry, office, withFiles, sourceKind, patientReason = null }) {
+  const forWhat = plainReason(patientReason) || PATIENT_REASON_FALLBACK;
   const first = nameParts(patientName).first;
   const specialistOffice = oneLine(entry.practice_name) || oneLine(entry.specialist_name) || 'the specialist';
   const phone = oneLine(entry.phone);
@@ -228,7 +292,7 @@ function composePatientNotice({ patientName, referringProvider = null, entry, of
   const subject = oneLine(`We've sent your referral to ${specialistOffice}`);
   const text = [
     first ? `Hi ${first},` : 'Hello,',
-    `${opening}${doctor || office.name} has referred you to ${specialistOffice} for ${PATIENT_REASON_FALLBACK}. We've already sent them your information${withFiles ? ' and X-rays' : ''}, so they'll know exactly why you're coming.`,
+    `${opening}${doctor || office.name} has referred you to ${specialistOffice} for ${forWhat}. We've already sent them your information${withFiles ? ' and X-rays' : ''}, so they'll know exactly why you're coming.`,
     phone
       ? `Here's what to do next: call them at ${phone} to set up your appointment.`
       : `Here's what to do next: call them to set up your appointment.${office.phone ? ` If you need their number, call us at ${office.phone}.` : ''}`,
@@ -244,6 +308,8 @@ function composePatientNotice({ patientName, referringProvider = null, entry, of
 
 module.exports = {
   DOB_LINE,
+  NOT_ON_FILE,
+  CONTACT_UNAVAILABLE,
   FINDINGS_PARAGRAPH,
   ON_REQUEST_LEAD,
   SPECIALIST_LINK_LABELS,
@@ -257,4 +323,7 @@ module.exports = {
   shortReason,
   teethText,
   composeReferralLetter,
+  contactLines,
+  birthDateText,
+  plainReason,
 };

@@ -14947,6 +14947,7 @@ __export(contract_entry_exports, {
   TC_REFERRAL_EVENT_VERBS: () => TC_REFERRAL_EVENT_VERBS,
   TC_REFERRAL_HUB_GROUPS: () => TC_REFERRAL_HUB_GROUPS,
   TC_REFERRAL_LINK_EVENT_VERBS: () => TC_REFERRAL_LINK_EVENT_VERBS,
+  TC_REFERRAL_PATIENT_REASON_MAX: () => TC_REFERRAL_PATIENT_REASON_MAX,
   TC_REFERRAL_R5_EVENT_VERBS: () => TC_REFERRAL_R5_EVENT_VERBS,
   TC_REFERRAL_SEND_EVENT_VERBS: () => TC_REFERRAL_SEND_EVENT_VERBS,
   TC_REFERRAL_SOURCE_KINDS_R2: () => TC_REFERRAL_SOURCE_KINDS_R2,
@@ -17616,6 +17617,11 @@ var TcReferral = import_zod8.z.object({
   events: import_zod8.z.array(TcReferralEvent).optional(),
   /** R6: the doctor's own note, written at sign-off. null when none. */
   doctorNote: import_zod8.z.string().nullable().optional(),
+  /**
+   * The reason in plain words, for the PATIENT's email only (see
+   * TC_REFERRAL_PATIENT_REASON_MAX). null when none was written.
+   */
+  patientReason: import_zod8.z.string().nullable().optional(),
   /** R6: only on the hub list — how many files are attached. */
   attachmentCount: import_zod8.z.number().int().nonnegative().optional(),
   /**
@@ -17704,11 +17710,13 @@ var REFERRAL_EDITABLE_STATUSES = ["draft"];
 var REFERRAL_FIELD_EDITABLE_STATUSES = ["draft", "pending_signoff"];
 var REFERRAL_DOCTOR_EDITABLE_STATUSES = ["pending_signoff"];
 var TC_REFERRAL_DOCTOR_NOTE_MAX = 4e3;
+var TC_REFERRAL_PATIENT_REASON_MAX = 200;
 var fieldShape = {
   directoryEntryId: import_zod8.z.string().uuid().nullable().optional(),
   urgency: TcReferralUrgency.optional(),
   reason: import_zod8.z.string().trim().min(1, "Say why you are referring").max(2e3).optional(),
-  teeth: TcReferralTeeth.optional()
+  teeth: TcReferralTeeth.optional(),
+  patientReason: import_zod8.z.string().trim().max(TC_REFERRAL_PATIENT_REASON_MAX, `Keep the reason in plain words under ${TC_REFERRAL_PATIENT_REASON_MAX} characters`).nullable().optional()
 };
 var hasAnyField = (v) => Object.values(v).some((x) => x !== void 0);
 var TcReferralFieldsEdit = import_zod8.z.object(fieldShape).strict().refine(hasAnyField, "Nothing to change");
@@ -17842,6 +17850,9 @@ function referralEditSummary(before, change) {
   if (change.teeth !== void 0 && JSON.stringify(change.teeth) !== JSON.stringify(before.teeth)) out.push("teeth");
   if (change.doctorNote !== void 0 && (change.doctorNote || null) !== (before.doctorNote ?? null)) {
     out.push("doctor's note");
+  }
+  if (change.patientReason !== void 0 && (change.patientReason || null) !== (before.patientReason ?? null)) {
+    out.push("reason in plain words");
   }
   return out;
 }
@@ -18131,6 +18142,7 @@ var import_zod10 = __toESM(require_zod());
   TC_REFERRAL_EVENT_VERBS,
   TC_REFERRAL_HUB_GROUPS,
   TC_REFERRAL_LINK_EVENT_VERBS,
+  TC_REFERRAL_PATIENT_REASON_MAX,
   TC_REFERRAL_R5_EVENT_VERBS,
   TC_REFERRAL_SEND_EVENT_VERBS,
   TC_REFERRAL_SOURCE_KINDS_R2,
