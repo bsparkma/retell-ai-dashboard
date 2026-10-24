@@ -584,6 +584,8 @@ export const TC_REFERRAL_PATIENT_REASON_MAX = 200;
 /** The fields both edit surfaces share. At least one must be present. */
 const fieldShape = {
   directoryEntryId: z.string().uuid().nullable().optional(),
+  /** Provider directory: a pick from the office's list, or "Other" free text. */
+  referringProvider: z.string().trim().max(200).optional(),
   urgency: TcReferralUrgency.optional(),
   reason: z.string().trim().min(1, "Say why you are referring").max(2000).optional(),
   teeth: TcReferralTeeth.optional(),
@@ -830,6 +832,7 @@ export function referralEditSummary(
     teeth: TcReferralTeeth;
     doctorNote?: string | null;
     patientReason?: string | null;
+    referringProvider?: string;
   },
   change: {
     directoryEntryId?: string | null;
@@ -838,10 +841,14 @@ export function referralEditSummary(
     teeth?: TcReferralTeeth;
     doctorNote?: string | null;
     patientReason?: string | null;
+    referringProvider?: string;
   },
 ): string[] {
   const out: string[] = [];
   if (change.directoryEntryId !== undefined && change.directoryEntryId !== before.directoryEntryId) out.push("specialist");
+  if (change.referringProvider !== undefined && change.referringProvider !== (before.referringProvider ?? "")) {
+    out.push("referring provider");
+  }
   if (change.urgency !== undefined && change.urgency !== before.urgency) {
     out.push(`how soon (${TC_REFERRAL_URGENCY_LABELS[before.urgency]} → ${TC_REFERRAL_URGENCY_LABELS[change.urgency]})`);
   }

@@ -90,6 +90,7 @@ const contract = require('../../hyg/contract.gen.cjs');
 const tcContract = require('../../tc/contract.gen.cjs');
 const referralCreate = require('../tc/referralCreate');
 const referralStore = require('../tc/referralStore');
+const providerStore = require('../tc/providerStore');
 const referralAttachments = require('../tc/referralAttachments');
 const transitions = require('../tc/referralTransitions');
 
@@ -2462,6 +2463,27 @@ router.get(
       referralStore.listDirectory(pool, office, { includeInactive: false })
     );
     return res.json({ success: true, entries: rows.map(referralStore.toEntry) });
+  })
+);
+
+/**
+ * GET /api/hyg/visit/:aptNum/provider-directory — the office's ACTIVE
+ * providers (the TC provider directory), for the chairside form's referring
+ * provider pick. Non-PHI office configuration, read only, the same gate as
+ * the specialist list above.
+ */
+router.get(
+  '/:aptNum/provider-directory',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumOr400(req, res, office);
+    if (aptNum === null) return undefined;
+    const gate = await referralCreate.referralsGate(req, office);
+    if (gate) return res.status(gate[0]).json(gate[1]);
+    const rows = await tenantDb.withTenantDb(req, (pool) =>
+      providerStore.listProviders(pool, office, { includeInactive: false })
+    );
+    return res.json({ success: true, entries: rows.map(providerStore.toEntry) });
   })
 );
 

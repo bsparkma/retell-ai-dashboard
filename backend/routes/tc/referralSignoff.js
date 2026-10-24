@@ -21,6 +21,8 @@
  *   R6 (item 56):
  *   GET   /directory     the office's ACTIVE specialists — the doctor may pick
  *                        a different one; the directory itself stays tc.full
+ *   GET   /providers     the office's ACTIVE providers (provider directory),
+ *                        for the referring-provider pick; the list stays tc.full
  *   PATCH /:id/fields    the doctor edits specialist / urgency / reason / teeth
  *                        and their own note, while it awaits sign-off
  *   POST  /:id/return    pending_signoff → draft, with the doctor's question
@@ -49,6 +51,7 @@ const store = require('./referralStore');
 const transitions = require('./referralTransitions');
 const attachments = require('./referralAttachments');
 const referralSend = require('./referralSend');
+const providerStore = require('./providerStore');
 
 const { z, TcReferralDeclineRequest, TcReferralDoctorEdit, TcReferralReturnRequest } = contract;
 
@@ -131,6 +134,18 @@ router.get(
       store.listDirectory(pool, req.tcOffice, { includeInactive: false })
     );
     res.json({ success: true, entries: rows.map(store.toEntry) });
+  })
+);
+
+// Provider directory: the referring provider the doctor may pick at sign-off.
+// Not PHI; read-only; active only. The list itself is /api/tc/providers (tc.full).
+router.get(
+  '/providers',
+  h(async (req, res) => {
+    const rows = await tenantDb.withTenantDb(req, (pool) =>
+      providerStore.listProviders(pool, req.tcOffice, { includeInactive: false })
+    );
+    res.json({ success: true, entries: rows.map(providerStore.toEntry) });
   })
 );
 
