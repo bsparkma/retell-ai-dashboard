@@ -306,8 +306,8 @@ test('N: one message per recipient class — the letter to the specialist, the n
   assert.match(notified.note, /^Patient emailed at the address on file in Open Dental/);
   assert.doesNotMatch(notified.note, /@/, 'the address lives in recipient_address, not in the free-text note');
 
-  // Open Dental: exactly one read, of THIS office's patient, and nothing else.
-  assert.deepEqual(odCalls.map((c) => [c.office, c.method, c.path]), [['roland', 'apiGetRaw', '/patients/12827']]);
+  // Open Dental: one contact read of THIS office's patient (the notice reused it), the letter's insurance read, nothing else.
+  assert.deepEqual(odCalls.map((c) => [c.office, c.method, c.path]), [['roland', 'apiGetRaw', '/patients/12827'], ['roland', 'apiGetRaw', '/patplans']]);
 
   const audits = auditRows(db).map((a) => [a.resource_type, a.action, a.result, a.office]);
   assert.ok(audits.some((a) => a[0] === 'tc_referral.patient_email_lookup' && a[1] === 'READ' && a[3] === 'roland'));
@@ -382,7 +382,7 @@ test('P: switch OFF (the default) → no patient email, a named skip, no Open De
   assert.equal(skipped[0].note, 'Patient not emailed: patient email is off for this office.');
   // Letter enrichment: the LETTER reads the patient's contact (one GET); the
   // notice, switched off, adds none.
-  assert.deepEqual(odCalls.map((c) => [c.method, c.path]), [['apiGetRaw', '/patients/12827']], 'one read, for the letter; none for an email that will not be sent');
+  assert.deepEqual(odCalls.map((c) => [c.method, c.path]), [['apiGetRaw', '/patients/12827'], ['apiGetRaw', '/patplans']], "the letter's reads (contact, insurance); none for an email that will not be sent");
   assert.equal(auditRows(db).some((a) => a.resource_type === 'tc_referral.patient_email_lookup'), false);
   // The specialist side is exactly as with the switch on.
   const l = linksOf(letter.body);
@@ -537,7 +537,7 @@ test('N: a letter that ends in send_conflict sends no notice and leaves no live 
   assert.equal(page.html, linkRouter.NEUTRAL_PAGE, 'its links land on the neutral page');
   // Letter enrichment: the letter's own contact read happened before it went
   // out; the notice adds no second lookup for a letter not on the record.
-  assert.deepEqual(odCalls.map((c) => [c.method, c.path]), [['apiGetRaw', '/patients/12827']], 'only the letter read; no patient lookup for a letter not on the record');
+  assert.deepEqual(odCalls.map((c) => [c.method, c.path]), [['apiGetRaw', '/patients/12827'], ['apiGetRaw', '/patplans']], "only the letter's reads; no patient lookup for a letter not on the record");
 });
 
 /**

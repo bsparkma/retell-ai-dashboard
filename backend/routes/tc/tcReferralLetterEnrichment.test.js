@@ -188,11 +188,11 @@ test('A: the letter carries the date of birth and a Patient contact section, fro
   const text = letter.content.plainText;
   assert.ok(text.includes(`Patient: Stedi Test 2\nDate of birth: ${DOB_TEXT}`), 'the DOB slot fills from the read');
   assert.ok(text.includes(`Patient contact:\nPhone: ${PHONE}\nEmail: ${PATIENT}`), 'the contact section');
-  assert.doesNotMatch(text, /available from our office on request/);
+  assert.ok(!text.includes(letterText.DOB_LINE), 'the DOB line did not fall back');
   // The HTML form says the same.
   assert.ok(letter.content.html.includes(DOB_TEXT) && letter.content.html.includes(PHONE));
-  // One GET for the whole send — the notice reused it — through roland's own client, read only.
-  assert.deepEqual(odCalls.map((c) => [c.office, c.method, c.path]), [['roland', 'apiGetRaw', '/patients/12827']]);
+  // One contact GET for the whole send — the notice reused it — then the insurance read; roland's own client, read only.
+  assert.deepEqual(odCalls.map((c) => [c.office, c.method, c.path]), [['roland', 'apiGetRaw', '/patients/12827'], ['roland', 'apiGetRaw', '/patplans']]);
   assert.deepEqual(messagesByRecipient(acsCalls), { [SPECIALIST]: 1, [PATIENT]: 1 });
   // The read is on the record, before it was made, with nothing of what it read.
   const lookups = auditRows(db).filter((a) => a.resource_type === 'tc_referral.letter_contact_lookup');
@@ -245,7 +245,7 @@ for (const [name, setup, why] of [
     assert.ok(text.includes(`Patient: Stedi Test 2\n${letterText.DOB_LINE}`), 'the DOB line falls back');
     assert.ok(text.includes(letterText.CONTACT_UNAVAILABLE));
     assert.doesNotMatch(text, /not on file/, 'nothing claims a field is empty when it was never read');
-    assert.ok(odCalls.length <= 1, 'never more than one read');
+    assert.ok(odCalls.filter((c) => c.path.startsWith('/patients/')).length <= 1, 'never more than one contact read');
   });
 }
 
@@ -260,7 +260,7 @@ test('A: the read is audited first — a READ that cannot be recorded is not mad
   });
   const { r, letter } = await sendIt(baseUrl, db, acsCalls);
   assert.equal(r.body.referral.status, 'sent');
-  assert.equal(odCalls.length, 0, 'no trail, no read');
+  assert.deepEqual(odCalls.map((c) => c.path), ['/patplans'], 'no trail, no contact read (the insurance read has its own trail)');
   assert.ok(letter.content.plainText.includes(letterText.CONTACT_UNAVAILABLE));
 });
 
