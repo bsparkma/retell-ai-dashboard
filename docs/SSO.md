@@ -121,3 +121,89 @@ az keyvault secret set --vault-name kv-carein-core --name dashboard-sso-client-s
 ```
 Rotating `dashboard-session-secret` the same way will invalidate all existing
 sessions (everyone must sign in again).
+
+## The external door (Google / email code, S2b)
+
+Two doors issue the same `carein_sso` session cookie:
+
+| Door | Routes | Identity provider | Session `idp` claim |
+| --- | --- | --- | --- |
+| **Staff** | `/auth/login`, `/auth/callback` | careindent Microsoft Entra | absent (`'entra'` is treated the same) |
+| **External** | `/auth/ext/login`, `/auth/ext/callback` | Entra External ID (`<subdomain>.ciamlogin.com`): Google or an email one-time code | `'external'` |
+
+The staff door works exactly as described above. The external door **ships
+dark**: until `DASHBOARD_EXTSSO_TENANT_ID` (GUID), `DASHBOARD_EXTSSO_SUBDOMAIN`,
+`DASHBOARD_EXTSSO_CLIENT_ID` and the Key Vault secret
+`dashboard-extsso-client-secret` (`DASHBOARD_EXTSSO_CLIENT_SECRET`) are all
+present and valid, `/auth/ext/*` returns 404 and `GET /auth/providers` returns
+`{ microsoft: true, external: false }`. The sign-in screen shows the second
+button only when `external` is true. Nothing is defaulted
+(`backend/config/extSso.js`).
+
+The secret is a `SECRET_MAP` entry loaded from the vault by managed identity at
+boot, like the staff secret. Do **not** also add a Container App `secretref`
+for it, because that creates a second, divergent source.
+
+### On the external door, the app_user row is the only gate
+
+`/auth/ext/callback` decides in this order:
+
+1. The state must have been minted by `/auth/ext/login`, and each state can be
+   used once.
+2. The email must be verified. A sign-in with no email, `email_verified: false`
+   or no `sub` is refused.
+3. The address must have an **active `app_user` row**. There is no domain rule
+   and no bootstrap fallback on this door. No row, or a disabled one, gets the
+   "ask your practice administrator to add you" page.
+4. The row's binding is checked (below).
+5. If all of that passes, the door mints the session with `idp: 'external'` and
+   `tid` = the External ID tenant.
+
+The control DB being unreachable returns 503, never a session.
+
+### The binding rule
+
+`app_user.auth_provider` and `app_user.external_sub` (migration
+`1789200000000`) record which door owns a row:
+
+| `auth_provider` | Result on the external door |
+| --- | --- |
+| `'entra'` | **Refused** (409 + an `UNAUTHORIZED` audit row in that tenant). This is a staff Microsoft row. |
+| `NULL` | **Bound** on the first external sign-in: `external_sub` is set to the token `sub` and `auth_provider` to `'external'`. The bind is atomic, so two identities racing for one row cannot both win. |
+| `'external'` | Allowed only if the token `sub` equals `external_sub`. A different identity claiming the same address is refused (409 + audit). |
+
+`external_sub` is unique. One external identity can own at most one row, so the
+same person in a second practice is refused there.
+
+### The two restrictions
+
+1. **No staff takeover.** Migration `1789300000000` marks every `app_user` row
+   that existed before this slice as `'entra'`. Its `down()` resets only the
+   rows it recorded in `app_user_entra_backfill`. So the external door can bind
+   **only a row added after the backfill** whose `auth_provider` is still NULL.
+   - Rows created later through `/admin/users` or the Developer Console start
+     NULL. Whoever first proves control of that mailbox through Google or an
+     email code claims the row.
+   - The staff door does not write `auth_provider` in this slice. To pin a
+     newly added staff member to Microsoft, set their row to `'entra'`.
+2. **No super-admin through the external door.** `resolveUserContext`
+   (`backend/middleware/tenantContext.js`) is the one place `isSuperAdmin` is
+   computed. It returns false for any session whose `idp` is `'external'`,
+   whatever `platform_admin` says.
+   - `req.isSuperAdmin`, `requireSuperAdmin()` (so `/api/platform/*` returns
+     403) and `/auth/me` all inherit this.
+   - The practice role from the row still applies.
+   - The staff door is unaffected.
+
+The staff bootstrap fallback (`ROLES_BOOTSTRAP_FALLBACK`) applies to staff
+sessions only. An external session with no row resolves role null.
+
+These rules are pinned by `backend/routes/authExternal.test.js`.
+
+### App registration (External ID tenant)
+
+- Redirect URI: `https://<dashboard host>/auth/ext/callback`. This is derived
+  from the host in `DASHBOARD_SSO_REDIRECT_URI`, so there is no separate
+  setting.
+- Emit the `email` optional claim in the ID token. Without it, every sign-in
+  gets the "couldn't confirm your email" page.
