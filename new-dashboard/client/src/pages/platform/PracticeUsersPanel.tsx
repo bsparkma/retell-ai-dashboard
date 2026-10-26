@@ -1,118 +1,48 @@
 /**
- * One practice's roster — READ-ONLY.
+ * One practice's people — add, change role / home office, disable, re-enable.
  *
- * Deliberate scope call (Beau, 2026-08-13). Role, status and home-office changes
- * stay on /admin/users, where the last-admin guard, the platform-admin
- * protection and the self-change refusal already live and are already tested.
- * Two write paths into `app_user` would mean two places for those rules to be
- * enforced, and the second is where they would eventually not be.
+ * The same editor as /admin/users (components/users/TenantUserEditor), through
+ * the Developer Console's door: /api/platform/practices/:tenantId/users. Both
+ * doors run ONE server-side rule set (backend/services/tenantUsers.js) — the
+ * last-admin guard, platform-admin protection, self-change refusal and tenant
+ * scope are enforced there, not here. A refusal is shown inline, in the
+ * server's words.
  *
- * So this page shows no control that writes, and says where the writes are
- * instead — using the server's own `manageAt` rather than a hardcoded path.
+ * Differences from the practice's own page, and why:
+ *   - a home office can be chosen when adding: the operator is usually setting
+ *     up a practice they do not work in, so "add, then edit" is a wasted trip;
+ *   - no sign-in-domain warning: the operator's own domain says nothing about
+ *     what this practice's staff addresses look like.
  */
-import { useEffect, useState } from "react";
-import { Link } from "wouter";
-import { ExternalLink, Loader2 } from "lucide-react";
+import { useMemo } from "react";
 
-import { Badge } from "@/components/ui/badge";
+import { TenantUserEditor, type UserDoor } from "@/components/users/TenantUserEditor";
 import { api } from "@/lib/api";
-import type { Practice, PracticeUsersResponse } from "@/lib/api";
-import { loadError } from "../Platform";
-
-function formatLastLogin(iso: string | null): string {
-  if (!iso) return "Never";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "Never";
-  return d.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
+import type { Practice } from "@/lib/api";
 
 export default function PracticeUsersPanel({ practice }: { practice: Practice }) {
-  const [data, setData] = useState<PracticeUsersResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const tenantId = practice.tenantId;
 
-  useEffect(() => {
-    let live = true;
-    setData(null);
-    setError(null);
-    api
-      .listPracticeUsers(practice.tenantId)
-      .then((res) => live && setData(res))
-      .catch((e) => live && setError(loadError(e)));
-    return () => {
-      live = false;
-    };
-  }, [practice.tenantId]);
-
-  if (error) {
-    return <p className="text-sm text-destructive" data-testid="users-error">{error}</p>;
-  }
-  if (data === null) {
-    return (
-      <p className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" /> Loading people…
-      </p>
-    );
-  }
-  if (data.users.length === 0) {
-    return (
-      <p className="text-sm text-muted-foreground" data-testid="users-empty">
-        Nobody has been added to {practice.displayName} yet.
-      </p>
-    );
-  }
+  // The practice is fixed by the URL the door calls; the server never reads
+  // one from a body, so there is nothing here that could aim a write elsewhere.
+  const door = useMemo<UserDoor>(
+    () => ({
+      list: () => api.listPracticeUsers(tenantId),
+      create: (input) => api.createPracticeUser(tenantId, input),
+      update: (email, patch) => api.updatePracticeUser(tenantId, email, patch),
+    }),
+    [tenantId],
+  );
 
   return (
     <div className="space-y-3" data-testid="practice-users">
-      <div className="overflow-x-auto rounded-lg border border-border/70">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
-              <th className="px-3 py-2 font-medium">Email</th>
-              <th className="px-3 py-2 font-medium">Role</th>
-              <th className="px-3 py-2 font-medium">Home office</th>
-              <th className="px-3 py-2 font-medium">Status</th>
-              <th className="px-3 py-2 font-medium">Last sign-in</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.users.map((u) => (
-              <tr key={u.email} className="border-b border-border/50 last:border-0">
-                <td className="px-3 py-2 text-foreground">{u.email}</td>
-                <td className="px-3 py-2">
-                  <Badge variant="outline" className="font-mono text-[11px]">{u.role}</Badge>
-                </td>
-                <td className="px-3 py-2 text-muted-foreground" data-testid={`home-office-${u.email}`}>
-                  {/* An empty home office is a real answer — shared accounts are
-                      meant to have none — so it renders as an em dash, not blank. */}
-                  {u.homeOffice ?? "—"}
-                </td>
-                <td className="px-3 py-2">
-                  {u.status === "active" ? (
-                    <span className="text-xs text-muted-foreground">active</span>
-                  ) : (
-                    <Badge variant="outline" className="text-[11px]">disabled</Badge>
-                  )}
-                </td>
-                <td className="px-3 py-2 text-muted-foreground">{formatLastLogin(u.lastLoginAt)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <p className="text-xs text-muted-foreground">
-        This list is read-only. Roles, status and home office are changed on the practice&apos;s own{" "}
-        <Link href={data.manageAt} className="inline-flex items-center gap-0.5 underline">
-          Users page <ExternalLink className="h-3 w-3" />
-        </Link>
-        , where the last-admin and self-change guards live.
-      </p>
+      <TenantUserEditor
+        key={tenantId}
+        door={door}
+        offerHomeOfficeOnAdd
+        placeholder="person@practice.com"
+        emptyText={`Nobody has been added to ${practice.displayName} yet.`}
+      />
     </div>
   );
 }

@@ -18,7 +18,11 @@
  *   4. THE TENANT ID. `:tenantId` is resolved against the registry before
  *      anything opens a tenant database. An id that is not in the catalog is a
  *      404, not a connection attempt.
- *   5. THE SHORTENING COUNT. The number the console shows before you confirm is
+ *   5. THE USER DOOR. User writes reach the shared rule set
+ *      (services/tenantUsers.js) with the tenant from loadPractice ONLY — a
+ *      tenant id in the body cannot redirect them — and are audited into the
+ *      affected practice's log, failing closed.
+ *   6. THE SHORTENING COUNT. The number the console shows before you confirm is
  *      computed by the same selector the pruner uses to choose victims.
  *
  * The router is mounted over in-memory doubles in the same shape server.js
@@ -53,6 +57,10 @@ let settings;
 let auditRows;
 /** Rows the fake audit_log SELECT returns. */
 let auditLogRows;
+/** Flip to make the fake auditForTenant throw, as a dead audit store would. */
+let auditForTenantFails = false;
+/** Who each auditForTenant row was written as, parallel to the rows. */
+let auditActors = [];
 
 const REGISTRY_KEYS = [
   'getTenantById',
@@ -60,6 +68,11 @@ const REGISTRY_KEYS = [
   'listTenantModules',
   'setTenantModule',
   'listTenantUsers',
+  'getTenantUser',
+  'createTenantUser',
+  'updateTenantUser',
+  'countActiveTenantAdmins',
+  'getPlatformAdminByEmail',
   'getPlatformSetting',
   'setPlatformSetting',
 ];
@@ -114,6 +127,33 @@ beforeEach(async () => {
     return { module: mod, enabled };
   };
   registry.listTenantUsers = async (id) => (users[id] || []).slice();
+  // The user-write doubles are keyed by tenant exactly as the real SQL's
+  // `WHERE tenant_id = $1` is: a row in one practice is invisible from another.
+  const findUser = (id, email) =>
+    (users[id] || []).find((u) => u.email === String(email).toLowerCase()) || null;
+  const activeAdmins = (id) =>
+    (users[id] || []).filter((u) => u.role === 'admin' && u.status === 'active').length;
+  registry.getTenantUser = async (id, email) => findUser(id, email);
+  registry.countActiveTenantAdmins = async (id) => activeAdmins(id);
+  registry.getPlatformAdminByEmail = async () => null;
+  registry.createTenantUser = async (id, email, role, homeOffice = null) => {
+    if (findUser(id, email)) return null;
+    const row = { email: email.toLowerCase(), role, status: 'active', last_login_at: null, home_office: homeOffice };
+    (users[id] = users[id] || []).push(row);
+    return row;
+  };
+  registry.updateTenantUser = async (id, email, patch) => {
+    const row = findUser(id, email);
+    if (!row) return null;
+    const losesAdmin =
+      (typeof patch.role === 'string' && patch.role !== 'admin') ||
+      (typeof patch.status === 'string' && patch.status !== 'active');
+    if (losesAdmin && row.role === 'admin' && row.status === 'active' && activeAdmins(id) <= 1) return null;
+    if (typeof patch.role === 'string') row.role = patch.role;
+    if (typeof patch.status === 'string') row.status = patch.status;
+    if ('home_office' in patch) row.home_office = patch.home_office;
+    return row;
+  };
   registry.getPlatformSetting = async (key) => settings.get(key) || null;
   registry.setPlatformSetting = async (key, value, updatedBy) => {
     const row = { key, value, updated_at: new Date('2026-08-13T12:00:00Z'), updated_by: updatedBy };
@@ -125,8 +165,12 @@ beforeEach(async () => {
     auditRows.push({ tenantId: req.tenant.id, ...entry });
   };
   auditModule.auditForTenant = async (req, tenantId, entry) => {
+    if (auditForTenantFails) throw new Error('audit store down');
     auditRows.push({ tenantId, ...entry });
+    auditActors.push(req.user && req.user.email);
   };
+  auditForTenantFails = false;
+  auditActors = [];
 
   // A pg-shaped double: the audit reader is the only thing that opens a tenant
   // database here, and what it needs is `query(sql, params)`.
@@ -220,6 +264,8 @@ test('every platform route refuses a tenant admin — admin.all is not enough', 
     ['GET', `/api/platform/practices/${SMITH}/modules`],
     ['PUT', `/api/platform/practices/${SMITH}/modules/tc`, { enabled: false }],
     ['GET', `/api/platform/practices/${SMITH}/users`],
+    ['POST', `/api/platform/practices/${SMITH}/users`, { email: 'new.person@example.test', role: 'admin' }],
+    ['PATCH', `/api/platform/practices/${CAREIN}/users/hyg@carein.ai`, { role: 'admin' }],
     ['GET', `/api/platform/practices/${SMITH}/audit`],
     ['GET', '/api/platform/retention'],
     ['PUT', '/api/platform/retention', { days: 60 }],
@@ -362,9 +408,14 @@ test('an id that is not in the catalog is a 404, and never opens a database', as
   assert.equal(poolOpened, false, 'a URL string must not become a connection attempt');
 });
 
-// --- 5. users (read-only) ---------------------------------------------------
+// --- 5. users ----------------------------------------------------------------
+//
+// The rules themselves are proven in services/tenantUsers.test.js. What is
+// proven here is THIS door: the tenant comes from loadPractice and nowhere
+// else, the audit row lands in the affected practice's log, and a dead audit
+// store fails the request.
 
-test('the users panel lists role and home office, and points writes elsewhere', async () => {
+test('the users panel lists role and home office, with the same vocabularies as /api/users', async () => {
   asSuperAdmin();
 
   const body = await (await get(`/api/platform/practices/${CAREIN}/users`)).json();
@@ -378,15 +429,140 @@ test('the users panel lists role and home office, and points writes elsewhere', 
     homeOffice: 'roland',
   });
   assert.equal(body.users[1].homeOffice, null, 'no home office is a real answer, not a blank guess');
-  assert.equal(body.manageAt, '/admin/users');
+  assert.ok(Array.isArray(body.roles) && body.roles.includes('admin'));
+  assert.ok(Array.isArray(body.offices) && body.offices.length > 0);
+  assert.equal(body.actor, 'admin@carein.ai');
+  assert.equal(body.manageAt, undefined, 'the writes live here now — nothing to point at');
 });
 
-test('the console exposes NO user write — role changes stay on /admin/users', async () => {
+test('add: a super_admin adds a user to ANOTHER practice, audited into THAT practice', async () => {
   asSuperAdmin();
 
-  for (const method of ['POST', 'PATCH', 'PUT', 'DELETE']) {
-    const res = await send(method, `/api/platform/practices/${CAREIN}/users`, { role: 'admin' });
-    assert.ok(res.status === 404 || res.status === 405, `${method} users must not be a route (got ${res.status})`);
+  const res = await send('POST', `/api/platform/practices/${SMITH}/users`, {
+    email: 'Person.One@Example.Test',
+    role: 'admin',
+    homeOffice: 'roland',
+  });
+  assert.equal(res.status, 201);
+  const body = await res.json();
+  assert.deepEqual(body.user, {
+    email: 'person.one@example.test',
+    role: 'admin',
+    status: 'active',
+    lastLoginAt: null,
+    homeOffice: 'roland',
+  });
+  assert.equal(users[SMITH].length, 1);
+  assert.deepEqual(auditRows, [
+    {
+      tenantId: SMITH,
+      action: 'CREATE',
+      resourceType: 'app_user',
+      resourceId: 'person.one@example.test',
+      result: 'SUCCESS',
+    },
+  ]);
+  assert.deepEqual(auditActors, ['admin@carein.ai'], 'the actor is the super_admin');
+});
+
+test('add: a tenant_id in the BODY cannot redirect the write', async () => {
+  asSuperAdmin();
+
+  const res = await send('POST', `/api/platform/practices/${SMITH}/users`, {
+    email: 'person.two@example.test',
+    role: 'office',
+    tenant_id: CAREIN,
+    tenantId: CAREIN,
+  });
+  assert.equal(res.status, 201);
+  assert.equal(users[SMITH].length, 1, 'the row lands in the URL practice');
+  assert.equal(users[CAREIN].length, 2, 'the body practice is untouched');
+  assert.equal(auditRows[0].tenantId, SMITH, 'and so does the audit row');
+});
+
+test('edit: a tenant_id in the BODY cannot redirect the write either', async () => {
+  asSuperAdmin();
+  users[SMITH].push({ email: 'hyg@carein.ai', role: 'hygiene', status: 'active', last_login_at: null, home_office: null });
+
+  const res = await send('PATCH', `/api/platform/practices/${SMITH}/users/hyg@carein.ai`, {
+    role: 'tc',
+    tenant_id: CAREIN,
+  });
+  assert.equal(res.status, 200);
+  assert.equal(users[SMITH][0].role, 'tc');
+  assert.equal(users[CAREIN][1].role, 'hygiene', "CAREIN's row with the same address is untouched");
+  assert.equal(auditRows[0].tenantId, SMITH);
+});
+
+test('edit: an address that only exists in another practice is a 404, not a cross-tenant write', async () => {
+  asSuperAdmin();
+
+  const res = await send('PATCH', `/api/platform/practices/${SMITH}/users/hyg@carein.ai`, { status: 'disabled' });
+  assert.equal(res.status, 404);
+  assert.equal((await res.json()).code, 'USER_NOT_FOUND');
+  assert.equal(users[CAREIN][1].status, 'active');
+  assert.equal(auditRows.length, 0);
+});
+
+test('an unknown :tenantId is a 404 before any user write', async () => {
+  asSuperAdmin();
+  let writes = 0;
+  registry.createTenantUser = async () => {
+    writes += 1;
+    return null;
+  };
+  registry.updateTenantUser = async () => {
+    writes += 1;
+    return null;
+  };
+
+  const unknown = '99999999-9999-4999-8999-999999999999';
+  const post = await send('POST', `/api/platform/practices/${unknown}/users`, { email: 'person.one@example.test', role: 'office' });
+  const patch = await send('PATCH', `/api/platform/practices/${unknown}/users/person.one@example.test`, { role: 'office' });
+
+  for (const res of [post, patch]) {
+    assert.equal(res.status, 404);
+    assert.equal((await res.json()).code, 'PRACTICE_NOT_FOUND');
+  }
+  assert.equal(writes, 0);
+  assert.equal(auditRows.length, 0);
+});
+
+test('the shared rules apply through this door: last admin is refused with its code', async () => {
+  asSuperAdmin();
+
+  const res = await send('PATCH', `/api/platform/practices/${CAREIN}/users/boss@carein.ai`, { role: 'office' });
+  assert.equal(res.status, 409);
+  const body = await res.json();
+  assert.equal(body.code, 'LAST_ADMIN');
+  assert.equal(body.activeAdmins, 1);
+  assert.equal(users[CAREIN][0].role, 'admin');
+  assert.deepEqual(
+    auditRows.map((r) => [r.tenantId, r.action, r.result]),
+    [[CAREIN, 'UPDATE', 'UNAUTHORIZED']],
+    'the refusal is on the record, in the affected practice'
+  );
+});
+
+test('a failed audit write fails the request — fail closed', async () => {
+  asSuperAdmin();
+  auditForTenantFails = true;
+
+  const post = await send('POST', `/api/platform/practices/${SMITH}/users`, { email: 'person.one@example.test', role: 'office' });
+  assert.equal(post.status, 500);
+  assert.equal((await post.json()).success, false);
+
+  const patch = await send('PATCH', `/api/platform/practices/${CAREIN}/users/hyg@carein.ai`, { role: 'tc' });
+  assert.equal(patch.status, 500);
+  assert.equal((await patch.json()).success, false);
+});
+
+test('DELETE and PUT on users are still not routes — disabling is a status, not a delete', async () => {
+  asSuperAdmin();
+
+  for (const method of ['PUT', 'DELETE']) {
+    const res = await send(method, `/api/platform/practices/${CAREIN}/users/hyg@carein.ai`, { role: 'admin' });
+    assert.ok(res.status === 404 || res.status === 405, `${method} must not be a route (got ${res.status})`);
   }
 });
 

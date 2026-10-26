@@ -434,18 +434,23 @@ async function getTenantUser(tenantId, email) {
  *
  * Returns null when the email already exists in this tenant, so the caller can
  * answer 409 rather than silently overwriting a role somebody set deliberately.
+ *
+ * `homeOffice` is optional and defaults to null, which is exactly what the
+ * column holds when omitted (nullable, no DEFAULT) — so a caller that never
+ * passes it gets the same row it always did.
  * @param {string} tenantId
  * @param {string} email
  * @param {string} role
+ * @param {string|null} [homeOffice]
  * @returns {Promise<AppUser|null>}
  */
-async function createTenantUser(tenantId, email, role) {
+async function createTenantUser(tenantId, email, role, homeOffice = null) {
   const { rows } = await query(
-    `INSERT INTO app_user (tenant_id, email, role, status)
-          VALUES ($1, lower($2), $3, 'active')
+    `INSERT INTO app_user (tenant_id, email, role, status, home_office)
+          VALUES ($1, lower($2), $3, 'active', $4)
      ON CONFLICT (tenant_id, email) DO NOTHING
        RETURNING user_id, tenant_id, email, role, status, last_login_at, home_office`,
-    [tenantId, email, role]
+    [tenantId, email, role, homeOffice]
   );
   return rows[0] || null;
 }
