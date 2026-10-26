@@ -73,6 +73,12 @@ const SECRET_MAP = Object.freeze([
   // server-side session/JWT signing key. Both live ONLY in Key Vault.
   { secretName: 'dashboard-sso-client-secret', envKey: 'DASHBOARD_SSO_CLIENT_SECRET' },
   { secretName: 'dashboard-session-secret', envKey: 'DASHBOARD_SESSION_SECRET' },
+  // Entra External ID (the Google / email-code door, config/extSso.js): the
+  // confidential-client secret of the app registration in the External ID
+  // tenant. OPTIONAL: absent in the vault -> skipped, and the external door
+  // stays dark (isConfigured() false, /auth/ext/* 404). Like the staff secret,
+  // this is the ONLY source — never a container-app secretRef as well.
+  { secretName: 'dashboard-extsso-client-secret', envKey: 'DASHBOARD_EXTSSO_CLIENT_SECRET' },
   // Twilio, TC text messaging (queue item 39). ALL optional: absent in the
   // vault -> skipped, and texting stays FEATURE_DISABLED (config/twilio.js).
   // The from-numbers are per office and never borrowed across offices; a

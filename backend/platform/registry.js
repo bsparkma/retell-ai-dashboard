@@ -701,6 +701,59 @@ async function touchUserLogin(userId, at = new Date()) {
   await query(`UPDATE app_user SET last_login_at = $2 WHERE user_id = $1`, [userId, at]);
 }
 
+// --- external sign-in binding (S2b) -----------------------------------------
+//
+// Deliberately SEPARATE reads from getUserByEmail: the staff path's identity
+// read stays exactly as it was, and only the external door ever names these
+// two columns.
+
+/**
+ * Which door a row is bound to, read FRESH (never through the userContext
+ * cache) because it decides whether a sign-in is a takeover.
+ * @param {string} tenantId
+ * @param {string} email
+ * @returns {Promise<{ auth_provider: string|null, external_sub: string|null } | null>}
+ */
+async function getExternalBinding(tenantId, email) {
+  const { rows } = await query(
+    `SELECT auth_provider, external_sub
+       FROM app_user
+      WHERE tenant_id = $1 AND lower(email) = lower($2)
+      LIMIT 1`,
+    [tenantId, email]
+  );
+  return rows[0] || null;
+}
+
+/**
+ * BIND ON FIRST SIGN-IN: claim an unbound row for one external identity.
+ *
+ * The "is it still unbound?" check is INSIDE the UPDATE's WHERE, so two
+ * different external identities racing for the same address cannot both win —
+ * exactly one UPDATE matches. A row already bound (to anyone) or marked
+ * 'entra' matches nothing, and the caller re-reads to learn why.
+ *
+ * Returns true when THIS call bound the row. A unique violation on
+ * external_sub (the identity already owns another row) propagates as the pg
+ * error, code 23505, for the caller to refuse on.
+ * @param {string} tenantId
+ * @param {string} email
+ * @param {string} externalSub
+ * @returns {Promise<boolean>}
+ */
+async function bindExternalSub(tenantId, email, externalSub) {
+  const { rows } = await query(
+    `UPDATE app_user
+        SET external_sub = $3, auth_provider = 'external'
+      WHERE tenant_id = $1 AND lower(email) = lower($2)
+        AND external_sub IS NULL
+        AND (auth_provider IS NULL OR auth_provider = 'external')
+      RETURNING user_id`,
+    [tenantId, email, externalSub]
+  );
+  return rows.length === 1;
+}
+
 /**
  * @typedef {Object} TenantSpec
  * @property {string} slug
@@ -837,5 +890,7 @@ module.exports = {
   setPlatformAdminDisabled,
   removePlatformAdmin,
   touchUserLogin,
+  getExternalBinding,
+  bindExternalSub,
   close,
 };

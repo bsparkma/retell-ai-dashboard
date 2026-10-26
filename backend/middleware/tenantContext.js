@@ -69,6 +69,17 @@ function bootstrapFallbackEnabled() {
 }
 
 /**
+ * Was this session minted by the STAFF door? `idp` is the claim the session JWT
+ * carries: 'entra' or absent (every staff session issued before the claim
+ * existed) means staff; anything else — today only 'external' — does not.
+ * @param {unknown} idp
+ * @returns {boolean}
+ */
+function isStaffIdp(idp) {
+  return idp === undefined || idp === null || idp === 'entra';
+}
+
+/**
  * TEMPORARY Phase 1 bootstrap mapping.
  * careindent Entra tenant id — used only by the fallback below.
  */
@@ -139,7 +150,11 @@ async function resolveTenantForUser(user) {
  * `isSuperAdmin` is independent of all of that: it comes from platform_admin
  * and is true even for an email with no app_user row.
  *
- * @param {{ email?: string, tenantId?: string, tid?: string }} user
+ * The two fallback rows apply to STAFF sessions only (`idp` 'entra' or
+ * absent). An external-door session with no app_user row resolves role null
+ * whatever the flag says.
+ *
+ * @param {{ email?: string, tenantId?: string, tid?: string, idp?: string }} user
  * @returns {Promise<{
  *   tenant: { tenant_id: string, slug: string, display_name?: string } | null,
  *   role: string | null,
@@ -187,8 +202,15 @@ async function resolveUserContext(user) {
   // middleware and strand the SPA in a sign-in loop with nothing to explain
   // itself; a resolved tenant with no role produces an honest, actionable
   // dead-end instead.
+  //
+  // STAFF DOOR ONLY. A session minted by the external door (Google / email
+  // code, idp:'external') NEVER reaches the fallback, whatever its email or
+  // tid: for that door the app_user row is the sole gate, and a mailbox
+  // somebody controls must not be able to buy an 'office' role by not having
+  // a row. Absent idp = a staff session minted before the claim existed.
   const entraTid = String(user.tenantId || user.tid || '').toLowerCase();
   if (
+    isStaffIdp(user.idp) &&
     entraTid === CAREIN_FALLBACK.entraTenantId &&
     email.toLowerCase().endsWith(CAREIN_FALLBACK.emailDomain)
   ) {
