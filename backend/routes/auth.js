@@ -289,8 +289,11 @@ function verifiedIdentity(claims) {
  * BIND ON FIRST SIGN-IN, or check the binding on every later one.
  *
  *   'entra' row                  → refuse: a staff Microsoft account is never
- *                                  taken over through this door
- *   unbound                      → bind to this sub (atomic; a lost race is
+ *                                  taken over through this door. Every row
+ *                                  that existed before S2b is 'entra' (the
+ *                                  1789300000000 backfill), so ONLY a row
+ *                                  added after it can ever be bound here.
+ *   unbound (auth_provider NULL) → bind to this sub (atomic; a lost race is
  *                                  re-read and judged like any other row)
  *   bound to this sub            → ok
  *   bound to a different sub     → refuse

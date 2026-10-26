@@ -17,7 +17,7 @@
  *                  'external' bound by the external door to `external_sub`
  *   external_sub   the External ID token `sub` this row is bound to, or NULL
  *
- * NO BACKFILL. Existing rows keep NULL in both columns and the staff sign-in
+ * NO BACKFILL HERE. Existing rows keep NULL in both columns and the staff sign-in
  * path never writes either in this slice, so nobody's sign-in changes until a
  * row is bound by an external sign-in.
  *

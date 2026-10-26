@@ -18,6 +18,10 @@
  *   e. THE SESSION is the same carein_sso cookie, marked idp:'external'.
  *   +  FAIL CLOSED: control DB down → 503, never a session.
  *   +  THE FALLBACK never applies to an external session, on /auth/me or /api.
+ *   +  BACKFILL (round 2): every pre-S2b row is 'entra', so only a row added
+ *      after it can be bound here.
+ *   +  NO SUPER-ADMIN through this door: platform_admin is ignored for an
+ *      external session, on /auth/me and on /api/platform.
  *
  * The MSAL client is replaced at the module seam (extSso.getClient); the token
  * exchange never leaves the process. Synthetic addresses only (@example.test),
@@ -55,6 +59,7 @@ auditModule.auditForTenant = async (req, tenantId, entry) => {
 const authRouter = require('./auth');
 const { requireDashboardAuth } = require('../middleware/auth');
 const { tenantContext } = require('../middleware/tenantContext');
+const { requireSuperAdmin, permissionsForRole } = require('../config/permissions');
 
 const EXT_TENANT = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
 const STAFF_TENANT = 'fb0713b3-53e4-426a-8b0f-e444441bfc29'; // careindent, as the fallback names it
@@ -68,6 +73,7 @@ const EXT_ENV = {
 };
 
 const PERSON = 'person.one@example.test';
+const PLATFORM_ADMIN = 'platform.admin@example.test';
 
 const REGISTRY_KEYS = [
   'getUserByEmail',
@@ -92,6 +98,8 @@ let rows;
 let bindCalls;
 let controlDbDown;
 let bindRaises23505;
+/** @type {Set<string>} active platform_admin emails */
+let platformAdmins;
 
 // --- the fake External ID authority -----------------------------------------
 
@@ -111,6 +119,7 @@ beforeEach(() => {
   bindCalls = [];
   controlDbDown = false;
   bindRaises23505 = false;
+  platformAdmins = new Set();
   auditRows = [];
   auditFails = false;
   nextClaims = null;
@@ -124,9 +133,10 @@ beforeEach(() => {
     const r = rows.get(String(email).toLowerCase());
     return r ? { user_id: r.user_id, tenant_id: r.tenant_id, email: r.email, role: r.role, status: r.status, last_login_at: null, home_office: null } : null;
   };
-  registry.getPlatformAdminByEmail = async () => {
+  registry.getPlatformAdminByEmail = async (email) => {
     down();
-    return null;
+    const e = String(email).toLowerCase();
+    return platformAdmins.has(e) ? { email: e, status: 'active' } : null;
   };
   registry.getTenantById = async (id) => ({ tenant_id: id, slug: 'demo', display_name: 'Demo Dental', status: 'active' });
   registry.getTenantBySlug = async (slug) => ({ tenant_id: 'T-STAFF', slug, display_name: 'Staff', status: 'active' });
@@ -198,6 +208,8 @@ async function boot() {
   app.use('/auth', authRouter);
   app.use('/api', requireDashboardAuth(), tenantContext());
   app.get('/api/probe', (req, res) => res.json({ tenant: req.tenant.id, role: req.userRole }));
+  // The platform tier, guarded exactly as server.js mounts it.
+  app.use('/api/platform', requireSuperAdmin(), (_req, res) => res.json({ ok: true }));
   return new Promise((resolve) => {
     const server = app.listen(0, '127.0.0.1', () => {
       const base = `http://127.0.0.1:${server.address().port}`;
@@ -442,6 +454,34 @@ test('BIND: a staff (entra) row can never be taken over through this door', asyn
   }
 });
 
+test('BACKFILL: a pre-S2b row (marked entra by 1789300000000) is refused; a row added after it binds', async () => {
+  // The backfill leaves every row that existed before this slice 'entra' —
+  // here, an admin row a mailbox-holder would most like to claim.
+  rows.get(PERSON).auth_provider = 'entra';
+  rows.get(PERSON).role = 'admin';
+  const NEWCOMER = 'person.two@example.test';
+  rows.set(NEWCOMER, { user_id: 'U2', tenant_id: T1, email: NEWCOMER, role: 'tc', status: 'active', auth_provider: null, external_sub: null });
+
+  const srv = await boot();
+  try {
+    const old = await signIn(srv, googleClaims());
+    assert.equal(old.status, 409);
+    assert.equal(sessionCookie(old), null);
+    assert.equal(rows.get(PERSON).auth_provider, 'entra', 'the staff row is untouched');
+    assert.equal(rows.get(PERSON).external_sub, null);
+    assert.equal(auditRows.length, 1);
+    assert.equal(auditRows[0].result, 'UNAUTHORIZED');
+
+    const added = await signIn(srv, googleClaims({ sub: 'ext-sub-NEW', email: NEWCOMER }));
+    assert.equal(added.status, 302);
+    assert.ok(sessionCookie(added));
+    assert.equal(rows.get(NEWCOMER).auth_provider, 'external');
+    assert.deepEqual(bindCalls, [{ tenantId: T1, email: NEWCOMER, sub: 'ext-sub-NEW' }]);
+  } finally {
+    await srv.close();
+  }
+});
+
 test('BIND: an identity that already owns another row (unique violation) is refused, not granted', async () => {
   bindRaises23505 = true;
   const srv = await boot();
@@ -539,6 +579,54 @@ test('FALLBACK: an external session with no row resolves role null with the flag
     const staffApi = await srv.get('/api/probe', `${sso.cookieName}=${staff}`);
     assert.equal(staffApi.status, 200);
     assert.equal((await staffApi.json()).role, 'office');
+  } finally {
+    await srv.close();
+  }
+});
+
+// --- no super-admin through the external door ------------------------------------------------------
+
+test('SUPER-ADMIN: a platform_admin signed in externally is NOT a super_admin — /auth/me false, /api/platform 403', async () => {
+  platformAdmins.add(PLATFORM_ADMIN);
+  rows.set(PLATFORM_ADMIN, { user_id: 'U9', tenant_id: T1, email: PLATFORM_ADMIN, role: 'admin', status: 'active', auth_provider: null, external_sub: null });
+
+  const srv = await boot();
+  try {
+    // Through the real door, end to end.
+    const res = await signIn(srv, googleClaims({ sub: 'ext-sub-PA', email: PLATFORM_ADMIN }));
+    assert.equal(res.status, 302);
+    const token = String(sessionCookie(res));
+    const cookie = `${sso.cookieName}=${token}`;
+
+    const me = await (await srv.get('/auth/me', cookie)).json();
+    assert.equal(me.isSuperAdmin, false);
+    assert.equal(me.role, 'admin', 'the practice role from the row still holds');
+    assert.deepEqual(me.permissions, permissionsForRole('admin'), "an admin's permissions, not the super_admin's");
+
+    const platform = await srv.get('/api/platform/practices', cookie);
+    assert.equal(platform.status, 403);
+    assert.equal((await platform.json()).action, 'platform.admin');
+
+    // The practice side is unaffected.
+    assert.equal((await srv.get('/api/probe', cookie)).status, 200);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('SUPER-ADMIN: the same email through the STAFF door keeps it — /auth/me true, /api/platform 200', async () => {
+  platformAdmins.add(PLATFORM_ADMIN);
+  rows.set(PLATFORM_ADMIN, { user_id: 'U9', tenant_id: T1, email: PLATFORM_ADMIN, role: 'admin', status: 'active', auth_provider: 'entra', external_sub: null });
+
+  // A staff session: no idp claim, exactly as /auth/callback mints it.
+  const staff = sso.issueSession({ sub: 's', oid: 'o', name: 'n', email: PLATFORM_ADMIN, tid: STAFF_TENANT });
+  const cookie = `${sso.cookieName}=${staff}`;
+
+  const srv = await boot();
+  try {
+    const me = await (await srv.get('/auth/me', cookie)).json();
+    assert.equal(me.isSuperAdmin, true);
+    assert.equal((await srv.get('/api/platform/practices', cookie)).status, 200);
   } finally {
     await srv.close();
   }
