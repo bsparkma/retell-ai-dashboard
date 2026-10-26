@@ -102,7 +102,7 @@ export default function Platform() {
   return (
     <div className="space-y-6 p-6" data-testid="platform-console">
       <header>
-        <h1 className="text-xl font-semibold text-foreground">Platform</h1>
+        <h1 className="text-xl font-semibold text-foreground">Developer Console</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Every practice on CareIN, and the settings that apply across all of them.
         </p>

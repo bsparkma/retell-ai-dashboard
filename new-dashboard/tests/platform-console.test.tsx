@@ -16,6 +16,8 @@
 import * as React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 // Classic JSX runtime global — see tests/module-home.test.tsx for why.
 (globalThis as Record<string, unknown>).React = React;
@@ -78,6 +80,9 @@ const server = vi.hoisted(() => ({
   retentionWrites: [] as number[],
   impactCalls: [] as number[],
   purgeCalls: [] as Array<{ dryRun: boolean; confirm?: string }>,
+  userCreates: [] as Array<{ tenantId: string; input: Record<string, unknown> }>,
+  userPatches: [] as Array<{ tenantId: string; email: string; patch: Record<string, unknown> }>,
+  userWriteError: null as { message: string; status: number; code: string } | null,
 }));
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -114,8 +119,34 @@ vi.mock("@/lib/api", async (importOriginal) => {
           { email: "temp@carein.ai", role: "hygiene" as const, status: "active" as const, lastLoginAt: null, homeOffice: null },
         ],
         roles: ["admin", "office", "tc", "hygiene"] as const,
-        manageAt: "/admin/users",
+        offices: [
+          { officeId: "roland", officeName: "Roland" },
+          { officeId: "valley", officeName: "Valley Fort Smith" },
+        ],
+        actor: authState.email,
       })),
+      createPracticeUser: vi.fn(async (tenantId: string, input: Record<string, unknown>) => {
+        server.userCreates.push({ tenantId, input });
+        if (server.userWriteError) {
+          const e = server.userWriteError;
+          throw new real.ApiError(e.message, e.status, e.code);
+        }
+        return {
+          email: String(input.email),
+          role: input.role as "office",
+          status: "active" as const,
+          lastLoginAt: null,
+          homeOffice: (input.homeOffice as string | null | undefined) ?? null,
+        };
+      }),
+      updatePracticeUser: vi.fn(async (tenantId: string, email: string, patch: Record<string, unknown>) => {
+        server.userPatches.push({ tenantId, email, patch });
+        if (server.userWriteError) {
+          const e = server.userWriteError;
+          throw new real.ApiError(e.message, e.status, e.code);
+        }
+        return { email, role: "hygiene" as const, status: "active" as const, lastLoginAt: null, homeOffice: null, ...patch };
+      }),
       listPracticeAudit: vi.fn(async (_t: string, filters: Record<string, unknown> = {}) => {
         const all = Array.from({ length: 120 }, (_, i) => ({
           auditId: `a${i}`,
@@ -206,6 +237,10 @@ beforeEach(() => {
   server.retentionWrites = [];
   server.impactCalls = [];
   server.purgeCalls = [];
+  server.userCreates = [];
+  server.userPatches = [];
+  server.userWriteError = null;
+  authState.email = "admin@carein.ai";
   toasts.errors = [];
   toasts.successes = [];
 });
@@ -265,7 +300,7 @@ describe("access", () => {
     // visibleNav is the permission filter; /platform is deliberately NOT in
     // ROUTE_PERMISSIONS, so it must never be routed through this — a nav group
     // that leaked through here would show for every signed-in user.
-    const groups = [{ title: "Platform", items: [{ path: "/platform", label: "Platform Console", icon: (() => null) as never }] }];
+    const groups = [{ title: "Platform", items: [{ path: "/platform", label: "Developer Console", icon: (() => null) as never }] }];
     expect(visibleNav(groups, []).length).toBe(1);
     // ...which is exactly why DashboardLayout appends it on isSuperAdmin instead.
   });
@@ -357,24 +392,118 @@ describe("practices", () => {
 // --- 3. users ----------------------------------------------------------------
 
 describe("users", () => {
-  it("shows role and home office, and renders a missing home office as an em dash", async () => {
+  it("shows role, home office and a status chip per person", async () => {
     renderPage();
     await openPractice("carein", "users");
 
-    await screen.findByTestId("practice-users");
-    expect(screen.getByTestId("home-office-boss@carein.ai").textContent).toBe("roland");
-    // A shared account is MEANT to have none — blank would read as missing data.
-    expect(screen.getByTestId("home-office-temp@carein.ai").textContent).toBe("—");
+    await screen.findByTestId("user-row-boss@carein.ai");
+    expect((screen.getByTestId("home-office-boss@carein.ai") as HTMLSelectElement).value).toBe("roland");
+    // A shared account is MEANT to have none — the "—" option, not a blank guess.
+    expect((screen.getByTestId("home-office-temp@carein.ai") as HTMLSelectElement).value).toBe("");
+    expect(screen.getByTestId("status-boss@carein.ai").textContent).toBe("Active");
+    // lastLoginAt null: added, but nobody has used the account yet.
+    expect(screen.getByTestId("status-temp@carein.ai").textContent).toBe("Never signed in");
   });
 
-  it("offers no way to write, and points at the page that does", async () => {
+  it("adds a user to THIS practice with a role and home office from the server's lists", async () => {
     renderPage();
     await openPractice("carein", "users");
-    const panel = await screen.findByTestId("practice-users");
+    await screen.findByTestId("user-row-boss@carein.ai");
 
-    expect(panel.querySelectorAll("select").length).toBe(0);
-    expect(panel.querySelectorAll("input").length).toBe(0);
-    expect(panel.querySelector('a[href="/admin/users"]')).toBeTruthy();
+    const officeSelect = screen.getByTestId("add-user-home-office") as HTMLSelectElement;
+    expect(Array.from(officeSelect.options).map((o) => o.value)).toEqual(["", "roland", "valley"]);
+
+    fireEvent.change(screen.getByTestId("add-user-email"), { target: { value: "Person.One@Example.Test" } });
+    fireEvent.change(screen.getByTestId("add-user-role"), { target: { value: "tc" } });
+    fireEvent.change(officeSelect, { target: { value: "valley" } });
+    fireEvent.click(screen.getByRole("button", { name: /^add$/i }));
+
+    await waitFor(() =>
+      expect(server.userCreates).toEqual([
+        { tenantId: CAREIN, input: { email: "person.one@example.test", role: "tc", homeOffice: "valley" } },
+      ]),
+    );
+    expect(await screen.findByTestId("user-row-person.one@example.test")).toBeTruthy();
+    expect(screen.getByTestId("status-person.one@example.test").textContent).toBe("Never signed in");
+  });
+
+  it("shows an add refusal INLINE, headlined by its code, in the server's words", async () => {
+    server.userWriteError = {
+      message: "That email already has a row in this practice",
+      status: 409,
+      code: "USER_EXISTS",
+    };
+    renderPage();
+    await openPractice("carein", "users");
+    await screen.findByTestId("user-row-boss@carein.ai");
+
+    fireEvent.change(screen.getByTestId("add-user-email"), { target: { value: "person.two@example.test" } });
+    fireEvent.click(screen.getByRole("button", { name: /^add$/i }));
+
+    const note = await screen.findByTestId("add-user-refusal");
+    expect(note.getAttribute("data-code")).toBe("USER_EXISTS");
+    expect(note.textContent).toContain("Already added.");
+    expect(note.textContent).toContain("That email already has a row in this practice");
+  });
+
+  it("shows a last-admin refusal inline on the row it refused", async () => {
+    server.userWriteError = {
+      message: "This is the last active admin for this practice. Give someone else the admin role first.",
+      status: 409,
+      code: "LAST_ADMIN",
+    };
+    renderPage();
+    await openPractice("carein", "users");
+    await screen.findByTestId("user-row-boss@carein.ai");
+
+    fireEvent.change(screen.getByTestId("role-select-boss@carein.ai"), { target: { value: "office" } });
+
+    const note = await screen.findByTestId("refusal-boss@carein.ai");
+    expect(note.getAttribute("data-code")).toBe("LAST_ADMIN");
+    expect(note.textContent).toContain("Last admin.");
+    expect(note.textContent).toMatch(/last active admin/i);
+    expect(server.userPatches).toEqual([
+      { tenantId: CAREIN, email: "boss@carein.ai", patch: { role: "office" } },
+    ]);
+  });
+
+  it("disables and re-enables through this practice's door", async () => {
+    renderPage();
+    await openPractice("carein", "users");
+    await screen.findByTestId("user-row-temp@carein.ai");
+
+    const toggle = screen.getByTestId("toggle-temp@carein.ai");
+    expect(toggle.textContent).toContain("Disable");
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(server.userPatches).toEqual([
+        { tenantId: CAREIN, email: "temp@carein.ai", patch: { status: "disabled" } },
+      ]),
+    );
+    expect(await screen.findByText("Re-enable")).toBeTruthy();
+    expect(screen.getByTestId("status-temp@carein.ai").textContent).toBe("Disabled");
+  });
+
+  it("locks the operator's own row's role and status, like /admin/users does", async () => {
+    authState.email = "boss@carein.ai";
+    renderPage();
+    await openPractice("carein", "users");
+    await screen.findByTestId("user-row-boss@carein.ai");
+
+    expect(screen.getByTestId("role-select-boss@carein.ai").hasAttribute("disabled")).toBe(true);
+    expect(screen.getByTestId("toggle-boss@carein.ai").hasAttribute("disabled")).toBe(true);
+    expect(screen.getByTestId("role-select-temp@carein.ai").hasAttribute("disabled")).toBe(false);
+  });
+});
+
+describe("nav", () => {
+  it('labels the console "Developer Console", keeps /platform, and shows it only to a super_admin', () => {
+    const src = readFileSync(resolve(__dirname, "../client/src/components/DashboardLayout.tsx"), "utf8");
+    expect(src).toMatch(/path: "\/platform", label: "Developer Console"/);
+    expect(src).not.toMatch(/label: "Platform Console"/);
+    // Appended on the /auth/me super_admin flag, never through the permission filter.
+    expect(src).toMatch(/\.\.\.\(isSuperAdmin \? \[PLATFORM_GROUP\] : \[\]\)/);
   });
 });
 

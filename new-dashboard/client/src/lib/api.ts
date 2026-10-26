@@ -223,12 +223,18 @@ export interface Practice {
   modules: PracticeModule[];
 }
 
-/** One practice's roster. READ-ONLY here — writes live on /admin/users. */
-export interface PracticeUsersResponse {
-  users: TenantUser[];
-  roles: TenantUserRole[];
-  /** Where the writes actually are, so this page can link rather than fork. */
-  manageAt: string;
+/**
+ * One practice's roster, as the Developer Console reads it. The same shape as
+ * /api/users, because both pages render through one editor and both doors run
+ * the same server-side rule set (backend/services/tenantUsers.js).
+ */
+export type PracticeUsersResponse = TenantUsersResponse;
+
+/** A change to one user. `homeOffice: null` CLEARS it — explicit, not omitted. */
+export interface TenantUserPatch {
+  role?: TenantUserRole;
+  status?: TenantUserStatus;
+  homeOffice?: string | null;
 }
 
 /** The vocabularies audit_log's CHECK constraints admit. */
@@ -2036,11 +2042,39 @@ export const api = {
     return data.modules;
   },
 
-  /** One practice's roster. Read-only; `manageAt` says where the writes live. */
+  /** One practice's roster, with the role and office vocabularies. */
   async listPracticeUsers(tenantId: string): Promise<PracticeUsersResponse> {
     return request<PracticeUsersResponse>(
       `/platform/practices/${encodeURIComponent(tenantId)}/users`,
     );
+  },
+
+  /**
+   * Add a user to ANY practice. The practice is the URL's — the server never
+   * reads one from the body — and the same rules as /api/users apply.
+   */
+  async createPracticeUser(
+    tenantId: string,
+    input: { email: string; role: TenantUserRole; homeOffice?: string | null },
+  ): Promise<TenantUser> {
+    const data = await request<{ user: TenantUser }>(
+      `/platform/practices/${encodeURIComponent(tenantId)}/users`,
+      { method: "POST", body: JSON.stringify(input) },
+    );
+    return data.user;
+  },
+
+  /** Change one user in ANY practice. Same guards as `updateUser`. */
+  async updatePracticeUser(
+    tenantId: string,
+    email: string,
+    patch: TenantUserPatch,
+  ): Promise<TenantUser> {
+    const data = await request<{ user: TenantUser }>(
+      `/platform/practices/${encodeURIComponent(tenantId)}/users/${encodeURIComponent(email)}`,
+      { method: "PATCH", body: JSON.stringify(patch) },
+    );
+    return data.user;
   },
 
   /** A page of one practice's audit log, newest first. Paginated server-side. */
