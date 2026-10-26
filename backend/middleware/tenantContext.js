@@ -148,7 +148,11 @@ async function resolveTenantForUser(user) {
  *                                      of a sign-in loop)
  *
  * `isSuperAdmin` is independent of all of that: it comes from platform_admin
- * and is true even for an email with no app_user row.
+ * and is true even for an email with no app_user row — but ONLY for a staff
+ * session. An external-door session (idp:'external') is never a super_admin,
+ * whatever platform_admin says: the platform tier is reachable through the
+ * Microsoft door alone. This is the one place the flag is computed, so
+ * req.isSuperAdmin, requireSuperAdmin() and /auth/me all inherit it.
  *
  * The two fallback rows apply to STAFF sessions only (`idp` 'entra' or
  * absent). An external-door session with no app_user row resolves role null
@@ -168,7 +172,12 @@ async function resolveUserContext(user) {
   const email = user && user.email;
   if (!email) return empty;
 
-  const { appUser, isSuperAdmin } = await userContext.getUserContext(email);
+  const identity = await userContext.getUserContext(email);
+  const appUser = identity.appUser;
+  // NO SUPER-ADMIN THROUGH THE EXTERNAL DOOR (S2b round 2). A mailbox proven by
+  // Google or an email code is enough to hold a practice role, never the
+  // platform tier.
+  const isSuperAdmin = identity.isSuperAdmin === true && isStaffIdp(user.idp);
 
   if (appUser) {
     const t = await registry.getTenantById(appUser.tenant_id);
