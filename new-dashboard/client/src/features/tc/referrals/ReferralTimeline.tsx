@@ -6,6 +6,7 @@
 import {
   REFERRAL_LINK_ACTORS,
   TC_REFERRAL_STATUS_LABELS,
+  referralCorrespondenceLabel,
   type TcReferralEvent,
   type TcReferralEventVerb,
 } from "@shared/tc/referrals";
@@ -33,6 +34,9 @@ export const REFERRAL_EVENT_LABELS: Record<TcReferralEventVerb, string> = {
   patient_email_sent: "Patient emailed",
   patient_email_skipped: "Patient not emailed",
   patient_email_failed: "Patient email not sent",
+  // R6.9: the line names which way, with whom and how (referralCorrespondenceLabel);
+  // this is only the fallback for a row missing those.
+  correspondence: "Correspondence",
 };
 
 /** R5b: the same move, when the specialist's link made it rather than a person. */
@@ -43,6 +47,8 @@ export function referralEventLabel(e: TcReferralEvent): string {
   if (e.verb === "mark_acknowledged" && e.actor === REFERRAL_LINK_ACTORS.specialist) {
     return REFERRAL_ACKNOWLEDGED_BY_LINK_LABEL;
   }
+  // R6.9: "Phone call from specialist's office".
+  if (e.verb === "correspondence" && e.correspondence) return referralCorrespondenceLabel(e.correspondence);
   if (e.verb) return REFERRAL_EVENT_LABELS[e.verb];
   return TC_REFERRAL_STATUS_LABELS[e.toStatus];
 }

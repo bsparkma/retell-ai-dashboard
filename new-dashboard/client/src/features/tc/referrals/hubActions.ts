@@ -21,6 +21,7 @@
  */
 import {
   REFERRAL_MARK_LABELS,
+  referralCanLogCorrespondence,
   referralNextStatus,
   type TcReferralMoveVerb,
   type TcReferralStatus,
@@ -118,6 +119,15 @@ export function hubActionPlan(
     return { actions: [], signoff, notes };
   }
   return { actions: possible, signoff, notes };
+}
+
+/**
+ * R6.9: is "Log correspondence" offered? To a tc.full viewer (the route is
+ * tc.full), on any status but a draft — the shared rule the server applies.
+ * Not a move: it is outside the plan above and never changes the status.
+ */
+export function hubCanLogCorrespondence(status: TcReferralStatus, viewer: HubViewer): boolean {
+  return viewer.tcFull && referralCanLogCorrespondence(status);
 }
 
 /** The button's words. Submit names where it goes when the policy is known. */

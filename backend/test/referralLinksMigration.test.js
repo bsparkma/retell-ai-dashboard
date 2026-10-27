@@ -54,9 +54,11 @@ test('the verb CHECK is dropped and re-added, inline, equal to the contract: R5 
   assert.ok(dropAt > -1 && addAt > dropAt, 'drop, then add');
   const [sql] = checksNamed(calls, 'tc_referral_events_verb_check');
   assert.match(sql, /^verb IS NULL OR verb IN \(/);
-  assert.deepEqual(inList(sql), [...contract.TC_REFERRAL_ALL_EVENT_VERBS]);
+  // R6.9: this migration is history; its list is the frozen R5B one (the live
+  // vocabulary, TC_REFERRAL_ALL_EVENT_VERBS, is pinned by 1792800000000's test).
+  assert.deepEqual(inList(sql), [...contract.TC_REFERRAL_R5B_EVENT_VERBS]);
   assert.deepEqual(
-    [...contract.TC_REFERRAL_ALL_EVENT_VERBS],
+    [...contract.TC_REFERRAL_R5B_EVENT_VERBS],
     [...contract.TC_REFERRAL_R5_EVENT_VERBS, 'patient_scheduled', 'patient_email_sent', 'patient_email_skipped', 'patient_email_failed']
   );
   assert.deepEqual([...contract.TC_REFERRAL_LINK_EVENT_VERBS], ['patient_scheduled', 'patient_email_sent', 'patient_email_skipped', 'patient_email_failed']);

@@ -229,7 +229,21 @@ const REFERRAL_COLS = [
   'patient_reason',
 ];
 
-const EVENT_COLS = ['event_id', 'office_id', 'referral_id', 'from_status', 'to_status', 'actor', 'at', 'note', 'verb'];
+const EVENT_COLS = [
+  'event_id',
+  'office_id',
+  'referral_id',
+  'from_status',
+  'to_status',
+  'actor',
+  'at',
+  'note',
+  'verb',
+  // R6.9 (1792800000000): set only on a `correspondence` row.
+  'correspondence_direction',
+  'correspondence_party',
+  'correspondence_channel',
+];
 
 /** jsonb teeth: pg returns the value; a fake may hold the JSON text. */
 function teethOf(v) {
@@ -289,6 +303,10 @@ function toEvent(e) {
     at: iso(e.at),
     note: e.note ?? '',
     verb: e.verb ?? null,
+    correspondence:
+      e.verb === 'correspondence' && e.correspondence_direction && e.correspondence_party && e.correspondence_channel
+        ? { direction: e.correspondence_direction, party: e.correspondence_party, channel: e.correspondence_channel }
+        : null,
   };
 }
 
@@ -435,6 +453,18 @@ async function insertEvent(q, { office, referralId, from, to, actor, at, note, v
   await q.query(
     `INSERT INTO tc_referral_events (event_id, office_id, referral_id, from_status, to_status, actor, at, note, verb) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
     [randomUUID(), office, referralId, from, to, actor, at, note || '', verb]
+  );
+}
+
+/**
+ * R6.9: a correspondence row — staff's record of a contact outside the app.
+ * The status does not move (from = to = `status`, which the caller read under
+ * the row lock); the database pins that, the vocabulary and the note's length.
+ */
+async function insertCorrespondenceEvent(q, { office, referralId, status, actor, at, note, direction, party, channel }) {
+  await q.query(
+    'INSERT INTO tc_referral_events (event_id, office_id, referral_id, from_status, to_status, actor, at, note, verb, correspondence_direction, correspondence_party, correspondence_channel) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)',
+    [randomUUID(), office, referralId, status, status, actor, at, note, 'correspondence', direction, party, channel]
   );
 }
 
@@ -592,14 +622,19 @@ async function openSendProblems(q, office, rows) {
 const RESPONDED_STATUSES = Object.freeze(['sent', 'acknowledged', 'patient_seen', 'closed']);
 
 /**
- * referral id → { received, patientEmail } for the rows that have been sent:
- * the specialist's receipt and the patient email's outcome since the latest
- * send (contract.referralResponses). Read only, one query, for the hub's and
- * the case / checkout lists' badges.
+ * referral id → { received, patientEmail, lastCorrespondence }:
+ *   - for the rows that have been sent, the specialist's receipt and the
+ *     patient email's outcome since the latest send (contract.referralResponses);
+ *   - (R6.9) for every row, the latest correspondence staff logged
+ *     (contract.referralLastCorrespondence) — it can be logged at any status
+ *     but a draft, and a referral sent back to draft keeps what was logged.
+ * Read only, ONE query over the rows' events, for the hub's and the case /
+ * checkout lists' cards.
  */
 async function responseSignals(q, office, rows) {
-  const ids = rows.filter((r) => RESPONDED_STATUSES.includes(r.status)).map((r) => String(r.referral_id));
+  const ids = rows.map((r) => String(r.referral_id));
   if (ids.length === 0) return new Map();
+  const responded = new Set(rows.filter((r) => RESPONDED_STATUSES.includes(r.status)).map((r) => String(r.referral_id)));
   const res = await q.query(
     `SELECT ${EVENT_COLS.join(', ')} FROM tc_referral_events WHERE office_id = $1 AND referral_id = ANY($2) ORDER BY at ASC`,
     [office, ids]
@@ -611,7 +646,10 @@ async function responseSignals(q, office, rows) {
     byId.get(k).push(toEvent(e));
   }
   const out = new Map();
-  for (const [k, events] of byId) out.set(k, contract.referralResponses(events));
+  for (const [k, events] of byId) {
+    const responses = responded.has(k) ? contract.referralResponses(events) : { received: null, patientEmail: null };
+    out.set(k, { ...responses, lastCorrespondence: contract.referralLastCorrespondence(events) });
+  }
   return out;
 }
 
@@ -763,6 +801,7 @@ module.exports = {
   updateDraft,
   casStatus,
   insertEvent,
+  insertCorrespondenceEvent,
   FIELD_COLUMNS,
   updateFields,
   listHub,

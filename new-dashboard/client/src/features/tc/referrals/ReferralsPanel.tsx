@@ -57,6 +57,7 @@ import {
   TcReferralInput,
   TcReferralUrgency,
   referralChipTop,
+  referralLastContactLine,
   referralResponseBadges,
   referralReturnedLine,
   type TcReferral,
@@ -666,6 +667,12 @@ export function ReferralsPanel({ office, source, compact = false }: ReferralsPan
           {referralResponseBadges(r).patientEmail && (
             <p className="text-xs text-muted-foreground" data-testid="referral-response-patient-email">
               {referralResponseBadges(r).patientEmail}
+            </p>
+          )}
+          {/* R6.9: the latest contact staff logged, muted. */}
+          {referralLastContactLine(r.lastCorrespondence) && (
+            <p className="text-xs text-muted-foreground" title={r.lastCorrespondence?.note} data-testid="referral-last-contact">
+              {referralLastContactLine(r.lastCorrespondence)}
             </p>
           )}
           <p className="text-sm text-foreground">{r.reason}</p>
