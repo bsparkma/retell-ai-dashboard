@@ -350,3 +350,53 @@ test('the checkout alert carries the answers, built from the stored rows', async
     await app.close();
   }
 });
+
+test('an answer that lands between the check and the claim fails the note with NOTHING written', async () => {
+  const client = od();
+  const app = await bootHygApp({ od: client });
+  try {
+    await answered(app);
+    const noteRow = await stage(app, 'note');
+
+    // Stand in for a PUT committing in the gap: the moment the note is claimed
+    // (and so before any Open Dental write), the stored answer is already different.
+    const db = app.db;
+    const query = db.query.bind(db);
+    let fired = false;
+    db.query = async (sql, params) => {
+      if (!fired && /SET state = 'Sending'/.test(String(sql))) {
+        fired = true;
+        db.hyg_existing_tx_disposition[0].patient = 'declined';
+        db.hyg_existing_tx_disposition[0].wait_timeframe = null;
+      }
+      return query(sql, params);
+    };
+
+    const res = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/send' + Q, { body: { confirm: confirm(noteRow) } });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(fired, true);
+    assert.equal(res.body.outcomes[0].state, 'Failed');
+    assert.equal(res.body.outcomes[0].code, 'PREVIEW_CHANGED');
+    assert.deepEqual(client.writes, [], 'the old answer never reached the chart');
+
+    // Retry puts it back on the list (unlocking the answers); the next Send asks
+    // for a re-stage; the re-staged note says what is stored now, and lands.
+    const retried = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/staged-writes/note/retry' + Q);
+    assert.equal(retried.status, 200, JSON.stringify(retried.body));
+    const again = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/send' + Q, {
+      body: { confirm: confirm(retried.body.visit.stagedWrites.find((w) => w.kind === 'note')) },
+    });
+    assert.equal(again.status, 409);
+    assert.equal(again.body.code, 'PREVIEW_CHANGED');
+    const restaged = await stage(app, 'note');
+    assert.ok(restaged.preview.some((l) => /patient declined\./.test(l)));
+    const sent = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/send' + Q, { body: { confirm: confirm(restaged) } });
+    assert.equal(sent.status, 200);
+    assert.equal(sent.body.outcomes[0].state, 'Written');
+    const note = client.writes.find((w) => w[2] === '/procedurelogs/GroupNote')[3].Note;
+    assert.match(note, /patient declined\./);
+    assert.doesNotMatch(note, /wants to wait/);
+  } finally {
+    await app.close();
+  }
+});

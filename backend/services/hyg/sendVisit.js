@@ -503,7 +503,16 @@ async function sendVisit({
 
     let result;
     try {
-      result = await sendOne(row, ctx);
+      // SLICE 2b: RE-CHECKED NOW THAT THIS ROW IS CLAIMED. Claiming it froze the
+      // answers, so an edit that landed between the check above and the claim
+      // is caught here — before any Open Dental write. The row fails with
+      // nothing written; Retry puts it back on the list (which unlocks the
+      // answers), and the next Send asks for it to be staged again.
+      const stillCurrent =
+        row.kind === 'note' || row.kind === 'router'
+          ? await checkExistingTxCurrent(pool, { office, visit, rows: [row] })
+          : { ok: true };
+      result = stillCurrent.ok ? await sendOne(row, ctx) : { ...stillCurrent, ok: false };
     } catch (err) {
       // A throw is a failure like any other: the row must not be left Sending.
       result = {

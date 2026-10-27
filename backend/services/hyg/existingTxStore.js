@@ -195,7 +195,8 @@ async function saveDisposition(pool, { office, visit, procNum, input, snapshot, 
  * Remember a SUCCESSFUL read: every planned procedure's snapshot, so the Router
  * can list the ones nobody answered. Skipped when the stored read already has
  * this `readAt` (a cache hit), and never once the visit is frozen — the sent
- * record does not move. See migrations-tenant/1792900000000_hyg_existing_tx_read.js.
+ * record does not move. The frozen guard LOCKS, exactly as saveDisposition's
+ * does, so a read racing a send cannot rewrite the plan the handoff reads. See migrations-tenant/1792900000000_hyg_existing_tx_read.js.
  */
 async function recordLoaded(pool, { office, visitId, readAt, items }) {
   const value = {
@@ -213,14 +214,15 @@ async function recordLoaded(pool, { office, visitId, readAt, items }) {
     })),
   };
   await pool.query(
-    `UPDATE hyg_visit SET existing_tx_read = $3::jsonb
+    `WITH writes AS (
+       SELECT state FROM hyg_staged_write
+        WHERE office = $1 AND visit_id = $2 AND kind = ANY($5::text[])
+        FOR SHARE
+     )
+     UPDATE hyg_visit SET existing_tx_read = $3::jsonb
       WHERE office = $1 AND visit_id = $2
         AND (existing_tx_read IS NULL OR existing_tx_read->>'readAt' IS DISTINCT FROM $4::text)
-        AND NOT EXISTS (
-          SELECT 1 FROM hyg_staged_write
-           WHERE office = $1 AND visit_id = $2
-             AND kind = ANY($5::text[]) AND state = ANY($6::text[])
-        )`,
+        AND (SELECT count(*) FROM writes WHERE state = ANY($6::text[])) = 0`,
     [office, visitId, JSON.stringify(value), readAt, FREEZING_KINDS, FROZEN_STATES]
   );
 }
@@ -231,13 +233,14 @@ async function recordLoaded(pool, { office, visitId, readAt, items }) {
  */
 async function recordFailed(pool, { office, visitId, at }) {
   await pool.query(
-    `UPDATE hyg_visit SET existing_tx_read = $3::jsonb
+    `WITH writes AS (
+       SELECT state FROM hyg_staged_write
+        WHERE office = $1 AND visit_id = $2 AND kind = ANY($4::text[])
+        FOR SHARE
+     )
+     UPDATE hyg_visit SET existing_tx_read = $3::jsonb
       WHERE office = $1 AND visit_id = $2 AND existing_tx_read IS NULL
-        AND NOT EXISTS (
-          SELECT 1 FROM hyg_staged_write
-           WHERE office = $1 AND visit_id = $2
-             AND kind = ANY($4::text[]) AND state = ANY($5::text[])
-        )`,
+        AND (SELECT count(*) FROM writes WHERE state = ANY($5::text[])) = 0`,
     [office, visitId, JSON.stringify({ status: 'failed', at }), FREEZING_KINDS, FROZEN_STATES]
   );
 }

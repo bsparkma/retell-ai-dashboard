@@ -163,11 +163,18 @@ const RADIOGRAPH_MAP = Object.freeze({
  */
 function existingTxForTc(existingTx) {
   const items = existingTx && Array.isArray(existingTx.items) ? existingTx.items : [];
-  const parsed = items
+  const valid = items
     .map((i) => contract.ExistingTxHandoffItemSchema.safeParse(i))
     .filter((r) => r.success)
-    .map((r) => r.data)
-    .slice(0, contract.EXISTING_TX_HANDOFF_MAX);
+    .map((r) => r.data);
+  const parsed = valid.slice(0, contract.EXISTING_TX_HANDOFF_MAX);
+  if (parsed.length !== items.length) {
+    // Counts only — never a code, a tooth or a PatNum.
+    console.warn(
+      `[hyghandoff] existing treatment: ${items.length} item(s), ${items.length - valid.length} not ` +
+        `parseable, ${valid.length - parsed.length} over the cap — ${parsed.length} sent`
+    );
+  }
   return parsed.length > 0 ? parsed : undefined;
 }
 

@@ -408,7 +408,7 @@ class FakeHygDb extends FakeAuditDb {
     }
 
     // ── Slice 2b: the visit's recorded existing-treatment read ─────────────
-    if (/^\s*UPDATE hyg_visit SET existing_tx_read = \$3::jsonb\s+WHERE office = \$1 AND visit_id = \$2\s+AND \(existing_tx_read IS NULL OR existing_tx_read->>'readAt' IS DISTINCT FROM \$4::text\)\s+AND NOT EXISTS/i.test(text)) {
+    if (/^\s*WITH writes AS \(\s*SELECT state FROM hyg_staged_write\s+WHERE office = \$1 AND visit_id = \$2 AND kind = ANY\(\$5::text\[\]\)\s+FOR SHARE\s*\)\s*UPDATE hyg_visit SET existing_tx_read = \$3::jsonb\s+WHERE office = \$1 AND visit_id = \$2\s+AND \(existing_tx_read IS NULL OR existing_tx_read->>'readAt' IS DISTINCT FROM \$4::text\)\s+AND \(SELECT count\(\*\) FROM writes WHERE state = ANY\(\$6::text\[\]\)\) = 0/i.test(text)) {
       const [office, visitId, value, readAt, kinds, states] = params;
       const row = this.hyg_visit.find((v) => v.office === office && v.visit_id === visitId);
       if (!row || this.existingTxFrozen(office, visitId, kinds, states)) return { rows: [], rowCount: 0 };
@@ -417,7 +417,7 @@ class FakeHygDb extends FakeAuditDb {
       row.existing_tx_read = this.checkExistingTxRead(FakeHygDb.json(value));
       return { rows: [], rowCount: 1 };
     }
-    if (/^\s*UPDATE hyg_visit SET existing_tx_read = \$3::jsonb\s+WHERE office = \$1 AND visit_id = \$2 AND existing_tx_read IS NULL\s+AND NOT EXISTS/i.test(text)) {
+    if (/^\s*WITH writes AS \(\s*SELECT state FROM hyg_staged_write\s+WHERE office = \$1 AND visit_id = \$2 AND kind = ANY\(\$4::text\[\]\)\s+FOR SHARE\s*\)\s*UPDATE hyg_visit SET existing_tx_read = \$3::jsonb\s+WHERE office = \$1 AND visit_id = \$2 AND existing_tx_read IS NULL\s+AND \(SELECT count\(\*\) FROM writes WHERE state = ANY\(\$5::text\[\]\)\) = 0/i.test(text)) {
       const [office, visitId, value, kinds, states] = params;
       const row = this.hyg_visit.find((v) => v.office === office && v.visit_id === visitId);
       if (!row || (row.existing_tx_read ?? null) !== null || this.existingTxFrozen(office, visitId, kinds, states)) {
