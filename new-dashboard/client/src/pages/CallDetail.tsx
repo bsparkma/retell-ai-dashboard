@@ -10,8 +10,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   ArrowLeft, Bot, Users, Play, Pause, Download, FileText,
   User, Calendar, Phone, Tag, AlertTriangle, CheckCircle2, Clock, Send, UserCheck, Loader2, Sparkles, VolumeX,
-  StickyNote, Archive
+  StickyNote, Archive, PhoneOff
 } from "lucide-react";
+import { DEAD_AIR_LABEL } from "@/lib/worklist";
 import {
   api, type UnifiedCall, type OdPatient, type OdPatientAddress, type NotAPatientReason,
   type CallActor, type OdSyncStatus, type TranscribeResult, type CallDisposition,
@@ -458,6 +459,10 @@ export default function CallDetail() {
   const auth = useAuth();
   const [call, setCall] = useState<UnifiedCall | null | "loading">("loading");
   const [error, setError] = useState<string | null>(null);
+  // "Dropped by Karen" is derived by the server on GET only. Mutation responses (triage,
+  // link, send) don't carry it and are merged over `call`, so hold the load-time answer
+  // here — it depends only on how the call ended, which no action on this page changes.
+  const [deadAir, setDeadAir] = useState(false);
 
   const [patient, setPatient] = useState<OdPatient | null>(null);
   const [patientLoading, setPatientLoading] = useState(false);
@@ -705,8 +710,9 @@ export default function CallDetail() {
     if (!id) return;
     setCall("loading");
     setError(null);
+    setDeadAir(false);
     api.getUnifiedCall(id)
-      .then(setCall)
+      .then((loaded) => { setCall(loaded); setDeadAir(loaded.agentDeadAir); })
       .catch(() => { setCall(null); setError("Call not found"); });
   }, [id]);
 
@@ -890,6 +896,14 @@ export default function CallDetail() {
             {displayCall.isEmergency && (
               <span className="flex items-center gap-1 px-2 py-1 rounded-lg text-sm font-bold bg-destructive/15 text-destructive">
                 <AlertTriangle size={14} /> Emergency
+              </span>
+            )}
+            {deadAir && (
+              <span
+                className="flex items-center gap-1 px-2 py-1 rounded-lg text-sm font-bold bg-destructive/15 text-destructive"
+                title="The AI went silent after the caller spoke and the call was hung up on inactivity."
+              >
+                <PhoneOff size={14} /> {DEAD_AIR_LABEL}
               </span>
             )}
             <span

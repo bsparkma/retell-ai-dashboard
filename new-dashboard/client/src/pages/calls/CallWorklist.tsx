@@ -22,7 +22,7 @@ import {
 import {
   Search, Bot, Users, RefreshCw, AlertTriangle, CalendarCheck, UserPlus, Shield,
   CheckCircle2, UserSearch, UserCheck, CircleSlash, Loader2, PlugZap, Clock, Send,
-  FileText, VolumeX, MessageSquare, Archive,
+  FileText, VolumeX, MessageSquare, Archive, PhoneOff,
 } from "lucide-react";
 import { ActionTooltip, IconAction, ACTION_HEIGHT, ICON_ACTION_CLASS } from "@/components/calls/IconAction";
 import { TriageActions } from "@/components/calls/TriageActions";
@@ -40,7 +40,9 @@ import { syncToast, syncCaption, SYNC_COOLDOWN_SECONDS } from "@/lib/sync";
 import { useTranscribeCall } from "@/hooks/useTranscribeCall";
 import { needsRebillConfirm, ANSWERED_BY_AI_BADGE } from "@/lib/transcribe";
 import { TranscribeRebillDialog } from "@/components/calls/TranscribeRebillDialog";
-import { callNeedsAttention, isAiDuplicateLeg, rowPrimaryAction } from "@/lib/worklist";
+import {
+  callNeedsAttention, isAiDuplicateLeg, rowPrimaryAction, sortWorklist, DEAD_AIR_LABEL,
+} from "@/lib/worklist";
 import { can } from "@/lib/permissions";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { usePolling } from "@/hooks/usePolling";
@@ -66,6 +68,9 @@ interface Chip {
   match: (c: UnifiedCall) => boolean;
 }
 const SIGNAL_CHIPS: Chip[] = [
+  // First, and the only solid red: the AI went silent on this caller and the call was hung
+  // up on inactivity. Derived server-side on every read (backend/utils/agentDeadAir.js).
+  { key: "dead_air", label: DEAD_AIR_LABEL, icon: PhoneOff, color: "oklch(0.50 0.22 25)", bg: "oklch(0.62 0.24 25 / 0.16)", match: (c) => c.agentDeadAir },
   { key: "emergency", label: "Emergency", icon: AlertTriangle, color: "oklch(0.55 0.20 25)", bg: "oklch(0.62 0.22 25 / 0.12)", match: (c) => c.isEmergency },
   { key: "booked", label: "Booked", icon: CalendarCheck, color: "oklch(0.48 0.16 155)", bg: "oklch(0.65 0.18 155 / 0.12)", match: (c) => c.appointmentBooked },
   { key: "new", label: "New patient", icon: UserPlus, color: "oklch(0.45 0.16 260)", bg: "oklch(0.55 0.18 260 / 0.12)", match: (c) => c.isNewPatient },
@@ -211,8 +216,10 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
   const officeOdConnected =
     office === ALL_OFFICES ? offices.some((o) => o.odConnected) : (selectedOffice?.odConnected ?? false);
 
+  // agentDeadAir is derived by the list GET only. A mutation response re-normalized into a
+  // full call reads it as false, so a patch never gets to clear it — the next poll owns it.
   const patchCall = useCallback((id: string, patch: Partial<UnifiedCall>) => {
-    setCalls((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+    setCalls((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch, agentDeadAir: c.agentDeadAir } : c)));
   }, []);
 
   /** The signed-in user as the store records an actor, or null. */
@@ -415,12 +422,9 @@ export function CallWorklist({ onNeedsAttentionCount }: CallWorklistProps) {
       const keys = Array.from(activeChips);
       list = list.filter((c) => keys.every((k) => SIGNAL_CHIPS.find((chip) => chip.key === k)?.match(c)));
     }
-    return [...list].sort((a, b) =>
-      sortDir === "oldest"
-        ? new Date(a.date).getTime() - new Date(b.date).getTime()
-        : new Date(b.date).getTime() - new Date(a.date).getTime()
-    );
-  }, [calls, view, search, activeChips, sortDir, sourceFilter, dispositionFilter, needsAttention]);
+    // Unworked "Dropped by Karen" calls jump the queue in either date order.
+    return sortWorklist(list, sortDir, mangoWorklistMode);
+  }, [calls, view, search, activeChips, sortDir, sourceFilter, dispositionFilter, needsAttention, mangoWorklistMode]);
 
   const toggleChip = (key: string) => {
     // Turning on a chip that only matches rows the attention view hides has to take you
