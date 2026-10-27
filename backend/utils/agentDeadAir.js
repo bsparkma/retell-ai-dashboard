@@ -20,12 +20,40 @@
  * are skipped, so an agent turn that produced no words after the caller's sentence is the
  * defect itself, not evidence the agent answered.
  *
+ * RETELL PLACEHOLDER TURNS. When the agent produces no speech, Retell does not always
+ * leave the turn empty — it writes a bracketed placeholder as the agent's content
+ * ("[No spoken response]", "[Silence]"; prod transcripts held 54 and 12 of them). Read as
+ * words, those made the incident calls look like 'agent_spoke_last', and the flag caught
+ * 1 call where ignoring them catches 25. So an AGENT turn whose whole trimmed content is a
+ * single bracketed tag counts as no words, exactly like an empty one. Real speech that
+ * merely contains a bracket ("Sure [pause] what's your name?") still counts. A CALLER
+ * turn is never discounted: "[inaudible]" from the caller is still the caller speaking.
+ *
  * Pure and derived: reads only fields already on the stored call (disconnection_reason,
  * direction, transcript_json in the canonical shape from utils/transcriptShape.js) and
  * persists nothing. Computed at read time by routes/unifiedCalls.js.
  */
 
 const DEAD_AIR_REASON = 'inactivity';
+
+/** An agent turn that is ONLY a bracketed tag — Retell's no-speech placeholder. */
+const PLACEHOLDER_ONLY = /^\[[^\]]*\]$/;
+
+/**
+ * Does this turn carry words? Empty content never does; an agent turn that is only a
+ * bracketed placeholder doesn't either. A caller turn with any content does.
+ * @param {unknown} turn
+ * @returns {boolean}
+ */
+function hasWords(turn) {
+  if (!turn || typeof turn !== 'object') return false;
+  const { role, content } = /** @type {{ role?: unknown, content?: unknown }} */ (turn);
+  if (typeof content !== 'string') return false;
+  const text = content.trim();
+  if (text === '') return false;
+  if (role === 'agent' && PLACEHOLDER_ONLY.test(text)) return false;
+  return true;
+}
 
 /**
  * @typedef {'dead_air' | 'not_inactivity' | 'not_inbound' | 'no_transcript' | 'agent_spoke_last'} DeadAirVerdict
@@ -48,7 +76,7 @@ function classifyDeadAir(call) {
 
   let last = null;
   for (const turn of turns) {
-    if (turn && typeof turn.content === 'string' && turn.content.trim() !== '') last = turn;
+    if (hasWords(turn)) last = turn;
   }
   if (!last) return 'no_transcript';
   return last.role === 'user' ? 'dead_air' : 'agent_spoke_last';

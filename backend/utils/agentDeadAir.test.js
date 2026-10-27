@@ -58,6 +58,53 @@ test('(e) empty agent turn after the caller → still flagged', () => {
   assert.equal(isAgentDeadAir(c), true);
 });
 
+test('(f) caller spoke, then an agent "[No spoken response]" placeholder → flagged', () => {
+  const c = call({
+    transcript_json: [
+      turn('agent', 'Thanks for calling, how can I help?'),
+      turn('user', 'I need to move my appointment.'),
+      turn('agent', '[No spoken response]'),
+    ],
+  });
+  assert.equal(classifyDeadAir(c), 'dead_air');
+});
+
+test('(g) caller spoke, then an agent "[Silence]" placeholder → flagged', () => {
+  const c = call({
+    transcript_json: [
+      turn('agent', 'Thanks for calling, how can I help?'),
+      turn('user', 'I need to move my appointment.'),
+      turn('agent', '  [Silence]  '),
+    ],
+  });
+  assert.equal(classifyDeadAir(c), 'dead_air');
+});
+
+test('(h) an agent turn with real words that merely contains brackets still counts', () => {
+  const c = call({
+    transcript_json: [
+      turn('agent', 'Thanks for calling, how can I help?'),
+      turn('user', 'I need to move my appointment.'),
+      turn('agent', "Sure [pause] what's your name?"),
+    ],
+  });
+  assert.equal(classifyDeadAir(c), 'agent_spoke_last');
+});
+
+test('(i) a caller "[inaudible]" as the last turn is NOT discounted → flagged', () => {
+  const c = call({
+    transcript_json: [
+      turn('agent', 'Thanks for calling, how can I help?'),
+      turn('user', '[inaudible]'),
+    ],
+  });
+  assert.equal(classifyDeadAir(c), 'dead_air');
+});
+
+test('a transcript that is only an agent placeholder counts as missing, not as the agent speaking', () => {
+  assert.equal(classifyDeadAir(call({ transcript_json: [turn('agent', '[No spoken response]')] })), 'no_transcript');
+});
+
 test('outbound and unknown direction are never flagged', () => {
   assert.equal(classifyDeadAir(call({ direction: 'outbound' })), 'not_inbound');
   assert.equal(classifyDeadAir(call({ direction: null })), 'not_inbound');
