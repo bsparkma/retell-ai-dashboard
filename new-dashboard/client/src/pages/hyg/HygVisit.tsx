@@ -432,17 +432,36 @@ export default function HygVisit() {
   const [existingErrors, setExistingErrors] = useState<Record<number, string>>({});
   const visitId = page?.visit?.visitId ?? null;
 
+  /**
+   * WHICH VISIT A RESPONSE BELONGS TO. A ProcNum is only unique within one
+   * patient's chart in one office, so an answer that comes back after the page
+   * moved to another visit must not land on a row that happens to share the
+   * number. Every read and save checks this before it touches state.
+   */
+  const existingContext = `${office}|${aptNum}|${visitId ?? ""}`;
+  const existingContextRef = useRef(existingContext);
+  existingContextRef.current = existingContext;
+  /** The newest read wins; an older Retry that answers late is dropped. */
+  const existingReadSeq = useRef(0);
+  /** One row's saves go out IN ORDER, each after the last has answered. */
+  const existingChains = useRef(new Map<number, Promise<void>>());
+  const existingPending = useRef(new Map<number, number>());
+
   const loadExistingTx = useCallback(
     async (refresh: boolean, signal?: AbortSignal) => {
       if (!isOfficeId(office)) return;
+      const seq = ++existingReadSeq.current;
+      const context = existingContextRef.current;
+      const current = () =>
+        !signal?.aborted && seq === existingReadSeq.current && context === existingContextRef.current;
       setExistingTx({ status: "loading" });
       try {
         const data = await fetchExistingTx(office, aptNum, { refresh }, signal);
-        if (signal?.aborted) return;
+        if (!current()) return;
         setExistingTx({ status: "ready", data });
         setExistingErrors({});
       } catch {
-        if (signal?.aborted) return;
+        if (!current()) return;
         // The same sentence whatever failed: the list is not known, and that
         // is the one thing the section must not paper over with "none".
         setExistingTx({ status: "error", message: EXISTING_TX_UNAVAILABLE });
@@ -452,6 +471,11 @@ export default function HygVisit() {
   );
 
   useEffect(() => {
+    // A different visit starts clean: nothing pending, no row errors.
+    existingChains.current = new Map();
+    existingPending.current = new Map();
+    setExistingSaving(new Set());
+    setExistingErrors({});
     if (visitId === null) {
       setExistingTx({ status: "not_started" });
       return;
@@ -472,48 +496,67 @@ export default function HygVisit() {
     }
   }, [office, aptNum, date, adopt]);
 
-  /** Store one row's answers. The row shows the SERVER's read-back, never the tap. */
+  /**
+   * Store one row's answers. The row shows the SERVER's read-back, never the
+   * tap. Queued behind the row's previous save, so quick taps reach the server
+   * in the order they were made and the last one is what is stored.
+   */
   const onSaveExistingTx = useCallback(
-    async (procNum: number, input: ExistingTxDispositionInput) => {
+    (procNum: number, input: ExistingTxDispositionInput) => {
       if (!isOfficeId(office)) return;
+      const chains = existingChains.current;
+      const pending = existingPending.current;
+      const context = existingContextRef.current;
+      // A queue from before a visit change: nothing it says applies any more.
+      const live = () => chains === existingChains.current && context === existingContextRef.current;
+
+      pending.set(procNum, (pending.get(procNum) ?? 0) + 1);
       setExistingSaving((prev) => new Set(prev).add(procNum));
-      setExistingErrors(({ [procNum]: _dropped, ...rest }) => rest);
-      try {
-        const res = await saveExistingTxDisposition(office, aptNum, procNum, input);
-        setExistingTx((prev) =>
-          prev.status === "ready"
-            ? {
-                ...prev,
-                data: {
-                  ...prev.data,
-                  items: prev.data.items.map((i) =>
-                    i.procNum === procNum ? { ...i, disposition: res.disposition } : i,
-                  ),
-                },
-              }
-            : prev,
-        );
-      } catch (err) {
-        const frozen = err instanceof HygApiError && err.code === "EXISTING_TX_FROZEN";
-        if (frozen) {
+
+      const saveOne = async () => {
+        if (!live()) return;
+        setExistingErrors(({ [procNum]: _dropped, ...rest }) => rest);
+        try {
+          const res = await saveExistingTxDisposition(office, aptNum, procNum, input);
+          if (!live()) return;
           setExistingTx((prev) =>
-            prev.status === "ready" ? { ...prev, data: { ...prev.data, frozen: true } } : prev,
+            prev.status === "ready"
+              ? {
+                  ...prev,
+                  data: {
+                    ...prev.data,
+                    items: prev.data.items.map((i) =>
+                      i.procNum === procNum ? { ...i, disposition: res.disposition } : i,
+                    ),
+                  },
+                }
+              : prev,
           );
+        } catch (err) {
+          if (!live()) return;
+          if (err instanceof HygApiError && err.code === "EXISTING_TX_FROZEN") {
+            setExistingTx((prev) =>
+              prev.status === "ready" ? { ...prev, data: { ...prev.data, frozen: true } } : prev,
+            );
+          }
+          setExistingErrors((prev) => ({
+            ...prev,
+            [procNum]:
+              err instanceof HygApiError ? err.message : "That answer was not saved. Try again.",
+          }));
+        } finally {
+          const left = (pending.get(procNum) ?? 1) - 1;
+          pending.set(procNum, left);
+          if (left === 0 && live()) {
+            setExistingSaving((prev) => {
+              const next = new Set(prev);
+              next.delete(procNum);
+              return next;
+            });
+          }
         }
-        setExistingErrors((prev) => ({
-          ...prev,
-          [procNum]:
-            err instanceof HygApiError
-              ? err.message
-              : "That answer was not saved. Try again.",
-        }));
-      } finally {
-        setExistingSaving((prev) => {
-          const next = new Set(prev);
-          next.delete(procNum);
-          return next;
-        });
-      }
+      };
+      chains.set(procNum, (chains.get(procNum) ?? Promise.resolve()).then(saveOne));
     },
     [office, aptNum],
   );

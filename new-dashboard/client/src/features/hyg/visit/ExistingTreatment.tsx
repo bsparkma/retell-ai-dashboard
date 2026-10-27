@@ -23,7 +23,7 @@
  * Rows are divs with buttons inside — no nested interactive elements — and
  * every tap target is at least 44px (min-h-11), as on the rest of the visit.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 
 import {
@@ -153,15 +153,34 @@ function ExistingTxRow({
   // A read-back that changed the stored note wins over the box.
   useEffect(() => setNote(item.disposition?.note ?? ""), [item.disposition?.note]);
 
-  const disabled = frozen || saving;
+  /**
+   * THE LAST ANSWER SENT, which the next tap builds on.
+   *
+   * Every PUT carries the WHOLE disposition, so a tap merged onto the stored
+   * read-back while an earlier save is still in flight would send the older
+   * answer back and undo it — typing a note and then tapping a chip is exactly
+   * that sequence (blur saves the note, the tap lands a moment later). The
+   * parent sends one row's saves in order; this is what makes each one carry
+   * everything before it. It re-syncs to the server only when nothing is
+   * pending, so a read-back can never rewind a tap that is still on its way.
+   */
+  const latest = useRef(input);
+  useEffect(() => {
+    if (!saving) latest.current = currentInput(item);
+  }, [saving, item]);
+
+  // Only a sent visit locks the row. A save in flight does not: a tap made
+  // while it is on its way is queued behind it, not swallowed.
+  const disabled = frozen;
   const urgent = input.clinical === "worse_urgent";
   const tooth = toothLabel(item);
   const id = item.procNum;
 
   function save(next: Partial<ExistingTxDispositionInput>) {
-    const merged = { ...input, ...next };
+    const merged = { ...latest.current, ...next };
     // A timeframe belongs to "wants to wait" only; changing the answer clears it.
     if (merged.patient !== "wants_to_wait") merged.waitTimeframe = null;
+    latest.current = merged;
     onSave(merged);
   }
 
@@ -223,7 +242,7 @@ function ExistingTxRow({
             active={input.clinical === value}
             disabled={disabled}
             // Tapping the picked answer again takes it back.
-            onClick={() => save({ clinical: input.clinical === value ? null : value })}
+            onClick={() => save({ clinical: latest.current.clinical === value ? null : value })}
             testId={`hyg-existing-tx-clinical-${id}-${value}`}
           />
         ))}
@@ -251,7 +270,7 @@ function ExistingTxRow({
               label={EXISTING_TX_WAIT_LABELS[value]}
               active={input.waitTimeframe === value}
               disabled={disabled}
-              onClick={() => save({ waitTimeframe: input.waitTimeframe === value ? null : value })}
+              onClick={() => save({ waitTimeframe: latest.current.waitTimeframe === value ? null : value })}
               testId={`hyg-existing-tx-wait-${id}-${value}`}
             />
           ))}
@@ -268,7 +287,7 @@ function ExistingTxRow({
           onChange={(e) => setNote(e.target.value)}
           onBlur={() => {
             const next = note.trim() === "" ? null : note.trim();
-            if (next !== (input.note ?? null)) save({ note: next });
+            if (next !== (latest.current.note ?? null)) save({ note: next });
           }}
           className="min-h-11 w-full rounded-lg border border-border bg-background px-3 text-sm disabled:opacity-60"
           data-testid={`hyg-existing-tx-note-${id}`}

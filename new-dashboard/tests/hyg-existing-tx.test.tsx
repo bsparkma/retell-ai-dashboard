@@ -46,6 +46,8 @@ const server = vi.hoisted(() => ({
   failReads: 0,
   /** Set to make the next save refuse with this code. */
   saveRefusal: null as string | null,
+  /** ms each save waits before answering, so a test can tap while one is in flight. */
+  saveDelay: 0,
   reads: [] as boolean[],
   saves: [] as Array<{ procNum: number; input: ExistingTxDispositionInput }>,
   opens: 0,
@@ -184,6 +186,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
     saveExistingTxDisposition: vi.fn(
       async (_o: string, _a: number, procNum: number, input: ExistingTxDispositionInput) => {
         server.saves.push({ procNum, input });
+        if (server.saveDelay > 0) await new Promise((r) => setTimeout(r, server.saveDelay));
         if (server.saveRefusal) {
           throw new real.HygApiError(
             "This visit has been sent, so its existing-treatment answers can no longer be changed",
@@ -231,6 +234,7 @@ beforeEach(() => {
   server.frozen = false;
   server.failReads = 0;
   server.saveRefusal = null;
+  server.saveDelay = 0;
   server.reads = [];
   server.saves = [];
   server.opens = 0;
@@ -425,6 +429,25 @@ describe("the chips", () => {
     fireEvent.click(screen.getByTestId("hyg-existing-tx-clinical-5001-worse_urgent"));
     await waitFor(() => expect(screen.queryByTestId("hyg-existing-tx-urgent-5001")).toBeNull());
     expect(server.saves[1].input.clinical).toBeNull();
+  });
+
+  it("a note then a chip, tapped while the note is still saving, keeps BOTH — in order", async () => {
+    server.saveDelay = 150;
+    renderVisit();
+    await screen.findByTestId("hyg-existing-tx-row-5001");
+    const note = screen.getByTestId("hyg-existing-tx-note-5001");
+    fireEvent.change(note, { target: { value: "sensitive to cold" } });
+    fireEvent.blur(note);
+    // The note's save is in flight; the chip is still there to tap.
+    const chip = screen.getByTestId("hyg-existing-tx-patient-5001-declined") as HTMLButtonElement;
+    expect(chip.disabled).toBe(false);
+    fireEvent.click(chip);
+    await waitFor(() => expect(pressed("hyg-existing-tx-patient-5001-declined")).toBe("true"));
+    expect(server.saves.map((s) => s.input)).toEqual([
+      { clinical: null, patient: "not_discussed", waitTimeframe: null, note: "sensitive to cold" },
+      { clinical: null, patient: "declined", waitTimeframe: null, note: "sensitive to cold" },
+    ]);
+    expect((screen.getByTestId("hyg-existing-tx-note-5001") as HTMLInputElement).value).toBe("sensitive to cold");
   });
 
   it("the note saves on blur, trimmed, and only when it changed", async () => {

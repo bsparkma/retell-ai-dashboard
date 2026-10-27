@@ -56,6 +56,13 @@ function ttlMs() {
  * @type {Map<string, { at: number, value: { items: object[], readAt: string } }>}
  */
 const cache = new Map();
+/**
+ * The read in flight per key, so a page open and a chip tap on a cold cache —
+ * or a double Retry — cost one Open Dental read, not two. Overwritten with
+ * null when it settles (no `.delete(`, as above).
+ * @type {Map<string, Promise<{ items: object[], readAt: string }> | null>}
+ */
+const inFlight = new Map();
 
 function keyOf(office, visitId, patNum) {
   return `${office}|${visitId}|${patNum}`;
@@ -165,17 +172,35 @@ async function loadExistingTreatment(odGet, { office, visitId, patNum, refresh =
     if (hit && Date.now() - hit.at < ttl) return { ...hit.value, cached: true };
   }
 
-  const value = await readExistingTreatment(odGet, { patNum });
-  if (ttl > 0) {
-    if (cache.size >= MAX_ENTRIES && !cache.has(key)) cache.clear();
-    cache.set(key, { at: Date.now(), value });
+  // A read already in flight is as fresh as a new one, so even a Retry joins it.
+  let pending = inFlight.get(key) || null;
+  if (pending === null) {
+    if (inFlight.size >= MAX_ENTRIES && !inFlight.has(key)) inFlight.clear();
+    const started = readExistingTreatment(odGet, { patNum }).then(
+      (value) => {
+        if (inFlight.get(key) === started) inFlight.set(key, null);
+        if (ttl > 0) {
+          if (cache.size >= MAX_ENTRIES && !cache.has(key)) cache.clear();
+          cache.set(key, { at: Date.now(), value });
+        }
+        return value;
+      },
+      (err) => {
+        if (inFlight.get(key) === started) inFlight.set(key, null);
+        throw err;
+      }
+    );
+    inFlight.set(key, started);
+    pending = started;
   }
+  const value = await pending;
   return { ...value, cached: false };
 }
 
 /** Tests only: every boot starts cold. */
 function resetExistingTreatmentCache() {
   cache.clear();
+  inFlight.clear();
 }
 
 module.exports = {

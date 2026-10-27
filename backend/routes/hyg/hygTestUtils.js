@@ -440,7 +440,10 @@ class FakeHygDb extends FakeAuditDb {
       }));
       return { rows, rowCount: rows.length };
     }
-    if (/^\s*INSERT INTO hyg_existing_tx_disposition[\s\S]*WHERE NOT EXISTS \([\s\S]*FROM hyg_staged_write[\s\S]*ON CONFLICT \(office, visit_id, proc_num\) DO UPDATE/i.test(text)) {
+    // The freeze guard: a FOR SHARE CTE over the visit's router/note rows, then
+    // a count of the frozen ones. The fake has no concurrency, so the lock is
+    // pinned by the real-Postgres rehearsal; this pins the statement's shape.
+    if (/^\s*WITH writes AS \(\s*SELECT state FROM hyg_staged_write\s+WHERE office = \$1::text AND visit_id = \$2::uuid AND kind = ANY\(\$11::text\[\]\)\s+FOR SHARE\s*\)\s*INSERT INTO hyg_existing_tx_disposition[\s\S]*WHERE \(SELECT count\(\*\) FROM writes WHERE state = ANY\(\$12::text\[\]\)\) = 0\s+ON CONFLICT \(office, visit_id, proc_num\) DO UPDATE/i.test(text)) {
       const [office, visitId, patNum, procNum, clinical, patient, wait, note, snapshot, actor, kinds, states] =
         params;
       if (this.existingTxFrozen(office, visitId, kinds, states)) return { rows: [], rowCount: 0 };

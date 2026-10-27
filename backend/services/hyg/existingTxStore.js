@@ -17,17 +17,22 @@
  * FROZEN ONCE THE VISIT IS SENT — IN THE SAME STATEMENT AS THE WRITE
  * ═════════════════════════════════════════════════════════════════════════════
  * The rule is the slip's: once the visit's `router` or `note` write has left
- * Draft/Staged (Sending, Written or Failed — visitStore's CLIENT_MUTABLE_STATES
- * read the other way), what was recorded at this visit is the record and is no
- * longer edited here. The guard is a NOT EXISTS inside the upsert itself, so
- * there is no read-then-write window in which a send could start between the
- * check and the save.
+ * Draft/Staged (Sending, Written or Failed), what was recorded at this visit is
+ * the record and is no longer edited here. `Amending` freezes too: it is only
+ * ever reached FROM Written, so a visit being amended is a visit that was sent.
+ *
+ * The guard is inside the upsert itself, and it LOCKS: the CTE takes FOR SHARE
+ * on every router/note row of the visit, whatever its state. A send that has
+ * moved a row to `Sending` but not yet committed holds that row's lock, so the
+ * upsert waits for it and then re-reads the committed state (READ COMMITTED
+ * re-checks a row it waited on) — it cannot see `Staged` and write past a send.
+ * `count(*)` rather than EXISTS so every matching row is read, and so locked.
  */
 
 /** Staged-write kinds whose send freezes the dispositions. */
 const FREEZING_KINDS = Object.freeze(['router', 'note']);
 /** The states a staged write is in once it has left the client's hands. */
-const FROZEN_STATES = Object.freeze(['Sending', 'Written', 'Failed']);
+const FROZEN_STATES = Object.freeze(['Sending', 'Written', 'Failed', 'Amending']);
 
 const COLUMNS = `
   proc_num, clinical, patient, wait_timeframe, note, proc_snapshot,
@@ -138,16 +143,17 @@ async function lastDiscussed(pool, { office, patNum, visitId, visitDate, procNum
  */
 async function saveDisposition(pool, { office, visit, procNum, input, snapshot, actor }) {
   const res = await pool.query(
-    `INSERT INTO hyg_existing_tx_disposition
+    `WITH writes AS (
+       SELECT state FROM hyg_staged_write
+        WHERE office = $1::text AND visit_id = $2::uuid AND kind = ANY($11::text[])
+        FOR SHARE
+     )
+     INSERT INTO hyg_existing_tx_disposition
        (office, visit_id, pat_num, proc_num, clinical, patient, wait_timeframe, note,
         proc_snapshot, created_by, updated_by)
      SELECT $1::text, $2::uuid, $3::bigint, $4::bigint, $5::text, $6::text, $7::text,
             $8::text, $9::jsonb, $10::text, $10::text
-      WHERE NOT EXISTS (
-        SELECT 1 FROM hyg_staged_write
-         WHERE office = $1::text AND visit_id = $2::uuid
-           AND kind = ANY($11::text[]) AND state = ANY($12::text[])
-      )
+      WHERE (SELECT count(*) FROM writes WHERE state = ANY($12::text[])) = 0
      ON CONFLICT (office, visit_id, proc_num) DO UPDATE
        SET clinical = EXCLUDED.clinical,
            patient = EXCLUDED.patient,

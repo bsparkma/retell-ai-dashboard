@@ -286,6 +286,8 @@ test('frozen after send: a sent note or slip refuses edits with 409; a sent peri
     ['router', 'Written', true],
     ['router', 'Sending', true],
     ['note', 'Failed', true],
+    // Amending is reached only from Written: a visit being amended was sent.
+    ['note', 'Amending', true],
     ['note', 'Staged', false],
     ['router', 'Draft', false],
     ['perio', 'Written', false],
@@ -432,6 +434,30 @@ test('the read is cached per visit; Retry with refresh=1 asks again; a PUT reuse
     // Every audited read is audited, cache hit or not.
     const visitReads = db.audit.filter((a) => a.resource_type === 'hyg_existing_tx' && a.action === 'READ');
     assert.equal(visitReads.length, 3);
+  } finally {
+    await app.close();
+  }
+});
+
+test('two reads at once on a cold cache cost ONE Open Dental read', async () => {
+  const db = new FakeHygDb();
+  visitRow(db, { office: 'roland', aptNum: 900001, patNum: 12827 });
+  const od = new FakeOd({ '/procedurelogs': [procRow({ ProcNum: 5001 })] });
+  // Open Dental is slow (seconds, in life), so the three requests overlap.
+  const original = od.apiGetRaw.bind(od);
+  od.apiGetRaw = async (...args) => {
+    await new Promise((r) => setTimeout(r, 300));
+    return original(...args);
+  };
+  const app = await bootHygApp({ db, od });
+  try {
+    const [a, b, c] = await Promise.all([
+      api(app.baseUrl, 'GET', '/api/hyg/visit/900001/existing-tx' + Q),
+      api(app.baseUrl, 'GET', '/api/hyg/visit/900001/existing-tx' + Q + '&refresh=1'),
+      api(app.baseUrl, 'PUT', '/api/hyg/visit/900001/existing-tx/5001' + Q, { body: BODY }),
+    ]);
+    assert.deepEqual([a.status, b.status, c.status], [200, 200, 200]);
+    assert.equal(od.calls.filter((x) => x.path === '/procedurelogs').length, 1);
   } finally {
     await app.close();
   }
