@@ -50,7 +50,7 @@ describe("route gating for /fees", () => {
     // A fees action leaking onto an unrelated prefix would lock that page for
     // everybody who does not hold it — the expensive direction of this mistake.
     const feesGated = Object.entries(ROUTE_PERMISSIONS)
-      .filter(([, action]) => action.startsWith("fees."))
+      .filter(([, action]) => [action].flat().some((a) => a.startsWith("fees.")))
       .map(([prefix]) => prefix);
     expect(feesGated).toEqual(["/fees"]);
   });
