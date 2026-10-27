@@ -17,6 +17,8 @@ const { normalizeTranscriptJson } = require('../utils/transcriptShape');
 const { normalizeNotes, makeNote, normalizeActor } = require('../utils/callDispositions');
 const callTwins = require('./callTwins');
 const retention = require('./callRetention');
+const { isAgentDeadAir } = require('../utils/agentDeadAir');
+const { getOfficeForCall } = require('../config/officeAgents');
 
 function normalizeCallDate(value) {
   if (value instanceof Date) {
@@ -867,6 +869,19 @@ class UnifiedCallStore {
     // call hits the PBX, the AI row when it is forwarded), so linking has to run from
     // this side too — not only on Mango ingest.
     if (stored) this.linkTwinFor(stored);
+
+    // "Dropped by Karen" (utils/agentDeadAir.js): one structured line the FIRST time a
+    // call classifies as agent dead air, so an Azure Monitor alert can key on the event.
+    // Call id and office ONLY — no number, name or transcript text. It fires on the
+    // transition, so webhook re-delivery and the 15-min poller re-adding the same call
+    // don't repeat it, and a store reload (addCallInternal, not this path) never replays it.
+    if (stored && isAgentDeadAir(stored) && !isAgentDeadAir(existing)) {
+      console.log(JSON.stringify({
+        event: 'karen_dead_air',
+        call_id: stored.external_id ?? stored.id,
+        office: getOfficeForCall(stored),
+      }));
+    }
 
     return stored;
   }
