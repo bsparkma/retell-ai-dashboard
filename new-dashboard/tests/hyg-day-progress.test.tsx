@@ -124,7 +124,7 @@ const PROGRESS: HygDayProgressResponse = {
   office: "roland",
   progress: [
     { aptNum: 900001, overall: "sent", steps: steps("written", "written", "not_applicable", "written") },
-    { aptNum: 900002, overall: "ready_to_send", steps: steps("ready", "none", "not_applicable", "not_applicable") },
+    { aptNum: 900002, overall: "ready_to_send", steps: steps("ready", "ready", "not_applicable", "not_applicable") },
     { aptNum: 900003, overall: "in_progress", steps: steps("written", "drafting", "sending", "ready", true) },
     { aptNum: 900004, overall: "needs_attention", steps: steps("written", "failed", "not_applicable", "none") },
     { aptNum: 900005, overall: "not_started", steps: null },
@@ -272,8 +272,7 @@ describe("day cards: the progress pill", () => {
 
     const ready = card("Papaya P.");
     expect(within(ready).getByTestId("hyg-step-note").textContent).toBe("Note: Ready");
-    // The dash carries a spoken word for anyone not reading the glyph.
-    expect(within(ready).getByTestId("hyg-step-slip").textContent).toBe("Slip — not started");
+    expect(within(ready).getByTestId("hyg-step-slip").textContent).toBe("Slip: Ready");
     expect(within(ready).queryByTestId("hyg-step-tc")).toBeNull();
 
     const busy = card("Mango M.");
@@ -283,6 +282,8 @@ describe("day cards: the progress pill", () => {
 
     const failed = card("Guava G.");
     expect(within(failed).getByTestId("hyg-step-slip").textContent).toBe("Slip: Failed");
+    // The dash carries a spoken word for anyone not reading the glyph.
+    expect(within(failed).getByTestId("hyg-step-tc").textContent).toBe("TC — not started");
 
     // A visit that does not exist has no steps to mark.
     expect(within(card("Lychee L.")).queryByTestId("hyg-progress-steps")).toBeNull();

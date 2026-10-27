@@ -134,13 +134,13 @@ function deriveVisitProgress(visit) {
   let overall;
   if (applicable.includes('failed')) overall = 'needs_attention';
   else if (applicable.every((s) => s === 'written')) overall = 'sent';
-  else if (
-    applicable.includes('ready') &&
-    !applicable.includes('drafting') &&
-    !applicable.includes('sending')
-  ) {
-    overall = 'ready_to_send';
-  } else overall = 'in_progress';
+  // READY TO SEND means the whole visit is: every applicable step is staged or
+  // already in the chart. A step nobody has started (`none`) keeps it in
+  // progress — "Ready to send" beside a note that was never drafted would send
+  // a hygienist to the confirm screen with half a visit. Ruled 2026-10-27.
+  // All-written was caught above, so this branch always has at least one ready.
+  else if (applicable.every((s) => s === 'ready' || s === 'written')) overall = 'ready_to_send';
+  else overall = 'in_progress';
 
   return { overall, steps };
 }

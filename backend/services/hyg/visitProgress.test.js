@@ -105,9 +105,11 @@ test('overall: every state, one row each', () => {
       overall: 'ready_to_send',
     },
     {
-      name: 'ready beside a step not yet started is still ready_to_send',
+      // Was ready_to_send under the first rule; the 2026-10-27 ruling makes a
+      // step nobody started keep the visit in progress. See row (e).
+      name: 'ready beside a step not yet started is in_progress, not ready_to_send',
       input: visit({ stagedWrites: [w('note', 'Staged')] }),
-      overall: 'ready_to_send',
+      overall: 'in_progress',
     },
     {
       name: 'ready but perio still drafting → in_progress',
@@ -150,6 +152,36 @@ test('overall: every state, one row each', () => {
       input: visit({ treatmentItemCount: 2, stagedWrites: [w('note', 'Written'), w('router', 'Written')] }),
       overall: 'in_progress',
       steps: { note: 'written', slip: 'written', perio: 'not_applicable', tc: 'none' },
+    },
+
+    // ── ready_to_send needs the WHOLE visit staged or written (ruled 2026-10-27) ──
+    {
+      name: '(e) note none + slip ready → in_progress',
+      input: visit({ stagedWrites: [w('router', 'Staged')] }),
+      overall: 'in_progress',
+      steps: { note: 'none', slip: 'ready', perio: 'not_applicable', tc: 'not_applicable' },
+    },
+    {
+      name: '(f) note ready + slip ready + perio n/a + tc n/a → ready_to_send',
+      input: visit({ treatmentItemCount: 0, stagedWrites: [w('note', 'Staged'), w('router', 'Staged')] }),
+      overall: 'ready_to_send',
+      steps: { note: 'ready', slip: 'ready', perio: 'not_applicable', tc: 'not_applicable' },
+    },
+    {
+      name: '(g) note written + slip ready → ready_to_send',
+      input: visit({ stagedWrites: [w('note', 'Written'), w('router', 'Staged')] }),
+      overall: 'ready_to_send',
+      steps: { note: 'written', slip: 'ready', perio: 'not_applicable', tc: 'not_applicable' },
+    },
+    {
+      name: 'tc none beside a ready note and slip → in_progress (treatment not yet handed off)',
+      input: visit({ treatmentItemCount: 1, stagedWrites: [w('note', 'Staged'), w('router', 'Staged')] }),
+      overall: 'in_progress',
+    },
+    {
+      name: 'perio ready beside written note and slip → ready_to_send',
+      input: visit({ stagedWrites: [w('note', 'Written'), w('router', 'Written'), w('perio', 'Staged')] }),
+      overall: 'ready_to_send',
     },
   ];
 
