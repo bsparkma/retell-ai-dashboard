@@ -3,6 +3,26 @@ const EventEmitter = require('events');
 const moment = require('moment');
 
 /**
+ * The path of an OD request, for log lines: the query string and fragment are
+ * dropped because OD search parameters (LName, Phone, Birthdate, ...) can carry
+ * patient identifiers. An absolute URL is reduced to its pathname. Pure.
+ * @param {unknown} url  axios `config.url`
+ * @returns {string}
+ */
+function odRequestPath(url) {
+  if (typeof url !== 'string' || url === '') return '(unknown)';
+  if (/^https?:\/\//i.test(url)) {
+    try {
+      return new URL(url).pathname;
+    } catch (_err) {
+      return '(unparseable)';
+    }
+  }
+  const cut = url.search(/[?#]/);
+  return cut === -1 ? url : url.slice(0, cut);
+}
+
+/**
  * Backoff (ms) for an OD API 429 retry (item 7). Honors a numeric Retry-After header
  * (seconds); otherwise exponential 500·2^(attempt-1) capped at 8s. Pure — jitter is
  * added by the caller so this stays deterministic and unit-testable.
@@ -342,7 +362,13 @@ class OpenDentalService extends EventEmitter {
         // spam the health check was built to replace: an office that is down
         // stays down, and would otherwise print a line every 5 minutes forever.
         if (!config?.__odQuiet) {
-          console.error('[OD API] Response Error:', error.response?.data || error.message);
+          // status + path + office answer "which office, which call, refused or
+          // broken?" from one line. The path never carries the query string, and
+          // the trailing detail is the same body/message this line always printed.
+          console.error(
+            `[OD API] Response Error: status=${status ?? 'none'} path=${odRequestPath(config?.url)} office=${this.officeKey || 'default'}`,
+            error.response?.data || error.message
+          );
         }
         this.handleApiError(error);
         return Promise.reject(error);
@@ -2277,5 +2303,6 @@ openDentalServiceSingleton.OpenDentalService = OpenDentalService;
 module.exports = openDentalServiceSingleton;
 module.exports.OpenDentalService = OpenDentalService;
 module.exports.computeOdBackoffMs = computeOdBackoffMs;
+module.exports.odRequestPath = odRequestPath;
 module.exports._resetOdSlotsForTests = _resetOdSlotsForTests;
 module.exports.odTrafficStats = odTrafficStats; 
