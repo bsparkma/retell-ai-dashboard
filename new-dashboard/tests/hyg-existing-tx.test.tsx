@@ -438,7 +438,9 @@ describe("the chips", () => {
     const note = screen.getByTestId("hyg-existing-tx-note-5001");
     fireEvent.change(note, { target: { value: "sensitive to cold" } });
     fireEvent.blur(note);
-    // The note's save is in flight; the chip is still there to tap.
+    // The note's save is in flight: the chip is still there to tap, and a
+    // re-read waits until it lands.
+    expect((screen.getByTestId("hyg-existing-tx-refresh") as HTMLButtonElement).disabled).toBe(true);
     const chip = screen.getByTestId("hyg-existing-tx-patient-5001-declined") as HTMLButtonElement;
     expect(chip.disabled).toBe(false);
     fireEvent.click(chip);

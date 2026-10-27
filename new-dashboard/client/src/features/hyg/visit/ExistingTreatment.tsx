@@ -350,7 +350,11 @@ export function ExistingTreatment({
           <button
             type="button"
             onClick={onRetry}
-            className={cn(TAP, "inline-flex items-center gap-1.5 border-transparent text-muted-foreground hover:bg-accent/40")}
+            // Not while a save is on its way: a re-read remounts the rows, and a
+            // row rebuilt from an answer older than the one being saved would
+            // build the next tap on it.
+            disabled={saving.size > 0}
+            className={cn(TAP, "inline-flex items-center gap-1.5 border-transparent text-muted-foreground hover:bg-accent/40 disabled:opacity-60")}
             data-testid="hyg-existing-tx-refresh"
           >
             <RefreshCw size={14} /> Refresh
