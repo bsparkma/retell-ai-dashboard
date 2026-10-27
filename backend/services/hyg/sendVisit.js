@@ -66,6 +66,8 @@ const perioSend = require('./perioSend');
 const slipPdf = require('./slipPdf');
 const tcHandoff = require('./tcHandoffClient');
 const visitStore = require('./visitStore');
+const existingTxStore = require('./existingTxStore');
+const composer = require('./stagedWriteComposer');
 const { refuseUnlessTestPatient } = require('../../config/hygFixtureGate');
 
 /**
@@ -115,6 +117,9 @@ const PAYLOAD_SCHEMAS = {
        */
       visitType: contract.VisitTypeSchema.nullable().optional(),
       text: contract.z.string().min(1).max(60000),
+      // Slice 2b: the digest of the existing-treatment lines this note prints.
+      // Optional, so every note staged before it still sends.
+      existingTxDigest: contract.z.string().regex(/^[0-9a-f]{64}$/).optional(),
     })
     .strict(),
   router: contract.z
@@ -123,6 +128,7 @@ const PAYLOAD_SCHEMAS = {
       aptNum: contract.z.number().int().positive(),
       patNum: contract.z.number().int().positive(),
       lines: contract.z.array(contract.z.string()).min(1),
+      existingTxDigest: contract.z.string().regex(/^[0-9a-f]{64}$/).optional(),
     })
     .strict(),
   'tc-handoff': contract.z
@@ -306,13 +312,57 @@ async function sendSlip(row, payload, ctx) {
   return { ok: true, writtenRef: `Document ${uploaded.docNum} in ${category.name}` };
 }
 
-/** The treatment → TC's own hygiene-intake contract. */
+/**
+ * Is every confirmed note and slip still printing the existing-treatment
+ * answers that are stored now? (hygiene Slice 2b)
+ *
+ * The staged payload carries a digest of the lines it prints. A disposition
+ * edited after the note was staged would otherwise go to the chart as the OLD
+ * answer under a preview she approved, so the WHOLE batch is refused, with
+ * nothing written — the same rule as PREVIEW_CHANGED, because it is the same
+ * failure. A row with no digest is checked too: staged before any answer, it
+ * must still print none.
+ *
+ * @returns {Promise<{ ok: true } | { ok: false, code: string, error: string }>}
+ */
+async function checkExistingTxCurrent(pool, { office, visit, rows }) {
+  const carriers = rows.filter((r) => r.kind === 'note' || r.kind === 'router');
+  if (carriers.length === 0) return { ok: true };
+  const existingTx = await existingTxStore.loadForSend(pool, { office, visitId: visit.visitId });
+  for (const row of carriers) {
+    const staged = (row.payload && row.payload.existingTxDigest) || null;
+    const now = composer.existingTxDigest(row.kind, existingTx);
+    if (staged !== now) {
+      return {
+        ok: false,
+        code: 'PREVIEW_CHANGED',
+        error:
+          `The existing-treatment answers changed after the ${row.kind === 'note' ? 'note' : 'slip'} ` +
+          'was staged. Nothing was sent. Stage it again so it says what was answered.',
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * The treatment → TC's own hygiene-intake contract.
+ *
+ * The existing-treatment answers are read HERE, server-side, after this row has
+ * been marked Sending — which freezes them (existingTxStore.FREEZING_KINDS), so
+ * what TC receives is what the visit will keep saying.
+ */
 async function sendHandoff(ctx) {
+  const existingTx = await existingTxStore.loadForSend(ctx.pool, {
+    office: ctx.office,
+    visitId: ctx.visit.visitId,
+  });
   const built = tcHandoff.buildIntake({
     visit: ctx.visit,
     appointment: ctx.appointment,
     handoffCategory: contract.deriveCategory(ctx.visit.items),
     date: ctx.visit.visitDate || ctx.date,
+    existingTx,
   });
   if (!built.ok) return built;
 
@@ -365,6 +415,10 @@ async function sendVisit({
   if (checked.rows.length === 0) {
     return { ok: false, status: 422, code: 'NOTHING_TO_SEND', error: 'Nothing is staged to send' };
   }
+  const current = await checkExistingTxCurrent(pool, { office, visit, rows: checked.rows });
+  if (!current.ok) {
+    return { ok: false, status: 409, code: current.code, error: current.error };
+  }
 
   /*
    * THE PERIO CONFIRM, BEFORE ANY UNIT WRITES ANYTHING.
@@ -414,6 +468,7 @@ async function sendVisit({
 
   const ctx = {
     req,
+    pool,
     office,
     officeName,
     date,

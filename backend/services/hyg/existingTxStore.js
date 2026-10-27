@@ -16,10 +16,15 @@
  * ═════════════════════════════════════════════════════════════════════════════
  * FROZEN ONCE THE VISIT IS SENT — IN THE SAME STATEMENT AS THE WRITE
  * ═════════════════════════════════════════════════════════════════════════════
- * The rule is the slip's: once the visit's `router` or `note` write has left
- * Draft/Staged (Sending, Written or Failed), what was recorded at this visit is
- * the record and is no longer edited here. `Amending` freezes too: it is only
- * ever reached FROM Written, so a visit being amended is a visit that was sent.
+ * The rule is the slip's: once the visit's `router`, `note` or `tc-handoff`
+ * write has left Draft/Staged (Sending, Written or Failed), what was recorded at
+ * this visit is the record and is no longer edited here. `Amending` freezes
+ * too: it is only ever reached FROM Written, so a visit being amended is a
+ * visit that was sent.
+ *
+ * `tc-handoff` joined in Slice 2b, when the handoff began to CARRY these
+ * answers: anything that sends them freezes them, so what TC holds and what
+ * this visit says can never disagree. A sent perio chart still does not.
  *
  * The guard is inside the upsert itself, and it LOCKS: the CTE takes FOR SHARE
  * on every router/note row of the visit, whatever its state. A send that has
@@ -30,7 +35,7 @@
  */
 
 /** Staged-write kinds whose send freezes the dispositions. */
-const FREEZING_KINDS = Object.freeze(['router', 'note']);
+const FREEZING_KINDS = Object.freeze(['router', 'note', 'tc-handoff']);
 /** The states a staged write is in once it has left the client's hands. */
 const FROZEN_STATES = Object.freeze(['Sending', 'Written', 'Failed', 'Amending']);
 
@@ -182,11 +187,174 @@ async function saveDisposition(pool, { office, visit, procNum, input, snapshot, 
   return { ok: true, disposition: toDisposition(res.rows[0]) };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Slice 2b: the plan the server last read, and what leaves the module
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Remember a SUCCESSFUL read: every planned procedure's snapshot, so the Router
+ * can list the ones nobody answered. Skipped when the stored read already has
+ * this `readAt` (a cache hit), and never once the visit is frozen — the sent
+ * record does not move. See migrations-tenant/1792900000000_hyg_existing_tx_read.js.
+ */
+async function recordLoaded(pool, { office, visitId, readAt, items }) {
+  const value = {
+    status: 'loaded',
+    readAt,
+    items: items.map((i) => ({
+      procNum: i.procNum,
+      code: i.code,
+      description: i.description,
+      tooth: i.tooth,
+      surface: i.surface,
+      dateTp: i.dateTp,
+      priorityName: i.priorityName,
+      scheduled: i.scheduled,
+    })),
+  };
+  await pool.query(
+    `UPDATE hyg_visit SET existing_tx_read = $3::jsonb
+      WHERE office = $1 AND visit_id = $2
+        AND (existing_tx_read IS NULL OR existing_tx_read->>'readAt' IS DISTINCT FROM $4::text)
+        AND NOT EXISTS (
+          SELECT 1 FROM hyg_staged_write
+           WHERE office = $1 AND visit_id = $2
+             AND kind = ANY($5::text[]) AND state = ANY($6::text[])
+        )`,
+    [office, visitId, JSON.stringify(value), readAt, FREEZING_KINDS, FROZEN_STATES]
+  );
+}
+
+/**
+ * Remember a FAILED read — only when nothing has ever loaded. A failure after a
+ * success leaves the loaded plan in place: it WAS loaded, and the Router says so.
+ */
+async function recordFailed(pool, { office, visitId, at }) {
+  await pool.query(
+    `UPDATE hyg_visit SET existing_tx_read = $3::jsonb
+      WHERE office = $1 AND visit_id = $2 AND existing_tx_read IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM hyg_staged_write
+           WHERE office = $1 AND visit_id = $2
+             AND kind = ANY($4::text[]) AND state = ANY($5::text[])
+        )`,
+    [office, visitId, JSON.stringify({ status: 'failed', at }), FREEZING_KINDS, FROZEN_STATES]
+  );
+}
+
+/** A string clamped to the handoff schema's bound, so a long OD value never makes TC refuse. */
+function clamp(value, max) {
+  const s = typeof value === 'string' ? value : '';
+  return s.length > max ? s.slice(0, max) : s;
+}
+
+/** 'YYYY-MM-DD' or null — the only date shape the handoff schema accepts. */
+function dateOrNull(value) {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+}
+
+/** A procedure snapshot in the handoff's shape, from a plan item or a stored proc_snapshot. */
+function snapshotOf(procNum, s, scheduled) {
+  return {
+    procNum,
+    code: clamp(s.code, 40),
+    description: clamp(s.description, 300),
+    tooth: clamp(s.tooth, 40),
+    surface: clamp(s.surface, 20),
+    dateTp: dateOrNull(s.dateTp ?? s.date_tp),
+    priorityName: (() => {
+      const p = s.priorityName ?? s.priority_name;
+      return typeof p === 'string' && p !== '' ? clamp(p, 100) : null;
+    })(),
+    scheduled: scheduled === true,
+  };
+}
+
+/** Newest planned date first, unknown last, ties by ProcNum — the screen's own order. */
+function byNewest(a, b) {
+  if (a.dateTp !== b.dateTp) {
+    if (a.dateTp === null) return 1;
+    if (b.dateTp === null) return -1;
+    return a.dateTp < b.dateTp ? 1 : -1;
+  }
+  return b.procNum - a.procNum;
+}
+
+/**
+ * The visit's existing treatment as it LEAVES the module — PURE.
+ *
+ * `read` is hyg_visit.existing_tx_read; `rows` the visit's dispositions. An
+ * ANSWERED item is described by its own `proc_snapshot`, taken when it was
+ * answered — so a later Open Dental edit does not rewrite what was discussed.
+ * An unanswered item is described by the plan the server last read. Answered
+ * items the latest plan no longer lists are kept: what was said is still what
+ * was said. "Already scheduled" follows the latest plan when it has the item.
+ *
+ * @returns {{ status: 'not_loaded'|'failed'|'loaded', items: object[] }}
+ */
+function buildExistingTx(read, rows) {
+  const plan =
+    read && read.status === 'loaded' && Array.isArray(read.items) ? read.items : null;
+  const status = plan ? 'loaded' : read && read.status === 'failed' ? 'failed' : 'not_loaded';
+  const byProc = new Map(rows.map((r) => [Number(r.proc_num), r]));
+
+  const answer = (snapshot, row) => ({
+    ...snapshot,
+    clinical: row ? row.clinical ?? null : null,
+    patient: row ? row.patient : 'not_discussed',
+    waitTimeframe: row ? row.wait_timeframe ?? null : null,
+    note: row ? clamp(row.note, 500) || null : null,
+  });
+
+  const items = [];
+  const seen = new Set();
+  for (const p of plan || []) {
+    const procNum = Number(p.procNum);
+    if (!Number.isSafeInteger(procNum) || procNum <= 0 || seen.has(procNum)) continue;
+    seen.add(procNum);
+    const row = byProc.get(procNum) || null;
+    const source = row && row.proc_snapshot ? row.proc_snapshot : p;
+    items.push(answer(snapshotOf(procNum, source, p.scheduled), row));
+  }
+  const extra = rows
+    .filter((r) => !seen.has(Number(r.proc_num)))
+    .map((r) => {
+      const s = r.proc_snapshot || {};
+      return answer(snapshotOf(Number(r.proc_num), s, s.scheduled), r);
+    })
+    .sort(byNewest);
+  return { status, items: [...items, ...extra] };
+}
+
+/**
+ * Load the visit's existing treatment for composing or sending — office-keyed,
+ * from CareIN's own tables only. No Open Dental request.
+ */
+async function loadForSend(pool, { office, visitId }) {
+  const [visitRes, rowsRes] = await Promise.all([
+    pool.query(
+      `SELECT existing_tx_read FROM hyg_visit WHERE office = $1 AND visit_id = $2`,
+      [office, visitId]
+    ),
+    pool.query(
+      `SELECT ${COLUMNS} FROM hyg_existing_tx_disposition
+        WHERE office = $1 AND visit_id = $2`,
+      [office, visitId]
+    ),
+  ]);
+  const read = visitRes.rowCount > 0 ? visitRes.rows[0].existing_tx_read : null;
+  return buildExistingTx(read || null, rowsRes.rows);
+}
+
 module.exports = {
   isFrozen,
   listForVisit,
   lastDiscussed,
   saveDisposition,
+  recordLoaded,
+  recordFailed,
+  buildExistingTx,
+  loadForSend,
   FREEZING_KINDS,
   FROZEN_STATES,
 };

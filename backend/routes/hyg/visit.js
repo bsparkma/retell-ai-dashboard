@@ -762,6 +762,36 @@ async function readExistingTxFor(visit, { refresh }) {
   }
 }
 
+/**
+ * Record the read's outcome on the visit (hygiene Slice 2b). Best effort, like
+ * rememberAppointment: a failure here costs the Router its "every item" list
+ * (it then says the plan was not recorded), never the hygienist her page.
+ */
+async function rememberExistingTxRead(req, visit, read) {
+  if (!read.ok && read.body && read.body.code !== 'OD_READ_FAILED') return;
+  try {
+    await tenantDb.withTenantDb(req, (pool) =>
+      read.ok
+        ? existingTxStore.recordLoaded(pool, {
+            office: visit.office,
+            visitId: visit.visitId,
+            readAt: read.readAt,
+            items: read.items,
+          })
+        : existingTxStore.recordFailed(pool, {
+            office: visit.office,
+            visitId: visit.visitId,
+            at: new Date().toISOString(),
+          })
+    );
+  } catch (err) {
+    console.warn(
+      `[hygexistingtx] could not record the read for ${visit.office} apt ${visit.aptNum}: ` +
+        ((err && err.message) || String(err))
+    );
+  }
+}
+
 router.get(
   '/:aptNum/existing-tx',
   h(async (req, res) => {
@@ -780,6 +810,11 @@ router.get(
 
     const startedAt = Date.now();
     const read = await readExistingTxFor(visit, { refresh: req.query.refresh === '1' });
+    // SLICE 2b: REMEMBER WHAT THE READ SAID, so the Router can list every item
+    // (answered or not) and can tell "never loaded" from "could not be loaded".
+    // Only an Open Dental outcome is recorded — an office that is not ready
+    // never reached Open Dental and says nothing about the plan.
+    await rememberExistingTxRead(req, visit, read);
     if (!read.ok) {
       await auditHygDenial(req, 'hyg_existing_tx', aptNum, {
         office,
@@ -909,6 +944,8 @@ router.put(
       surface: item.surface,
       date_tp: item.dateTp,
       priority_name: item.priorityName,
+      // Slice 2b: the Router's "Already scheduled", as the read said it.
+      scheduled: item.scheduled,
     };
     const saved = await tenantDb.withTenantDb(req, (pool) =>
       existingTxStore.saveDisposition(pool, {
@@ -961,6 +998,13 @@ router.post(
     if (!visit) return undefined;
 
     const outcome = await tenantDb.withTenantDb(req, async (pool) => {
+      // SLICE 2b: the existing-treatment answers, from the STORED dispositions
+      // and their own snapshots — never from this request. Only the note and the
+      // slip print them; the handoff reads them at send time, frozen.
+      const existingTx =
+        body.kind === 'note' || body.kind === 'router'
+          ? await existingTxStore.loadForSend(pool, { office, visitId: visit.visitId })
+          : undefined;
       const staged = await visitStore.stageWrite(pool, {
         office,
         visit,
@@ -970,7 +1014,7 @@ router.post(
         // signed in and which office this is, and visitStore has no business
         // knowing either — it holds rows.
         compose: (kind, ctx) =>
-          composer.compose(kind, { ...ctx, signature: signatureFor(req, office) }),
+          composer.compose(kind, { ...ctx, signature: signatureFor(req, office), existingTx }),
       });
       if (!staged.ok) return staged;
       return { ok: true, visit: await visitStore.getVisit(pool, { office, aptNum }) };
@@ -2336,13 +2380,27 @@ async function deliverCheckout(req, { office, aptNum, final }) {
     delivery: { state: 'not_delivered', code, message: error },
   });
   try {
-    const ctx = await tenantDb.withTenantDb(req, (pool) =>
-      visitStore.getOrthoSendContext(pool, { office, aptNum })
-    );
+    const ctx = await tenantDb.withTenantDb(req, async (pool) => {
+      const found = await visitStore.getOrthoSendContext(pool, { office, aptNum });
+      if (!found) return null;
+      // Slice 2b: the existing-treatment answers as they stand — stored rows
+      // only. The visit Send's final update supersedes an early alert's.
+      const existingTx = await existingTxStore.loadForSend(pool, {
+        office,
+        visitId: found.visit.visitId,
+      });
+      return { ...found, existingTx };
+    });
     if (!ctx) return refuse(404, 'VISIT_NOT_FOUND', 'No visit has been started for this appointment yet');
 
     const date = ctx.visit.visitDate || new Date().toISOString().slice(0, 10);
-    const built = tcHandoff.buildCheckoutIntake({ visit: ctx.visit, snapshot: ctx.snapshot, date, final });
+    const built = tcHandoff.buildCheckoutIntake({
+      visit: ctx.visit,
+      snapshot: ctx.snapshot,
+      date,
+      final,
+      existingTx: ctx.existingTx,
+    });
     if (!built.ok) return refuse(409, built.code, built.error);
 
     const submit = req.app.get('hygCheckoutSubmit') || tcHandoff.submitCheckoutHandoff;

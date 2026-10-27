@@ -123,7 +123,9 @@ const SAVE_DEBOUNCE_MS = 800;
 /** Slice 2a: the section's failure sentence, whatever failed. */
 const EXISTING_TX_UNAVAILABLE = "Couldn't load existing treatment from Open Dental";
 /** The staged-write states that lock the existing-treatment answers (the server's rule). */
-const EXISTING_TX_LOCKING: ReadonlySet<string> = new Set(["Sending", "Written", "Failed"]);
+const EXISTING_TX_LOCKING: ReadonlySet<string> = new Set(["Sending", "Written", "Failed", "Amending"]);
+/** The staged writes that carry the existing-treatment answers (the server's FREEZING_KINDS). */
+const EXISTING_TX_CARRIERS: ReadonlySet<string> = new Set(["router", "note", "tc-handoff"]);
 
 function Chip({ label, tone }: { label: string; tone: "alert" | "unknown" }) {
   return (
@@ -873,12 +875,12 @@ export default function HygVisit() {
   const items = page.visit?.items ?? [];
   const staged = page.visit?.stagedWrites ?? [];
 
-  // The answers lock the moment the note or slip leaves Draft/Staged — read off
-  // the tray's own rows, so a Send pressed on this page locks them without a
-  // re-read. The server refuses an edit (409) either way; this is the screen
-  // saying so first.
+  // The answers lock the moment the note, slip or TC handoff — the three writes
+  // that carry them — leaves Draft/Staged. Read off the tray's own rows, so a
+  // Send pressed on this page locks them without a re-read. The server refuses
+  // an edit (409) either way; this is the screen saying so first.
   const existingLocked = staged.some(
-    (w) => (w.kind === "router" || w.kind === "note") && EXISTING_TX_LOCKING.has(w.state),
+    (w) => EXISTING_TX_CARRIERS.has(w.kind) && EXISTING_TX_LOCKING.has(w.state),
   );
   const existingTxShown: ExistingTxState =
     existingTx.status === "ready" && existingLocked && !existingTx.data.frozen

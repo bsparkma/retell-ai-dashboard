@@ -145,7 +145,18 @@ const INTAKE_COLS = [
   // The hygienist's ortho screening (item 33) — jsonb, NULL when there is none.
   // See the 1790100000000_tc_ortho_screening migration.
   'ortho_screening',
+  // Existing-treatment answers (hygiene Slice 2b) — a jsonb ARRAY, NULL when the
+  // visit sent none. See the 1793000000000_tc_hygiene_intake_existing_tx migration.
+  'existing_tx',
 ];
+
+/**
+ * jsonb columns whose value is an ARRAY. node-postgres sends a JS array as a
+ * Postgres ARRAY literal (`{...}`), which a jsonb column refuses — an object
+ * (ortho_screening) is JSON-encoded by the driver, an array is not. So these
+ * are encoded here, explicitly.
+ */
+const JSONB_ARRAY_COLS = new Set(['existing_tx']);
 
 /** `INSERT INTO t (a, b) VALUES ($1, $2)` for a column list. */
 function insertSql(table, cols) {
@@ -155,7 +166,10 @@ function insertSql(table, cols) {
 
 /** Ordered param array for a row object and column list. */
 function params(row, cols) {
-  return cols.map((c) => (row[c] === undefined ? null : row[c]));
+  return cols.map((c) => {
+    const v = row[c] === undefined ? null : row[c];
+    return JSONB_ARRAY_COLS.has(c) && v !== null ? JSON.stringify(v) : v;
+  });
 }
 
 // ── pg → contract type normalization ────────────────────────────────────────

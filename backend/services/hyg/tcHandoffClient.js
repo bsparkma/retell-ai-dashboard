@@ -149,7 +149,29 @@ const RADIOGRAPH_MAP = Object.freeze({
  * @returns {{ ok: true, body: Record<string, unknown> }
  *          | { ok: false, code: string, error: string }}
  */
-function buildIntake({ visit, appointment, handoffCategory, date }) {
+/**
+ * The existing-treatment items a body carries (hygiene Slice 2b), or undefined.
+ *
+ * `existingTx` is existingTxStore.loadForSend's answer — the stored
+ * dispositions with their own proc_snapshot, built server-side. A visit whose
+ * plan was never loaded and where nothing was answered carries NOTHING, so its
+ * body is exactly the one it always was. Each item is parsed through the shared
+ * handoff schema: an item TC would refuse is dropped here rather than costing
+ * the whole handoff.
+ * @param {{ items?: unknown[] } | undefined} existingTx
+ * @returns {object[]|undefined}
+ */
+function existingTxForTc(existingTx) {
+  const items = existingTx && Array.isArray(existingTx.items) ? existingTx.items : [];
+  const parsed = items
+    .map((i) => contract.ExistingTxHandoffItemSchema.safeParse(i))
+    .filter((r) => r.success)
+    .map((r) => r.data)
+    .slice(0, contract.EXISTING_TX_HANDOFF_MAX);
+  return parsed.length > 0 ? parsed : undefined;
+}
+
+function buildIntake({ visit, appointment, handoffCategory, date, existingTx }) {
   const items = Array.isArray(visit.items) ? visit.items : [];
   if (items.length === 0) {
     return {
@@ -209,6 +231,8 @@ function buildIntake({ visit, appointment, handoffCategory, date }) {
       ? 'prophy'
       : 'none';
 
+  const carried = existingTxForTc(existingTx);
+
   const treatmentLines = items.map((item) => {
     const teeth = item.teeth === 'mouth' ? 'Whole mouth' : `#${(item.teeth || []).join(', #')}`;
     return `${teeth} ${item.code} (${item.priority})`;
@@ -244,6 +268,8 @@ function buildIntake({ visit, appointment, handoffCategory, date }) {
       flagUrgent: priorities.has('urgent'),
       kind: 'hygiene',
       sourceKey: sourceKeyFor(visit, 'handoff'),
+      // Slice 2b. Absent when there is nothing to carry.
+      ...(carried ? { existingTx: carried } : {}),
     },
   };
 }
@@ -410,7 +436,7 @@ function capped(value, max) {
  * @returns {{ ok: true, body: Record<string, unknown> }
  *          | { ok: false, code: string, error: string }}
  */
-function buildCheckoutIntake({ visit, snapshot, date, final }) {
+function buildCheckoutIntake({ visit, snapshot, date, final, existingTx }) {
   const snap = snapshot || {};
   const patientName = capped(snap.patientName, 200);
   if (!patientName) {
@@ -446,6 +472,7 @@ function buildCheckoutIntake({ visit, snapshot, date, final }) {
   const noteWritten = staged.some((w) => w && w.kind === 'note' && w.state === 'Written');
 
   const seen = capped(snap.providerName, 200);
+  const carried = existingTxForTc(existingTx);
   return {
     ok: true,
     body: {
@@ -471,6 +498,8 @@ function buildCheckoutIntake({ visit, snapshot, date, final }) {
         notesPending: !noteWritten,
         frontDeskNote: capped(slip.frontDeskNote, 4000),
         financialNote: capped(slip.financialNote, 4000),
+        // Slice 2b. Absent when there is nothing to carry.
+        ...(carried ? { existingTx: carried } : {}),
       },
     },
   };
@@ -593,6 +622,7 @@ module.exports = {
   INTEREST_MAP,
   buildIntake,
   buildCheckoutIntake,
+  existingTxForTc,
   sourceKeyFor,
   submitHygieneIntake,
   submitCheckoutHandoff,

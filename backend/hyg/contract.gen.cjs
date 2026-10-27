@@ -14833,15 +14833,18 @@ __export(contract_entry_exports, {
   EXAM_STATUS_LABELS: () => EXAM_STATUS_LABELS,
   EXISTING_TX_CLINICAL: () => EXISTING_TX_CLINICAL,
   EXISTING_TX_CLINICAL_LABELS: () => EXISTING_TX_CLINICAL_LABELS,
+  EXISTING_TX_HANDOFF_MAX: () => EXISTING_TX_HANDOFF_MAX,
   EXISTING_TX_NOTE_MAX: () => EXISTING_TX_NOTE_MAX,
   EXISTING_TX_PATIENT: () => EXISTING_TX_PATIENT,
   EXISTING_TX_PATIENT_LABELS: () => EXISTING_TX_PATIENT_LABELS,
+  EXISTING_TX_TC_GROUP_ORDER: () => EXISTING_TX_TC_GROUP_ORDER,
   EXISTING_TX_WAIT: () => EXISTING_TX_WAIT,
   EXISTING_TX_WAIT_LABELS: () => EXISTING_TX_WAIT_LABELS,
   ExamStatusSchema: () => ExamStatusSchema,
   ExistingTxClinicalSchema: () => ExistingTxClinicalSchema,
   ExistingTxDispositionInputSchema: () => ExistingTxDispositionInputSchema,
   ExistingTxDispositionSchema: () => ExistingTxDispositionSchema,
+  ExistingTxHandoffItemSchema: () => ExistingTxHandoffItemSchema,
   ExistingTxItemSchema: () => ExistingTxItemSchema,
   ExistingTxLastDiscussedSchema: () => ExistingTxLastDiscussedSchema,
   ExistingTxPatientSchema: () => ExistingTxPatientSchema,
@@ -15031,6 +15034,7 @@ __export(contract_entry_exports, {
   flagsFromBits: () => flagsFromBits,
   formatOrthoMonths: () => formatOrthoMonths,
   freeFieldsFor: () => freeFieldsFor,
+  groupExistingTxForTc: () => groupExistingTxForTc,
   hasPerioChartLine: () => hasPerioChartLine,
   isAnswered: () => isAnswered,
   isChildVisit: () => isChildVisit,
@@ -17930,6 +17934,35 @@ var ExistingTxSaveResponseSchema = import_zod6.z.object({
 function countNotDiscussed(items) {
   return items.filter((i) => i.disposition === null || i.disposition.patient === "not_discussed").length;
 }
+var EXISTING_TX_HANDOFF_MAX = 200;
+var ExistingTxHandoffItemSchema = import_zod6.z.object({
+  procNum: import_zod6.z.number().int().positive(),
+  code: import_zod6.z.string().max(40),
+  description: import_zod6.z.string().max(300),
+  tooth: import_zod6.z.string().max(40),
+  surface: import_zod6.z.string().max(20),
+  dateTp: import_zod6.z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
+  priorityName: import_zod6.z.string().max(100).nullable(),
+  scheduled: import_zod6.z.boolean(),
+  clinical: ExistingTxClinicalSchema.nullable(),
+  patient: ExistingTxPatientSchema,
+  waitTimeframe: ExistingTxWaitSchema.nullable(),
+  note: import_zod6.z.string().max(EXISTING_TX_NOTE_MAX).nullable()
+}).strict();
+var EXISTING_TX_TC_GROUP_ORDER = [
+  "ready_to_schedule",
+  "see_plan_again",
+  "cost_questions",
+  "wants_to_wait",
+  "declined",
+  "not_discussed"
+];
+function groupExistingTxForTc(items) {
+  return EXISTING_TX_TC_GROUP_ORDER.map((patient) => ({
+    patient,
+    items: items.filter((i) => i.patient === patient)
+  })).filter((g) => g.items.length > 0);
+}
 
 // ../backend/hyg/contract.entry.ts
 var import_zod7 = __toESM(require_zod());
@@ -17945,15 +17978,18 @@ var import_zod7 = __toESM(require_zod());
   EXAM_STATUS_LABELS,
   EXISTING_TX_CLINICAL,
   EXISTING_TX_CLINICAL_LABELS,
+  EXISTING_TX_HANDOFF_MAX,
   EXISTING_TX_NOTE_MAX,
   EXISTING_TX_PATIENT,
   EXISTING_TX_PATIENT_LABELS,
+  EXISTING_TX_TC_GROUP_ORDER,
   EXISTING_TX_WAIT,
   EXISTING_TX_WAIT_LABELS,
   ExamStatusSchema,
   ExistingTxClinicalSchema,
   ExistingTxDispositionInputSchema,
   ExistingTxDispositionSchema,
+  ExistingTxHandoffItemSchema,
   ExistingTxItemSchema,
   ExistingTxLastDiscussedSchema,
   ExistingTxPatientSchema,
@@ -18143,6 +18179,7 @@ var import_zod7 = __toESM(require_zod());
   flagsFromBits,
   formatOrthoMonths,
   freeFieldsFor,
+  groupExistingTxForTc,
   hasPerioChartLine,
   isAnswered,
   isChildVisit,

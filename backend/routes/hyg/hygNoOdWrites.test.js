@@ -663,3 +663,38 @@ test('Slice 2a: the TC reader the existing-treatment read reuses names no write 
   const reader = fs.readFileSync(path.join(__dirname, '..', '..', 'services', 'hyg', 'existingTreatment.js'), 'utf8');
   assert.match(reader, /require\('\.\.\/\.\.\/routes\/tc\/odReads'\)/, 'the reuse is real');
 });
+
+test('Slice 2b: composing the note and Router with existing treatment reaches no Open Dental write', async () => {
+  // The answers ride the note and the Router into the chart ONLY through the
+  // existing human-approved visit Send (GroupNote / Images upload). Staging them
+  // — the step that builds what she approves — must reach no write verb.
+  const { FakeHygDb } = require('./hygTestUtils');
+  const db = new FakeHygDb();
+  const od = new FakeOd({
+    '/appointments': [apptRow({ AptNum: 900001, PatNum: 12827, AptDateTime: DATE + ' 08:00:00' })],
+    '/operatories': [operatoryRow()],
+    '/appointmenttypes': [{ AppointmentTypeNum: 3, AppointmentTypeName: 'Prophy Adult' }],
+    '/providers': [{ ProvNum: 7, Abbr: 'HYG1' }],
+    '/patients/12827': patientRow(),
+    '/procedurelogs': [{ ProcNum: 5001, PatNum: 12827, AptNum: 0, ProcStatus: 'TP', procCode: 'D2740', DateTP: '2026-06-20' }],
+  });
+  const app = await bootHygApp({ db, od });
+  const q = '?office=roland&date=' + DATE;
+  try {
+    assert.equal((await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/open' + q)).status, 200);
+    assert.equal((await api(app.baseUrl, 'GET', '/api/hyg/visit/900001/existing-tx?office=roland')).status, 200);
+    const put = await api(app.baseUrl, 'PUT', '/api/hyg/visit/900001/existing-tx/5001?office=roland', {
+      body: { clinical: 'no_change', patient: 'declined', waitTimeframe: null, note: null },
+    });
+    assert.equal(put.status, 200);
+    for (const kind of ['note', 'router']) {
+      const staged = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/staged-writes' + q, { body: { kind } });
+      assert.equal(staged.status, 201, kind);
+      const row = staged.body.visit.stagedWrites.find((w) => w.kind === kind);
+      assert.ok(row.preview.some((l) => /Existing treatment/.test(l)), `the ${kind} really carries the section`);
+    }
+    assert.deepEqual(od.writes, [], 'not one Open Dental write verb was reached');
+  } finally {
+    await app.close();
+  }
+});
