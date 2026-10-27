@@ -832,6 +832,9 @@ export interface BackendUnifiedCall {
   linked_call_id?: string | null;
   link_role?: CallLinkRole | null;
   disconnection_reason?: string | null;
+  // "Dropped by Karen" — DERIVED by the server on every read (backend/utils/agentDeadAir.js),
+  // never stored: Retell hung up on silence right after the caller spoke.
+  agent_dead_air?: boolean | null;
   [key: string]: unknown;
 }
 
@@ -1253,6 +1256,10 @@ export function normalizeUnifiedCall(c: BackendUnifiedCall) {
     // straight to its twin; `linkRole` decides how this row behaves in the worklist.
     linkedCallId: c.linked_call_id ?? null,
     linkRole: (c.link_role ?? null) as CallLinkRole | null,
+
+    // "Dropped by Karen": the AI went silent on a caller mid-sentence and the call was
+    // hung up on inactivity. Server-derived; only a literal true flags the row.
+    agentDeadAir: c.agent_dead_air === true,
   };
 }
 

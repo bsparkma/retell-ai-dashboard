@@ -26,6 +26,40 @@ export function hasLinkedTwin(c: UnifiedCall): boolean {
   return Boolean(c.linkedCallId);
 }
 
+/** Row chip + call detail chip text for a call the AI dropped. */
+export const DEAD_AIR_LABEL = "Dropped by Karen — call back first";
+
+/**
+ * A call the AI went silent on (server-derived `agentDeadAir`) that nobody has worked yet.
+ *
+ * These callers rang, said why, and were hung up on — so they jump the worklist queue.
+ * "Unworked" is exactly `callNeedsAttention`: once the call is triaged, dispositioned or
+ * closed out it sorts by date like everything else, but keeps its chip.
+ */
+export function isUnworkedDeadAir(c: UnifiedCall, mangoWorklistMode: MangoWorklistMode): boolean {
+  return c.agentDeadAir && callNeedsAttention(c, mangoWorklistMode);
+}
+
+/**
+ * Worklist order: unworked dropped-by-Karen calls first, then the chosen date order.
+ * Returns a new array; the input is not mutated.
+ */
+export function sortWorklist(
+  list: readonly UnifiedCall[],
+  sortDir: "newest" | "oldest",
+  mangoWorklistMode: MangoWorklistMode,
+): UnifiedCall[] {
+  const byDate = (a: UnifiedCall, b: UnifiedCall) =>
+    sortDir === "oldest"
+      ? new Date(a.date).getTime() - new Date(b.date).getTime()
+      : new Date(b.date).getTime() - new Date(a.date).getTime();
+  return [...list].sort((a, b) => {
+    const pa = isUnworkedDeadAir(a, mangoWorklistMode) ? 0 : 1;
+    const pb = isUnworkedDeadAir(b, mangoWorklistMode) ? 0 : 1;
+    return pa - pb || byDate(a, b);
+  });
+}
+
 /**
  * Whether a call demands worklist attention.
  *

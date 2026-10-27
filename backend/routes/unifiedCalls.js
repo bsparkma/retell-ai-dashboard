@@ -11,6 +11,7 @@ const unifiedCallStore = require('../services/unifiedCallStore');
 const retellService = require('../config/retell');
 const openDentalSync = require('../services/openDentalSync');
 const { sanitizeForOd } = require('../utils/sanitizeForOd');
+const { classifyDeadAir } = require('../utils/agentDeadAir');
 const audit = require('../platform/audit');
 const syncScheduler = require('../services/syncScheduler');
 const manualSyncThrottle = require('../services/manualSyncThrottle');
@@ -453,7 +454,20 @@ router.get('/', async (req, res) => {
     // Stamp each call with its server-resolved office so the UI can (a) trust one
     // source of truth for office attribution and (b) render the "Unmapped line"
     // affordance for office_id === 'unknown' (using the call's called_number).
-    result.calls = result.calls.map((c) => ({ ...c, office_id: getOfficeForCall(c) }));
+    //
+    // agent_dead_air ("Dropped by Karen") is DERIVED here on every read from fields the
+    // store already holds — never persisted, so it needs no whitelist entry and is always
+    // judged by the current rule. An inactivity call with no transcript cannot be judged;
+    // count those rather than letting them pass silently as "fine".
+    let deadAirUnjudged = 0;
+    result.calls = result.calls.map((c) => {
+      const verdict = classifyDeadAir(c);
+      if (verdict === 'no_transcript') deadAirUnjudged += 1;
+      return { ...c, office_id: getOfficeForCall(c), agent_dead_air: verdict === 'dead_air' };
+    });
+    if (deadAirUnjudged > 0) {
+      console.debug(`[deadAir] ${deadAirUnjudged} inactivity call(s) with no transcript could not be judged`);
+    }
 
     // Add store stats
     const stats = unifiedCallStore.getStats();
@@ -868,7 +882,12 @@ router.get('/:id', async (req, res) => {
       action: 'READ', resourceType: 'call', resourceId: id, office: officeKey, result: 'SUCCESS',
     });
 
-    res.json({ ...call, office_id: officeKey, office: odOffices.describeOffice(officeKey) });
+    res.json({
+      ...call,
+      office_id: officeKey,
+      office: odOffices.describeOffice(officeKey),
+      agent_dead_air: classifyDeadAir(call) === 'dead_air',
+    });
   } catch (error) {
     console.error('Error fetching call:', error);
     res.status(500).json({ error: 'Failed to fetch call' });
