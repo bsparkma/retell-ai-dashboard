@@ -161,6 +161,42 @@ export function login(): void {
   window.location.href = `${AUTH_BASE}/auth/login`;
 }
 
+/** Which sign-in doors this server has switched on (`/auth/providers`). */
+export interface AuthProviders {
+  microsoft: boolean;
+  /** The Google / email-code door (Entra External ID). False until fully configured. */
+  external: boolean;
+}
+
+/**
+ * Ask the backend which sign-in buttons to draw.
+ *
+ * Fails toward FEWER buttons: any network error or unexpected shape reads as
+ * `external: false`, so a broken probe can never put a button on screen that
+ * leads to a 404. The Microsoft button does not depend on this at all.
+ */
+export async function fetchProviders(): Promise<AuthProviders> {
+  const dark: AuthProviders = { microsoft: true, external: false };
+  try {
+    const res = await fetch(`${AUTH_BASE}/auth/providers`, {
+      credentials: "include",
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) return dark;
+    const data: unknown = await res.json();
+    if (typeof data !== "object" || data === null) return dark;
+    const external = (data as { external?: unknown }).external;
+    return { microsoft: true, external: external === true };
+  } catch {
+    return dark;
+  }
+}
+
+/** Start the Google / email-code sign-in flow (full-page redirect to the backend). */
+export function loginExternal(): void {
+  window.location.href = `${AUTH_BASE}/auth/ext/login`;
+}
+
 /** Clear the session cookie, then hard-redirect to the root (sign-in). */
 export async function logout(): Promise<void> {
   try {

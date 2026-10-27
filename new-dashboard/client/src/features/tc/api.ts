@@ -1000,6 +1000,26 @@ export function transitionPreauth(
   }).then((r) => r.preauthCase);
 }
 
+/** What "Start case" did: a new case, or the patient's open case it attached to. */
+export interface TcPreauthStartCaseResult {
+  caseId: string;
+  url: string;
+  attached: boolean;
+  preauthCase: TcPreauthCase;
+}
+
+/**
+ * Put a pre-auth's patient on the pipeline. No body: the server takes the
+ * patient and office from the pre-auth row, never from here.
+ */
+export function startCaseFromPreauth(office: OfficeId, preauthId: string): Promise<TcPreauthStartCaseResult> {
+  return tcRequest<TcPreauthStartCaseResult & { success: true }>(`/tc/preauth/${preauthId}/start-case`, {
+    method: "POST",
+    office,
+    body: {},
+  }).then(({ caseId, url, attached, preauthCase }) => ({ caseId, url, attached, preauthCase }));
+}
+
 export function deletePreauth(office: OfficeId, preauthId: string): Promise<void> {
   return tcRequest<{ success: true }>(`/tc/preauth/${preauthId}`, {
     method: "DELETE",

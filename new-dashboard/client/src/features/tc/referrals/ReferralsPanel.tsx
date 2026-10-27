@@ -45,7 +45,10 @@ import {
   uploadReferralAttachment,
 } from "@/features/tc/referrals/referralsApi";
 import { AttachmentZone } from "@/features/tc/referrals/AttachmentZone";
+import { ProviderPicker } from "@/features/tc/providers/ProviderPicker";
+import { listActiveProviders } from "@/features/tc/providers/providersApi";
 import type { OfficeId } from "@shared/tc/contract";
+import type { TcProviderEntry } from "@shared/tc/providers";
 import {
   REFERRAL_READY_TO_SEND_COPY,
   TC_REFERRAL_CHIP_LABELS,
@@ -53,7 +56,8 @@ import {
   TC_REFERRAL_URGENCY_LABELS,
   TcReferralInput,
   TcReferralUrgency,
-  referralChipFor,
+  referralChipTop,
+  referralResponseBadges,
   referralReturnedLine,
   type TcReferral,
   type TcReferralAttachment,
@@ -74,6 +78,62 @@ const STATUS_TONE: Partial<Record<TcReferralStatus, string>> = {
   acknowledged: "bg-sky-100 text-sky-900 dark:bg-sky-950 dark:text-sky-300",
   patient_seen: "bg-violet-100 text-violet-900 dark:bg-violet-950 dark:text-violet-300",
 };
+
+/**
+ * The responses a referral has collected, shown without opening it: a
+ * "Received" badge (the specialist confirmed, from their link or marked by
+ * staff), a "Patient scheduled <date>" badge, and — quiet, a line, not a
+ * badge — what happened to the patient's email. Renders nothing when there is
+ * nothing to say. `hideReceived` drops the badge where the status already
+ * says "Acknowledged"; `withPatientEmail` false leaves the line out where
+ * there is no room.
+ */
+export function ReferralResponseSignals({
+  referral,
+  hideReceived = false,
+  withPatientEmail = true,
+}: {
+  referral: Pick<TcReferral, "received" | "scheduledDate" | "patientEmail">;
+  hideReceived?: boolean;
+  withPatientEmail?: boolean;
+}) {
+  const b = referralResponseBadges(referral);
+  const received = hideReceived ? null : b.received;
+  const line = withPatientEmail ? b.patientEmail : null;
+  if (!received && !b.scheduled && !line) return null;
+  return (
+    <>
+      {(received || b.scheduled) && (
+        <span className="inline-flex flex-wrap items-center gap-1.5">
+          {received && (
+            <Badge
+              variant="outline"
+              className="border-transparent bg-sky-100 text-sky-900 dark:bg-sky-950 dark:text-sky-300"
+              title={b.receivedTitle ?? undefined}
+              data-testid="referral-response-received"
+            >
+              {received}
+            </Badge>
+          )}
+          {b.scheduled && (
+            <Badge
+              variant="outline"
+              className="border-transparent bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+              data-testid="referral-response-scheduled"
+            >
+              {b.scheduled}
+            </Badge>
+          )}
+        </span>
+      )}
+      {line && (
+        <p className="w-full text-xs text-muted-foreground" data-testid="referral-response-patient-email">
+          {line}
+        </p>
+      )}
+    </>
+  );
+}
 
 export function ReferralStatusBadge({ status }: { status: TcReferralStatus }) {
   return (
@@ -230,6 +290,12 @@ export interface ReferralDialogProps {
   /** The office's active specialists, from whichever surface may read them. */
   loadDirectory: () => Promise<TcReferralDirectoryEntry[]>;
   /**
+   * The office's active providers (provider directory) for the referring
+   * provider pick, from whichever surface may read them. Absent, or a failed
+   * read, leaves the field free text.
+   */
+  loadProviders?: () => Promise<TcProviderEntry[]>;
+  /**
    * Chairside (item 54): one button, "Send for Dr. sign-off" — the hygienist
    * does not keep drafts. Otherwise Save draft / Save & submit.
    */
@@ -249,6 +315,7 @@ export function ReferralDialog({
   onSave,
   saving,
   loadDirectory,
+  loadProviders,
   submitOnly = false,
   sourceLabel,
   alreadyAttached = 0,
@@ -256,6 +323,8 @@ export function ReferralDialog({
   const [d, setD] = useState<Draft>(draftOf(null));
   const [files, setFiles] = useState<File[]>([]);
   const [entries, setEntries] = useState<TcReferralDirectoryEntry[]>([]);
+  // null until (and unless) the provider directory answers: free text meanwhile.
+  const [providers, setProviders] = useState<TcProviderEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -266,7 +335,13 @@ export function ReferralDialog({
     loadDirectory()
       .then(setEntries)
       .catch(() => setEntries([]));
-    // loadDirectory is a fresh closure each render; `open` is the trigger.
+    setProviders(null);
+    if (loadProviders) {
+      loadProviders()
+        .then(setProviders)
+        .catch(() => setProviders(null));
+    }
+    // loadDirectory / loadProviders are fresh closures each render; `open` is the trigger.
   }, [open, editing]);
 
   function set<K extends keyof Draft>(k: K, v: Draft[K]) {
@@ -367,7 +442,12 @@ export function ReferralDialog({
           </div>
           <div className="sm:col-span-2 space-y-1">
             <Label htmlFor="rf-provider">Referring provider</Label>
-            <Input id="rf-provider" value={d.referringProvider} onChange={(e) => set("referringProvider", e.target.value)} />
+            <ProviderPicker
+              id="rf-provider"
+              value={d.referringProvider}
+              onChange={(v) => set("referringProvider", v)}
+              providers={providers}
+            />
           </div>
           <div className="sm:col-span-2 space-y-1">
             <Label htmlFor="rf-narrative">Notes for the specialist</Label>
@@ -498,6 +578,7 @@ export function ReferralsPanel({ office, source, compact = false }: ReferralsPan
   const dialog = (
     <ReferralDialog
       loadDirectory={() => listDirectory(office, false)}
+      loadProviders={() => listActiveProviders(office)}
       sourceLabel={"caseId" in source ? "this case" : "this checkout"}
       open={dialogOpen}
       editing={editing}
@@ -512,15 +593,25 @@ export function ReferralsPanel({ office, source, compact = false }: ReferralsPan
   );
 
   if (compact) {
-    const chip = enabled && referrals ? referralChipFor(referrals) : "none";
+    // The chip names the newest referral's real status; beside it, room
+    // allowing, the same received / scheduled signals the hub shows.
+    const top = enabled && referrals ? referralChipTop(referrals) : null;
+    const chip = top?.chip ?? "none";
     return (
       <section
-        className="flex items-center justify-between gap-2 rounded-lg border border-dashed border-border p-2.5 text-sm"
+        className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-dashed border-border p-2.5 text-sm"
         data-testid="checkout-referral"
       >
         <span className="text-muted-foreground">Referral</span>
-        <span className="flex items-center gap-2">
+        <span className="flex flex-wrap items-center gap-2">
           <span data-testid="checkout-referral-chip">{TC_REFERRAL_CHIP_LABELS[chip]}</span>
+          {top && (
+            <ReferralResponseSignals
+              referral={top.referral}
+              hideReceived={top.chip === "acknowledged"}
+              withPatientEmail={false}
+            />
+          )}
           {enabled && (
             <Button
               size="sm"
@@ -564,11 +655,19 @@ export function ReferralsPanel({ office, source, compact = false }: ReferralsPan
         <div key={r.referralId} className="rounded-lg border border-border p-3 space-y-1" data-testid="tc-referral-row">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <span className="font-medium text-foreground">{r.practiceName ?? "No specialist chosen yet"}</span>
-            <ReferralStatusBadge status={r.status} />
+            <span className="flex flex-wrap items-center gap-1.5">
+              <ReferralStatusBadge status={r.status} />
+              <ReferralResponseSignals referral={r} hideReceived={r.status === "acknowledged"} withPatientEmail={false} />
+            </span>
           </div>
           <p className="text-sm text-muted-foreground">
             {[r.specialty, teethLabel(r.teeth), TC_REFERRAL_URGENCY_LABELS[r.urgency]].filter(Boolean).join(" · ")}
           </p>
+          {referralResponseBadges(r).patientEmail && (
+            <p className="text-xs text-muted-foreground" data-testid="referral-response-patient-email">
+              {referralResponseBadges(r).patientEmail}
+            </p>
+          )}
           <p className="text-sm text-foreground">{r.reason}</p>
           {referralReturnedLine(r.returned) && (
             <p

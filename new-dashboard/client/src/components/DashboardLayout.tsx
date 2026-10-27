@@ -253,7 +253,9 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
  */
 const PLATFORM_GROUP: NavGroup = {
   title: "Platform",
-  items: [{ path: "/platform", label: "Platform Console", icon: ShieldCheck }],
+  // Labelled "Developer Console"; the route stays /platform so existing links
+  // and bookmarks keep working.
+  items: [{ path: "/platform", label: "Developer Console", icon: ShieldCheck }],
 };
 
 /**

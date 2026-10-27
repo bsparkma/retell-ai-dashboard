@@ -69,6 +69,17 @@ function bootstrapFallbackEnabled() {
 }
 
 /**
+ * Was this session minted by the STAFF door? `idp` is the claim the session JWT
+ * carries: 'entra' or absent (every staff session issued before the claim
+ * existed) means staff; anything else — today only 'external' — does not.
+ * @param {unknown} idp
+ * @returns {boolean}
+ */
+function isStaffIdp(idp) {
+  return idp === undefined || idp === null || idp === 'entra';
+}
+
+/**
  * TEMPORARY Phase 1 bootstrap mapping.
  * careindent Entra tenant id — used only by the fallback below.
  */
@@ -137,9 +148,17 @@ async function resolveTenantForUser(user) {
  *                                      of a sign-in loop)
  *
  * `isSuperAdmin` is independent of all of that: it comes from platform_admin
- * and is true even for an email with no app_user row.
+ * and is true even for an email with no app_user row — but ONLY for a staff
+ * session. An external-door session (idp:'external') is never a super_admin,
+ * whatever platform_admin says: the platform tier is reachable through the
+ * Microsoft door alone. This is the one place the flag is computed, so
+ * req.isSuperAdmin, requireSuperAdmin() and /auth/me all inherit it.
  *
- * @param {{ email?: string, tenantId?: string, tid?: string }} user
+ * The two fallback rows apply to STAFF sessions only (`idp` 'entra' or
+ * absent). An external-door session with no app_user row resolves role null
+ * whatever the flag says.
+ *
+ * @param {{ email?: string, tenantId?: string, tid?: string, idp?: string }} user
  * @returns {Promise<{
  *   tenant: { tenant_id: string, slug: string, display_name?: string } | null,
  *   role: string | null,
@@ -153,7 +172,12 @@ async function resolveUserContext(user) {
   const email = user && user.email;
   if (!email) return empty;
 
-  const { appUser, isSuperAdmin } = await userContext.getUserContext(email);
+  const identity = await userContext.getUserContext(email);
+  const appUser = identity.appUser;
+  // NO SUPER-ADMIN THROUGH THE EXTERNAL DOOR (S2b round 2). A mailbox proven by
+  // Google or an email code is enough to hold a practice role, never the
+  // platform tier.
+  const isSuperAdmin = identity.isSuperAdmin === true && isStaffIdp(user.idp);
 
   if (appUser) {
     const t = await registry.getTenantById(appUser.tenant_id);
@@ -187,8 +211,15 @@ async function resolveUserContext(user) {
   // middleware and strand the SPA in a sign-in loop with nothing to explain
   // itself; a resolved tenant with no role produces an honest, actionable
   // dead-end instead.
+  //
+  // STAFF DOOR ONLY. A session minted by the external door (Google / email
+  // code, idp:'external') NEVER reaches the fallback, whatever its email or
+  // tid: for that door the app_user row is the sole gate, and a mailbox
+  // somebody controls must not be able to buy an 'office' role by not having
+  // a row. Absent idp = a staff session minted before the claim existed.
   const entraTid = String(user.tenantId || user.tid || '').toLowerCase();
   if (
+    isStaffIdp(user.idp) &&
     entraTid === CAREIN_FALLBACK.entraTenantId &&
     email.toLowerCase().endsWith(CAREIN_FALLBACK.emailDomain)
   ) {

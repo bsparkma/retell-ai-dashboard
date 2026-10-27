@@ -69,6 +69,8 @@ import {
   returnReferral,
   uploadReferralAttachment,
 } from "@/features/tc/referrals/referralsApi";
+import { listSignoffProviders } from "@/features/tc/providers/providersApi";
+import type { TcProviderEntry } from "@shared/tc/providers";
 import { AddAttachments } from "@/features/tc/referrals/AddAttachments";
 import { ReferralFieldsForm, type ReferralFieldsChange } from "@/features/tc/referrals/ReferralFieldsForm";
 import { referralEventLabel } from "@/features/tc/referrals/ReferralTimeline";
@@ -140,6 +142,8 @@ export function SignoffQueue({ offices, showOfficeBadges }: { offices: OfficeId[
   // R6: the doctor's edit, and "send back with a question".
   const [editing, setEditing] = useState(false);
   const [entries, setEntries] = useState<TcReferralDirectoryEntry[]>([]);
+  // Provider directory: null until (and unless) it answers — free text meanwhile.
+  const [providers, setProviders] = useState<TcProviderEntry[] | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
   const [returning, setReturning] = useState(false);
   const [question, setQuestion] = useState("");
@@ -243,6 +247,9 @@ export function SignoffQueue({ offices, showOfficeBadges }: { offices: OfficeId[
     listSignoffDirectory(office)
       .then(setEntries)
       .catch(() => setEntries([]));
+    listSignoffProviders(office)
+      .then(setProviders)
+      .catch(() => setProviders(null));
   }
 
   /** The doctor's edit. The card shows what the server stored, nothing sooner. */
@@ -369,6 +376,8 @@ export function SignoffQueue({ offices, showOfficeBadges }: { offices: OfficeId[
               <dl className="grid grid-cols-[120px_1fr] gap-x-3 gap-y-1 text-sm">
                 <dt className="text-muted-foreground">Reason</dt>
                 <dd>{open.reason}</dd>
+                <dt className="text-muted-foreground">For the patient</dt>
+                <dd data-testid="tc-signoff-patient-reason">{open.patientReason || "a specialist consultation (nothing written)"}</dd>
                 <dt className="text-muted-foreground">Teeth</dt>
                 <dd>{teethLabel(open.teeth) || "—"}</dd>
                 <dt className="text-muted-foreground">How soon</dt>
@@ -390,6 +399,7 @@ export function SignoffQueue({ offices, showOfficeBadges }: { offices: OfficeId[
                 <ReferralFieldsForm
                   referral={open}
                   entries={entries}
+                  providers={providers}
                   withDoctorNote
                   saving={busy}
                   serverError={editError}

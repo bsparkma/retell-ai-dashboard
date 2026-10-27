@@ -73,6 +73,12 @@ const SECRET_MAP = Object.freeze([
   // server-side session/JWT signing key. Both live ONLY in Key Vault.
   { secretName: 'dashboard-sso-client-secret', envKey: 'DASHBOARD_SSO_CLIENT_SECRET' },
   { secretName: 'dashboard-session-secret', envKey: 'DASHBOARD_SESSION_SECRET' },
+  // Entra External ID (the Google / email-code door, config/extSso.js): the
+  // confidential-client secret of the app registration in the External ID
+  // tenant. OPTIONAL: absent in the vault -> skipped, and the external door
+  // stays dark (isConfigured() false, /auth/ext/* 404). Like the staff secret,
+  // this is the ONLY source — never a container-app secretRef as well.
+  { secretName: 'dashboard-extsso-client-secret', envKey: 'DASHBOARD_EXTSSO_CLIENT_SECRET' },
   // Twilio, TC text messaging (queue item 39). ALL optional: absent in the
   // vault -> skipped, and texting stays FEATURE_DISABLED (config/twilio.js).
   // The from-numbers are per office and never borrowed across offices; a
@@ -312,9 +318,15 @@ function getVaultClient() {
   return vaultClient;
 }
 
-async function loadFromKeyVault() {
-  const client = getVaultClient();
-
+/**
+ * See the LoadResult block above: absent (404) → skipped, anything else →
+ * thrown. That split is what keeps an optional secret from ever being fatal,
+ * and it is pinned by secrets.test.js.
+ * @param {{ getSecret: (name: string) => Promise<{ value?: string } | null | undefined> }} [client]
+ *   the vault client; defaults to the real one (tests pass a fake)
+ * @returns {Promise<LoadResult>}
+ */
+async function loadFromKeyVault(client = getVaultClient()) {
   /** @type {LoadResult} */
   const result = { loaded: [], skipped: [] };
 
@@ -444,4 +456,15 @@ module.exports = {
   secretNameToEnvKey,
   /** Exposed for diagnostics/tests — names only, never values. */
   secretNames: SECRET_MAP.map((m) => m.secretName),
+  /** Tests only: drive the loader with a fake vault client. */
+  loadFromKeyVault,
+  /**
+   * Tests only: install a fake vault client and forget any earlier load, so
+   * loadSecrets() runs its production path against the fake.
+   * @param {{ getSecret: (name: string) => Promise<{ value?: string } | null | undefined> } | null} client
+   */
+  _setVaultClientForTests(client) {
+    vaultClient = /** @type {import('@azure/keyvault-secrets').SecretClient | null} */ (/** @type {unknown} */ (client));
+    loaded = false;
+  },
 };

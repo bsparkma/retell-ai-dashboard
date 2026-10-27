@@ -66,12 +66,20 @@ import {
   hubActionPlan,
   type HubViewer,
 } from "@/features/tc/referrals/hubActions";
-import { AttachmentList, ReferralStatusBadge, teethLabel, viewAttachment } from "@/features/tc/referrals/ReferralsPanel";
+import {
+  AttachmentList,
+  ReferralResponseSignals,
+  ReferralStatusBadge,
+  teethLabel,
+  viewAttachment,
+} from "@/features/tc/referrals/ReferralsPanel";
 import { AddAttachments } from "@/features/tc/referrals/AddAttachments";
 import { NewHubReferral } from "@/features/tc/referrals/NewHubReferral";
 import { ReferralFieldsForm, type ReferralFieldsChange } from "@/features/tc/referrals/ReferralFieldsForm";
 import { ReferralTimeline } from "@/features/tc/referrals/ReferralTimeline";
+import { listActiveProviders } from "@/features/tc/providers/providersApi";
 import type { OfficeId } from "@shared/tc/contract";
+import type { TcProviderEntry } from "@shared/tc/providers";
 import {
   REFERRAL_FIELD_EDITABLE_STATUSES,
   REFERRAL_MARK_LABELS,
@@ -82,8 +90,10 @@ import {
   TC_REFERRAL_URGENCY_LABELS,
   TcReferralSourceKind,
   TcReferralStatus,
+  referralDateLabel,
   referralHubGroup,
   referralNextStatus,
+  referralResponseBadges,
   referralReturnedLine,
   referralSendBlocker,
   referralStatusAge,
@@ -377,10 +387,7 @@ export function sendErrorMessage(e: unknown): string {
 
 /** R5b: "Tue, Nov 3, 2026" for the 'YYYY-MM-DD' a link gave; the raw value if it does not parse. */
 export function scheduledDateLabel(ymd: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
-  if (!m) return ymd;
-  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
-  return d.toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric", year: "numeric" });
+  return referralDateLabel(ymd);
 }
 
 /**
@@ -488,6 +495,7 @@ function FilterSelect({
 
 export function HubCard({ referral: r, now, onOpen }: { referral: TcReferral; now: Date; onOpen: () => void }) {
   const returned = referralReturnedLine(r.returned);
+  const patientEmailLine = referralResponseBadges(r).patientEmail;
   return (
     <button
       type="button"
@@ -510,7 +518,14 @@ export function HubCard({ referral: r, now, onOpen }: { referral: TcReferral; no
         <span className="flex items-center gap-0.5 text-muted-foreground" data-testid="tc-hub-attachments">
           <Paperclip className="w-3 h-3" /> {r.attachmentCount ?? 0}
         </span>
+        {/* The responses we collect, without opening the card. */}
+        <ReferralResponseSignals referral={r} withPatientEmail={false} />
       </div>
+      {patientEmailLine && (
+        <p className="text-xs text-muted-foreground truncate" title={patientEmailLine} data-testid="referral-response-patient-email">
+          {patientEmailLine}
+        </p>
+      )}
       {returned && (
         <p className="text-xs font-medium text-amber-800 dark:text-amber-300" data-testid="tc-hub-returned">
           {returned}
@@ -547,6 +562,8 @@ export function HubDetail({
   const [r, setR] = useState<TcReferral | null>(null);
   const [files, setFiles] = useState<TcReferralAttachment[]>([]);
   const [entries, setEntries] = useState<TcReferralDirectoryEntry[]>([]);
+  // Provider directory: null until (and unless) it answers — free text meanwhile.
+  const [providers, setProviders] = useState<TcProviderEntry[] | null>(null);
   const [editing, setEditing] = useState<Editing>(null);
   const [busy, setBusy] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
@@ -595,6 +612,9 @@ export function HubDetail({
     listDirectory(office, false)
       .then(setEntries)
       .catch(() => setEntries([]));
+    listActiveProviders(office)
+      .then(setProviders)
+      .catch(() => setProviders(null));
   }
 
   /** Run a change; show only what the server answered. */
@@ -705,6 +725,8 @@ export function HubDetail({
             <dl className="grid grid-cols-[110px_1fr] gap-x-3 gap-y-1 text-sm">
               <dt className="text-muted-foreground">Reason</dt>
               <dd>{r.reason}</dd>
+              <dt className="text-muted-foreground">For the patient</dt>
+              <dd data-testid="tc-hub-detail-patient-reason">{r.patientReason || "a specialist consultation (nothing written)"}</dd>
               <dt className="text-muted-foreground">Teeth</dt>
               <dd>{teethLabel(r.teeth) || "—"}</dd>
               <dt className="text-muted-foreground">How soon</dt>
@@ -737,6 +759,7 @@ export function HubDetail({
                 <ReferralFieldsForm
                   referral={r}
                   entries={entries}
+                  providers={providers}
                   saving={busy}
                   serverError={serverError}
                   saveLabel={editing === "reopen" ? "Save & send for re-approval" : "Save changes"}

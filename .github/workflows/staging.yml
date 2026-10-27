@@ -115,13 +115,3 @@ jobs:
             case "$img" in *":$SHA") ;; *) echo "::error::$app serving $img, expected tag :$SHA"; exit 1 ;; esac
           done
           echo "Both apps provisioned on :$SHA"
-
-  # 5) PROD — DISABLED placeholder (Step 5). Wired to NOTHING. Never the LAN box.
-  deploy-prod:
-    if: ${{ false }}   # disabled until Azure prod exists (Step 5)
-    needs: deploy
-    runs-on: ubuntu-latest
-    environment: production   # add a required reviewer on this environment in Step 5
-    steps:
-      - name: Placeholder
-        run: echo "Prod deploy is a Step 5 placeholder. Do not wire to any live resource."

@@ -6,7 +6,9 @@
  *   GET    /practices                            the tenant catalog
  *   GET    /practices/:tenantId/modules          entitlement state, all four
  *   PUT    /practices/:tenantId/modules/:module  the kill switch
- *   GET    /practices/:tenantId/users            roster, READ-ONLY
+ *   GET    /practices/:tenantId/users            roster + the editor's vocabularies
+ *   POST   /practices/:tenantId/users            add a user to that practice
+ *   PATCH  /practices/:tenantId/users/:email     change role / status / home office
  *   GET    /practices/:tenantId/audit            paginated audit_log read
  *   GET    /retention                            the call-store window + policy source
  *   PUT    /retention                            change it (30 | 60 | 90)
@@ -30,12 +32,12 @@
  *   - CREATING A TENANT. Provisioning a practice means a database, Key Vault
  *     secrets and migrations; it stays the `platform/provisionTenant.js`
  *     runbook. A button that half-provisions is worse than no button.
- *   - EDITING USERS. Deliberate scope call: this console LISTS a practice's
- *     roster and nothing more. Role and status changes stay on /admin/users,
- *     where the last-admin, platform-admin and self-change rules already live
- *     and are already tested. Two write paths into app_user would mean two
- *     places for those rules to be enforced, and the second one is where they
- *     would eventually not be.
+ *   - A SECOND COPY OF THE USER RULES. User edits DO exist here now (the
+ *     /practices/:tenantId/users writes), but the last-admin, platform-admin,
+ *     self-change and tenant-scope rules are not in this file. They live once
+ *     in services/tenantUsers.js, which /api/users calls too — one rule set,
+ *     two doors. This file only decides the tenant (loadPractice's registry
+ *     row, never the body), the actor, and whose audit log the row lands in.
  *   - PRUNE / PURGE. Those already exist at POST /api/admin/call-store/prune
  *     and /purge-legacy, already behind requireSuperAdmin(). The console calls
  *     them where they are rather than growing a second copy of a job that
@@ -63,8 +65,8 @@ const odOffices = require('../config/odOffices');
 const retentionScheduler = require('../services/retentionScheduler');
 const unifiedCallStore = require('../services/unifiedCallStore');
 const callRetention = require('../services/callRetention');
+const tenantUsers = require('../services/tenantUsers');
 const { MODULE_CATALOG, isKnownModule } = require('../config/modules');
-const { TENANT_ROLES } = require('../config/permissions');
 
 const router = express.Router();
 
@@ -244,35 +246,94 @@ router.put('/practices/:tenantId/modules/:module', loadPractice, async (req, res
   }
 });
 
-// ── users (read-only) ───────────────────────────────────────────────────────
+// ── users ───────────────────────────────────────────────────────────────────
+//
+// The same rule set as /api/users (services/tenantUsers.js), through a second
+// door. What this door contributes, and nothing more:
+//
+//   THE TENANT is `req.practice.tenant_id` — loadPractice's validated registry
+//   row. A `tenant_id` (or anything else) in the body is never read, so it can
+//   not redirect a write; an unknown :tenantId 404s before any write.
+//
+//   THE ACTOR is the super_admin. `isSuperAdmin` is read off the request the
+//   gate already checked, so the platform-admin rule lets them through and the
+//   self rule still binds them.
+//
+//   THE AUDIT ROW lands in THAT practice's log via auditForTenant — it is that
+//   practice's admins who go looking for "who changed this person's role". Fail
+//   closed: a failed audit write throws, and the response is a 500.
+
+/** Who is acting, as the service needs it. */
+function actorOf(req) {
+  return { email: actorEmail(req), isSuperAdmin: req.isSuperAdmin === true };
+}
+
+/** Write a service Outcome as the response. */
+function sendOutcome(res, outcome) {
+  if (!outcome.ok) {
+    return fail(res, outcome.status, outcome.error, outcome.code, outcome.extra);
+  }
+  return res.status(outcome.status).json({ success: true, user: outcome.user });
+}
 
 /**
  * GET /practices/:tenantId/users
  *
- * READ-ONLY BY DESIGN — see the header. Shape deliberately mirrors
- * GET /api/users so the console can reuse the same row rendering, minus every
- * control that would write.
+ * Same shape as GET /api/users, so both pages render through one editor.
  */
 router.get('/practices/:tenantId/users', loadPractice, async (req, res) => {
   try {
-    const rows = await registry.listTenantUsers(req.practice.tenant_id);
-    return res.json({
-      success: true,
-      users: rows.map((r) => ({
-        email: r.email,
-        role: r.role,
-        status: r.status,
-        lastLoginAt: r.last_login_at ? new Date(r.last_login_at).toISOString() : null,
-        homeOffice: r.home_office || null,
-      })),
-      roles: TENANT_ROLES,
-      // Where the writes actually live, so the console can link there instead
-      // of growing its own editor.
-      manageAt: '/admin/users',
-    });
+    const roster = await tenantUsers.listUsers(req.practice.tenant_id, actorOf(req));
+    return res.json({ success: true, ...roster });
   } catch (err) {
     console.error('[platform] users read failed:', err && err.message ? err.message : err);
     return fail(res, 503, 'Could not load users', 'USERS_UNAVAILABLE');
+  }
+});
+
+/**
+ * POST /practices/:tenantId/users   { email, role, homeOffice? }
+ *
+ * Unlike /api/users, this door takes a home office at create time: the person
+ * adding a user here is usually setting up a practice they do not work in, and
+ * a second round trip per person is friction with no safety behind it.
+ */
+router.post('/practices/:tenantId/users', loadPractice, async (req, res) => {
+  const tenantId = req.practice.tenant_id;
+  const body = req.body || {};
+  try {
+    const outcome = await tenantUsers.createUser({
+      tenantId,
+      actor: actorOf(req),
+      audit: (entry) => auditForTenant(req, tenantId, entry),
+      email: body.email,
+      role: body.role,
+      homeOffice: body.homeOffice,
+    });
+    return sendOutcome(res, outcome);
+  } catch (err) {
+    console.error('[platform] user create failed:', err && err.message ? err.message : err);
+    return fail(res, 500, 'Could not add that user', 'USER_CREATE_FAILED');
+  }
+});
+
+/**
+ * PATCH /practices/:tenantId/users/:email   { role?, status?, homeOffice? }
+ */
+router.patch('/practices/:tenantId/users/:email', loadPractice, async (req, res) => {
+  const tenantId = req.practice.tenant_id;
+  try {
+    const outcome = await tenantUsers.updateUser({
+      tenantId,
+      actor: actorOf(req),
+      audit: (entry) => auditForTenant(req, tenantId, entry),
+      email: req.params.email,
+      body: req.body || {},
+    });
+    return sendOutcome(res, outcome);
+  } catch (err) {
+    console.error('[platform] user update failed:', err && err.message ? err.message : err);
+    return fail(res, 500, 'Could not update that user', 'USER_UPDATE_FAILED');
   }
 });
 

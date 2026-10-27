@@ -65,7 +65,7 @@ class CompositeDb extends FakeHygDb {
       }
       return { rows: [], rowCount: 0 };
     }
-    if (/^COMMIT$/i.test(text) || /\btc_(referral|cases)/i.test(text)) {
+    if (/^COMMIT$/i.test(text) || /\btc_(referral|cases|provider_directory)/i.test(text)) {
       return this.tc.query(sql, params);
     }
     return super.query(sql, params);
@@ -238,6 +238,28 @@ test("the chairside picker reads this office's ACTIVE specialists only", async (
   const r = await api(app.baseUrl, 'GET', '/api/hyg/visit/900001/referral-directory?office=roland');
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.deepEqual(r.body.entries.map((e) => e.practiceName), ['River Endodontics']);
+});
+
+test("the chairside referring-provider pick reads this office's ACTIVE providers only; dark when referrals is off", async (t) => {
+  switchReferrals(t, { roland: true });
+  const app = await boot(t);
+  const dir = app.db.tc.table('tc_provider_directory');
+  const row = (office_id, name, active) => ({
+    provider_id: randomUUID(),
+    office_id,
+    name,
+    credential_suffix: 'DDS',
+    active,
+    od_prov_num: null,
+    created_by: 'seed',
+    updated_by: 'seed',
+  });
+  dir.push(row('roland', 'Avery Roland', true), row('roland', 'Former Doc', false), row('valley', 'Casey Valley', true));
+  const r = await api(app.baseUrl, 'GET', '/api/hyg/visit/900001/provider-directory?office=roland');
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual(r.body.entries.map((e) => [e.name, e.credentialSuffix]), [['Avery Roland', 'DDS']]);
+  const off = await api(app.baseUrl, 'GET', '/api/hyg/visit/900001/provider-directory?office=valley');
+  assert.equal(off.status, 403);
 });
 
 test('a hygienist can name a specialist; another office\'s specialist is refused', async (t) => {

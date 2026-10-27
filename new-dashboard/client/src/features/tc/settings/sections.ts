@@ -18,6 +18,7 @@ import {
   Plug,
   Send,
   ShieldCheck,
+  Stethoscope,
   Users,
   type LucideIcon,
 } from "lucide-react";
@@ -34,6 +35,7 @@ export type TcSettingsSectionKey =
   | "data"
   | "notifications"
   | "email_identity"
+  | "providers"
   | "referrals";
 
 export interface TcSettingsSection {
@@ -74,6 +76,9 @@ export const TC_SETTINGS_SECTIONS: readonly TcSettingsSection[] = [
     needsLibrary: false,
     requiresPermission: "tc.notification_defaults",
   },
+  // The provider directory (referring provider / pre-auth doctor). Everyone on
+  // the TC surface sees it; admin + office change it (the server's canEdit).
+  { key: "providers", label: "Providers", icon: Stethoscope, needsLibrary: false },
   // Item 52: the specialist directory and the referral policies. Dark per office.
   { key: "referrals", label: "Referrals", icon: Send, needsLibrary: false, requiresReferrals: true },
 ];

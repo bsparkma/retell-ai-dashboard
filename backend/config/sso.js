@@ -91,6 +91,8 @@ function getCryptoProvider() {
  * @property {string} name  display name
  * @property {string} email userPrincipalName / email (lowercased)
  * @property {string} tid   tenant id
+ * @property {string} [idp] 'external' on a session minted by the external door
+ *                          (config/extSso.js); absent on every staff session
  */
 
 /**

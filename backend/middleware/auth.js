@@ -120,6 +120,21 @@ function requireDashboardToken({ exempt = [] } = {}) {
 }
 
 /**
+ * The request identity a verified session cookie carries.
+ *
+ * `idp` is copied ONLY when the session has one, so a staff session (which
+ * never has the claim) builds exactly the object it always did. An external-
+ * door session carries idp:'external', which resolveUserContext reads to keep
+ * it away from the staff bootstrap fallback.
+ * @param {{ email: string, name: string, tid: string, idp?: string }} claims
+ * @returns {{ email: string, name: string, tenantId: string, idp?: string }}
+ */
+function sessionUser(claims) {
+  const user = { email: claims.email, name: claims.name, tenantId: claims.tid };
+  return claims.idp ? { ...user, idp: claims.idp } : user;
+}
+
+/**
  * Express middleware: allow a request through if it carries EITHER a valid
  * Entra SSO session cookie OR the shared dashboard bearer token. This lets the
  * browser dashboard authenticate via SSO cookies while existing token-based
@@ -143,7 +158,7 @@ function requireDashboardAuth({ exempt = [] } = {}) {
       if (token) {
         const claims = sso.verifySession(token);
         if (claims) {
-          req.user = { email: claims.email, name: claims.name, tenantId: claims.tid };
+          req.user = sessionUser(claims);
           req.authMethod = 'session';
           return next();
         }
@@ -194,7 +209,7 @@ function socketAuth(socket, next) {
     if (sessionToken) {
       const claims = sso.verifySession(sessionToken);
       if (claims) {
-        socket.user = { email: claims.email, name: claims.name, tenantId: claims.tid };
+        socket.user = sessionUser(claims);
         return next();
       }
     }

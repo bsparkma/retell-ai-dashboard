@@ -23,6 +23,7 @@ import { odAttachSearch, tcErrorMessage, type OdPatient } from "@/features/tc/ap
 import { OdPatientSearch } from "@/features/tc/od/OdShell";
 import type { OfficeId } from "@shared/tc/contract";
 import type { TcReferral, TcReferralInput } from "@shared/tc/referrals";
+import { listActiveProviders } from "@/features/tc/providers/providersApi";
 import { createReferral, listDirectory } from "./referralsApi";
 import { ReferralDialog, attachThenSubmit } from "./ReferralsPanel";
 
@@ -92,6 +93,7 @@ export function NewHubReferral({
         editing={null}
         saving={saving}
         loadDirectory={() => listDirectory(office, false)}
+        loadProviders={() => listActiveProviders(office)}
         sourceLabel={patient ? `Open Dental: ${patient.displayName}` : undefined}
         onClose={close}
         onSave={(input, submit, chosen) => void save(input, submit, chosen)}

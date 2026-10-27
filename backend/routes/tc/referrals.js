@@ -313,6 +313,9 @@ async function present(pool, office, rows, { withAttachmentCounts = false } = {}
   // R5: the Send button's two inputs, for the approved ones.
   const emails = await store.directoryEmails(pool, office, rows);
   const problems = await store.openSendProblems(pool, office, rows);
+  // The responses the cards show without opening one: received, and the
+  // patient email's outcome (read only; scheduledDate is already on the row).
+  const responses = await store.responseSignals(pool, office, rows);
   const counts = withAttachmentCounts
     ? await store.attachmentCounts(pool, office, rows.map((r) => r.referral_id))
     : null;
@@ -321,6 +324,9 @@ async function present(pool, office, rows, { withAttachmentCounts = false } = {}
     out.returned = returns.get(String(r.referral_id)) ?? null;
     out.specialistEmail = emails.get(String(r.directory_entry_id)) ?? null;
     out.sendProblem = problems.get(String(r.referral_id)) ?? null;
+    const response = responses.get(String(r.referral_id));
+    out.received = response ? response.received : null;
+    out.patientEmail = response ? response.patientEmail : null;
     if (counts) out.attachmentCount = counts.get(String(r.referral_id)) ?? 0;
     return out;
   });
