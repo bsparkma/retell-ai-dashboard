@@ -14841,6 +14841,7 @@ __export(contract_entry_exports, {
   HygCheckoutAlertResponseSchema: () => HygCheckoutAlertResponseSchema,
   HygDayFlagsSchema: () => HygDayFlagsSchema,
   HygDayIdentitiesResponseSchema: () => HygDayIdentitiesResponseSchema,
+  HygDayProgressResponseSchema: () => HygDayProgressResponseSchema,
   HygDayResponseSchema: () => HygDayResponseSchema,
   HygDayScopeSchema: () => HygDayScopeSchema,
   HygDayStatsSchema: () => HygDayStatsSchema,
@@ -14854,6 +14855,9 @@ __export(contract_entry_exports, {
   HygPerioSendResponseSchema: () => HygPerioSendResponseSchema,
   HygSendResponseSchema: () => HygSendResponseSchema,
   HygSlipSchema: () => HygSlipSchema,
+  HygStepStateSchema: () => HygStepStateSchema,
+  HygVisitOverallSchema: () => HygVisitOverallSchema,
+  HygVisitProgressSchema: () => HygVisitProgressSchema,
   HygVisitResponseSchema: () => HygVisitResponseSchema,
   HygVisitSchema: () => HygVisitSchema,
   HygWarningSchema: () => HygWarningSchema,
@@ -16062,6 +16066,44 @@ var HygDayIdentitiesResponseSchema = import_zod3.z.object({
   pending: import_zod3.z.number().int(),
   stats: HygDayStatsSchema
 });
+var HygStepStateSchema = import_zod3.z.enum([
+  "none",
+  "drafting",
+  "ready",
+  "sending",
+  "written",
+  "failed",
+  "not_applicable"
+]);
+var HygVisitOverallSchema = import_zod3.z.enum([
+  "not_started",
+  "in_progress",
+  "ready_to_send",
+  "sent",
+  "needs_attention"
+]);
+var HygStepSchema = import_zod3.z.object({ state: HygStepStateSchema });
+var HygVisitProgressSchema = import_zod3.z.object({
+  aptNum: import_zod3.z.number().int().positive(),
+  overall: HygVisitOverallSchema,
+  /** Null exactly when `overall` is `not_started`: there is no visit to mark. */
+  steps: import_zod3.z.object({
+    note: HygStepSchema,
+    slip: HygStepSchema,
+    perio: HygStepSchema,
+    tc: HygStepSchema.extend({
+      /** Front desk was alerted at checkout; the handoff has not landed yet. */
+      checkoutAlerted: import_zod3.z.boolean(),
+      /** The visit Send's final checkout snapshot reached the front desk. */
+      checkoutFinal: import_zod3.z.boolean()
+    })
+  }).nullable()
+});
+var HygDayProgressResponseSchema = import_zod3.z.object({
+  success: import_zod3.z.literal(true),
+  office: OfficeIdSchema,
+  progress: import_zod3.z.array(HygVisitProgressSchema)
+});
 var HygErrorSchema = import_zod3.z.object({
   success: import_zod3.z.literal(false),
   error: import_zod3.z.string(),
@@ -16074,6 +16116,7 @@ var HygErrorSchema = import_zod3.z.object({
 var HYG_ERROR_CODES = [
   "INVALID_OFFICE",
   "INVALID_DATE",
+  "INVALID_APT_NUMS",
   "OFFICE_NOT_READY",
   "OD_READ_FAILED",
   "MODULE_NOT_ENTITLED",
@@ -17776,6 +17819,7 @@ var import_zod6 = __toESM(require_zod());
   HygCheckoutAlertResponseSchema,
   HygDayFlagsSchema,
   HygDayIdentitiesResponseSchema,
+  HygDayProgressResponseSchema,
   HygDayResponseSchema,
   HygDayScopeSchema,
   HygDayStatsSchema,
@@ -17789,6 +17833,9 @@ var import_zod6 = __toESM(require_zod());
   HygPerioSendResponseSchema,
   HygSendResponseSchema,
   HygSlipSchema,
+  HygStepStateSchema,
+  HygVisitOverallSchema,
+  HygVisitProgressSchema,
   HygVisitResponseSchema,
   HygVisitSchema,
   HygWarningSchema,

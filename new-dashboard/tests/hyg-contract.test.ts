@@ -23,6 +23,7 @@ import {
   DX_LABELS,
   DxCodeSchema,
   HygDayIdentitiesResponseSchema,
+  HygDayProgressResponseSchema,
   HygDayResponseSchema,
   HygSlipSchema,
   MOTIVATION_LABELS,
@@ -296,11 +297,20 @@ describe("the day response contract matches the backend that builds it", () => {
    * endpoint against the day's schema — passing or failing for reasons that
    * have nothing to do with the day.
    */
-  function backendResponseKeys(which: "day" | "identities"): string[] {
+  function backendResponseKeys(which: "day" | "identities" | "progress"): string[] {
     const src = readFileSync(path.join(repoRoot, "backend", "routes", "hyg", "day.js"), "utf8");
     const split = src.indexOf("// GET /api/hyg/day/identities");
     expect(split, "the fill route's banner is what separates the two handlers").toBeGreaterThan(0);
-    const half = which === "day" ? src.slice(0, split) : src.slice(split);
+    // The progress route's banner bounds the fill handler from below, so each
+    // slice holds exactly one handler's final `res.json`.
+    const progressSplit = src.indexOf("// GET /api/hyg/day/progress");
+    expect(progressSplit, "the progress route's banner follows the fill's").toBeGreaterThan(split);
+    const half =
+      which === "day"
+        ? src.slice(0, split)
+        : which === "identities"
+          ? src.slice(split, progressSplit)
+          : src.slice(progressSplit);
     const body = half.slice(half.lastIndexOf("return res.json({"));
     return [...body.matchAll(/^\s{6}([a-zA-Z][a-zA-Z0-9]*)[,:]/gm)].map((m) => m[1]).sort();
   }
@@ -320,6 +330,12 @@ describe("the day response contract matches the backend that builds it", () => {
     // that never fills in.
     expect(backendResponseKeys("identities")).toEqual(
       Object.keys(HygDayIdentitiesResponseSchema.shape).sort(),
+    );
+  });
+
+  it("names exactly the keys the PROGRESS route returns", () => {
+    expect(backendResponseKeys("progress")).toEqual(
+      Object.keys(HygDayProgressResponseSchema.shape).sort(),
     );
   });
 
