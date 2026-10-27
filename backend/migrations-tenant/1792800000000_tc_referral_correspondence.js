@@ -79,7 +79,11 @@ exports.down = (pgm) => {
   // A correspondence row cannot satisfy R5b's verb CHECK, so it is relabelled
   // first rather than deleted: the history line and its note stay, as an
   // unlabelled row with from = to (as 1792500000000's down did for its verbs).
-  pgm.sql(`UPDATE ${EVENTS} SET verb = NULL WHERE verb = 'correspondence'`);
+  // The three facts are cleared in the same statement, or the relabelled row
+  // would break the fields CHECK, which is still in force at this point.
+  pgm.sql(
+    `UPDATE ${EVENTS} SET verb = NULL, correspondence_direction = NULL, correspondence_party = NULL, correspondence_channel = NULL WHERE verb = 'correspondence'`
+  );
   for (const name of ['note', 'status', 'fields', 'channel', 'party', 'direction']) {
     pgm.dropConstraint(EVENTS, `tc_referral_events_correspondence_${name}_check`, { ifExists: true });
   }

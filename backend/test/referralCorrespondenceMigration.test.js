@@ -116,7 +116,7 @@ test('no new referral status, no new table, the send-fields CHECK untouched', ()
 test("down() relabels correspondence rows, drops the CHECKs and columns, and restores R5b's verb CHECK exactly", () => {
   const calls = capture(migration, 'down');
   const relabel = calls.findIndex(
-    (c) => c.op === 'sql' && String(c.args[0]) === "UPDATE tc_referral_events SET verb = NULL WHERE verb = 'correspondence'"
+    (c) => c.op === 'sql' && String(c.args[0]) === "UPDATE tc_referral_events SET verb = NULL, correspondence_direction = NULL, correspondence_party = NULL, correspondence_channel = NULL WHERE verb = 'correspondence'"
   );
   const dropCols = calls.findIndex((c) => c.op === 'dropColumns');
   const restore = calls.findIndex((c) => c.op === 'addConstraint' && c.args[1] === 'tc_referral_events_verb_check');
