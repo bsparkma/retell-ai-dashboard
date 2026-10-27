@@ -1,7 +1,7 @@
 /**
  * Is referrals switched on for any office in scope? (queue item 56, R6) —
- * the gate on the "Referrals" hub nav item, the way `signoff.enabled` gates
- * "Awaiting sign-off". Asks GET /api/tc/referrals/status (never refused) once
+ * the gate on the "Referrals" hub nav item for tc.full (a signer's gate is
+ * `signoff.enabled`, from useSignoffWatch). Asks GET /api/tc/referrals/status (never refused) once
  * per change of scope; the switch is a platform setting, not a live count, so
  * it is not polled. Reads false until an office answers `enabled: true`, so a
  * dark office never flashes the item. The caller passes offices only for

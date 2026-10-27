@@ -6,8 +6,9 @@
  *    list shown afterwards is the one RE-READ from the server.
  *  - A reopen (approved → re-approval) offers no files: approved is not a
  *    status staff may attach in.
- *  - The doctor's sign-off edit offers "Add files" through the sign-off route
- *    (`signoff = true`), and only while editing.
+ *  - (The doctor's sign-off edit — "Add files" through the sign-off route,
+ *    only while editing — moved with the sign-off page into the hub:
+ *    tests/referrals-signoff-in-hub.test.tsx.)
  *  - A failed upload is named; nothing reads as attached that the server did
  *    not store.
  *
@@ -48,7 +49,6 @@ vi.mock("sonner", () => ({ toast: toastMock }));
 vi.mock("@/features/tc/referrals/referralsApi", () => ref);
 
 import { HubDetail } from "@/pages/tc/TcReferralsHub";
-import { SignoffInner } from "@/pages/tc/TcReferralSignoff";
 import { TcApiError } from "@/features/tc/api";
 
 const RID = "9b1c2d3e-4f50-4a61-8b72-938495a6b7c8";
@@ -169,34 +169,5 @@ describe("the hub's staff edit", () => {
     fireEvent.click(within(panel).getByRole("button", { name: /Edit \(re-approval needed\)/ }));
     await within(panel).findByTestId("referral-fields-form");
     expect(within(panel).queryByTestId("referral-add-attachments")).toBeNull();
-  });
-});
-
-describe("the doctor's sign-off edit", () => {
-  async function openSignoff(detail: TcReferral) {
-    ref.listSignoffQueue.mockResolvedValue([detail]);
-    ref.getSignoffReferral.mockResolvedValue(detail);
-    render(<SignoffInner office="roland" />);
-    fireEvent.click(await screen.findByTestId("tc-signoff-row"));
-    return screen.findByTestId("tc-signoff-detail");
-  }
-
-  it("while editing: Add files, through the sign-off route; the list is re-read from it", async () => {
-    ref.listReferralAttachments.mockResolvedValueOnce([]).mockResolvedValueOnce([stored(2, "doctor@carein.ai")]);
-    const detail = await openSignoff(referral({ status: "pending_signoff" }));
-    expect(within(detail).queryByTestId("referral-add-attachments")).toBeNull(); // not until Edit
-    fireEvent.click(within(detail).getByRole("button", { name: /^Edit$/ }));
-    const add = await within(detail).findByTestId("referral-add-attachments");
-
-    const file = png();
-    addFile(add, file);
-    ref.uploadReferralAttachment.mockResolvedValue(stored(2, "doctor@carein.ai"));
-    fireEvent.click(within(add).getByRole("button", { name: "Attach file" }));
-
-    await waitFor(() => expect(ref.uploadReferralAttachment).toHaveBeenCalledWith("roland", RID, file, true));
-    await waitFor(() => expect(ref.listReferralAttachments).toHaveBeenLastCalledWith("roland", RID, true));
-    expect(await within(detail).findByText("xray-2.png")).toBeTruthy();
-    expect(ref.approveReferral).not.toHaveBeenCalled();
-    expect(ref.sendReferralEmail).not.toHaveBeenCalled();
   });
 });

@@ -10,7 +10,8 @@
  *    a conflict (the email already went out). A failure offers a retry.
  *  - Only the server's answer is shown: sent once the server says so; a
  *    refusal shows its sentence and the re-read referral.
- *  - The doctor's approval says what an auto-send did.
+ *  - (The doctor's approval — what an auto-send did — moved with the sign-off
+ *    page into the hub: tests/referrals-signoff-in-hub.test.tsx.)
  *  - The platform console's referral-email switch.
  *
  * With TC_SHOTS=1 it also dumps the hub and the panel (tccheckout-13 / -14).
@@ -84,7 +85,6 @@ vi.mock("@/lib/api", async (importOriginal) => {
 });
 
 import { HubInner } from "@/pages/tc/TcReferralsHub";
-import { SignoffInner } from "@/pages/tc/TcReferralSignoff";
 import { TcReferralEmailPanel } from "@/pages/platform/TcReferralsPanel";
 import { referralEventLabel } from "@/features/tc/referrals/ReferralTimeline";
 import { TcApiError } from "@/features/tc/api";
@@ -315,35 +315,6 @@ describe("the history and the contract", () => {
     expect(TcReferralsStatus.safeParse(status()).success).toBe(true);
     expect(TcReferralsStatus.safeParse(status(EMAIL_ON)).success).toBe(true);
     expect(TcReferralsStatus.safeParse(status({ enabled: true, unavailable: "nope" as never })).success).toBe(false);
-  });
-});
-
-describe("the doctor's approval", () => {
-  async function approveWith(answer: TcReferral) {
-    const pending = referral({ status: "pending_signoff", specialistEmail: EMAIL });
-    ref.listSignoffQueue.mockResolvedValueOnce([pending]).mockResolvedValue([]);
-    ref.getSignoffReferral.mockResolvedValue({ ...pending, events: [] });
-    ref.approveReferral.mockResolvedValue(answer);
-    render(<SignoffInner office="roland" />);
-    fireEvent.click(await screen.findByTestId("tc-signoff-row"));
-    const detail = await screen.findByTestId("tc-signoff-detail");
-    fireEvent.click(within(detail).getByRole("button", { name: /Approve/ }));
-    return screen.findByTestId("tc-signoff-done");
-  }
-
-  it("auto-sent: says it was emailed", async () => {
-    const done = await approveWith(referral({ status: "sent" }));
-    expect(done.textContent).toContain("Emailed to River Endodontics.");
-    expect(toastMock.success).toHaveBeenCalledWith("Approved and emailed to River Endodontics.");
-  });
-
-  it("auto-send failed: approved, and says the email did not go out", async () => {
-    const done = await approveWith(
-      referral({ sendProblem: { kind: "failed", note: "Not sent automatically: busy.", actor: "doctor@carein.ai", at: NOW.toISOString() } }),
-    );
-    expect(done.textContent).toContain("approved.");
-    expect(done.textContent).toContain("The automatic email did not go out");
-    expect(String(toastMock.error.mock.calls[0][0])).toMatch(/^Approved — but the automatic email did not go out\. Not sent automatically: busy\./);
   });
 });
 
