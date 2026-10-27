@@ -107,6 +107,22 @@ test('driving the day route to SUCCESS reaches no Open Dental write verb', async
   }
 });
 
+test('the day-card progress route reaches Open Dental not at all — no write, and no read', async () => {
+  // Stricter than the day route above: progress is CareIN's own Postgres only,
+  // so even a GET to Open Dental from it would be a regression.
+  const od = new FakeOd({});
+  const app = await bootHygApp({ od });
+  try {
+    const res = await api(app.baseUrl, 'GET', '/api/hyg/day/progress?office=roland&apt=900001,900002');
+    assert.equal(res.status, 200, 'the route must actually SUCCEED, or this proves nothing');
+    assert.equal(res.body.progress.length, 2);
+    assert.deepEqual(od.writes, [], 'not one write verb was reached');
+    assert.deepEqual(od.calls, [], 'not one Open Dental request was made');
+  } finally {
+    await app.close();
+  }
+});
+
 test('every refusal path also reaches no Open Dental write verb', async () => {
   // The error branches are where a write is most likely to be added carelessly
   // ("record the failure back into the chart"), and least likely to be covered

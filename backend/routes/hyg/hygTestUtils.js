@@ -280,6 +280,61 @@ class FakeHygDb extends FakeAuditDb {
       throw new Error('[hygTestUtils] simulated crash on: ' + text.trim().slice(0, 60));
     }
 
+    // ── the day-card progress read (services/hyg/progressStore.js) ──────────
+    // Four read-only statements, each keyed by office FIRST. Matched before the
+    // hyg_perio_send catch-all below, which throws on SQL it was not taught.
+    if (/^\s*SELECT visit_id, apt_num, checkout_sent_at, checkout_final_at\s+FROM hyg_visit\s+WHERE office = \$1 AND apt_num = ANY\(\$2::bigint\[\]\)/i.test(text)) {
+      const [office, aptNums] = params;
+      const wanted = new Set(aptNums.map(Number));
+      const rows = this.hyg_visit
+        .filter((r) => r.office === office && wanted.has(Number(r.apt_num)))
+        .map((r) => ({
+          visit_id: r.visit_id,
+          // The driver's shape: bigint as a string.
+          apt_num: String(r.apt_num),
+          checkout_sent_at: r.checkout_sent_at ?? null,
+          checkout_final_at: r.checkout_final_at ?? null,
+        }));
+      return { rows, rowCount: rows.length };
+    }
+    if (/^\s*SELECT visit_id, kind, state, \(error_message IS NOT NULL\) AS has_error\s+FROM hyg_staged_write\s+WHERE office = \$1 AND visit_id = ANY\(\$2::uuid\[\]\)/i.test(text)) {
+      const [office, visitIds] = params;
+      const rows = this.hyg_staged_write
+        .filter((r) => r.office === office && visitIds.includes(r.visit_id))
+        .map((r) => ({
+          visit_id: r.visit_id,
+          kind: r.kind,
+          state: r.state,
+          has_error: r.error_message !== null && r.error_message !== undefined,
+        }));
+      return { rows, rowCount: rows.length };
+    }
+    if (/^\s*SELECT DISTINCT ON \(visit_id\) visit_id, state\s+FROM hyg_perio_send\s+WHERE office = \$1 AND visit_id = ANY\(\$2::uuid\[\]\) AND state <> 'deleted'\s+ORDER BY visit_id, created_at DESC/i.test(text)) {
+      const [office, visitIds] = params;
+      /** @type {Map<string, Record<string, any>>} */
+      const latest = new Map();
+      for (const r of this.hyg_perio_send) {
+        if (r.office !== office || !visitIds.includes(r.visit_id) || r.state === 'deleted') continue;
+        const cur = latest.get(r.visit_id);
+        if (!cur || new Date(r.created_at).getTime() > new Date(cur.created_at).getTime()) {
+          latest.set(r.visit_id, r);
+        }
+      }
+      const rows = [...latest.values()].map((r) => ({ visit_id: r.visit_id, state: r.state }));
+      return { rows, rowCount: rows.length };
+    }
+    if (/^\s*SELECT visit_id, COUNT\(\*\)::int AS item_count\s+FROM hyg_treatment_item\s+WHERE office = \$1 AND visit_id = ANY\(\$2::uuid\[\]\)\s+GROUP BY visit_id/i.test(text)) {
+      const [office, visitIds] = params;
+      /** @type {Map<string, number>} */
+      const counts = new Map();
+      for (const r of this.hyg_treatment_item) {
+        if (r.office !== office || !visitIds.includes(r.visit_id)) continue;
+        counts.set(r.visit_id, (counts.get(r.visit_id) || 0) + 1);
+      }
+      const rows = [...counts].map(([visit_id, item_count]) => ({ visit_id, item_count }));
+      return { rows, rowCount: rows.length };
+    }
+
     // ── hyg_perio_send (item 12) ────────────────────────────────────────────
     // Matched FIRST: the chart's restage below would otherwise be read as one of
     // the slice-3 hyg_staged_write statements.
