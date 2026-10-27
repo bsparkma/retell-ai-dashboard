@@ -76,9 +76,16 @@ import {
   type HygDayIdentitiesResponse,
   type HygDayResponse,
   type HygDayScope,
+  type HygVisitProgress,
   type OfficeId,
 } from "@shared/hyg/contract";
-import { fetchDay, fetchDayIdentities, HygApiError, HYG_OFFICE_LABELS } from "@/features/hyg/api";
+import {
+  fetchDay,
+  fetchDayIdentities,
+  fetchDayProgress,
+  HygApiError,
+  HYG_OFFICE_LABELS,
+} from "@/features/hyg/api";
 import {
   byStartTime,
   columnLabel,
@@ -92,6 +99,7 @@ import {
   todayIso,
 } from "@/features/hyg/day";
 import { AppointmentCard } from "@/features/hyg/AppointmentCard";
+import { type CardProgress, cardProgressFor, progressAptNums } from "@/features/hyg/progress";
 import { cn } from "@/lib/utils";
 
 /** A control big enough to hit standing up. 44px is the floor, not the target. */
@@ -527,7 +535,18 @@ function Notices({ day }: { day: HygDayResponse }) {
  * The chair moves onto the row, because in a list it is a property of the
  * appointment rather than the axis it is arranged along.
  */
-function DayList({ appointments, day }: { appointments: HygAppointment[]; day: HygDayResponse }) {
+/** A card's progress, by AptNum. One function so list and chairs cannot disagree. */
+type ProgressFor = (aptNum: number | null) => CardProgress;
+
+function DayList({
+  appointments,
+  day,
+  progressFor,
+}: {
+  appointments: HygAppointment[];
+  day: HygDayResponse;
+  progressFor: ProgressFor;
+}) {
   const rows = useMemo(() => byStartTime(appointments), [appointments]);
   return (
     <div className="mt-3 space-y-2" data-testid="hyg-day-list">
@@ -540,7 +559,12 @@ function DayList({ appointments, day }: { appointments: HygAppointment[]; day: H
             {appt.opName ?? (appt.opNum !== null ? `Op ${appt.opNum}` : "No chair")}
           </div>
           <div className="min-w-0 flex-1">
-            <AppointmentCard appointment={appt} office={day.office} date={day.date} />
+            <AppointmentCard
+              appointment={appt}
+              office={day.office}
+              date={day.date}
+              progress={progressFor(appt.aptNum)}
+            />
           </div>
         </div>
       ))}
@@ -548,7 +572,15 @@ function DayList({ appointments, day }: { appointments: HygAppointment[]; day: H
   );
 }
 
-function DayColumns({ day, appointments }: { day: HygDayResponse; appointments: HygAppointment[] }) {
+function DayColumns({
+  day,
+  appointments,
+  progressFor,
+}: {
+  day: HygDayResponse;
+  appointments: HygAppointment[];
+  progressFor: ProgressFor;
+}) {
   const columns = useMemo(
     () => groupByOperatory(appointments, day.operatories),
     [appointments, day.operatories],
@@ -575,6 +607,7 @@ function DayColumns({ day, appointments }: { day: HygDayResponse; appointments: 
                 appointment={appt}
                 office={day.office}
                 date={day.date}
+                progress={progressFor(appt.aptNum)}
               />
             ))}
           </div>
@@ -783,6 +816,101 @@ export default function HygDay() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [office, date, prefs.scope, reloadKey, fillKey, state.kind]);
 
+  /**
+   * VISIT PROGRESS — the pill on each card.
+   *
+   * Asked for once the day has arrived, with that day's own AptNums, and again:
+   *   - when the page is picked back up (focus, or visibilitychange to visible);
+   *   - every 60s while the page is visible — the iPad left on a chair;
+   *   - when the hygienist comes back from a visit, which REMOUNTS this page
+   *     and so lands here as a fresh first read.
+   * Nothing else polls. A hidden page asks nothing.
+   *
+   * Keyed on office + date + the AptNum list, NOT on `state`: the names fill
+   * in by merging into `state`, and a merge is not a reason to re-ask.
+   *
+   * A failure is the cards' problem, never the schedule's: every card reads
+   * "Progress unavailable" — never "Not started", which is a claim the server
+   * did not make.
+   */
+  const progressQuery = useMemo(() => {
+    if (state.kind !== "ready") return null;
+    const aptNums = progressAptNums(state.day.appointments);
+    return {
+      office: state.day.office,
+      aptNums,
+      key: `${state.day.office}|${state.day.date}|${aptNums.join(",")}`,
+    };
+  }, [state]);
+  const progressKey = progressQuery?.key ?? "";
+  const progressQueryRef = useRef(progressQuery);
+  progressQueryRef.current = progressQuery;
+
+  const [progressRead, setProgressRead] = useState<{
+    key: string;
+    status: "loading" | "failed" | "ready";
+    byApt: ReadonlyMap<number, HygVisitProgress>;
+  }>({ key: "", status: "loading", byApt: new Map() });
+
+  useEffect(() => {
+    const q = progressQueryRef.current;
+    if (q === null || q.key !== progressKey) return;
+    if (q.aptNums.length === 0) {
+      setProgressRead({ key: q.key, status: "ready", byApt: new Map() });
+      return;
+    }
+
+    let disposed = false;
+    let inFlight: AbortController | null = null;
+    const load = () => {
+      if (document.visibilityState === "hidden") return;
+      // Focus and visibilitychange often fire together; one answer is enough.
+      inFlight?.abort();
+      const mine = new AbortController();
+      inFlight = mine;
+      fetchDayProgress(q.office, q.aptNums, mine.signal)
+        .then((res) => {
+          if (disposed || mine.signal.aborted) return;
+          setProgressRead({
+            key: q.key,
+            status: "ready",
+            byApt: new Map(res.progress.map((p) => [p.aptNum, p])),
+          });
+        })
+        .catch(() => {
+          if (disposed || mine.signal.aborted) return;
+          // Not the last good answer: a stale "Sent" is the lie this pill must
+          // not tell. Unavailable until a read succeeds again.
+          setProgressRead({ key: q.key, status: "failed", byApt: new Map() });
+        });
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") load();
+    };
+
+    setProgressRead({ key: q.key, status: "loading", byApt: new Map() });
+    load();
+    const timer = setInterval(load, 60_000);
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", load);
+    return () => {
+      disposed = true;
+      inFlight?.abort();
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", load);
+    };
+  }, [progressKey]);
+
+  const progressFor = useCallback<ProgressFor>(
+    (aptNum) =>
+      // An answer for a different day is no answer for this one.
+      progressRead.key === progressKey
+        ? cardProgressFor(aptNum, progressRead)
+        : { kind: "loading" },
+    [progressRead, progressKey],
+  );
+
   // The roster's display name is what the rest of the shell shows; the short
   // module label is the fallback when the roster has not arrived. Used only in
   // the page CAPTION — the refusal panels below name their office from the
@@ -977,9 +1105,9 @@ export default function HygDay() {
               the day.
             </p>
           ) : prefs.view === "list" ? (
-            <DayList appointments={visible} day={state.day} />
+            <DayList appointments={visible} day={state.day} progressFor={progressFor} />
           ) : (
-            <DayColumns day={state.day} appointments={visible} />
+            <DayColumns day={state.day} appointments={visible} progressFor={progressFor} />
           )}
         </>
       )}

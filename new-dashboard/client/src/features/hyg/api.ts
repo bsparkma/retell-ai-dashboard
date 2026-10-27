@@ -36,6 +36,7 @@ import {
   HandoffCategorySchema,
   HygAppointmentSchema,
   HygDayIdentitiesResponseSchema,
+  HygDayProgressResponseSchema,
   HygDayResponseSchema,
   HygCheckoutAlertResponseSchema,
   HygOrthoSendResponseSchema,
@@ -43,6 +44,7 @@ import {
   HygVisitSchema,
   OfficeIdSchema,
   type HygDayIdentitiesResponse,
+  type HygDayProgressResponse,
   type HygDayResponse,
   type HygCheckoutAlertResponse,
   type HygOrthoSendResponse,
@@ -310,6 +312,38 @@ export async function fetchDayIdentities(
       if (!parsed.success) {
         throw new HygApiError(
           "CareIN returned patient names this page could not read",
+          0,
+          "CONTRACT_MISMATCH",
+          { issues: parsed.error.issues.slice(0, 5) },
+        );
+      }
+      return parsed.data;
+    },
+    signal,
+  );
+}
+
+/**
+ * Which visits on the day are done — the day cards' pill.
+ *
+ * Sends the day's own AptNums; the server answers with states only (no PatNum,
+ * no name) from CareIN's own tables and makes no Open Dental request. A failure
+ * here is the CARD's problem, never the day's: the caller draws "Progress
+ * unavailable", and the schedule stays exactly where it is.
+ */
+export async function fetchDayProgress(
+  office: OfficeId,
+  aptNums: readonly number[],
+  signal?: AbortSignal,
+): Promise<HygDayProgressResponse> {
+  return get(
+    "/day/progress",
+    { office, apt: aptNums.join(",") },
+    (raw) => {
+      const parsed = HygDayProgressResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new HygApiError(
+          "CareIN returned visit progress this page could not read",
           0,
           "CONTRACT_MISMATCH",
           { issues: parsed.error.issues.slice(0, 5) },
