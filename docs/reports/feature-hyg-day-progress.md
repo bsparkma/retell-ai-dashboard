@@ -13,7 +13,7 @@ sit under the card, so a hygienist or OM can see at a glance which visits are do
 | no `hyg_visit` row | Not started | neutral |
 | any step failed | Needs attention | red |
 | every applicable step `Written` | Sent | green |
-| any step ready, none drafting/sending | Ready to send | blue |
+| every applicable step ready or written, at least one ready | Ready to send | blue |
 | anything else | In progress | neutral |
 | read failed, or AptNum missing from the answer | **Progress unavailable** (dashed) | none, because it is not a state |
 
@@ -109,7 +109,7 @@ with each finding:
 | No test pinned the treatment flip, or a tc row with zero items | **Added** to the table test. |
 | No test that Refresh re-asks, that a name-fill merge does not, or that a late answer for the previous day is never drawn | **Added** to `hyg-day-progress.test.tsx`. |
 | The fake DB matches SQL by regex, so the real SQL was never run | **Rehearsed** against real Postgres 16. See below. |
-| `ready_to_send` fires with `note: none` and `slip: ready` | **No change.** This matches the spec ("any ready and none drafting/sending"). Flagged in case you want "none" to block it. |
+| `ready_to_send` fires with `note: none` and `slip: ready` | **Fixed in the PM fix round** (2026-10-27). See below. |
 | "TC: Checkout alerted" shows even when TC is `not_applicable` | **No change.** It is honest, because the alert happened. Flagged. |
 | One failed 60s poll flickers every card to "unavailable" | **No change.** Deliberate, per the spec. |
 
@@ -189,3 +189,68 @@ These are iPad landscape 1180×820, from `scripts/shoot-hyg.mjs`, in light and d
 - Because of that lock, a temporary ref `refs/tmp/pr275` (used to inspect the merge commit)
   could not be deleted. It is harmless. Once the lock is gone, remove it with
   `git update-ref -d refs/tmp/pr275`.
+
+## Fix round (PM review, 2026-10-27)
+
+The PM review approved #275 with one fix.
+
+### The ruling
+
+`ready_to_send` now requires every applicable step to be `ready` or `written`:
+- note and slip must each be ready or written;
+- perio and TC may be ready, written, or not applicable;
+- nothing may be failed, drafting, sending, or not started (`none`).
+
+Any required step at `none` leaves the visit `in_progress`. Choice 2, "TC: Checkout alerted" on a
+visit with no treatment, stays as built.
+
+### The change
+
+In `backend/services/hyg/visitProgress.js`, the `ready_to_send` branch is now
+`applicable.every((s) => s === 'ready' || s === 'written')`. It runs after the `sent`
+check, so it only fires when at least one step is still `ready`.
+
+### Table rows
+
+| Row | Input | Result |
+| --- | --- | --- |
+| (e) | note none + slip ready | `in_progress` |
+| (f) | note ready + slip ready + perio n/a + tc n/a | `ready_to_send` |
+| (g) | note written + slip ready | `ready_to_send` |
+| new | tc none beside a ready note and slip (treatment not handed off) | `in_progress` |
+| new | perio ready beside a written note and slip | `ready_to_send` |
+
+### Existing rows
+
+- **(a)–(d):** unchanged, and they still pass. The diff removes no line from them.
+- **One row changed its expectation:** "ready beside a step not yet started" (note Staged,
+  slip none) pinned the old rule. It now reads `in_progress`, with a comment pointing to row (e).
+  It is the case this ruling exists to change; it is not one of (a)–(d).
+- **Page test fixture:** `hyg-day-progress.test.tsx` mocked a server answer of
+  `ready_to_send` with slip `none`, which the server can no longer produce. The fixture now has
+  slip `ready`. The "— not started" chip assertion moved to the failed card's TC step, which
+  is still `none`.
+- **Screenshots:** the shots fixture already matched the rule, so they still stand.
+
+### Housekeeping
+
+- `tasklist | findstr /i git` (run in PowerShell, because Git Bash mangles `/i`) found nothing.
+  `Get-Process` also showed no git process.
+- `.git/packed-refs.lock` in the main clone was the 0-byte file dated 2026-10-07 12:20. I
+  removed it.
+- `git update-ref -d refs/tmp/pr275` succeeded, and `git show-ref` no longer finds the ref.
+- The next commit landed with no lock warning.
+
+### Results
+
+```
+backend  node --check server.js         OK
+backend  node --test                    # tests 4197  # pass 4194  # fail 0  # skipped 3
+dashboard pnpm run check (tsc --noEmit) clean
+dashboard pnpm run test                 Test Files 187 passed | 37 skipped (224)
+                                        Tests 2872 passed | 215 skipped (3087)
+```
+
+CI: run 40534286440 `build-test` passed in 6m13s on fix commit `c042869`. It checked out
+`refs/pull/275/merge` = `5b8fc61` ("Merge c042869 into 096e23a", the develop tip). It was green
+on the first push; no fix pushes were needed. **Not merged.**
