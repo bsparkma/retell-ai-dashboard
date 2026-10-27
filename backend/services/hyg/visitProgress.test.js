@@ -125,6 +125,32 @@ test('overall: every state, one row each', () => {
       overall: 'in_progress',
       steps: { note: 'written', slip: 'written', perio: 'drafting', tc: 'not_applicable' },
     },
+
+    // ── The four rows pinned by the TC not_applicable ruling (2026-10-26) ──
+    {
+      name: '(a) zero items + note/slip Written + no perio → sent',
+      input: visit({ treatmentItemCount: 0, stagedWrites: [w('note', 'Written'), w('router', 'Written')] }),
+      overall: 'sent',
+      steps: { note: 'written', slip: 'written', perio: 'not_applicable', tc: 'not_applicable' },
+    },
+    {
+      name: '(b) zero items + note Written + slip Staged → ready_to_send, not sent',
+      input: visit({ treatmentItemCount: 0, stagedWrites: [w('note', 'Written'), w('router', 'Staged')] }),
+      overall: 'ready_to_send',
+      steps: { note: 'written', slip: 'ready', perio: 'not_applicable', tc: 'not_applicable' },
+    },
+    {
+      name: '(c) zero items + NO visit writes → never sent: n/a steps alone cannot make a visit sent',
+      input: visit({ treatmentItemCount: 0, stagedWrites: [] }),
+      overall: 'in_progress',
+      steps: { note: 'none', slip: 'none', perio: 'not_applicable', tc: 'not_applicable' },
+    },
+    {
+      name: '(d) items present + tc-handoff absent → TC none, not sent',
+      input: visit({ treatmentItemCount: 2, stagedWrites: [w('note', 'Written'), w('router', 'Written')] }),
+      overall: 'in_progress',
+      steps: { note: 'written', slip: 'written', perio: 'not_applicable', tc: 'none' },
+    },
   ];
 
   for (const row of table) {
@@ -214,6 +240,22 @@ test('tc: checkout alerted is reported beside the state, and only until Written'
     })
   );
   assert.equal(notSent.overall, 'in_progress');
+});
+
+test('tc applicability follows the treatment list, both directions', () => {
+  const done = [w('note', 'Written'), w('router', 'Written')];
+  // No treatment: tc owes nothing, the visit is sent.
+  assert.equal(deriveVisitProgress(visit({ stagedWrites: done })).overall, 'sent');
+  // A treatment item added afterwards: tc is owed again, and "Sent" honestly regresses.
+  const added = deriveVisitProgress(visit({ stagedWrites: done, treatmentItemCount: 1 }));
+  assert.equal(added.steps.tc.state, 'none');
+  assert.equal(added.overall, 'in_progress');
+  // A handoff row with zero items left stays APPLICABLE — the row is real.
+  const orphanRow = deriveVisitProgress(
+    visit({ stagedWrites: [...done, w('tc-handoff', 'Staged')], treatmentItemCount: 0 })
+  );
+  assert.equal(orphanRow.steps.tc.state, 'ready');
+  assert.equal(orphanRow.overall, 'ready_to_send');
 });
 
 test('parseAptNums: positive ints, deduped, capped at 200', () => {

@@ -64,12 +64,13 @@ async function readDayProgress(pool, { office, aptNums }) {
     if (entry) entry.stagedWrites.push({ kind: row.kind, state: row.state, hasError: row.has_error === true });
   }
 
-  // The latest send that has not been deleted, per visit.
+  // The latest send that has not been deleted, per visit. send_id breaks a
+  // created_at tie so the answer cannot change between two identical reads.
   const sends = await pool.query(
     `SELECT DISTINCT ON (visit_id) visit_id, state
        FROM hyg_perio_send
       WHERE office = $1 AND visit_id = ANY($2::uuid[]) AND state <> 'deleted'
-      ORDER BY visit_id, created_at DESC`,
+      ORDER BY visit_id, created_at DESC, send_id DESC`,
     [office, visitIds]
   );
   for (const row of sends.rows) {

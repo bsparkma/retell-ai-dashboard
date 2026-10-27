@@ -138,6 +138,13 @@ const fixtures = vi.hoisted(() => ({
   progress: null as unknown,
   progressFail: null as unknown,
   calls: [] as Array<{ office: string; aptNums: number[] }>,
+  /** When set, the NEXT progress call waits on this instead of answering. */
+  hold: null as null | Promise<unknown>,
+  /** The day as served; `date` is echoed from the request. */
+  day: null as unknown,
+  /** One name batch, then the fill hangs. Null = the fill hangs from the start. */
+  fill: null as unknown,
+  fillCalls: 0,
 }));
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -157,10 +164,22 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/features/hyg/api")>();
   return {
     ...real,
-    fetchDay: vi.fn(async () => DAY),
-    fetchDayIdentities: vi.fn(async () => new Promise(() => {}) as never),
+    fetchDay: vi.fn(async (_office: string, date: string) => ({
+      ...(fixtures.day as HygDayResponse),
+      date,
+    })),
+    fetchDayIdentities: vi.fn(async () => {
+      fixtures.fillCalls += 1;
+      if (fixtures.fill && fixtures.fillCalls === 1) return fixtures.fill as never;
+      return new Promise(() => {}) as never;
+    }),
     fetchDayProgress: vi.fn(async (office: string, aptNums: readonly number[]) => {
       fixtures.calls.push({ office, aptNums: [...aptNums] });
+      if (fixtures.hold) {
+        const held = fixtures.hold;
+        fixtures.hold = null;
+        await held;
+      }
       if (fixtures.progressFail) throw fixtures.progressFail;
       return fixtures.progress as HygDayProgressResponse;
     }),
@@ -201,6 +220,10 @@ beforeEach(() => {
   fixtures.progress = PROGRESS;
   fixtures.progressFail = null;
   fixtures.calls = [];
+  fixtures.hold = null;
+  fixtures.day = DAY;
+  fixtures.fill = null;
+  fixtures.fillCalls = 0;
 });
 
 afterEach(() => {
@@ -309,6 +332,72 @@ describe("day cards: the progress pill", () => {
       expect(p.className).toContain("shrink-0");
       expect(p.className).not.toContain("truncate");
     }
+  });
+
+  it("Refresh re-asks for progress along with the day", async () => {
+    renderDay();
+    await screen.findByTestId("hyg-progress-sent");
+    expect(fixtures.calls).toHaveLength(1);
+    act(() => {
+      screen.getByTestId("hyg-day-refresh").click();
+    });
+    await waitFor(() => expect(fixtures.calls).toHaveLength(2));
+    await screen.findByTestId("hyg-progress-sent");
+  });
+
+  it("names filling in do NOT re-ask: a merge is not a new day", async () => {
+    // Two cards waiting on a name; the fill answers once with both.
+    fixtures.day = {
+      ...DAY,
+      appointments: DAY.appointments.map((a, i) =>
+        i < 2 ? { ...a, identity: "pending" as const, patientName: null } : a,
+      ),
+      identitiesPending: 2,
+    };
+    fixtures.fill = {
+      success: true,
+      office: "roland",
+      date: "2026-09-08",
+      scope: "hygiene",
+      patients: [
+        { patNum: 12827, patientName: "Kiwi S.", premed: false, medicalAlerts: false },
+      ],
+      unavailable: [],
+      pending: 1,
+      stats: DAY.stats,
+    };
+    renderDay();
+    // Both pending cards share the fixture PatNum, so both fill in.
+    await screen.findAllByText("Kiwi S.");
+    await screen.findAllByTestId("hyg-progress-sent");
+    expect(fixtures.fillCalls).toBeGreaterThanOrEqual(1);
+    expect(fixtures.calls).toHaveLength(1);
+  });
+
+  it("an answer for the PREVIOUS day is never drawn on the next one", async () => {
+    let release: () => void = () => {};
+    fixtures.hold = new Promise<void>((r) => {
+      release = r;
+    });
+    renderDay();
+    await waitFor(() => expect(fixtures.calls).toHaveLength(1));
+
+    // Step to the next day while the first answer is still in flight. The next
+    // day's progress read then fails, so the only way a "Sent" appears is if
+    // the first day's late answer was drawn.
+    fixtures.progressFail = new HygApiError("x", 500, "INTERNAL_ERROR");
+    act(() => {
+      screen.getByLabelText("Next day").click();
+    });
+    await waitFor(() => expect(fixtures.calls).toHaveLength(2));
+    await waitFor(() => expect(screen.getAllByTestId("hyg-progress-unavailable")).toHaveLength(6));
+
+    await act(async () => {
+      release();
+      await Promise.resolve();
+    });
+    expect(screen.queryByTestId("hyg-progress-sent")).toBeNull();
+    expect(screen.getAllByTestId("hyg-progress-unavailable")).toHaveLength(6);
   });
 
   it("re-asks on focus and on becoming visible, and not while hidden", async () => {

@@ -309,7 +309,7 @@ class FakeHygDb extends FakeAuditDb {
         }));
       return { rows, rowCount: rows.length };
     }
-    if (/^\s*SELECT DISTINCT ON \(visit_id\) visit_id, state\s+FROM hyg_perio_send\s+WHERE office = \$1 AND visit_id = ANY\(\$2::uuid\[\]\) AND state <> 'deleted'\s+ORDER BY visit_id, created_at DESC/i.test(text)) {
+    if (/^\s*SELECT DISTINCT ON \(visit_id\) visit_id, state\s+FROM hyg_perio_send\s+WHERE office = \$1 AND visit_id = ANY\(\$2::uuid\[\]\) AND state <> 'deleted'\s+ORDER BY visit_id, created_at DESC, send_id DESC/i.test(text)) {
       const [office, visitIds] = params;
       /** @type {Map<string, Record<string, any>>} */
       const latest = new Map();
