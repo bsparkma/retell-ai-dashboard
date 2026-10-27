@@ -1,5 +1,6 @@
 /**
- * The "Awaiting sign-off" nav badge and the arrival alert (queue item 53).
+ * The sign-off waiting-count badge (on the Referrals nav item) and the arrival
+ * alert (queue item 53). The alert opens the referral in the hub's sign-off view.
  *
  * The same shape as useCheckoutWatch (item 50), for referrals: polls
  * GET /api/tc/referrals/signoff/summary for each office in scope on the
@@ -28,6 +29,7 @@ import { usePolling } from "@/hooks/usePolling";
 import { getSignoffSummary } from "@/features/tc/referrals/referralsApi";
 import { getNotificationPrefs } from "@/features/tc/notifications/notificationsApi";
 import { playChime } from "@/features/tc/notifications/chime";
+import { signoffViewHref } from "@/features/tc/referrals/hubActions";
 import { DEFAULT_NOTIFICATION_LEVEL, type TcNotificationLevel } from "@shared/tc/notifications";
 import type { OfficeId } from "@shared/tc/contract";
 
@@ -82,8 +84,8 @@ export function useSignoffWatch(offices: readonly OfficeId[], canReadPrefs = tru
               ? (p.value.events.find((e) => e.event === "referral_signoff")?.level ?? DEFAULT_NOTIFICATION_LEVEL)
               : DEFAULT_NOTIFICATION_LEVEL;
           if (level === "silent") return; // the badge below still updates
-          // F5: the page opens this referral, as Checkout opens a handoff's sidebar.
-          const target = `/tc/referrals/signoff?office=${office}&referral=${s.newest.referralId}`;
+          // F5: the hub's sign-off view opens this referral, as Checkout opens a handoff's sidebar.
+          const target = signoffViewHref(office, s.newest.referralId);
           toast(`${s.newest.patientName}'s referral is waiting for your sign-off`, {
             action: { label: "Open", onClick: () => navigate(target) },
           });

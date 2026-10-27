@@ -71,8 +71,9 @@ export const ROLE_HOME: Record<TenantRole, string> = {
   hygiene: "/hyg/day",
   reviewer: "/rcm/remittances",
   rcm_biller: "/rcm/remittances",
-  // Item 53: a doctor holds exactly one surface, the referral sign-off queue.
-  doctor: "/tc/referrals/signoff",
+  // Item 53: a doctor holds exactly one surface, the referral sign-off queue —
+  // since the sign-off-in-hub slice, the Referrals hub's sign-off view.
+  doctor: "/tc/referrals?view=signoff",
 };
 
 /** The fallback home for a user whose role we could not resolve. */
@@ -100,7 +101,7 @@ export function homeForRole(role: TenantRole | null): string {
  * for shells and error pages (`/home`, `/404`), and it costs nothing because
  * the data behind any real page is gated server-side regardless.
  */
-export const ROUTE_PERMISSIONS: Record<string, PermissionAction> = {
+export const ROUTE_PERMISSIONS: Record<string, PermissionAction | readonly PermissionAction[]> = {
   "/dashboard": "voice.read",
   "/calls": "voice.read",
   "/carein-calls": "voice.read",
@@ -112,9 +113,13 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionAction> = {
   "/tc": "tc.full",
   // The three Hygiene-nav pages are the ONLY /tc routes a hygienist may see.
   "/tc/hygiene": "tc.hygiene",
-  // Item 53: the sign-off queue is the doctor's whole TC surface. Longest
-  // prefix wins, so this beats "/tc" (tc.full) for exactly this page.
-  "/tc/referrals/signoff": "tc.referral_signoff",
+  // The Referrals hub: tc.full for the hub itself, OR tc.referral_signoff for
+  // its sign-off view — the doctor's whole TC surface (item 53, moved into the
+  // hub). Longest prefix wins, so this beats "/tc" (tc.full) for the hub and
+  // for the old /tc/referrals/signoff path, which now only redirects here.
+  // Which view, and which buttons, a person gets is the page's decision; every
+  // route behind it keeps its own server gate.
+  "/tc/referrals": ["tc.full", "tc.referral_signoff"],
   // RCM is read-gated at the route. Its tiers (rcm.read / rcm.queue / rcm.write,
   // decision D-9, plus rcm.post and rcm.settings from the shadow gate) are
   // enforced server-side per route; a page renders the same for a reviewer, a
@@ -134,11 +139,16 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionAction> = {
   "/fees": "fees.read",
 };
 
-/** The action a path requires, or null if it is unrestricted. */
-export function requiredActionFor(path: string): PermissionAction | null {
-  let best: { prefix: string; action: PermissionAction } | null = null;
+/**
+ * The action a path requires — or, where a page serves two roles, the actions
+ * any ONE of which opens it — or null if it is unrestricted. A query string is
+ * not part of the path ("/tc/referrals?view=signoff" is "/tc/referrals").
+ */
+export function requiredActionFor(path: string): PermissionAction | readonly PermissionAction[] | null {
+  const pathname = path.split("?")[0] ?? path;
+  let best: { prefix: string; action: PermissionAction | readonly PermissionAction[] } | null = null;
   for (const [prefix, action] of Object.entries(ROUTE_PERMISSIONS)) {
-    const matches = path === prefix || path.startsWith(`${prefix}/`);
+    const matches = pathname === prefix || pathname.startsWith(`${prefix}/`);
     if (!matches) continue;
     if (best === null || prefix.length > best.prefix.length) best = { prefix, action };
   }
@@ -148,5 +158,6 @@ export function requiredActionFor(path: string): PermissionAction | null {
 /** May this user open `path`? Unrestricted paths are always allowed. */
 export function canVisit(permissions: readonly string[] | undefined, path: string): boolean {
   const action = requiredActionFor(path);
-  return action === null || can(permissions, action);
+  if (action === null) return true;
+  return typeof action === "string" ? can(permissions, action) : action.some((a) => can(permissions, a));
 }

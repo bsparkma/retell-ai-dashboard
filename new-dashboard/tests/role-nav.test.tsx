@@ -135,7 +135,7 @@ describe("visibleNav", () => {
     },
   ];
 
-  it("a doctor sees ONLY the sign-off queue in the TC nav; tc and office do not see it (item 53)", () => {
+  it("a doctor sees ONLY Referrals in the TC nav — sign-off lives in the hub now (item 53); tc and office keep it too", () => {
     const TC_GROUPS = [
       {
         title: "Casework",
@@ -143,7 +143,7 @@ describe("visibleNav", () => {
           { path: "/tc/dashboard", label: "Dashboard", icon: (() => null) as never },
           { path: "/tc", label: "Pipeline", icon: (() => null) as never },
           { path: "/tc/checkout", label: "Checkout", icon: (() => null) as never },
-          { path: "/tc/referrals/signoff", label: "Awaiting sign-off", icon: (() => null) as never },
+          { path: "/tc/referrals", label: "Referrals", icon: (() => null) as never },
         ],
       },
       {
@@ -153,13 +153,15 @@ describe("visibleNav", () => {
     ];
     const doctor = visibleNav(TC_GROUPS, PERMS.doctor);
     expect(doctor.map((g) => g.title)).toEqual(["Casework"]);
-    expect(doctor[0].items.map((i) => i.label)).toEqual(["Awaiting sign-off"]);
+    expect(doctor[0].items.map((i) => i.label)).toEqual(["Referrals"]);
     for (const role of ["tc", "office"]) {
       const labels = visibleNav(TC_GROUPS, PERMS[role]).flatMap((g) => g.items.map((i) => i.label));
-      expect(labels, role).not.toContain("Awaiting sign-off");
+      expect(labels, role).toContain("Referrals");
       expect(labels, role).toContain("Pipeline");
     }
-    expect(visibleNav(TC_GROUPS, PERMS.admin).flatMap((g) => g.items.map((i) => i.label))).toContain("Awaiting sign-off");
+    expect(visibleNav(TC_GROUPS, PERMS.admin).flatMap((g) => g.items.map((i) => i.label))).toContain("Referrals");
+    // A hygienist sees none of it.
+    expect(visibleNav(TC_GROUPS, PERMS.hygiene)).toEqual([]);
   });
 
   it("drops a group once every item in it is hidden", () => {

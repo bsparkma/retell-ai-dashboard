@@ -8,11 +8,12 @@
  *    panel shows the SERVER's answer, and a refusal leaves it as it was),
  *    "Edit (re-approval needed)" on an approved one, the manual marks labelled
  *    as attestations (mark-sent needs how/where), sent+ read-only.
- *  - The doctor's sign-off card: edit incl. the doctor's note, and "Send back
- *    with a question" (needs the question).
+ *  - (The doctor's sign-off card — edit incl. the doctor's note, "Send back
+ *    with a question" — moved with the sign-off page into the hub:
+ *    tests/referrals-signoff-in-hub.test.tsx.)
  *  - The submitter sees "Returned by Dr. — <question>" on the case panel.
- *  - The route gate: /tc/referrals is tc.full; the sign-off page stays the
- *    doctor's own.
+ *  - The route gate: /tc/referrals opens with tc.full OR tc.referral_signoff
+ *    (sign-off moved into the hub), and the old sign-off path falls under it.
  *
  * With TC_SHOTS=1 it also dumps the hub and the doctor's edit card
  * (tccheckout-11 / -12). NO NETWORK, NO BACKEND, NO PHI (test patient 12827).
@@ -60,8 +61,7 @@ vi.mock("@/features/tc/components/TcShell", async (orig) => ({
   useTcOffice: () => "roland",
 }));
 
-import { HubInner, groupForHub, nextMark } from "@/pages/tc/TcReferralsHub";
-import { SignoffInner } from "@/pages/tc/TcReferralSignoff";
+import { HubInner, HubSignoffView, groupForHub, nextMark } from "@/pages/tc/TcReferralsHub";
 import { ReferralsPanel } from "@/features/tc/referrals/ReferralsPanel";
 import { changedFields } from "@/features/tc/referrals/ReferralFieldsForm";
 import { referralEventLabel } from "@/features/tc/referrals/ReferralTimeline";
@@ -214,9 +214,9 @@ describe("pure pieces", () => {
     expect(referralEventLabel(ev({ verb: "mark_sent", toStatus: "sent" }))).toBe("Marked sent (outside the app)");
     expect(referralEventLabel(ev({ verb: null, toStatus: "pending_signoff" }))).toBe("Pending Dr. sign-off");
   });
-  it("the hub is tc.full; the sign-off page stays the doctor's own", () => {
-    expect(requiredActionFor("/tc/referrals")).toBe("tc.full");
-    expect(requiredActionFor("/tc/referrals/signoff")).toBe("tc.referral_signoff");
+  it("the hub opens with tc.full or tc.referral_signoff; the old sign-off path is the hub's", () => {
+    expect(requiredActionFor("/tc/referrals")).toEqual(["tc.full", "tc.referral_signoff"]);
+    expect(requiredActionFor("/tc/referrals/signoff")).toEqual(["tc.full", "tc.referral_signoff"]);
   });
 });
 
@@ -377,51 +377,15 @@ describe("the detail panel", () => {
   });
 });
 
-// ── the doctor's sign-off card ──────────────────────────────────────────────
+// ── the doctor's sign-off card (now the hub's sign-off view; for the screenshot) ──
 
 async function openSignoff(detail: TcReferral) {
   ref.listSignoffQueue.mockResolvedValue([detail]);
   ref.getSignoffReferral.mockResolvedValue(detail);
-  render(<SignoffInner office="roland" />);
-  fireEvent.click(await screen.findByTestId("tc-signoff-row"));
-  return screen.findByTestId("tc-signoff-detail");
+  render(<HubSignoffView offices={["roland"]} showOfficeBadges={false} viewer={{ tcFull: false, signoff: true }} />);
+  fireEvent.click(await screen.findByTestId("tc-hub-signoff-row"));
+  return screen.findByTestId("tc-hub-detail");
 }
-
-describe("the doctor's sign-off card", () => {
-  it("the doctor edits fields and their own note; the card shows what the server stored", async () => {
-    const p = referral({ status: "pending_signoff", events: [] });
-    const detail = await openSignoff(p);
-    fireEvent.click(within(detail).getByRole("button", { name: /^Edit$/ }));
-    const form = await within(detail).findByTestId("referral-fields-form");
-    await waitFor(() => expect(ref.listSignoffDirectory).toHaveBeenCalledWith("roland"));
-    expect(ref.listDirectory).not.toHaveBeenCalled(); // the directory route is tc.full
-    expect((within(detail).getByRole("button", { name: /Approve/ }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.change(within(form).getByLabelText("Doctor's note"), { target: { value: "Please see within the week." } });
-    fireEvent.change(within(form).getByLabelText("How soon"), { target: { value: "urgent" } });
-    ref.doctorEditReferral.mockResolvedValue({ ...p, urgency: "urgent", doctorNote: "Please see within the week." });
-    fireEvent.click(within(form).getByRole("button", { name: /Save changes/ }));
-    await waitFor(() =>
-      expect(ref.doctorEditReferral).toHaveBeenCalledWith("roland", p.referralId, { urgency: "urgent", doctorNote: "Please see within the week." }),
-    );
-    expect((await within(detail).findByTestId("tc-signoff-doctor-note")).textContent).toBe("Please see within the week.");
-    expect((within(detail).getByRole("button", { name: /Approve/ }) as HTMLButtonElement).disabled).toBe(false);
-  });
-
-  it("send back with a question: the question is required, and it goes back as a draft", async () => {
-    const p = referral({ status: "pending_signoff", events: [] });
-    const detail = await openSignoff(p);
-    fireEvent.click(within(detail).getByRole("button", { name: /Send back with a question/ }));
-    const send = within(detail).getByRole("button", { name: "Send back" }) as HTMLButtonElement;
-    expect(send.disabled).toBe(true);
-    fireEvent.change(within(detail).getByLabelText("What do you need from them?"), { target: { value: "Which tooth — 3 or 14?" } });
-    ref.returnReferral.mockResolvedValue({ ...p, status: "draft" });
-    ref.listSignoffQueue.mockResolvedValue([]);
-    fireEvent.click(send);
-    await waitFor(() => expect(ref.returnReferral).toHaveBeenCalledWith("roland", p.referralId, "Which tooth — 3 or 14?"));
-    expect((await screen.findByTestId("tc-signoff-done")).textContent).toContain("sent back with your question");
-    expect(ref.approveReferral).not.toHaveBeenCalled();
-  });
-});
 
 // ── the submitter's surface ─────────────────────────────────────────────────
 

@@ -3,15 +3,21 @@
  *
  * Pure. The shared transition table (referralNextStatus) decides what is
  * possible from a status; this only chooses which of those moves belong on the
- * hub and says, in a sentence, why any other one is not here. The server
- * re-checks everything at the click: the role gates, the CAS on the status, and
- * the table itself.
+ * hub for the person looking, and says, in a sentence, why any other one is
+ * not here. The server re-checks everything at the click: the role gates, the
+ * CAS on the status, and the table itself.
  *
- * The hub is the TC side (tc.full). The doctor's verbs — approve, decline,
- * send back — stay on Awaiting sign-off: approving can email the referral
- * (auto-send on approval), and nothing on the hub sends except its own Send
- * box. So for a referral awaiting sign-off the hub names where to act instead
- * of drawing those buttons.
+ * Two kinds of move:
+ *  - the TC side's (tc.full): submit, withdraw, reopen, the marks, cancel;
+ *  - the doctor's (tc.referral_signoff): approve, decline, send back.
+ *
+ * SIGN-OFF IN THE HUB (Beau's ruling, reversing R6.1's "approve is never
+ * offered on the hub"): the doctor's moves are offered on the hub to a
+ * tc.referral_signoff holder — and ONLY to one — on a referral awaiting
+ * sign-off. They call the existing sign-off routes. Approving can email the
+ * referral (auto-send on approval), so the panel asks first wherever that may
+ * happen (see SignoffActions). Everyone else sees "Waiting for the doctor's
+ * sign-off" and no doctor's move. Send and the marks are unchanged.
  */
 import {
   REFERRAL_MARK_LABELS,
@@ -20,9 +26,10 @@ import {
   type TcReferralStatus,
   type TcReferralVerb,
 } from "@shared/tc/referrals";
+import type { OfficeId } from "@shared/tc/contract";
 import type { ReferralMark } from "./referralsApi";
 
-/** The moves the hub itself performs, in the order the panel draws them. */
+/** The TC side's moves on the hub, in the order the panel draws them. */
 export const HUB_VERBS = [
   "submit",
   "withdraw",
@@ -42,14 +49,15 @@ export function isMarkVerb(verb: HubVerb): verb is ReferralMark {
   return (HUB_MARK_VERBS as readonly string[]).includes(verb);
 }
 
-/** The doctor's moves, which the hub points to rather than performs. */
-const SIGNOFF_VERBS = ["approve", "decline", "return"] as const satisfies readonly TcReferralVerb[];
+/** The doctor's moves — offered only to a tc.referral_signoff holder. */
+export const HUB_SIGNOFF_VERBS = ["approve", "decline", "return"] as const satisfies readonly TcReferralVerb[];
+export type HubSignoffVerb = (typeof HUB_SIGNOFF_VERBS)[number];
 
 /** What the viewer holds, as far as the hub cares. UX only: the server decides. */
 export interface HubViewer {
-  /** tc.full: every hub move. */
+  /** tc.full: every TC-side hub move. */
   tcFull: boolean;
-  /** tc.referral_signoff: may act on Awaiting sign-off. */
+  /** tc.referral_signoff: approve, decline, send back. */
   signoff: boolean;
 }
 
@@ -63,16 +71,16 @@ export interface HubAction {
 }
 
 export interface HubActionPlan {
+  /** The TC side's moves. */
   actions: HubAction[];
+  /** The doctor's moves, in the order the panel draws them. */
+  signoff: HubSignoffVerb[];
   /** Why a move is not offered here, when one exists from this status. */
   notes: string[];
-  /** Point to Awaiting sign-off (the viewer may act there). */
-  signoffLink: boolean;
 }
 
 export const HUB_NOT_TC_FULL_COPY =
   "Only a treatment coordinator, office manager or admin can move a referral.";
-export const HUB_SIGNOFF_HERE_COPY = "Approve, decline or send it back from Awaiting sign-off.";
 export const HUB_SIGNOFF_WAITING_COPY = "Waiting for the doctor's sign-off.";
 
 /** Where `verb` leads from `status`, or undefined when it is not a move from here. */
@@ -100,14 +108,16 @@ export function hubActionPlan(
     const to = target(status, verb, signoffRequired);
     if (to !== undefined) possible.push({ verb, to });
   }
+  const signoffPossible = HUB_SIGNOFF_VERBS.filter((v) => target(status, v, signoffRequired) !== undefined);
+  const signoff = viewer.signoff ? signoffPossible : [];
   const notes: string[] = [];
-  const signoffPending = SIGNOFF_VERBS.some((v) => target(status, v, signoffRequired) !== undefined);
-  if (signoffPending) notes.push(viewer.signoff ? HUB_SIGNOFF_HERE_COPY : HUB_SIGNOFF_WAITING_COPY);
+  if (signoffPossible.length > 0 && !viewer.signoff) notes.push(HUB_SIGNOFF_WAITING_COPY);
   if (!viewer.tcFull) {
-    if (possible.length > 0) notes.unshift(HUB_NOT_TC_FULL_COPY);
-    return { actions: [], notes, signoffLink: signoffPending && viewer.signoff };
+    // A signer with nothing else to do here needs no lecture about the TC's moves.
+    if (possible.length > 0 && signoff.length === 0) notes.unshift(HUB_NOT_TC_FULL_COPY);
+    return { actions: [], signoff, notes };
   }
-  return { actions: possible, notes, signoffLink: signoffPending && viewer.signoff };
+  return { actions: possible, signoff, notes };
 }
 
 /** The button's words. Submit names where it goes when the policy is known. */
@@ -126,4 +136,19 @@ export function hubActionLabel(action: HubAction): string {
     default:
       return REFERRAL_MARK_LABELS[action.verb];
   }
+}
+
+/**
+ * The hub's sign-off view — where the doctor lands, where the sign-off alert
+ * points, and where the old /tc/referrals/signoff path now redirects. With an
+ * office and a referral it opens that one (the office is checked against the
+ * viewer's scope there, never trusted).
+ */
+export function signoffViewHref(office?: OfficeId | null, referralId?: string | null): string {
+  const q = new URLSearchParams({ view: "signoff" });
+  if (office && referralId) {
+    q.set("office", office);
+    q.set("referral", referralId);
+  }
+  return `/tc/referrals?${q.toString()}`;
 }
