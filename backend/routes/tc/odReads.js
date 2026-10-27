@@ -852,27 +852,9 @@ async function getCobProcedures(odGet, patNum) {
   const endpointsUsed = [];
 
   // ── TP procedures for this patient ────────────────────────────────────────
-  let statusFiltered = true;
-  let res = await odGet('/procedurelogs', { PatNum: patNum, ProcStatus: 'TP', ...(OD_CLINIC_NUM ? { ClinicNum: OD_CLINIC_NUM } : {}) }, { timeoutMs: OD_CALL_TIMEOUT_MS });
-  if (!res.ok && isCapabilityMiss(res)) {
-    statusFiltered = false;
-    res = await odGet('/procedurelogs', { PatNum: patNum }, { timeoutMs: OD_CALL_TIMEOUT_MS });
-  }
-  if (!res.ok) {
-    const err = new Error(`Failed to fetch procedures (${res.status})`);
-    err.odStatus = res.status;
-    throw err;
-  }
-  endpointsUsed.push(`GET /procedurelogs?PatNum${statusFiltered ? '&ProcStatus=TP' : ''}`);
-
-  const tpRows = asArray(res.data).filter((r) => {
-    if (!statusFiltered) {
-      const s = String(r.ProcStatus || '');
-      if (s !== 'TP' && s !== '1') return false;
-    }
-    if (OD_CLINIC_NUM && String(r.ClinicNum ?? '') !== String(OD_CLINIC_NUM)) return false;
-    return num(r.ProcFee) > 0;
-  });
+  const tp = await getTpProcedureRows(odGet, patNum);
+  endpointsUsed.push(tp.endpoint);
+  const tpRows = tp.rows.filter((r) => num(r.ProcFee) > 0);
 
   // ── Per-plan claimproc estimates (the legacy join, on the API) ────────────
   const maps = await loadPlanOrdinals(odGet, patNum);
@@ -984,6 +966,49 @@ async function getCobProcedures(odGet, patNum) {
   }
 
   return { procs, fallbackLines, claimProcsAvailable: cpAvailable, coverage, endpointsUsed, notes };
+}
+
+/**
+ * One patient's treatment-planned procedure rows, RAW, exactly as the COB read
+ * has always fetched them: `GET /procedurelogs?PatNum&ProcStatus=TP`, falling
+ * back to an unfiltered read with a client-side status filter on an OD build
+ * that rejects the parameter.
+ *
+ * Extracted from getCobProcedures so the hygiene visit's existing-treatment
+ * section reads the SAME rows the same way. Nothing is filtered here beyond
+ * status and clinic: the COB read applies its own fee floor, and a $0 watch
+ * item is exactly what the hygiene list must not lose.
+ *
+ * Throws `{ odStatus }` on an outage, like every read in this file.
+ *
+ * @returns {Promise<{ rows: Array<Record<string, any>>, statusFiltered: boolean, endpoint: string }>}
+ */
+async function getTpProcedureRows(odGet, patNum) {
+  let statusFiltered = true;
+  let res = await odGet('/procedurelogs', { PatNum: patNum, ProcStatus: 'TP', ...(OD_CLINIC_NUM ? { ClinicNum: OD_CLINIC_NUM } : {}) }, { timeoutMs: OD_CALL_TIMEOUT_MS });
+  if (!res.ok && isCapabilityMiss(res)) {
+    statusFiltered = false;
+    res = await odGet('/procedurelogs', { PatNum: patNum }, { timeoutMs: OD_CALL_TIMEOUT_MS });
+  }
+  if (!res.ok) {
+    const err = new Error(`Failed to fetch procedures (${res.status})`);
+    err.odStatus = res.status;
+    throw err;
+  }
+
+  const rows = asArray(res.data).filter((r) => {
+    if (!statusFiltered) {
+      const s = String(r.ProcStatus || '');
+      if (s !== 'TP' && s !== '1') return false;
+    }
+    if (OD_CLINIC_NUM && String(r.ClinicNum ?? '') !== String(OD_CLINIC_NUM)) return false;
+    return true;
+  });
+  return {
+    rows,
+    statusFiltered,
+    endpoint: `GET /procedurelogs?PatNum${statusFiltered ? '&ProcStatus=TP' : ''}`,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1297,6 +1322,7 @@ module.exports = {
   getTreatmentPlan,
   findUnaccepted,
   getCobProcedures,
+  getTpProcedureRows,
   getInsuranceSnapshot,
   getNextAppointment,
   // exported for tests / reuse

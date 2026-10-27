@@ -60,6 +60,7 @@ const { requireDashboardAuth } = require('../../middleware/auth');
 const odOffices = require('../../config/odOffices');
 const odConfigCache = require('../../services/odConfigCache');
 const odPatientCache = require('../../services/odPatientCache');
+const existingTreatment = require('../../services/hyg/existingTreatment');
 
 const REGISTRY_KEYS = [
   'getUserByEmail',
@@ -172,7 +173,69 @@ class FakeHygDb extends FakeAuditDb {
     this.hyg_staged_write = [];
     /** @type {Array<Record<string, any>>} item 12 */
     this.hyg_perio_send = [];
+    /** @type {Array<Record<string, any>>} Slice 2a */
+    this.hyg_existing_tx_disposition = [];
     this.seq = 0;
+  }
+
+  static EXISTING_TX_CLINICAL = ['no_change', 'worse_urgent', 're_evaluate', 'no_longer_needed'];
+  static EXISTING_TX_PATIENT = [
+    'not_discussed', 'ready_to_schedule', 'wants_to_wait', 'see_plan_again', 'cost_questions', 'declined',
+  ];
+  static EXISTING_TX_WAIT = ['1_month', '3_months', '6_months', 'next_recall'];
+
+  /** Slice 2a: any router/note write of this visit in a freezing state. */
+  existingTxFrozen(office, visitId, kinds, states) {
+    return this.hyg_staged_write.some(
+      (w) => w.office === office && w.visit_id === visitId && kinds.includes(w.kind) && states.includes(w.state)
+    );
+  }
+
+  /**
+   * The migration's CHECKs and composite FK for hyg_existing_tx_disposition,
+   * refused here as Postgres would refuse them.
+   */
+  checkExistingTx(row) {
+    this.checkOffice(row.office);
+    if (!this.hyg_visit.some((v) => v.visit_id === row.visit_id && v.office === row.office)) {
+      throw new Error('hyg_existing_tx_disposition_visit_fk violated');
+    }
+    if (!(row.pat_num > 0)) throw new Error('hyg_existing_tx_disposition_pat_num_check violated');
+    if (!(row.proc_num > 0)) throw new Error('hyg_existing_tx_disposition_proc_num_check violated');
+    if (row.clinical !== null && !FakeHygDb.EXISTING_TX_CLINICAL.includes(row.clinical)) {
+      throw new Error('hyg_existing_tx_disposition_clinical_check violated: ' + row.clinical);
+    }
+    if (!FakeHygDb.EXISTING_TX_PATIENT.includes(row.patient)) {
+      throw new Error('hyg_existing_tx_disposition_patient_check violated: ' + row.patient);
+    }
+    if (row.wait_timeframe !== null && !FakeHygDb.EXISTING_TX_WAIT.includes(row.wait_timeframe)) {
+      throw new Error('hyg_existing_tx_disposition_wait_timeframe_check violated');
+    }
+    if (row.patient !== 'wants_to_wait' && row.wait_timeframe !== null) {
+      throw new Error('hyg_existing_tx_disposition_wait_only_when_waiting_check violated');
+    }
+    if (row.note !== null && row.note.length > 500) {
+      throw new Error('hyg_existing_tx_disposition_note_check violated');
+    }
+    if (!row.proc_snapshot || typeof row.proc_snapshot !== 'object' || Array.isArray(row.proc_snapshot)) {
+      throw new Error('hyg_existing_tx_disposition_proc_snapshot_check violated');
+    }
+  }
+
+  /** A stored disposition as the driver returns it: bigint as a string. */
+  existingTxOut(r) {
+    return {
+      proc_num: String(r.proc_num),
+      clinical: r.clinical,
+      patient: r.patient,
+      wait_timeframe: r.wait_timeframe,
+      note: r.note,
+      proc_snapshot: r.proc_snapshot,
+      created_by: r.created_by,
+      created_at: r.created_at,
+      updated_by: r.updated_by,
+      updated_at: r.updated_at,
+    };
   }
 
   /** Deterministic ids — a test that asserts on one should not need a regex. */
@@ -333,6 +396,87 @@ class FakeHygDb extends FakeAuditDb {
       }
       const rows = [...counts].map(([visit_id, item_count]) => ({ visit_id, item_count }));
       return { rows, rowCount: rows.length };
+    }
+
+    // ── existing treatment dispositions (Slice 2a, existingTxStore.js) ──────
+    // Every statement keyed by office FIRST, like the store's. Matched before
+    // the catch-alls below, which throw on SQL they were not taught.
+    if (/^\s*SELECT 1 FROM hyg_staged_write\s+WHERE office = \$1 AND visit_id = \$2\s+AND kind = ANY\(\$3::text\[\]\) AND state = ANY\(\$4::text\[\]\)\s+LIMIT 1/i.test(text)) {
+      const [office, visitId, kinds, states] = params;
+      const hit = this.existingTxFrozen(office, visitId, kinds, states);
+      return { rows: hit ? [{ '?column?': 1 }] : [], rowCount: hit ? 1 : 0 };
+    }
+    if (/^\s*SELECT\s+proc_num, clinical, patient[\s\S]*FROM hyg_existing_tx_disposition\s+WHERE office = \$1 AND visit_id = \$2\s*$/i.test(text)) {
+      const [office, visitId] = params;
+      const rows = this.hyg_existing_tx_disposition
+        .filter((r) => r.office === office && r.visit_id === visitId)
+        .map((r) => this.existingTxOut(r));
+      return { rows, rowCount: rows.length };
+    }
+    if (/^\s*SELECT DISTINCT ON \(d\.proc_num\)[\s\S]*FROM hyg_existing_tx_disposition d\s+JOIN hyg_visit v ON v\.visit_id = d\.visit_id AND v\.office = d\.office\s+WHERE d\.office = \$1 AND d\.pat_num = \$2 AND d\.proc_num = ANY\(\$3::bigint\[\]\)\s+AND d\.visit_id <> \$4 AND d\.patient <> 'not_discussed'\s+AND v\.visit_date < \$5::date\s+ORDER BY d\.proc_num, v\.visit_date DESC, d\.updated_at DESC/i.test(text)) {
+      const [office, patNum, procNums, visitId, visitDate] = params;
+      const wanted = new Set(procNums.map(Number));
+      /** @type {Map<number, Record<string, any>>} */
+      const best = new Map();
+      for (const d of this.hyg_existing_tx_disposition) {
+        if (d.office !== office || Number(d.pat_num) !== Number(patNum)) continue;
+        if (!wanted.has(Number(d.proc_num)) || d.visit_id === visitId || d.patient === 'not_discussed') continue;
+        const v = this.hyg_visit.find((x) => x.visit_id === d.visit_id && x.office === d.office);
+        const vDate = v && v.visit_date ? String(v.visit_date).slice(0, 10) : null;
+        if (!vDate || !(vDate < String(visitDate))) continue;
+        const cur = best.get(Number(d.proc_num));
+        const newer =
+          !cur ||
+          vDate > cur.vDate ||
+          (vDate === cur.vDate && new Date(d.updated_at).getTime() > new Date(cur.d.updated_at).getTime());
+        if (newer) best.set(Number(d.proc_num), { d, vDate });
+      }
+      const rows = [...best.values()].map(({ d, vDate }) => ({
+        proc_num: String(d.proc_num),
+        patient: d.patient,
+        wait_timeframe: d.wait_timeframe,
+        clinical: d.clinical,
+        visit_date: vDate,
+      }));
+      return { rows, rowCount: rows.length };
+    }
+    // The freeze guard: a FOR SHARE CTE over the visit's router/note rows, then
+    // a count of the frozen ones. The fake has no concurrency, so the lock is
+    // pinned by the real-Postgres rehearsal; this pins the statement's shape.
+    if (/^\s*WITH writes AS \(\s*SELECT state FROM hyg_staged_write\s+WHERE office = \$1::text AND visit_id = \$2::uuid AND kind = ANY\(\$11::text\[\]\)\s+FOR SHARE\s*\)\s*INSERT INTO hyg_existing_tx_disposition[\s\S]*WHERE \(SELECT count\(\*\) FROM writes WHERE state = ANY\(\$12::text\[\]\)\) = 0\s+ON CONFLICT \(office, visit_id, proc_num\) DO UPDATE/i.test(text)) {
+      const [office, visitId, patNum, procNum, clinical, patient, wait, note, snapshot, actor, kinds, states] =
+        params;
+      if (this.existingTxFrozen(office, visitId, kinds, states)) return { rows: [], rowCount: 0 };
+      const row = {
+        office,
+        visit_id: visitId,
+        pat_num: Number(patNum),
+        proc_num: Number(procNum),
+        clinical,
+        patient,
+        wait_timeframe: wait,
+        note,
+        proc_snapshot: FakeHygDb.json(snapshot),
+        updated_by: actor,
+      };
+      this.checkExistingTx(row);
+      const existing = this.hyg_existing_tx_disposition.find(
+        (r) => r.office === office && r.visit_id === visitId && r.proc_num === row.proc_num
+      );
+      if (existing) {
+        // ON CONFLICT DO UPDATE: pat_num and created_* are the original row's.
+        Object.assign(existing, {
+          clinical, patient, wait_timeframe: wait, note,
+          proc_snapshot: row.proc_snapshot, updated_by: actor, updated_at: new Date(),
+        });
+        return { rows: [this.existingTxOut(existing)], rowCount: 1 };
+      }
+      const now = new Date();
+      const created = {
+        id: this.nextId('etx'), ...row, created_by: actor, created_at: now, updated_at: now,
+      };
+      this.hyg_existing_tx_disposition.push(created);
+      return { rows: [this.existingTxOut(created)], rowCount: 1 };
     }
 
     // ── hyg_perio_send (item 12) ────────────────────────────────────────────
@@ -1279,6 +1423,10 @@ async function bootHygApp({
   odUnavailableFor = [],
   tcSubmit = null,
   checkoutSubmit = null,
+  // Slice 2a: a SEPARATE fake client per office, keyed by office, for tests
+  // where the same OD identifier must mean different things in each database.
+  // An office not named here gets `od`.
+  odByOffice = null,
 } = {}) {
   const originals = {
     registry: Object.fromEntries(REGISTRY_KEYS.map((k) => [k, registry[k]])),
@@ -1318,6 +1466,7 @@ async function bootHygApp({
    */
   odPatientCache.resetOdPatientCache();
   odConfigCache.resetOdConfigCache();
+  existingTreatment.resetExistingTreatmentCache();
 
   process.env.OPENDENTAL_CUSTOMER_KEY = 'test-customer-key-roland';
   process.env.OPENDENTAL_CUSTOMER_KEY_VALLEY = 'test-customer-key-valley';
@@ -1345,7 +1494,7 @@ async function bootHygApp({
       officeKey: key,
       officeName: key === 'valley' ? 'Riley Family Dental' : 'Roland Family Dental',
       commTypeDefNum: key === 'valley' ? 451 : 486,
-      client: od,
+      client: odByOffice && odByOffice[key] ? odByOffice[key] : od,
     });
   };
 

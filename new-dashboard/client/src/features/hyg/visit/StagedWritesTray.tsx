@@ -164,6 +164,7 @@ function ConfirmSend({
   writes,
   patientName,
   perio,
+  existingNotDiscussed,
   busy,
   onCancel,
   onConfirm,
@@ -171,6 +172,7 @@ function ConfirmSend({
   writes: StagedWrite[] | null;
   patientName: string;
   perio: TrayPerio | null;
+  existingNotDiscussed: number;
   busy: boolean;
   onCancel: () => void;
   onConfirm: () => void;
@@ -195,6 +197,17 @@ function ConfirmSend({
                     what will be written — if any of it changes before you confirm, nothing is
                     sent and you will be asked to read it again.
                   </p>
+                  {/* SLICE 2a: A REMINDER, NEVER A GATE. Send stays enabled. */}
+                  {existingNotDiscussed > 0 ? (
+                    <p
+                      className="rounded-lg border border-dashed border-muted-foreground/40 px-3 py-2 text-xs"
+                      data-testid="hyg-confirm-existing-not-discussed"
+                    >
+                      {existingNotDiscussed} existing{" "}
+                      {existingNotDiscussed === 1 ? "item" : "items"} not discussed. You can still
+                      send.
+                    </p>
+                  ) : null}
                   {writes.map((write) => (
                     <div
                       key={write.kind}
@@ -281,12 +294,18 @@ export function StagedWritesTray({
   perioHref,
   perio = null,
   onResumePerio = () => undefined,
+  existingNotDiscussed = 0,
 }: {
   staged: StagedWrite[];
   handoffCategory: HandoffCategory;
   patientName: string;
   /** How many treatment items are on the visit. See `handoffUnavailable`. */
   itemCount: number;
+  /**
+   * Slice 2a: existing Open Dental items nobody discussed at this visit. The
+   * confirm mentions them; it never refuses on them.
+   */
+  existingNotDiscussed?: number;
   busy: boolean;
   sending: boolean;
   onStage: (kind: StagedWriteKind) => void;
@@ -617,6 +636,7 @@ export function StagedWritesTray({
         writes={confirming}
         patientName={patientName}
         perio={perio}
+        existingNotDiscussed={existingNotDiscussed}
         busy={sending}
         onCancel={() => setConfirming(null)}
         onConfirm={() => {

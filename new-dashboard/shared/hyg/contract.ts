@@ -1430,5 +1430,9 @@ export const HYG_VISIT_ERROR_CODES = [
   "REFERRAL_LOCKED",
   "REFERRAL_STORAGE_UNAVAILABLE",
   "REFERRAL_TRANSITION_NOT_ALLOWED",
+  // Slice 2a: existing treatment dispositions.
+  "INVALID_PROC_NUM",
+  "PROC_NOT_IN_PLAN",
+  "EXISTING_TX_FROZEN",
 ] as const;
 export type HygVisitErrorCode = (typeof HYG_VISIT_ERROR_CODES)[number];
