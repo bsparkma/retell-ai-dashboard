@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const retellService = require('../config/retell');
 const odAccess = require('../platform/odAccess');
+const { createLimiter } = require('../utils/concurrencyLimit');
 const { filterCallsForOffice, getOfficeConfig } = require('../config/officeAgents');
 
 // Enhanced AI-powered name extraction function
@@ -131,8 +132,19 @@ const extractNameAdvanced = (transcript, summary) => {
   return null;
 };
 
+// At most this many patient-status lookups run at once, process-wide. Each
+// lookup makes its Open Dental calls one after another, so this is also the cap
+// on concurrent OD requests from this path. Both call lists below fan out with
+// Promise.all over every call, which once meant ~150 simultaneous OD requests
+// and a storm of 30s timeouts (2026-10-26). Promise.all still preserves order.
+const OD_PATIENT_STATUS_CONCURRENCY = 5;
+const limitPatientStatus = createLimiter(OD_PATIENT_STATUS_CONCURRENCY);
+
 // Check if caller is new or existing patient using OpenDental
-const determinePatientStatus = async (req, callerName, callerNumber) => {
+const determinePatientStatus = (req, callerName, callerNumber) =>
+  limitPatientStatus(() => determinePatientStatusNow(req, callerName, callerNumber));
+
+const determinePatientStatusNow = async (req, callerName, callerNumber) => {
   try {
     // First try to find patient by phone number
     let patients = [];
@@ -719,4 +731,7 @@ router.get('/patient-suggestions/:query', async (req, res) => {
   }
 });
 
-module.exports = router; 
+module.exports = router;
+// Tests only: the capped lookup and its cap.
+module.exports._determinePatientStatus = determinePatientStatus;
+module.exports._OD_PATIENT_STATUS_CONCURRENCY = OD_PATIENT_STATUS_CONCURRENCY;
