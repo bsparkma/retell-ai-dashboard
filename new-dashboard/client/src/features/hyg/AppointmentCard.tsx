@@ -29,6 +29,12 @@ import { AlertTriangle, HelpCircle, Clock } from "lucide-react";
 
 import type { HygAppointment, OfficeId } from "@shared/hyg/contract";
 import { formatClock, formatLength, visibleFlags } from "@/features/hyg/day";
+import {
+  type CardProgress,
+  stepMarks,
+  summaryPill,
+  TONE_CLASSES,
+} from "@/features/hyg/progress";
 import { cn } from "@/lib/utils";
 
 /** Where a null field is rendered. One string, so no screen invents a second. */
@@ -112,14 +118,64 @@ function PatientName({ appointment }: { appointment: HygAppointment }) {
   );
 }
 
+/**
+ * The one-word summary on the time row. Plain spans, never a button: the whole
+ * card is the link, and a control inside it would gut its hit area.
+ *
+ * `whitespace-nowrap shrink-0` is what keeps "Progress unavailable" whole on a
+ * 288px chair column at iPad landscape; the length beside it gives way instead.
+ */
+function ProgressPill({ progress }: { progress: CardProgress }) {
+  const pill = summaryPill(progress);
+  if (pill === null) return null;
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold",
+        TONE_CLASSES[pill.tone],
+      )}
+      data-testid={
+        progress.kind === "unavailable"
+          ? "hyg-progress-unavailable"
+          : `hyg-progress-${progress.kind === "ready" ? progress.value.overall : "loading"}`
+      }
+    >
+      {pill.label}
+    </span>
+  );
+}
+
+function StepMarks({ progress }: { progress: CardProgress }) {
+  if (progress.kind !== "ready") return null;
+  const marks = stepMarks(progress.value);
+  if (marks.length === 0) return null;
+  return (
+    <div className="mt-2 flex flex-wrap gap-1" data-testid="hyg-progress-steps">
+      {marks.map((m) => (
+        <span
+          key={m.key}
+          className={cn("rounded px-1.5 py-0.5 text-[11px] font-medium", TONE_CLASSES[m.tone])}
+          data-testid={`hyg-step-${m.key}`}
+        >
+          {m.text}
+          {m.srText ? <span className="sr-only"> {m.srText}</span> : null}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export function AppointmentCard({
   appointment,
   office,
   date,
+  progress = { kind: "loading" },
 }: {
   appointment: HygAppointment;
   office: OfficeId;
   date: string;
+  /** This visit's progress, or why the card cannot say. See features/hyg/progress.ts. */
+  progress?: CardProgress;
 }) {
   const clock = formatClock(appointment.start);
   const length = formatLength(appointment.lengthMin);
@@ -143,20 +199,25 @@ export function AppointmentCard({
   const body = (
     <>
       <div className="flex items-baseline justify-between gap-2">
-        <span className="text-base font-semibold tabular-nums text-foreground">
+        <span className="shrink-0 text-base font-semibold tabular-nums text-foreground">
           {clock ?? UNKNOWN}
         </span>
-        {length ? (
-          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-            <Clock size={12} />
-            {length}
-          </span>
-        ) : (
-          // No Pattern on the appointment. Saying nothing would look like a
-          // zero-length visit; saying "30 min" would be a lie the size of the
-          // block on screen.
-          <span className="text-xs italic text-muted-foreground">Length not recorded</span>
-        )}
+        <span className="flex min-w-0 items-baseline justify-end gap-2">
+          {length ? (
+            <span className="inline-flex min-w-0 items-center gap-1 truncate text-xs text-muted-foreground">
+              <Clock size={12} className="shrink-0" />
+              {length}
+            </span>
+          ) : (
+            // No Pattern on the appointment. Saying nothing would look like a
+            // zero-length visit; saying "30 min" would be a lie the size of the
+            // block on screen.
+            <span className="min-w-0 truncate text-xs italic text-muted-foreground">
+              Length not recorded
+            </span>
+          )}
+          <ProgressPill progress={progress} />
+        </span>
       </div>
 
       <div className="mt-1 truncate text-lg font-semibold leading-tight text-foreground">
@@ -192,6 +253,8 @@ export function AppointmentCard({
           ) : null}
         </div>
       ) : null}
+
+      <StepMarks progress={progress} />
     </>
   );
 

@@ -678,6 +678,82 @@ export const HygDayIdentitiesResponseSchema = z.object({
 });
 export type HygDayIdentitiesResponse = z.infer<typeof HygDayIdentitiesResponseSchema>;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/hyg/day/progress — the day cards' pill
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One step of a visit, as a day card marks it.
+ *
+ * `written` is ONLY a staged write in `Written` — read back from Open Dental (or
+ * a TC case id returned). Never inferred. `not_applicable` is perio with no
+ * chart on the visit, or TC with no treatment to hand off — the card hides it
+ * rather than drawing a step nobody owes.
+ *
+ * Derived server-side in backend/services/hyg/visitProgress.js.
+ */
+export const HygStepStateSchema = z.enum([
+  "none",
+  "drafting",
+  "ready",
+  "sending",
+  "written",
+  "failed",
+  "not_applicable",
+]);
+export type HygStepState = z.infer<typeof HygStepStateSchema>;
+
+/**
+ * The one-word summary on the card's time row.
+ *
+ * `not_started` means there is no visit row for this appointment in CareIN —
+ * it is a CLAIM the server makes. A card whose progress did not load is a
+ * different fact and never borrows these words.
+ */
+export const HygVisitOverallSchema = z.enum([
+  "not_started",
+  "in_progress",
+  "ready_to_send",
+  "sent",
+  "needs_attention",
+]);
+export type HygVisitOverall = z.infer<typeof HygVisitOverallSchema>;
+
+const HygStepSchema = z.object({ state: HygStepStateSchema });
+
+export const HygVisitProgressSchema = z.object({
+  aptNum: z.number().int().positive(),
+  overall: HygVisitOverallSchema,
+  /** Null exactly when `overall` is `not_started`: there is no visit to mark. */
+  steps: z
+    .object({
+      note: HygStepSchema,
+      slip: HygStepSchema,
+      perio: HygStepSchema,
+      tc: HygStepSchema.extend({
+        /** Front desk was alerted at checkout; the handoff has not landed yet. */
+        checkoutAlerted: z.boolean(),
+        /** The visit Send's final checkout snapshot reached the front desk. */
+        checkoutFinal: z.boolean(),
+      }),
+    })
+    .nullable(),
+});
+export type HygVisitProgress = z.infer<typeof HygVisitProgressSchema>;
+
+/**
+ * Progress for a set of the day's AptNums, in one office.
+ *
+ * NO PHI: AptNums and states. The server reads only CareIN's own hyg_* tables
+ * for it and makes no Open Dental request.
+ */
+export const HygDayProgressResponseSchema = z.object({
+  success: z.literal(true),
+  office: OfficeIdSchema,
+  progress: z.array(HygVisitProgressSchema),
+});
+export type HygDayProgressResponse = z.infer<typeof HygDayProgressResponseSchema>;
+
 /**
  * Every refusal shape /api/hyg can return.
  *
@@ -701,6 +777,7 @@ export type HygError = z.infer<typeof HygErrorSchema>;
 export const HYG_ERROR_CODES = [
   "INVALID_OFFICE",
   "INVALID_DATE",
+  "INVALID_APT_NUMS",
   "OFFICE_NOT_READY",
   "OD_READ_FAILED",
   "MODULE_NOT_ENTITLED",

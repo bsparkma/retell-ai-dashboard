@@ -121,6 +121,9 @@ const express = require('express');
 
 const { h, resolveHygOd, auditHygRead, auditHygReads, auditHygDenial } = require('./helpers');
 const odDay = require('../../services/hyg/odDay');
+const tenantDb = require('../../platform/tenantDb');
+const progressStore = require('../../services/hyg/progressStore');
+const visitProgress = require('../../services/hyg/visitProgress');
 
 const router = express.Router();
 
@@ -429,6 +432,69 @@ router.get(
       // Still unnamed. The client asks again while this is FALLING.
       pending: fill.pending,
       stats: fill.stats,
+    });
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/hyg/day/progress — which visits on the day are done
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Per-appointment visit progress for the day cards.
+ *
+ * ZERO OPEN DENTAL. Reads only this platform's own hyg_* tables
+ * (services/hyg/progressStore.js) and derives the pill in a pure function
+ * (services/hyg/visitProgress.js). It never resolves an OD handle, so an office
+ * whose Open Dental is down still answers — the day route is what refuses a day
+ * that cannot be read.
+ *
+ * NO PHI IN THE ANSWER: AptNums and states. No PatNum, no name, no slip. That is
+ * also why there is no audit row here — nothing about a patient is disclosed
+ * that `GET /day` has not already disclosed and audited.
+ *
+ * Every row is keyed by (office, apt_num), never apt_num alone. The AptNums come
+ * from the caller (the day it already loaded), but they can only ever select
+ * rows in the office `requireOffice` validated.
+ */
+router.get(
+  '/progress',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+
+    const parsed = visitProgress.parseAptNums(req.query.apt);
+    if (!parsed.ok) {
+      return res.status(400).json({
+        success: false,
+        error: parsed.error,
+        code: 'INVALID_APT_NUMS',
+        office,
+      });
+    }
+
+    const started = Date.now();
+    const rows = await tenantDb.withTenantDb(req, (pool) =>
+      progressStore.readDayProgress(pool, { office, aptNums: parsed.aptNums })
+    );
+    const ms = Date.now() - started;
+
+    const progress = parsed.aptNums.map((aptNum) => ({
+      aptNum,
+      ...visitProgress.deriveVisitProgress(rows.get(aptNum) || null),
+    }));
+
+    // Slow reads only. The page asks every minute per open iPad, and a line per
+    // ask would bury the [hygday] lines that matter.
+    if (ms > 500) {
+      console.warn(
+        `[hygprogress] SLOW office=${office} apts=${parsed.aptNums.length} visits=${rows.size} ms=${ms}`
+      );
+    }
+
+    return res.json({
+      success: true,
+      office,
+      progress,
     });
   })
 );
