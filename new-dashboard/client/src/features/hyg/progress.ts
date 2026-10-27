@@ -50,7 +50,8 @@ export type StepKey = "note" | "slip" | "perio" | "tc";
 
 const STEP_NAMES: Record<StepKey, string> = {
   note: "Note",
-  slip: "Slip",
+  // The office calls this paper the ROUTER. The step key stays `slip`.
+  slip: "Router",
   perio: "Perio",
   tc: "TC",
 };

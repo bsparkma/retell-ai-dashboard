@@ -272,16 +272,16 @@ describe("day cards: the progress pill", () => {
 
     const ready = card("Papaya P.");
     expect(within(ready).getByTestId("hyg-step-note").textContent).toBe("Note: Ready");
-    expect(within(ready).getByTestId("hyg-step-slip").textContent).toBe("Slip: Ready");
+    expect(within(ready).getByTestId("hyg-step-slip").textContent).toBe("Router: Ready");
     expect(within(ready).queryByTestId("hyg-step-tc")).toBeNull();
 
     const busy = card("Mango M.");
-    expect(within(busy).getByTestId("hyg-step-slip").textContent).toBe("Slip: Drafting");
+    expect(within(busy).getByTestId("hyg-step-slip").textContent).toBe("Router: Drafting");
     expect(within(busy).getByTestId("hyg-step-perio").textContent).toBe("Perio: Sending…");
     expect(within(busy).getByTestId("hyg-step-tc").textContent).toBe("TC: Checkout alerted");
 
     const failed = card("Guava G.");
-    expect(within(failed).getByTestId("hyg-step-slip").textContent).toBe("Slip: Failed");
+    expect(within(failed).getByTestId("hyg-step-slip").textContent).toBe("Router: Failed");
     // The dash carries a spoken word for anyone not reading the glyph.
     expect(within(failed).getByTestId("hyg-step-tc").textContent).toBe("TC — not started");
 
@@ -461,7 +461,7 @@ describe("progress presentation helpers", () => {
       overall: "needs_attention",
       steps: steps("written", "written", "not_applicable", "failed", true),
     });
-    expect(marks.map((m) => m.text)).toEqual(["Note ✓ In chart", "Slip ✓ In chart", "TC: Failed"]);
+    expect(marks.map((m) => m.text)).toEqual(["Note ✓ In chart", "Router ✓ In chart", "TC: Failed"]);
     expect(marks[2].tone).toBe("attention");
   });
 
