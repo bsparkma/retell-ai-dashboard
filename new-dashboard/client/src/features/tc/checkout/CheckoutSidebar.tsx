@@ -23,6 +23,7 @@ import {
   CheckCircle2,
   CircleSlash,
   Clock,
+  CreditCard,
   FileText,
   Hand,
   Loader2,
@@ -48,6 +49,7 @@ import {
 } from "@/features/tc/checkout/checkoutApi";
 import {
   TC_CHECKOUT_PRIORITY_LABELS,
+  TC_CHECKOUT_RECORD_STATUS_LABELS,
   TC_CHECKOUT_STATUS_LABELS,
   TC_CHECKOUT_WAITING,
   type TcCheckoutHandoff,
@@ -72,12 +74,42 @@ export function checkoutClock(iso: string | null): string {
   return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/Chicago" });
 }
 
-export function PriorityChip({ priority }: { priority: TcCheckoutPriority | null }) {
+export function PriorityChip({ priority, prefix = "" }: { priority: TcCheckoutPriority | null; prefix?: string }) {
   if (!priority) return <Badge variant="outline">Nothing staged</Badge>;
   return (
     <Badge variant="outline" className={`border-transparent ${PRIORITY_CLASS[priority]}`} data-testid="checkout-priority">
+      {prefix}
       {TC_CHECKOUT_PRIORITY_LABELS[priority]}
     </Badge>
+  );
+}
+
+/**
+ * One staged procedure's PRIORITY and CATEGORY, drawn as two different kinds
+ * of thing (checkout v2). They used to be a coloured chip beside the code and a
+ * grey "Restorative · proposed" line under it, which read as though
+ * "Preventative" were the category. Now the priority is a filled, coloured pill
+ * that SAYS "priority", and the category is a plain outlined tag.
+ */
+function ProcedureTags({ priority, category }: { priority: TcCheckoutPriority; category: string }) {
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      <span
+        className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${PRIORITY_CLASS[priority]}`}
+        data-testid="checkout-proc-priority"
+        aria-label={`Priority: ${TC_CHECKOUT_PRIORITY_LABELS[priority]}`}
+      >
+        <span className="mr-1 font-normal opacity-75">Priority</span>
+        {TC_CHECKOUT_PRIORITY_LABELS[priority]}
+      </span>
+      <span
+        className="inline-flex items-center rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground"
+        data-testid="checkout-proc-category"
+        aria-label={`Category: ${category}`}
+      >
+        {category}
+      </span>
+    </span>
   );
 }
 
@@ -192,7 +224,7 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
           {handoff && snap && (
             <>
               <div className="flex flex-wrap items-center gap-2">
-                <PriorityChip priority={snap.priority} />
+                <PriorityChip priority={snap.priority} prefix="Priority: " />
                 {snap.notesPending ? (
                   <Badge variant="outline" className="border-transparent bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200 gap-1" data-testid="checkout-notes-pending">
                     <Clock className="w-3 h-3" /> Hygiene notes still being finished
@@ -208,6 +240,38 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
                 </Badge>
               </div>
 
+              {/* CHECKOUT V2: WHAT TO TAKE PAYMENT FOR, FIRST. The reason this
+                  patient must stop at the desk at all, so it leads the sheet. */}
+              {snap.collectAtCheckout && snap.collectAtCheckout.length > 0 ? (
+                <section
+                  className="rounded-lg border-2 border-emerald-500/60 bg-emerald-50 dark:bg-emerald-950/40 p-3"
+                  data-testid="checkout-collect"
+                >
+                  <h3 className="flex items-center gap-1.5 text-sm font-semibold text-emerald-900 dark:text-emerald-200">
+                    <CreditCard className="w-4 h-4" /> Collect payment
+                  </h3>
+                  <ul className="mt-1.5 space-y-0.5 text-sm font-medium text-foreground" data-testid="checkout-collect-items">
+                    {snap.collectAtCheckout.map((label, i) => (
+                      <li key={i}>{label}</li>
+                    ))}
+                  </ul>
+                </section>
+              ) : null}
+
+              {/* The hygienist's two notes from the slip, as their own section
+                  rather than a footnote under everything else. */}
+              {(snap.frontDeskNote || snap.financialNote) && (
+                <section className="space-y-1.5 text-sm" data-testid="checkout-hygiene-notes">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">From the hygienist</h3>
+                  {snap.frontDeskNote && (
+                    <p data-testid="checkout-front-desk-note"><span className="text-muted-foreground">Front desk: </span>{snap.frontDeskNote}</p>
+                  )}
+                  {snap.financialNote && (
+                    <p data-testid="checkout-financial-note"><span className="text-muted-foreground">Financial: </span>{snap.financialNote}</p>
+                  )}
+                </section>
+              )}
+
               <section>
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Treatment staged</h3>
                 {snap.procedures.length === 0 ? (
@@ -219,16 +283,43 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="font-medium text-foreground">{teethLine(p.teeth)} {p.code}</span>
                           {p.surfaces.length > 0 && <span className="text-muted-foreground">{p.surfaces.join("")}</span>}
-                          <PriorityChip priority={p.priority} />
                           {p.scheduleNext && <Badge variant="outline">Schedule next visit</Badge>}
                         </div>
-                        <p className="text-xs text-muted-foreground mt-0.5">{p.category} · {p.status}</p>
+                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                          <ProcedureTags priority={p.priority} category={p.category} />
+                          <span className="text-xs text-muted-foreground">{p.status}</span>
+                        </div>
                         {p.note && <p className="text-xs mt-1">{p.note}</p>}
                       </li>
                     ))}
                   </ul>
                 )}
               </section>
+
+              {/* CHECKOUT V2: the records the staged treatment needs, with where
+                  each stands, so a case does not stall on a missing PA later. */}
+              {snap.records && snap.records.length > 0 ? (
+                <section data-testid="checkout-records">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Records for the planned treatment</h3>
+                  <ul className="space-y-1 text-sm">
+                    {snap.records.map((r) => (
+                      <li key={r.record} className="flex items-center justify-between gap-2" data-testid="checkout-record">
+                        <span>{r.record}</span>
+                        <Badge
+                          variant="outline"
+                          className={
+                            r.status === "needed"
+                              ? "border-transparent bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+                              : "border-transparent bg-emerald-100 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200"
+                          }
+                        >
+                          {r.status === "needed" ? "Still needed" : TC_CHECKOUT_RECORD_STATUS_LABELS[r.status]}
+                        </Badge>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ) : null}
 
               <section>
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Next visit needs</h3>
@@ -261,13 +352,6 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
                   <ExistingTreatmentFromHygiene items={snap.existingTx} />
                 </section>
               ) : null}
-
-              {(snap.frontDeskNote || snap.financialNote) && (
-                <section className="space-y-1 text-sm">
-                  {snap.frontDeskNote && <p><span className="text-muted-foreground">Front desk: </span>{snap.frontDeskNote}</p>}
-                  {snap.financialNote && <p><span className="text-muted-foreground">Financial: </span>{snap.financialNote}</p>}
-                </section>
-              )}
 
               {/* Item 53: the referral chip goes live (None / Staged / Pending
                   Dr. sign-off / Approved) with Start referral beside it. It

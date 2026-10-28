@@ -14823,10 +14823,14 @@ var require_zod = __commonJS({
 // ../backend/hyg/contract.entry.ts
 var contract_entry_exports = {};
 __export(contract_entry_exports, {
+  COLLECT_AT_CHECKOUT_OPTIONS: () => COLLECT_AT_CHECKOUT_OPTIONS,
+  COLLECT_OTHER_MAX: () => COLLECT_OTHER_MAX,
   CORRECTED_OPTION_SPELLINGS: () => CORRECTED_OPTION_SPELLINGS,
   CheckoutAlertRequestSchema: () => CheckoutAlertRequestSchema,
   CheckoutDeliverySchema: () => CheckoutDeliverySchema,
   CheckoutSendSchema: () => CheckoutSendSchema,
+  CollectAtCheckoutIdSchema: () => CollectAtCheckoutIdSchema,
+  CollectAtCheckoutSchema: () => CollectAtCheckoutSchema,
   DONE_TODAY_OPTIONS: () => DONE_TODAY_OPTIONS,
   DRAFT_VISIT_TYPES: () => DRAFT_VISIT_TYPES,
   DX_LABELS: () => DX_LABELS,
@@ -14888,7 +14892,9 @@ __export(contract_entry_exports, {
   HygVisitSchema: () => HygVisitSchema,
   HygWarningSchema: () => HygWarningSchema,
   LOWER_PRIMARY: () => LOWER_PRIMARY,
+  MEDICAL_HISTORY_MAX: () => MEDICAL_HISTORY_MAX,
   MOTIVATION_LABELS: () => MOTIVATION_LABELS,
+  MedicalHistorySchema: () => MedicalHistorySchema,
   MotivationCodeSchema: () => MotivationCodeSchema,
   NOTE_CONTROLS: () => NOTE_CONTROLS,
   NOTE_TEMPLATES: () => NOTE_TEMPLATES,
@@ -15026,6 +15032,7 @@ __export(contract_entry_exports, {
   ZodError: () => import_zod7.ZodError,
   bleedSupPlaqCalcBits: () => bleedSupPlaqCalcBits,
   chartingOrder: () => chartingOrder,
+  collectAtCheckoutLabels: () => collectAtCheckoutLabels,
   comparePerioReadback: () => comparePerioReadback,
   controlLabel: () => controlLabel,
   controlsFor: () => controlsFor,
@@ -15035,6 +15042,7 @@ __export(contract_entry_exports, {
   defaultPerioSweep: () => defaultPerioSweep,
   deriveCategory: () => deriveCategory,
   doneTodayChoices: () => doneTodayChoices,
+  emptyCollectAtCheckout: () => emptyCollectAtCheckout,
   emptyNoteField: () => emptyNoteField,
   emptyOrthoScreening: () => emptyOrthoScreening,
   emptyPerioChart: () => emptyPerioChart,
@@ -15057,6 +15065,7 @@ __export(contract_entry_exports, {
   isPrimaryTooth: () => isPrimaryTooth,
   isWatchPriority: () => isWatchPriority,
   isWellFormedArchString: () => isWellFormedArchString,
+  medicalHistoryLine: () => medicalHistoryLine,
   normalizePerioChart: () => normalizePerioChart,
   odToothText: () => odToothText,
   orthoConcernsText: () => orthoConcernsText,
@@ -16592,6 +16601,41 @@ function doneTodayChoices(picked) {
   return DONE_TODAY_OPTIONS.filter((o) => !o.retired || picked.includes(o.id));
 }
 var XRAY_OPTIONS = ["FMX", "PANO", "BW-4", "BW-2", "PA"];
+var MEDICAL_HISTORY_MAX = 1e3;
+var MedicalHistorySchema = import_zod4.z.discriminatedUnion("status", [
+  import_zod4.z.object({ status: import_zod4.z.literal("no_changes") }).strict(),
+  import_zod4.z.object({ status: import_zod4.z.literal("changes"), text: import_zod4.z.string().min(1).max(MEDICAL_HISTORY_MAX) }).strict()
+]);
+function medicalHistoryLine(answer) {
+  if (!answer) return null;
+  if (answer.status === "no_changes") return "Medical history: reviewed, no changes";
+  const text = answer.text.trim();
+  return text ? `Medical history update: ${text}` : null;
+}
+var COLLECT_AT_CHECKOUT_OPTIONS = [
+  { id: "sealant", label: "Sealant" },
+  { id: "fl2", label: "Fl2" },
+  { id: "whitening_gel", label: "Whitening gel" },
+  { id: "mouthwash", label: "Mouthwash" },
+  { id: "fl2_toothpaste", label: "Fl2 toothpaste" }
+];
+var CollectAtCheckoutIdSchema = import_zod4.z.enum(["sealant", "fl2", "whitening_gel", "mouthwash", "fl2_toothpaste"]);
+var COLLECT_OTHER_MAX = 200;
+var CollectAtCheckoutSchema = import_zod4.z.object({
+  items: import_zod4.z.array(CollectAtCheckoutIdSchema).max(COLLECT_AT_CHECKOUT_OPTIONS.length),
+  other: import_zod4.z.string().max(COLLECT_OTHER_MAX)
+}).strict();
+function emptyCollectAtCheckout() {
+  return { items: [], other: "" };
+}
+function collectAtCheckoutLabels(c) {
+  if (!c) return [];
+  const picked = new Set(c.items);
+  const out = COLLECT_AT_CHECKOUT_OPTIONS.filter((o) => picked.has(o.id)).map((o) => o.label);
+  const other = c.other.trim();
+  if (other) out.push(other);
+  return out;
+}
 var NextVisitSchema = import_zod4.z.object({
   type: import_zod4.z.string().max(120).nullable(),
   intervalMonths: import_zod4.z.number().int().min(1).max(24).nullable(),
@@ -16678,7 +16722,14 @@ var HygSlipSchema = import_zod4.z.object({
   // screening whenever the visit carries an ortho case id, so the sheet the
   // TC was sent is the sheet this visit shows — a client cannot edit it after
   // the fact by sending a whole slip.
-  orthoScreening: OrthoScreeningSchema.nullable().default(null)
+  orthoScreening: OrthoScreeningSchema.nullable().default(null),
+  // ─────────────────────────────────────────────────────────────────────────
+  // CHECKOUT V2 — defaulted for the same load-bearing reason as above
+  // ─────────────────────────────────────────────────────────────────────────
+  /** The medical-history update. `null` = not answered; the note prints no line. */
+  medicalHistory: MedicalHistorySchema.nullable().default(null),
+  /** What to take payment for at the desk. Rides the checkout alert and the TC handoff. */
+  collectAtCheckout: CollectAtCheckoutSchema.default({ items: [], other: "" })
 }).strict();
 function emptySlip() {
   return {
@@ -16702,7 +16753,9 @@ function emptySlip() {
     noteFields: {},
     rtc: "",
     perioChartUpdated: null,
-    orthoScreening: null
+    orthoScreening: null,
+    medicalHistory: null,
+    collectAtCheckout: emptyCollectAtCheckout()
   };
 }
 function slipNoteField(slip, id) {
@@ -16756,7 +16809,18 @@ var StagedWriteSchema = import_zod4.z.object({
    * Optional so a response from before the field still parses; absent reads as
    * "not known to be out of date", which is what such a server could say.
    */
-  existingTxStale: import_zod4.z.boolean().optional()
+  existingTxStale: import_zod4.z.boolean().optional(),
+  /**
+   * WHY it is out of date (checkout v2). The flag above predates the other
+   * reasons and keeps its name so no reader has to change: it is now true for
+   * ANY of them, and this says which —
+   *   existing_tx      an existing-treatment answer changed (note, slip, handoff)
+   *   medical_history  the medical-history answer changed (note only)
+   *   handoff          what TC would receive changed: the items, the records,
+   *                    the existing answers or the collect-at-checkout list
+   * Absent whenever the flag is false, and from a server that predates it.
+   */
+  staleReason: import_zod4.z.enum(["existing_tx", "medical_history", "handoff"]).optional()
 });
 var ExistingTxSaveViewSchema = ExistingTxSaveResponseSchema.extend({
   stagedWrites: import_zod4.z.array(StagedWriteSchema)
@@ -18282,10 +18346,14 @@ function odToothText(tooth) {
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  COLLECT_AT_CHECKOUT_OPTIONS,
+  COLLECT_OTHER_MAX,
   CORRECTED_OPTION_SPELLINGS,
   CheckoutAlertRequestSchema,
   CheckoutDeliverySchema,
   CheckoutSendSchema,
+  CollectAtCheckoutIdSchema,
+  CollectAtCheckoutSchema,
   DONE_TODAY_OPTIONS,
   DRAFT_VISIT_TYPES,
   DX_LABELS,
@@ -18347,7 +18415,9 @@ function odToothText(tooth) {
   HygVisitSchema,
   HygWarningSchema,
   LOWER_PRIMARY,
+  MEDICAL_HISTORY_MAX,
   MOTIVATION_LABELS,
+  MedicalHistorySchema,
   MotivationCodeSchema,
   NOTE_CONTROLS,
   NOTE_TEMPLATES,
@@ -18485,6 +18555,7 @@ function odToothText(tooth) {
   ZodError,
   bleedSupPlaqCalcBits,
   chartingOrder,
+  collectAtCheckoutLabels,
   comparePerioReadback,
   controlLabel,
   controlsFor,
@@ -18494,6 +18565,7 @@ function odToothText(tooth) {
   defaultPerioSweep,
   deriveCategory,
   doneTodayChoices,
+  emptyCollectAtCheckout,
   emptyNoteField,
   emptyOrthoScreening,
   emptyPerioChart,
@@ -18516,6 +18588,7 @@ function odToothText(tooth) {
   isPrimaryTooth,
   isWatchPriority,
   isWellFormedArchString,
+  medicalHistoryLine,
   normalizePerioChart,
   odToothText,
   orthoConcernsText,

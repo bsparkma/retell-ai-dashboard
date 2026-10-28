@@ -419,6 +419,21 @@ class FakeHygDb extends FakeAuditDb {
       return { rows, rowCount: rows.length };
     }
 
+    // Checkout v2: the day card's collect-at-checkout count, from the slip.
+    if (/^\s*SELECT visit_id,\s+\(CASE WHEN jsonb_typeof\(slip->'collectAtCheckout'->'items'\) = 'array'[\s\S]*AS collect_count\s+FROM hyg_visit\s+WHERE office = \$1 AND visit_id = ANY\(\$2::uuid\[\]\)/i.test(text)) {
+      const [office, visitIds] = params;
+      const rows = this.hyg_visit
+        .filter((v) => v.office === office && visitIds.includes(v.visit_id))
+        .map((v) => {
+          const slip = FakeHygDb.json(v.slip) || {};
+          const c = slip.collectAtCheckout || {};
+          const items = Array.isArray(c.items) ? c.items.length : 0;
+          const other = typeof c.other === 'string' && c.other.trim() !== '' ? 1 : 0;
+          return { visit_id: v.visit_id, collect_count: items + other };
+        });
+      return { rows, rowCount: rows.length };
+    }
+
     // ── Slice 2b: the visit's recorded existing-treatment read ─────────────
     if (/^\s*WITH writes AS \(\s*SELECT state FROM hyg_staged_write\s+WHERE office = \$1 AND visit_id = \$2 AND kind = ANY\(\$5::text\[\]\)\s+FOR SHARE\s*\)\s*UPDATE hyg_visit SET existing_tx_read = \$3::jsonb\s+WHERE office = \$1 AND visit_id = \$2\s+AND \(existing_tx_read IS NULL OR existing_tx_read->>'readAt' IS DISTINCT FROM \$4::text\)\s+AND \(SELECT count\(\*\) FROM writes WHERE state = ANY\(\$6::text\[\]\)\) = 0/i.test(text)) {
       const [office, visitId, value, readAt, kinds, states] = params;
@@ -1201,14 +1216,20 @@ class FakeHygDb extends FakeAuditDb {
     }
 
     // existingTxStale.staleKinds: the carriers' stored digests only.
-    if (/^\s*SELECT kind, state, payload->>'existingTxDigest' AS existing_tx_digest\s+FROM hyg_staged_write\s+WHERE visit_id = \$1 AND office = \$2 AND kind = ANY\(\$3::text\[\]\) AND state = ANY\(\$4::text\[\]\)/i.test(text)) {
+    if (/^\s*SELECT kind, state, payload->>'existingTxDigest' AS existing_tx_digest,\s+payload->>'medicalHistoryDigest' AS medical_history_digest\s+FROM hyg_staged_write\s+WHERE visit_id = \$1 AND office = \$2 AND kind = ANY\(\$3::text\[\]\) AND state = ANY\(\$4::text\[\]\)/i.test(text)) {
       const [visitId, office, kinds, states] = params;
       const rows = this.hyg_staged_write
         .filter((r) => r.visit_id === visitId && r.office === office && kinds.includes(r.kind) && states.includes(r.state))
         .map((r) => {
           const payload = FakeHygDb.json(r.payload) || {};
           const digest = payload.existingTxDigest;
-          return { kind: r.kind, state: r.state, existing_tx_digest: typeof digest === 'string' ? digest : null };
+          const medical = payload.medicalHistoryDigest;
+          return {
+            kind: r.kind,
+            state: r.state,
+            existing_tx_digest: typeof digest === 'string' ? digest : null,
+            medical_history_digest: typeof medical === 'string' ? medical : null,
+          };
         });
       return { rows, rowCount: rows.length };
     }

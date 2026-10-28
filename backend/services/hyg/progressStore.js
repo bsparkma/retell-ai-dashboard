@@ -3,11 +3,12 @@
 /**
  * The day-card progress read, in Postgres — every statement it owns.
  *
- * READ-ONLY, AND ONLY OUR OWN TABLES. Five fixed SELECTs over hyg_visit,
+ * READ-ONLY, AND ONLY OUR OWN TABLES. Six fixed SELECTs over hyg_visit,
  * hyg_staged_write, hyg_perio_send, hyg_treatment_item and
  * hyg_existing_tx_disposition (a count only — feedback round 1). No Open Dental, no
  * write, and no column that carries a patient: not pat_num, not the slip, not a
- * preview or payload. What leaves here is AptNums, states and counts.
+ * preview or payload. What leaves here is AptNums, states and counts — the
+ * slip's collect-at-checkout list included (checkout v2): counted in SQL.
  *
  * Same rule as visitStore.js: every WHERE clause names `office`. An AptNum is a
  * different appointment in each practice's database, so a lookup by AptNum
@@ -26,7 +27,7 @@ const TC_ACTIONABLE = [...contract.EXISTING_TX_TC_ACTIONABLE];
  * @param {{ office: string, aptNums: number[] }} args
  * @returns {Promise<Map<number, {
  *   checkoutSentAt: unknown, checkoutFinalAt: unknown, treatmentItemCount: number,
- *   tcActionableCount: number,
+ *   tcActionableCount: number, collectCount: number,
  *   stagedWrites: Array<{ kind: string, state: string, hasError: boolean }>,
  *   latestPerioSendState: string | null,
  * }>>} keyed by AptNum; an appointment with no visit is absent.
@@ -52,6 +53,7 @@ async function readDayProgress(pool, { office, aptNums }) {
       checkoutFinalAt: row.checkout_final_at ?? null,
       treatmentItemCount: 0,
       tcActionableCount: 0,
+      collectCount: 0,
       stagedWrites: [],
       latestPerioSendState: null,
     };
@@ -111,6 +113,24 @@ async function readDayProgress(pool, { office, aptNums }) {
   for (const row of actionable.rows) {
     const entry = byVisit.get(row.visit_id);
     if (entry) entry.tcActionableCount = Number(row.actionable_count);
+  }
+
+  // Checkout v2: something to collect at checkout makes a handoff to send too.
+  // COUNTED IN SQL, so nothing of the slip leaves the database — not even the
+  // free-text "Other", which is only tested for being non-blank.
+  const collect = await pool.query(
+    `SELECT visit_id,
+            (CASE WHEN jsonb_typeof(slip->'collectAtCheckout'->'items') = 'array'
+                  THEN jsonb_array_length(slip->'collectAtCheckout'->'items') ELSE 0 END
+             + CASE WHEN btrim(COALESCE(slip->'collectAtCheckout'->>'other', '')) <> '' THEN 1 ELSE 0 END
+            )::int AS collect_count
+       FROM hyg_visit
+      WHERE office = $1 AND visit_id = ANY($2::uuid[])`,
+    [office, visitIds]
+  );
+  for (const row of collect.rows) {
+    const entry = byVisit.get(row.visit_id);
+    if (entry) entry.collectCount = Number(row.collect_count);
   }
 
   return byApt;

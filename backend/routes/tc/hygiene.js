@@ -344,6 +344,8 @@ router.post(
         // Hygiene Slice 2b. Null for every intake that carried none, which is
         // every intake before it and TC's own intake form.
         existingTx: input.existingTx ?? null,
+        // Checkout v2. Null for every intake that carried nothing to collect.
+        collectAtCheckout: input.collectAtCheckout ?? null,
       },
     });
 

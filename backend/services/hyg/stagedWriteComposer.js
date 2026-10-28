@@ -94,6 +94,9 @@ const contract = require('../../hyg/contract.gen.cjs');
 // services/openDentalSync.js); this module was the one Open Dental note path
 // that did not, and the first real send came back "Invalid JSON".
 const { sanitizeForOd } = require('../../utils/sanitizeForOd');
+// The handoff's own filter for what it carries, so its preview lists exactly
+// the existing items the send will. Pure, and it requires nothing of this file.
+const tcHandoff = require('./tcHandoffClient');
 
 /**
  * The typed name block that stands in for a signature, and is not one.
@@ -439,6 +442,20 @@ function existingTxDigest(kind, existingTx) {
 }
 
 /**
+ * The digest of the medical-history line a note PRINTS, or null when it prints
+ * none (checkout v2). The note's ONLY slip-field currency check: every other
+ * slip field still keeps the words it was staged with until it is staged again
+ * — the general fix is a separate item, deliberately not this one.
+ * @param {Record<string, any>|undefined} slip
+ * @returns {string|null}
+ */
+function medicalHistoryDigest(slip) {
+  const printed = contract.medicalHistoryLine(slip ? slip.medicalHistory : null);
+  if (!printed) return null;
+  return crypto.createHash('sha256').update(line(printed)).digest('hex');
+}
+
+/**
  * Compose one staged write.
  *
  * @param {'router'|'perio'|'note'|'tc-handoff'} kind
@@ -520,6 +537,13 @@ function composeRaw(kind, { visit, items, actor, signature, draft, existingTx })
     // THE TEMPLATE, WHEN SHE HAS SAID WHICH ONE. A null visitType composes the
     // generic note this module wrote before templates existed — see the header.
     const lines = slip.visitType ? noteTemplateLines(visit) : [...slipLines(visit)];
+    // CHECKOUT V2: the medical-history answer, RIGHT AFTER the visit type's
+    // opening line (first, on the generic note, which has no opening). Spliced
+    // in here rather than written into the shared templates, so the templates
+    // still match the practice's own auto notes line for line. Unanswered
+    // prints nothing: no line is not the same as "no changes".
+    const medical = contract.medicalHistoryLine(slip.medicalHistory);
+    if (medical) lines.splice(slip.visitType && lines.length > 0 ? 1 : 0, 0, medical);
     if (items.length > 0) {
       // A blank line first when a template ran, so the treatment block reads as
       // its own section rather than as one more graded row.
@@ -566,6 +590,9 @@ function composeRaw(kind, { visit, items, actor, signature, draft, existingTx })
         visitType: slip.visitType ?? null,
         text: lines.join('\n'),
         ...(noteDigest ? { existingTxDigest: noteDigest } : {}),
+        // Checkout v2: which medical-history answer these words print, so an
+        // answer changed after staging reads as out of date (existingTxStale.js).
+        ...(medical ? { medicalHistoryDigest: medicalHistoryDigest(slip) } : {}),
       },
     };
   }
@@ -582,15 +609,24 @@ function composeRaw(kind, { visit, items, actor, signature, draft, existingTx })
      * reads as they stand (sendVisit.sendHandoff). Only a visit with no new
      * treatment AND no TC-actionable answer has nothing to hand off.
      */
-    const actionable = contract.countTcActionable(
-      existingTx && Array.isArray(existingTx.items) ? existingTx.items : []
-    );
-    if (items.length === 0 && actionable === 0) {
+    /*
+     * CHECKOUT V2: OR SOMETHING TO PAY FOR. A patient leaving with a sealant or
+     * a tube of Fl2 toothpaste to pay for must stop at the desk, so a visit with
+     * only a collect-at-checkout list hands off too. Refused only with none of
+     * the three — the same rule tcHandoffClient.buildIntake re-checks at send.
+     */
+    // WHAT TC WILL RECEIVE, not what is stored: the existing items that pass the
+    // handoff schema, capped — tcHandoffClient.existingTxForTc, the send's own.
+    const carried = tcHandoff.existingTxForTc(existingTx) || [];
+    const actionable = contract.countTcActionable(carried);
+    const collect = contract.collectAtCheckoutLabels(slip.collectAtCheckout);
+    if (items.length === 0 && actionable === 0 && collect.length === 0) {
       return {
         empty:
-          'There is nothing on this visit to hand off: no treatment identified today, and no ' +
+          'There is nothing on this visit to hand off: no treatment identified today, no ' +
           'existing treatment the patient is ready to schedule, wants to see again, or has cost ' +
-          "questions about. An empty case in a treatment coordinator's queue is worse than no case.",
+          'questions about, and nothing to collect at checkout. An empty case in a treatment ' +
+          "coordinator's queue is worse than no case.",
       };
     }
     // deriveCategory has already been given the answer, item by item. Asking a
@@ -602,11 +638,6 @@ function composeRaw(kind, { visit, items, actor, signature, draft, existingTx })
       items.length > 0 ? `Treatment (${items.length}):` : 'Treatment identified today: none',
       ...items.map((item) => '  ' + itemLine(item)),
     ];
-    if (items.length === 0) {
-      // A FIXED line, not a count: the handoff reads the answers when it is
-      // SENT, so printing them here would be words that can go out of date.
-      lines.push('Existing treatment answers go with it, as they stand when it is sent.');
-    }
     const motivations = [
       ...new Set(items.flatMap((i) => (Array.isArray(i.motivation) ? i.motivation : []))),
     ];
@@ -616,13 +647,28 @@ function composeRaw(kind, { visit, items, actor, signature, draft, existingTx })
           motivations.map((m) => contract.MOTIVATION_LABELS[m] || m).join(', ')
       );
     }
+    /*
+     * CHECKOUT V2 — THE PREVIEW IS WHAT TC RECEIVES. It used to print a fixed
+     * line in place of the existing answers ("as they stand when it is sent"),
+     * because nothing told her if they changed. They are printed now, the
+     * Router's way (every carried item, both answers), and the staged handoff
+     * goes OUT OF DATE the moment any of this would print differently
+     * (existingTxStale.js) — so the words she confirms are the words TC gets.
+     */
+    lines.push(...existingRouterLines({ status: existingTx ? existingTx.status : 'not_loaded', items: carried }));
     lines.push(...recordsLines(items, slip.recordsStatus || {}));
+    if (collect.length > 0) {
+      lines.push('Collect at checkout:');
+      for (const label of collect) lines.push('  ' + label);
+    }
     return {
       title: 'Hygiene handoff',
       summary:
         items.length > 0
           ? `${items.length} ${items.length === 1 ? 'item' : 'items'} to the treatment coordinator (${category})`
-          : 'Existing treatment to the treatment coordinator — nothing new today',
+          : actionable > 0
+            ? 'Existing treatment to the treatment coordinator — nothing new today'
+            : 'Collect at checkout — no treatment to hand off today',
       preview: lines,
       payload: {
         kind: 'tc-handoff',
@@ -703,4 +749,5 @@ module.exports = {
   existingRouterLines,
   existingNoteLine,
   existingTxDigest,
+  medicalHistoryDigest,
 };

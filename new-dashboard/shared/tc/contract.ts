@@ -391,6 +391,13 @@ export const TcHygieneIntake = z.object({
    * and renders as it always did.
    */
   existingTx: z.array(ExistingTxHandoffItemSchema).max(EXISTING_TX_HANDOFF_MAX).nullable().default(null),
+  /**
+   * What the front desk takes payment for (checkout v2): the slip's labels, as
+   * a checkout snapshot carries them (shared/tc/checkout.ts TcCollectAtCheckout
+   * — restated here because that module imports nothing of this one). NULLABLE
+   * and ADDITIVE, exactly like existingTx.
+   */
+  collectAtCheckout: z.array(z.string().min(1).max(200)).max(6).nullable().default(null),
 });
 export type TcHygieneIntake = z.infer<typeof TcHygieneIntake>;
 

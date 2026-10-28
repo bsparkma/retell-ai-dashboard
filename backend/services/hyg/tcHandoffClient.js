@@ -186,14 +186,17 @@ function buildIntake({ visit, appointment, handoffCategory, date, existingTx }) 
   // Feedback round 1: refuse only when there is NEITHER new treatment NOR an
   // existing-treatment answer TC has to act on. Checked again here, at send,
   // because the answers may have changed since the handoff was staged.
+  // Checkout v2: or something to collect at checkout — the patient must stop at
+  // the desk to pay. Refused only with none of the three.
   const carried = existingTxForTc(existingTx);
-  if (items.length === 0 && contract.countTcActionable(carried || []) === 0) {
+  const collect = collectForTc(visit.slip);
+  if (items.length === 0 && contract.countTcActionable(carried || []) === 0 && !collect) {
     return {
       ok: false,
       code: 'NOTHING_TO_STAGE',
       error:
-        'There is nothing on this visit to hand off: no treatment identified today and no ' +
-        'existing treatment for the treatment coordinator to act on',
+        'There is nothing on this visit to hand off: no treatment identified today, no ' +
+        'existing treatment for the treatment coordinator to act on, and nothing to collect at checkout',
     };
   }
 
@@ -292,8 +295,51 @@ function buildIntake({ visit, appointment, handoffCategory, date, existingTx }) 
       sourceKey: sourceKeyFor(visit, 'handoff'),
       // Slice 2b. Absent when there is nothing to carry.
       ...(carried ? { existingTx: carried } : {}),
+      // Checkout v2. Absent when there is nothing to collect.
+      ...(collect ? { collectAtCheckout: collect } : {}),
     },
   };
+}
+
+/**
+ * The collect-at-checkout list a body carries (checkout v2), or undefined.
+ *
+ * LABELS, as the slip showed them — TC copies a snapshot and never reads the
+ * slip back. Parsed through the slip's own schema first: a stored value this
+ * build cannot read carries nothing rather than something half-understood.
+ * @param {Record<string, any>|undefined} slip
+ * @returns {string[]|undefined}
+ */
+function collectForTc(slip) {
+  const parsed = contract.CollectAtCheckoutSchema.safeParse(slip ? slip.collectAtCheckout : undefined);
+  if (!parsed.success) return undefined;
+  const labels = contract.collectAtCheckoutLabels(parsed.data);
+  return labels.length > 0 ? labels : undefined;
+}
+
+/**
+ * The records the visit's treatment needs and where each stands (checkout v2),
+ * or undefined when it needs none. The same derivation the slip's records list
+ * and the Router print: RECORDS_MATRIX over the items, the slip's recorded
+ * status, and "needed" for a record nobody marked.
+ * @param {Record<string, any>[]} items
+ * @param {Record<string, any>|undefined} slip
+ * @returns {{ record: string, status: string }[]|undefined}
+ */
+function recordsForTc(items, slip) {
+  const statuses = (slip && slip.recordsStatus) || {};
+  const records = contract
+    .recordsNeededFor(items)
+    .slice(0, 60)
+    .map((record) => {
+      const status = statuses[record];
+      return {
+        record: capped(record, 120),
+        status: status === 'on_file' || status === 'taken_today' ? status : 'needed',
+      };
+    })
+    .filter((r) => r.record.length > 0);
+  return records.length > 0 ? records : undefined;
 }
 
 /**
@@ -495,6 +541,8 @@ function buildCheckoutIntake({ visit, snapshot, date, final, existingTx }) {
 
   const seen = capped(snap.providerName, 200);
   const carried = existingTxForTc(existingTx);
+  const collect = collectForTc(slip);
+  const records = recordsForTc(items, slip);
   return {
     ok: true,
     body: {
@@ -522,6 +570,10 @@ function buildCheckoutIntake({ visit, snapshot, date, final, existingTx }) {
         financialNote: capped(slip.financialNote, 4000),
         // Slice 2b. Absent when there is nothing to carry.
         ...(carried ? { existingTx: carried } : {}),
+        // Checkout v2, both absent when empty — so a visit with neither sends
+        // exactly the snapshot it always did.
+        ...(collect ? { collectAtCheckout: collect } : {}),
+        ...(records ? { records } : {}),
       },
     },
   };
@@ -645,6 +697,8 @@ module.exports = {
   buildIntake,
   buildCheckoutIntake,
   existingTxForTc,
+  collectForTc,
+  recordsForTc,
   sourceKeyFor,
   submitHygieneIntake,
   submitCheckoutHandoff,

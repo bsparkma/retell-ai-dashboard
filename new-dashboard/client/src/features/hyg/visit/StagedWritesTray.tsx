@@ -49,6 +49,7 @@ import {
   type SendConfirmation,
   type StagedWrite,
   type StagedWriteKind,
+  type StaleReason,
 } from "@shared/hyg/contract";
 import {
   Dialog,
@@ -74,6 +75,24 @@ const TAP = "min-h-11 rounded-lg border px-3 text-sm font-medium transition-colo
 function previewLineClass(line: string): string {
   return cn(line.startsWith("  ") && "pl-3", line.trim() === "" && "h-3");
 }
+
+/**
+ * What changed, in the words the "Out of date" line uses — the SERVER's reason
+ * (StagedWrite.staleReason). A server that predates the reason only ever meant
+ * the existing-treatment answers, so that is what an absent one reads as.
+ */
+const STALE_LABELS: Record<StaleReason, string> = {
+  existing_tx: "answers changed",
+  medical_history: "medical history changed",
+  handoff: "what TC will receive changed",
+};
+
+/** The same, as the Send button's reason says it. */
+const STALE_SENTENCES: Record<StaleReason, string> = {
+  existing_tx: "the existing-treatment answers changed",
+  medical_history: "the medical-history answer changed",
+  handoff: "what the treatment coordinator will receive changed",
+};
 
 const KIND_LABELS: Record<StagedWriteKind, string> = {
   router: "Routing slip",
@@ -165,6 +184,7 @@ function ConfirmSend({
   patientName,
   perio,
   existingNotDiscussed,
+  medicalHistoryRecorded,
   busy,
   onCancel,
   onConfirm,
@@ -173,6 +193,8 @@ function ConfirmSend({
   patientName: string;
   perio: TrayPerio | null;
   existingNotDiscussed: number;
+  /** Checkout v2: false shows the reminder below. NEVER a gate. */
+  medicalHistoryRecorded: boolean;
   busy: boolean;
   onCancel: () => void;
   onConfirm: () => void;
@@ -205,6 +227,17 @@ function ConfirmSend({
                     >
                       {existingNotDiscussed} existing{" "}
                       {existingNotDiscussed === 1 ? "item" : "items"} not discussed. You can still
+                      send.
+                    </p>
+                  ) : null}
+                  {/* CHECKOUT V2: A REMINDER, NEVER A GATE. The note simply prints
+                      no medical-history line; Send stays enabled. */}
+                  {!medicalHistoryRecorded ? (
+                    <p
+                      className="rounded-lg border border-dashed border-muted-foreground/40 px-3 py-2 text-xs"
+                      data-testid="hyg-confirm-medical-history"
+                    >
+                      Medical history not recorded. The note will not mention it. You can still
                       send.
                     </p>
                   ) : null}
@@ -296,6 +329,8 @@ export function StagedWritesTray({
   onResumePerio = () => undefined,
   existingNotDiscussed = 0,
   existingTcActionable = 0,
+  collectCount = 0,
+  medicalHistoryRecorded = true,
 }: {
   staged: StagedWrite[];
   handoffCategory: HandoffCategory;
@@ -308,6 +343,13 @@ export function StagedWritesTray({
    * handoff stageable with no new treatment. See `handoffUnavailable`.
    */
   existingTcActionable?: number;
+  /**
+   * Checkout v2: how many things the desk is to collect payment for. Any makes
+   * the handoff stageable on its own — the patient must stop at the desk.
+   */
+  collectCount?: number;
+  /** Checkout v2: whether the slip answers the medical-history question. */
+  medicalHistoryRecorded?: boolean;
   /**
    * Slice 2a: existing Open Dental items nobody discussed at this visit. The
    * confirm mentions them; it never refuses on them.
@@ -360,8 +402,10 @@ export function StagedWritesTray({
    * Feedback round 1: "nothing" means neither new treatment NOR an existing
    * answer TC has to act on — the server's own rule.
    */
-  const handoffUnavailable = itemCount === 0 && existingTcActionable === 0;
+  const handoffUnavailable = itemCount === 0 && existingTcActionable === 0 && collectCount === 0;
   const handoffExistingOnly = itemCount === 0 && existingTcActionable > 0;
+  // Checkout v2: nothing for TC to work, only something to pay for at the desk.
+  const handoffCollectOnly = itemCount === 0 && existingTcActionable === 0 && collectCount > 0;
 
   return (
     <section className="space-y-3" data-testid="hyg-staged-tray">
@@ -414,8 +458,17 @@ export function StagedWritesTray({
                         className="mt-0.5 text-xs text-muted-foreground"
                         data-testid="hyg-handoff-no-items"
                       >
-                        Nothing for TC yet — add treatment above, or answer an existing item as
-                        ready to schedule, see the plan again, or cost questions.
+                        Nothing for TC yet — add treatment above, answer an existing item as
+                        ready to schedule, see the plan again, or cost questions, or add something
+                        to collect at checkout.
+                      </p>
+                    ) : handoffCollectOnly ? (
+                      <p
+                        className="mt-0.5 text-xs text-muted-foreground"
+                        data-testid="hyg-handoff-collect-only"
+                      >
+                        No treatment for TC today — it tells the desk what to collect payment for
+                        ({collectCount}).
                       </p>
                     ) : handoffExistingOnly ? (
                       <p
@@ -582,8 +635,8 @@ export function StagedWritesTray({
                   <span className="flex items-start gap-1.5 font-semibold">
                     <AlertTriangle size={14} className="mt-0.5 shrink-0" />
                     {write.state === "Failed"
-                      ? "Out of date — answers changed. Retry, then stage again"
-                      : "Out of date — answers changed. Stage again"}
+                      ? `Out of date — ${STALE_LABELS[write.staleReason ?? "existing_tx"]}. Retry, then stage again`
+                      : `Out of date — ${STALE_LABELS[write.staleReason ?? "existing_tx"]}. Stage again`}
                   </span>
                   {write.state === "Staged" ? (
                     <button
@@ -690,7 +743,7 @@ export function StagedWritesTray({
           {ready.length === 0
             ? "Stage the slip, the note, the handoff or the perio chart, then send them together."
             : staleReady.length > 0
-              ? `Stage the ${staleReady.map((w) => KIND_LABELS[w.kind].toLowerCase()).join(" and ")} again first — the existing-treatment answers changed after it was staged.`
+              ? `Stage the ${staleReady.map((w) => KIND_LABELS[w.kind].toLowerCase()).join(" and ")} again first — ${staleReady.map((w) => STALE_SENTENCES[w.staleReason ?? "existing_tx"]).filter((v, i, all) => all.indexOf(v) === i).join(", and ")} after it was staged.`
               : "You will see exactly what is written before anything is sent."}
         </p>
         {/* A refusal about the SEND rather than about one write — the stale
@@ -711,6 +764,7 @@ export function StagedWritesTray({
         patientName={patientName}
         perio={perio}
         existingNotDiscussed={existingNotDiscussed}
+        medicalHistoryRecorded={medicalHistoryRecorded}
         busy={sending}
         onCancel={() => setConfirming(null)}
         onConfirm={() => {

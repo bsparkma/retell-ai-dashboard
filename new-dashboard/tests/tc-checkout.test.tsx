@@ -185,7 +185,9 @@ describe("the Checkout inbox", () => {
     const sheet = await screen.findByTestId("checkout-sidebar");
     await within(sheet).findByTestId("checkout-procedures");
     expect(within(sheet).getByTestId("checkout-procedures").textContent).toMatch(/#3 Crown/);
-    expect(within(sheet).getAllByTestId("checkout-priority")[0].textContent).toBe("Urgent");
+    // RULING (checkout v2): the sheet's priority chip SAYS it is a priority, so
+    // it cannot be read as the category.
+    expect(within(sheet).getAllByTestId("checkout-priority")[0].textContent).toBe("Priority: Urgent");
     expect(within(sheet).getByTestId("checkout-notes-pending")).toBeTruthy();
     expect(within(sheet).getByTestId("checkout-next-visit").textContent).toMatch(/Prophy/);
     expect(within(sheet).getByTestId("checkout-next-visit").textContent).toMatch(/6 months/);
