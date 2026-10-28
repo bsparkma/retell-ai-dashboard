@@ -1159,6 +1159,7 @@ export default function HygVisit() {
                 : 0
             }
             collectCount={collectAtCheckoutLabels(draft.collectAtCheckout).length}
+            checkoutEnabled={page.checkoutEnabled === true}
             medicalHistoryRecorded={medicalHistoryLine(draft.medicalHistory) !== null}
             busy={busy}
             sending={sending}

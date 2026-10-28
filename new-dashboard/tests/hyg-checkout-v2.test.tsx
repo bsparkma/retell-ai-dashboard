@@ -175,15 +175,36 @@ function tray(props: Partial<React.ComponentProps<typeof StagedWritesTray>> = {}
 }
 
 describe("the tray", () => {
-  it("availability: the handoff stages with ONLY something to collect, and says so", () => {
-    tray({ collectCount: 2 });
+  // RULING (checkout v2 fix): ONLY something to collect used to make the
+  // handoff stageable. It opens no case now — the Checkout alert card takes
+  // the handoff card's place, and there is nothing to stage.
+  it("availability: ONLY something to collect shows the Checkout alert card, not the TC handoff card", () => {
+    tray({ collectCount: 2, checkoutEnabled: true });
+    expect(screen.queryByTestId("hyg-staged-tc-handoff")).toBeNull();
+    expect(screen.queryByTestId("hyg-stage-tc-handoff")).toBeNull();
+    const card = screen.getByTestId("hyg-staged-checkout-alert");
+    expect(card.textContent).toMatch(/Checkout alert/);
+    expect(screen.getByTestId("hyg-checkout-alert-collect").textContent).toMatch(
+      /no case is opened.*what to collect payment for \(2\) on the checkout alert/,
+    );
+    cleanup();
+
+    // An office with checkout alerts off is told so — nothing reaches the desk.
+    tray({ collectCount: 1, checkoutEnabled: false });
+    expect(screen.getByTestId("hyg-checkout-alert-off").textContent).toMatch(
+      /checkout alerts are off for this office.*\(1\)/,
+    );
+    cleanup();
+
+    // With treatment as well, the TC handoff card is back and stages as before.
+    tray({ collectCount: 2, itemCount: 1, checkoutEnabled: true });
+    expect(screen.queryByTestId("hyg-staged-checkout-alert")).toBeNull();
     expect((screen.getByTestId("hyg-stage-tc-handoff") as HTMLButtonElement).disabled).toBe(false);
-    expect(screen.getByTestId("hyg-handoff-collect-only").textContent).toMatch(/what to collect payment for \(2\)/);
     cleanup();
 
     tray({ collectCount: 0 });
     expect((screen.getByTestId("hyg-stage-tc-handoff") as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByTestId("hyg-handoff-no-items").textContent).toMatch(/collect at checkout/);
+    expect(screen.getByTestId("hyg-handoff-no-items").textContent).not.toMatch(/collect at checkout/);
   });
 
   it("the Send confirm reminds when the medical history is not recorded — and still sends", () => {

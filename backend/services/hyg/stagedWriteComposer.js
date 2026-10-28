@@ -610,23 +610,30 @@ function composeRaw(kind, { visit, items, actor, signature, draft, existingTx })
      * treatment AND no TC-actionable answer has nothing to hand off.
      */
     /*
-     * CHECKOUT V2: OR SOMETHING TO PAY FOR. A patient leaving with a sealant or
-     * a tube of Fl2 toothpaste to pay for must stop at the desk, so a visit with
-     * only a collect-at-checkout list hands off too. Refused only with none of
-     * the three — the same rule tcHandoffClient.buildIntake re-checks at send.
+     * CHECKOUT V2 FIX: SOMETHING TO PAY FOR IS NOT A CASE. A collect-at-checkout
+     * list is the front desk's business, and it reaches them on the CHECKOUT
+     * ALERT (tcHandoffClient.buildCheckoutIntake), which every Send carries. A
+     * visit with only that has nothing for a treatment coordinator to work, so
+     * it is refused here like any other empty handoff — with words that say
+     * where the list goes instead. With treatment or a TC-actionable answer,
+     * the case carries the list too (below).
      */
     // WHAT TC WILL RECEIVE, not what is stored: the existing items that pass the
     // handoff schema, capped — tcHandoffClient.existingTxForTc, the send's own.
     const carried = tcHandoff.existingTxForTc(existingTx, { quiet: true }) || [];
     const actionable = contract.countTcActionable(carried);
     const collect = contract.collectAtCheckoutLabels(slip.collectAtCheckout);
-    if (items.length === 0 && actionable === 0 && collect.length === 0) {
+    if (items.length === 0 && actionable === 0) {
       return {
         empty:
-          'There is nothing on this visit to hand off: no treatment identified today, no ' +
-          'existing treatment the patient is ready to schedule, wants to see again, or has cost ' +
-          'questions about, and nothing to collect at checkout. An empty case in a treatment ' +
-          "coordinator's queue is worse than no case.",
+          collect.length > 0
+            ? 'There is nothing on this visit for the treatment coordinator: no treatment ' +
+              'identified today, and no existing treatment the patient is ready to schedule, wants ' +
+              'to see again, or has cost questions about. What to collect at checkout goes to the ' +
+              'front desk on the checkout alert, not in a TC case.'
+            : 'There is nothing on this visit to hand off: no treatment identified today, and no ' +
+              'existing treatment the patient is ready to schedule, wants to see again, or has cost ' +
+              "questions about. An empty case in a treatment coordinator's queue is worse than no case.",
       };
     }
     // deriveCategory has already been given the answer, item by item. Asking a
@@ -666,9 +673,7 @@ function composeRaw(kind, { visit, items, actor, signature, draft, existingTx })
       summary:
         items.length > 0
           ? `${items.length} ${items.length === 1 ? 'item' : 'items'} to the treatment coordinator (${category})`
-          : actionable > 0
-            ? 'Existing treatment to the treatment coordinator — nothing new today'
-            : 'Collect at checkout — no treatment to hand off today',
+          : 'Existing treatment to the treatment coordinator — nothing new today',
       preview: lines,
       payload: {
         kind: 'tc-handoff',

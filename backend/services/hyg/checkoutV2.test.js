@@ -253,21 +253,37 @@ test('2: OLD TC payloads still parse — a snapshot and an intake with none of t
 });
 
 /**
- * THE TRUTH TABLE. items × TC-actionable answer × collect item → can the
- * handoff stage, can it build at send, and does the day card's tc step apply?
- * Only the row with none of the three is refused.
+ * THE TRUTH TABLE. items × TC-actionable answer × collect item, split in two:
+ *   CAN SEND CHECKOUT — the checkout alert builds for every row, and carries
+ *     the collect list exactly when there is one;
+ *   CREATES A CASE — the handoff stages, builds at send, and the day card's tc
+ *     step applies ONLY with treatment or a TC-actionable answer.
+ * RULING (checkout v2 fix): a collect item alone no longer creates a case (it
+ * used to: `expected = hasItems || hasActionable || hasCollect`).
  */
-test('2: availability truth table — refused only with no items, no actionable answer and nothing to collect', () => {
+test('2: availability truth table — checkout always sends; a case needs treatment or an actionable answer', () => {
   for (const hasItems of [false, true]) {
     for (const hasActionable of [false, true]) {
       for (const hasCollect of [false, true]) {
         const label = `items=${hasItems} actionable=${hasActionable} collect=${hasCollect}`;
-        const expected = hasItems || hasActionable || hasCollect;
+        const createsCase = hasItems || hasActionable;
         const v = visit(hasCollect ? { collectAtCheckout: { items: ['sealant'], other: '' } } : {}, hasItems ? [item()] : []);
         const existingTx = hasActionable ? existing('ready_to_schedule') : existing('declined');
 
+        // CAN SEND CHECKOUT.
+        const checkout = tcHandoff.buildCheckoutIntake({
+          visit: v,
+          snapshot: { patientName: 'Test 2, Stedi', providerName: 'HYG1', opName: 'Hyg 1' },
+          date: '2026-09-08',
+          final: true,
+          existingTx,
+        });
+        assert.equal(checkout.ok, true, `checkout: ${label}`);
+        assert.deepEqual(checkout.body.snapshot.collectAtCheckout, hasCollect ? ['Sealant'] : undefined, `checkout collect: ${label}`);
+
+        // CREATES A CASE.
         const composed = compose('tc-handoff', v, { existingTx });
-        assert.equal(Boolean(composed.preview), expected, `stage: ${label}`);
+        assert.equal(Boolean(composed.preview), createsCase, `stage: ${label}`);
 
         const built = tcHandoff.buildIntake({
           visit: v,
@@ -276,35 +292,48 @@ test('2: availability truth table — refused only with no items, no actionable 
           date: '2026-09-08',
           existingTx,
         });
-        assert.equal(built.ok, expected, `send: ${label}`);
-        if (!expected) assert.equal(built.code, 'NOTHING_TO_STAGE');
+        assert.equal(built.ok, createsCase, `send: ${label}`);
+        if (!createsCase) assert.equal(built.code, 'NOTHING_TO_STAGE');
+        // Both carry the list when both go.
+        if (createsCase) assert.deepEqual(built.body.collectAtCheckout, hasCollect ? ['Sealant'] : undefined, `case collect: ${label}`);
 
         const progress = deriveVisitProgress({
           stagedWrites: [],
           treatmentItemCount: hasItems ? 1 : 0,
           tcActionableCount: hasActionable ? 1 : 0,
-          collectCount: hasCollect ? 1 : 0,
           checkoutSentAt: null,
           checkoutFinalAt: null,
           latestPerioSendState: null,
         });
-        assert.equal(progress.steps.tc.state, expected ? 'none' : 'not_applicable', `progress: ${label}`);
+        assert.equal(progress.steps.tc.state, createsCase ? 'none' : 'not_applicable', `progress: ${label}`);
       }
     }
   }
 });
 
-test('2: a collect-only handoff says so, and carries an explicitly empty treatment list', () => {
+// RULING (checkout v2 fix): this used to stage a collect-only handoff with an
+// empty treatment list. It is refused now, and the list goes on the alert.
+test('2: a collect-only visit opens NO case — the handoff is refused, saying where the list goes', () => {
   const v = visit({ collectAtCheckout: { items: ['whitening_gel'], other: '' } });
   const composed = compose('tc-handoff', v);
-  // OD-safe text: the sanitizer writes the dash as '--'.
-  assert.equal(composed.summary, 'Collect at checkout -- no treatment to hand off today');
-  assert.deepEqual(composed.payload.items, []);
+  assert.equal(composed.preview, undefined);
+  assert.match(composed.empty, /nothing on this visit for the treatment coordinator/);
+  assert.match(composed.empty, /goes to the front desk on the checkout alert, not in a TC case/);
   const built = tcHandoff.buildIntake({
     visit: v, appointment: APPOINTMENT, handoffCategory: 'Other', date: '2026-09-08', existingTx: NONE,
   });
-  assert.equal(built.body.suspectedTreatment, '');
-  assert.deepEqual(built.body.collectAtCheckout, ['Whitening gel']);
+  assert.equal(built.ok, false);
+  assert.equal(built.code, 'NOTHING_TO_STAGE');
+  const checkout = tcHandoff.buildCheckoutIntake({
+    visit: v,
+    snapshot: { patientName: 'Test 2, Stedi', providerName: 'HYG1', opName: 'Hyg 1' },
+    date: '2026-09-08',
+    final: true,
+    existingTx: NONE,
+  });
+  assert.equal(checkout.ok, true);
+  assert.deepEqual(checkout.body.snapshot.collectAtCheckout, ['Whitening gel']);
+  assert.deepEqual(checkout.body.snapshot.procedures, []);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

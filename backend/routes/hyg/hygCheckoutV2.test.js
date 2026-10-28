@@ -6,11 +6,12 @@
  *   - The medical-history answer reaches the staged note, and changing it after
  *     staging marks the NOTE out of date (reason: medical_history) — not the
  *     Router, and no other slip field does. The Send refuses the stale note.
- *   - A visit with only something to collect at checkout stages and SENDS the
- *     TC handoff, carrying the list; the checkout alert carries it too, with
- *     the records the treatment needs.
+ *   - A visit with only something to collect at checkout opens NO TC case
+ *     (checkout v2 fix): the handoff is refused, and the visit Send carries the
+ *     list on the checkout alert alone. The alert carries it with the records
+ *     the treatment needs.
  *   - A staged handoff goes out of date when what TC would receive changes.
- *   - The day card's tc step applies to a collect-only visit.
+ *   - The day card's tc step stays not-applicable for a collect-only visit.
  *
  * Synthetic rows only: roland 12827 is the staging fixture.
  */
@@ -41,6 +42,33 @@ function od() {
     '/procedurelogs/GroupNotes': [],
     '/definitions': [{ DefNum: 473, ItemName: 'Routers' }],
   });
+}
+
+/** od(), plus a GroupNote that lands and reads back (hygCheckoutAlert.test.js's helper). */
+function odWithNoteWrites() {
+  const client = od();
+  client.routes['/procedurelogs'] = [{ ProcNum: 5001 }];
+  client.routes['/providers'] = [{ ProvNum: 1, Abbr: 'DOC1' }, { ProvNum: 7, Abbr: 'HYG1' }];
+  client.routes['/definitions'] = [{ DefNum: 401, ItemName: 'ODHQ' }, { DefNum: 473, ItemName: 'Routers' }];
+  let nextProcNum = 60001;
+  client.writeRoutes = {
+    '/procedurelogs/GroupNote': (body) => {
+      const procNum = nextProcNum++;
+      client.routes['/procedurelogs/GroupNotes'] = [
+        ...client.routes['/procedurelogs/GroupNotes'],
+        {
+          ProcNum: procNum,
+          PatNum: body.PatNum,
+          ProcNums: body.ProcNums,
+          ProvNum: body.ProvNum,
+          isSigned: false,
+          Note: String(body.Note).replace(/\n/g, '\r\n'),
+        },
+      ];
+      return { ok: true, status: 200, data: { ProcNum: procNum } };
+    },
+  };
+  return client;
 }
 
 async function openWith(app, slipPatch) {
@@ -116,36 +144,87 @@ test('medical history: it reaches the note; changing it marks the NOTE out of da
   }
 });
 
-test('collect at checkout ALONE stages and sends the TC handoff, carrying the list', async () => {
-  const submitted = [];
+// RULING (checkout v2 fix): a collect-only visit used to stage and SEND a TC
+// case with an empty treatment list. It sends the checkout alert ONLY now.
+test('collect at checkout ALONE opens no case: the handoff is refused, the Send carries it on the checkout alert', async (t) => {
+  checkoutOn(t);
+  const cases = [];
+  const alerts = [];
   const app = await bootHygApp({
-    od: od(),
+    od: odWithNoteWrites(),
     tcSubmit: async (_req, { body }) => {
-      submitted.push(body);
+      cases.push(body);
       return { ok: true, caseId: '8f3c1d20-0000-4000-8000-0000000000c2' };
+    },
+    checkoutSubmit: async (_req, { body }) => {
+      alerts.push(body);
+      return { ok: true, handoffId: '5d2a7e10-0000-4000-8000-0000000000c5', replayed: false, final: body.final === true };
     },
   });
   try {
-    // Nothing at all: refused, and the card's own words say all three ways out.
+    // Nothing at all: refused, in the words it always used.
     const open = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/open' + Q);
+    const none = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/staged-writes' + Q, { body: { kind: 'tc-handoff' } });
+    assert.equal(none.status, 422);
+    assert.equal(none.body.code, 'NOTHING_TO_STAGE');
+    assert.match(none.body.error, /An empty case in a treatment coordinator's queue is worse than no case/);
+
+    // Only something to collect: STILL refused — and it says where the list goes.
+    await saveSlip(app, { ...open.body.visit.slip, collectAtCheckout: { items: ['fl2_toothpaste'], other: '' } });
     const refused = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/staged-writes' + Q, { body: { kind: 'tc-handoff' } });
     assert.equal(refused.status, 422);
     assert.equal(refused.body.code, 'NOTHING_TO_STAGE');
-    assert.match(refused.body.error, /nothing to collect at checkout/);
+    assert.match(refused.body.error, /checkout alert, not in a TC case/);
 
-    await saveSlip(app, { ...open.body.visit.slip, collectAtCheckout: { items: ['fl2_toothpaste'], other: '' } });
+    // The visit Send: the note goes, the checkout alert rides it with the list,
+    // and no case intake is attempted at all.
+    assert.equal((await api(app.baseUrl, 'GET', '/api/hyg/visit/900001' + Q)).status, 200);
+    const visit = await stage(app, 'note');
+    const sent = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/send' + Q, {
+      body: { confirm: [{ kind: 'note', previewFingerprint: byKind(visit, 'note').previewFingerprint }] },
+    });
+    assert.equal(sent.status, 200, JSON.stringify(sent.body));
+    assert.equal(sent.body.checkout.state, 'delivered', JSON.stringify(sent.body.checkout));
+    assert.equal(alerts.length, 1);
+    assert.equal(alerts[0].final, true);
+    assert.deepEqual(alerts[0].snapshot.collectAtCheckout, ['Fl2 toothpaste']);
+    assert.equal(cases.length, 0, 'no TC case intake');
+    assert.equal(sent.body.visit.stagedWrites.some((w) => w.kind === 'tc-handoff'), false);
+  } finally {
+    await app.close();
+  }
+});
+
+test('collect items WITH treatment: the case AND the checkout alert both carry the list', async (t) => {
+  checkoutOn(t);
+  const cases = [];
+  const alerts = [];
+  const app = await bootHygApp({
+    od: od(),
+    tcSubmit: async (_req, { body }) => {
+      cases.push(body);
+      return { ok: true, caseId: '8f3c1d20-0000-4000-8000-0000000000c6' };
+    },
+    checkoutSubmit: async (_req, { body }) => {
+      alerts.push(body);
+      return { ok: true, handoffId: '5d2a7e10-0000-4000-8000-0000000000c7', replayed: false, final: body.final === true };
+    },
+  });
+  try {
+    await openWith(app, { collectAtCheckout: { items: ['sealant'], other: '' } });
+    assert.equal((await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/items' + Q, { body: CROWN })).status, 201);
     const visit = await stage(app, 'tc-handoff');
     const row = byKind(visit, 'tc-handoff');
     assert.ok(row.preview.includes('Collect at checkout:'));
-    assert.ok(row.preview.includes('  Fl2 toothpaste'));
-
+    assert.ok(row.preview.includes('  Sealant'));
     const sent = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/send' + Q, {
       body: { confirm: [{ kind: 'tc-handoff', previewFingerprint: row.previewFingerprint }] },
     });
     assert.equal(sent.status, 200, JSON.stringify(sent.body));
-    assert.equal(submitted.length, 1);
-    assert.deepEqual(submitted[0].collectAtCheckout, ['Fl2 toothpaste']);
-    assert.equal(submitted[0].suspectedTreatment, '', 'an explicitly empty treatment list');
+    assert.equal(cases.length, 1);
+    assert.deepEqual(cases[0].collectAtCheckout, ['Sealant']);
+    assert.equal(alerts.length, 1);
+    assert.deepEqual(alerts[0].snapshot.collectAtCheckout, ['Sealant']);
   } finally {
     await app.close();
   }
@@ -223,7 +302,9 @@ test('a staged handoff goes out of date when what TC would receive changes, and 
   }
 });
 
-test('the day card applies the tc step to a visit with only something to collect', async () => {
+// RULING (checkout v2 fix): a collect-only visit has no case to send, so the
+// tc step stays not applicable (it used to read `none`, a handoff to send).
+test('the day card does NOT apply the tc step to a visit with only something to collect', async () => {
   const app = await bootHygApp({ od: od() });
   try {
     const progress = async () => {
@@ -234,7 +315,7 @@ test('the day card applies the tc step to a visit with only something to collect
     const open = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/open' + Q);
     assert.equal(await progress(), 'not_applicable');
     await saveSlip(app, { ...open.body.visit.slip, collectAtCheckout: { items: [], other: 'Prescription toothpaste' } });
-    assert.equal(await progress(), 'none', 'a handoff still to send');
+    assert.equal(await progress(), 'not_applicable', 'no case to send');
   } finally {
     await app.close();
   }

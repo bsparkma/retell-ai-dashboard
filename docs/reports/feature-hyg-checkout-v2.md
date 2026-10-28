@@ -27,21 +27,20 @@ Ratified by Beau 2026-10-28. **No fees, balances or other financial reads from O
 - **Carried on both paths, as labels.** A checkout is a snapshot, never a reference.
   - **The checkout alert,** both the early alert and the visit Send's final update, sends `snapshot.collectAtCheckout`, e.g. `["Sealant", "Fl2 toothpaste", "Floss picks"]`.
   - **The TC handoff (case intake)** sends `collectAtCheckout`, plus `records` after review. They are stored on `tc_hygiene_intakes.collect_at_checkout` and `records_needed`, nullable jsonb arrays (migration `1793300000000_tc_hygiene_intake_collect`, above develop's newest `1793200000000`).
-- **Availability.** The handoff can go when any one of the three is present: treatment items, a TC-actionable existing answer, or ≥1 collect item. With none of them, `NOTHING_TO_STAGE` still applies. The same rule is used in three places:
-  - the composer, at stage;
-  - `tcHandoffClient.buildIntake`, at send;
-  - `visitProgress`'s tc step, where the day card counts the collect list in SQL.
+- **Availability** (as amended by the fix round, below). Two questions, answered separately:
+  - **Can checkout be sent?** Always. The checkout alert (early, and the visit Send's final update) carries the collect list whenever there is one.
+  - **Does it create a TC case?** Only with treatment items or a TC-actionable existing answer. A collect item alone does **not**. The same rule is used in three places: the composer at stage, `tcHandoffClient.buildIntake` at send, and `visitProgress`'s tc step on the day card.
 
-  | items | TC-actionable answer | collect item | stage | send | day card tc step |
+  | items | TC-actionable answer | collect item | checkout alert | TC case (stage / send) | day card tc step |
   | --- | --- | --- | --- | --- | --- |
-  | – | – | – | refused | refused | not applicable |
-  | – | – | ✓ | ✓ | ✓ | to do |
-  | – | ✓ | – | ✓ | ✓ | to do |
-  | – | ✓ | ✓ | ✓ | ✓ | to do |
-  | ✓ | any | any | ✓ | ✓ | to do |
+  | – | – | – | sent, no list | refused | not applicable |
+  | – | – | ✓ | sent, carries list | **refused** — no case | not applicable |
+  | – | ✓ | – | sent, no list | ✓ | to do |
+  | – | ✓ | ✓ | sent, carries list | ✓, carries list | to do |
+  | ✓ | any | – | sent, no list | ✓ | to do |
+  | ✓ | any | ✓ | sent, carries list | ✓, carries list | to do |
 
   All eight combinations are pinned in `checkoutV2.test.js`.
-- **A collect-only handoff** carries an explicitly empty treatment list. Its summary reads "Collect at checkout — no treatment to hand off today", and it files under the same category as an existing-only one (`single_tooth`).
 
 ### 3. Checkout panel v2 (TC checkout sidebar)
 
@@ -172,5 +171,25 @@ Backend runs on Node 22 now and then show a file-level `not ok` on an untouched 
 
 1. **Re-stage in-flight handoffs once after deploy.** A handoff staged before the deploy shows "Out of date" once. One "Stage again" fixes it.
 2. **Records were not previously carried to checkout.** Now they ride both the checkout alert and the TC case intake (see 3).
-3. **A collect-only handoff opens a TC case.** The ruling said it can send, so it does. It opens a `hygiene_review` case, filed `single_tooth` with an empty treatment list. If you would rather a collect-only visit send only the checkout alert and no case, that is a small change.
+3. **A collect-only visit opens no TC case** (fix round, below). It reaches the desk on the checkout alert only, so an office with checkout alerts switched off has nothing that tells the desk what to collect for such a visit; the tray says so in amber.
 4. **Pre-existing, not touched here:** last round's merged route test `hygFeedbackRound1.test.js` (and the parity fixture) use the configured doctors' real names as test data. That's against the no-staff-names rule. This slice may change existing test expectations only where its rulings require, so I left them; they are worth swapping for a synthetic roster in a follow-up.
+
+## Fix round (PM review, 2026-10-28)
+
+**Ruling:** a collect-only visit — no treatment items, no TC-actionable existing answer, ≥1 collect item — sends the **checkout alert only**. It must not create a TC pipeline case. A visit with collect items *and* case-worthy content behaves as before: a case and a checkout alert, both carrying the list.
+
+**What changed**
+- **Composer** (`stagedWriteComposer.js`): the TC handoff is refused again whenever there is no treatment and no TC-actionable answer, whatever the collect list says. A collect-only refusal names where the list goes: "What to collect at checkout goes to the front desk on the checkout alert, not in a TC case." The collect-only summary line is gone.
+- **Send** (`tcHandoffClient.buildIntake`): the same refusal, restored to develop's wording. The case body still carries `collectAtCheckout` whenever a case is sent.
+- **Visit Send**: unchanged code path. With no handoff staged, no case intake is attempted, and the checkout alert's final update (which rides every Send) carries the list. Pinned end to end: a collect-only visit sends its note, the checkout alert arrives with `["Fl2 toothpaste"]`, and the TC case submitter is never called.
+- **Day card** (`visitProgress.js`, `progressStore.js`): restored to develop. A collect-only visit's tc step is *not applicable*, and the collect-count query added earlier in this PR is removed along with its test fake.
+- **Tray**: for a collect-only visit, the TC handoff card gives way to a **Checkout alert** card (`hyg-staged-checkout-alert`). It reads "No treatment for TC today, so no case is opened. The front desk gets what to collect payment for (N) on the checkout alert — with Alert checkout, and again with Send." There is nothing to stage on it. If the office has checkout alerts off, the card says so in amber. The empty-handoff copy is back to develop's wording.
+- **No migration change.** `1793300000000` stays as it was; the case intake's `collect_at_checkout` column is still used when a case carries the list.
+
+**Tests, labelled `RULING (checkout v2 fix)`**
+- `checkoutV2.test.js`: the truth table now splits *can send checkout* (every row) from *creates a case* (treatment or actionable answer only), and checks both bodies carry the list when both go. The collect-only test now pins the refusal and the checkout body.
+- `hygCheckoutV2.test.js`: the collect-only route test now proves no case and the alert on Send. A new test proves collect + treatment sends both with the list. The day-card test now expects *not applicable*.
+- `hyg-checkout-v2.test.tsx`: the tray test now expects the Checkout alert card (on and off) for collect-only, and the TC handoff card once there is treatment.
+- `hyg-visit.test.tsx`: the earlier `RULING (checkout v2)` copy edit is reverted to develop's original expectation, since the copy is develop's again.
+
+**Runs:** backend `node --test` 4,355 pass, 0 assertion failures; one file-level `not ok` on the untouched `sendToTc.test.js` (the known Node 22 runner flake), which passes 18/18 on its own. Dashboard `tsc` clean; vitest 196 files, 2,994 tests passed.

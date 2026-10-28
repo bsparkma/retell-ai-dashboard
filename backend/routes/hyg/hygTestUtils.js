@@ -419,21 +419,6 @@ class FakeHygDb extends FakeAuditDb {
       return { rows, rowCount: rows.length };
     }
 
-    // Checkout v2: the day card's collect-at-checkout count, from the slip.
-    if (/^\s*SELECT visit_id,\s+\(CASE WHEN jsonb_typeof\(slip->'collectAtCheckout'->'items'\) = 'array'[\s\S]*AS collect_count\s+FROM hyg_visit\s+WHERE office = \$1 AND visit_id = ANY\(\$2::uuid\[\]\)/i.test(text)) {
-      const [office, visitIds] = params;
-      const rows = this.hyg_visit
-        .filter((v) => v.office === office && visitIds.includes(v.visit_id))
-        .map((v) => {
-          const slip = FakeHygDb.json(v.slip) || {};
-          const c = slip.collectAtCheckout || {};
-          const items = Array.isArray(c.items) ? c.items.length : 0;
-          const other = typeof c.other === 'string' && /[^\s]/.test(c.other) ? 1 : 0;
-          return { visit_id: v.visit_id, collect_count: items + other };
-        });
-      return { rows, rowCount: rows.length };
-    }
-
     // ── Slice 2b: the visit's recorded existing-treatment read ─────────────
     if (/^\s*WITH writes AS \(\s*SELECT state FROM hyg_staged_write\s+WHERE office = \$1 AND visit_id = \$2 AND kind = ANY\(\$5::text\[\]\)\s+FOR SHARE\s*\)\s*UPDATE hyg_visit SET existing_tx_read = \$3::jsonb\s+WHERE office = \$1 AND visit_id = \$2\s+AND \(existing_tx_read IS NULL OR existing_tx_read->>'readAt' IS DISTINCT FROM \$4::text\)\s+AND \(SELECT count\(\*\) FROM writes WHERE state = ANY\(\$6::text\[\]\)\) = 0/i.test(text)) {
       const [office, visitId, value, readAt, kinds, states] = params;

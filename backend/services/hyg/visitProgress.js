@@ -33,8 +33,7 @@
  *   tc     — `not_applicable` when there is no handoff row AND the visit has
  *            neither treatment items NOR an existing-treatment answer TC must act
  *            on (ready to schedule / see the plan again / cost questions —
- *            feedback round 1) NOR anything to collect at checkout (checkout
- *            v2). The composer REFUSES a handoff with none of the three
+ *            feedback round 1). The composer REFUSES a handoff with neither
  *            (stagedWriteComposer.js: "An empty case in a treatment
  *            coordinator's queue is worse than no case"), so without this such a
  *            visit could never read `sent`. A visit with either and no handoff
@@ -90,7 +89,6 @@ function stepFromStaged(row) {
  *   checkoutFinalAt: unknown,
  *   treatmentItemCount: number,
  *   tcActionableCount?: number,
- *   collectCount?: number,
  *   stagedWrites: Array<{ kind: string, state: string, hasError?: boolean }>,
  *   latestPerioSendState: string | null,
  * }} visit  null when there is no hyg_visit row for this appointment.
@@ -120,13 +118,7 @@ function deriveVisitProgress(visit) {
   let tcState;
   // Feedback round 1: a visit with no new treatment but an existing-treatment
   // answer TC must act on has a handoff to send, so the step applies to it too.
-  // Checkout v2: so does a visit with something to collect at checkout.
-  if (
-    !byKind[STEP_KINDS.tc] &&
-    !(visit.treatmentItemCount > 0) &&
-    !(visit.tcActionableCount > 0) &&
-    !(visit.collectCount > 0)
-  ) {
+  if (!byKind[STEP_KINDS.tc] && !(visit.treatmentItemCount > 0) && !(visit.tcActionableCount > 0)) {
     tcState = 'not_applicable';
   } else {
     tcState = stepFromStaged(byKind[STEP_KINDS.tc]);

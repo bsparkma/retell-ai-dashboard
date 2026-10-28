@@ -404,9 +404,8 @@ describe("the server owns the visit", () => {
     const card = screen.getByTestId("hyg-staged-tc-handoff");
     // RULING (feedback round 1): the card names BOTH ways it becomes stageable —
     // treatment today, or an existing item TC has to act on.
-    // RULING (checkout v2): and the third — something to collect at checkout.
     expect(screen.getByTestId("hyg-handoff-no-items").textContent).toMatch(
-      /Nothing for TC yet — add treatment above, answer an existing item .*, or add something to collect at checkout/i,
+      /Nothing for TC yet — add treatment above, or answer an existing item/i,
     );
     expect(card.textContent).not.toMatch(/It will go in as/);
     expect(screen.getByTestId("hyg-stage-tc-handoff").hasAttribute("disabled")).toBe(true);

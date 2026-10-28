@@ -33,6 +33,7 @@ import { useState } from "react";
 import { Link } from "wouter";
 import {
   AlertTriangle,
+  BellRing,
   CheckCircle2,
   FileText,
   Loader2,
@@ -330,6 +331,7 @@ export function StagedWritesTray({
   existingNotDiscussed = 0,
   existingTcActionable = 0,
   collectCount = 0,
+  checkoutEnabled = false,
   medicalHistoryRecorded = true,
 }: {
   staged: StagedWrite[];
@@ -344,10 +346,13 @@ export function StagedWritesTray({
    */
   existingTcActionable?: number;
   /**
-   * Checkout v2: how many things the desk is to collect payment for. Any makes
-   * the handoff stageable on its own — the patient must stop at the desk.
+   * Checkout v2: how many things the desk is to collect payment for. On its own
+   * it does NOT make a handoff (checkout v2 fix): the list goes to the desk on
+   * the checkout alert, and the tray shows that card in the handoff's place.
    */
   collectCount?: number;
+  /** Whether this office sends checkout alerts at all (the page's `checkoutEnabled`). */
+  checkoutEnabled?: boolean;
   /** Checkout v2: whether the slip answers the medical-history question. */
   medicalHistoryRecorded?: boolean;
   /**
@@ -402,10 +407,15 @@ export function StagedWritesTray({
    * Feedback round 1: "nothing" means neither new treatment NOR an existing
    * answer TC has to act on — the server's own rule.
    */
-  const handoffUnavailable = itemCount === 0 && existingTcActionable === 0 && collectCount === 0;
+  const handoffUnavailable = itemCount === 0 && existingTcActionable === 0;
   const handoffExistingOnly = itemCount === 0 && existingTcActionable > 0;
-  // Checkout v2: nothing for TC to work, only something to pay for at the desk.
-  const handoffCollectOnly = itemCount === 0 && existingTcActionable === 0 && collectCount > 0;
+  /*
+   * CHECKOUT V2 FIX: nothing for TC to work, only something to pay for at the
+   * desk. No case is opened for that (ruled 2026-10-28), so the handoff card
+   * gives way to a Checkout alert card saying where the list goes. A handoff
+   * row already on the visit keeps its own card, so its state stays visible.
+   */
+  const handoffCollectOnly = handoffUnavailable && collectCount > 0;
 
   return (
     <section className="space-y-3" data-testid="hyg-staged-tray">
@@ -423,6 +433,36 @@ export function StagedWritesTray({
           const write = byKind.get(kind);
           const Icon = KIND_ICONS[kind];
           const available = AVAILABLE.includes(kind);
+          if (kind === "tc-handoff" && !write && handoffCollectOnly) {
+            return (
+              <div
+                key={kind}
+                className="rounded-xl border border-border bg-card p-3"
+                data-testid="hyg-staged-checkout-alert"
+              >
+                <div className="flex items-center gap-1.5">
+                  <BellRing size={14} className="shrink-0 text-muted-foreground" />
+                  <span className="text-sm font-semibold text-foreground">Checkout alert</span>
+                </div>
+                {checkoutEnabled ? (
+                  <p className="mt-0.5 text-xs text-muted-foreground" data-testid="hyg-checkout-alert-collect">
+                    No treatment for TC today, so no case is opened. The front desk gets what to
+                    collect payment for ({collectCount}) on the checkout alert — with Alert
+                    checkout, and again with Send.
+                  </p>
+                ) : (
+                  <p
+                    className="mt-0.5 text-xs text-amber-700 dark:text-amber-400"
+                    data-testid="hyg-checkout-alert-off"
+                  >
+                    No treatment for TC today, so no case is opened — and checkout alerts are off
+                    for this office, so nothing here tells the front desk what to collect (
+                    {collectCount}).
+                  </p>
+                )}
+              </div>
+            );
+          }
           return (
             <div
               key={kind}
@@ -458,17 +498,8 @@ export function StagedWritesTray({
                         className="mt-0.5 text-xs text-muted-foreground"
                         data-testid="hyg-handoff-no-items"
                       >
-                        Nothing for TC yet — add treatment above, answer an existing item as
-                        ready to schedule, see the plan again, or cost questions, or add something
-                        to collect at checkout.
-                      </p>
-                    ) : handoffCollectOnly ? (
-                      <p
-                        className="mt-0.5 text-xs text-muted-foreground"
-                        data-testid="hyg-handoff-collect-only"
-                      >
-                        No treatment for TC today — it tells the desk what to collect payment for
-                        ({collectCount}).
+                        Nothing for TC yet — add treatment above, or answer an existing item as
+                        ready to schedule, see the plan again, or cost questions.
                       </p>
                     ) : handoffExistingOnly ? (
                       <p
