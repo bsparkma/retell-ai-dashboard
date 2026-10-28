@@ -68,6 +68,7 @@ const tcHandoff = require('./tcHandoffClient');
 const visitStore = require('./visitStore');
 const existingTxStore = require('./existingTxStore');
 const composer = require('./stagedWriteComposer');
+const existingTxStale = require('./existingTxStale');
 const { refuseUnlessTestPatient } = require('../../config/hygFixtureGate');
 
 /**
@@ -120,6 +121,9 @@ const PAYLOAD_SCHEMAS = {
       // Slice 2b: the digest of the existing-treatment lines this note prints.
       // Optional, so every note staged before it still sends.
       existingTxDigest: contract.z.string().regex(/^[0-9a-f]{64}$/).optional(),
+      // Checkout v2: the digest of the medical-history line it prints. Optional,
+      // so every note staged before it still sends.
+      medicalHistoryDigest: contract.z.string().regex(/^[0-9a-f]{64}$/).optional(),
     })
     .strict(),
   router: contract.z
@@ -327,27 +331,47 @@ async function sendSlip(row, payload, ctx) {
  * failure. A row with no digest is checked too: staged before any answer, it
  * must still print none.
  *
+ * CHECKOUT V2: the same check, for two more reasons — the note's medical-history
+ * line, and the TC handoff's whole preview (what TC receives). ONE function
+ * decides, existingTxStale.staleReason, which is also what the tray's "Out of
+ * date" reads: the screen can never call current what this refuses.
+ *
  * @returns {Promise<{ ok: true } | { ok: false, code: string, error: string }>}
  */
-async function checkExistingTxCurrent(pool, { office, visit, rows }) {
-  const carriers = rows.filter((r) => r.kind === 'note' || r.kind === 'router');
+async function checkStagedCurrent(pool, { office, visit, rows }) {
+  const carriers = rows.filter((r) => existingTxStale.CARRIER_KINDS.includes(r.kind));
   if (carriers.length === 0) return { ok: true };
   const existingTx = await existingTxStore.loadForSend(pool, { office, visitId: visit.visitId });
   for (const row of carriers) {
-    const staged = (row.payload && row.payload.existingTxDigest) || null;
-    const now = composer.existingTxDigest(row.kind, existingTx);
-    if (staged !== now) {
+    const payload = row.payload || {};
+    const reason = existingTxStale.staleReason(
+      {
+        kind: row.kind,
+        existingTxDigest: typeof payload.existingTxDigest === 'string' ? payload.existingTxDigest : null,
+        medicalHistoryDigest: typeof payload.medicalHistoryDigest === 'string' ? payload.medicalHistoryDigest : null,
+        preview: Array.isArray(row.preview) ? row.preview : [],
+      },
+      { visit, existingTx }
+    );
+    if (reason) {
+      const what = row.kind === 'note' ? 'note' : row.kind === 'router' ? 'slip' : 'TC handoff';
       return {
         ok: false,
         code: 'PREVIEW_CHANGED',
-        error:
-          `The existing-treatment answers changed after the ${row.kind === 'note' ? 'note' : 'slip'} ` +
-          'was staged. Nothing was sent. Stage it again so it says what was answered.',
+        error: `${STALE_WORDS[reason]} after the ${what} was staged. Nothing was sent. ` +
+          'Stage it again so it says what is on the visit now.',
       };
     }
   }
   return { ok: true };
 }
+
+/** The refusal's first words, per reason. */
+const STALE_WORDS = Object.freeze({
+  existing_tx: 'The existing-treatment answers changed',
+  medical_history: 'The medical-history answer changed',
+  handoff: 'What the treatment coordinator would receive changed',
+});
 
 /**
  * The treatment → TC's own hygiene-intake contract.
@@ -419,7 +443,7 @@ async function sendVisit({
   if (checked.rows.length === 0) {
     return { ok: false, status: 422, code: 'NOTHING_TO_SEND', error: 'Nothing is staged to send' };
   }
-  const current = await checkExistingTxCurrent(pool, { office, visit, rows: checked.rows });
+  const current = await checkStagedCurrent(pool, { office, visit, rows: checked.rows });
   if (!current.ok) {
     return { ok: false, status: 409, code: current.code, error: current.error };
   }
@@ -512,10 +536,9 @@ async function sendVisit({
       // is caught here — before any Open Dental write. The row fails with
       // nothing written; Retry puts it back on the list (which unlocks the
       // answers), and the next Send asks for it to be staged again.
-      const stillCurrent =
-        row.kind === 'note' || row.kind === 'router'
-          ? await checkExistingTxCurrent(pool, { office, visit, rows: [row] })
-          : { ok: true };
+      const stillCurrent = existingTxStale.CARRIER_KINDS.includes(row.kind)
+        ? await checkStagedCurrent(pool, { office, visit, rows: [row] })
+        : { ok: true };
       result = stillCurrent.ok ? await sendOne(row, ctx) : { ...stillCurrent, ok: false };
     } catch (err) {
       // A throw is a failure like any other: the row must not be left Sending.

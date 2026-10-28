@@ -148,6 +148,11 @@ const INTAKE_COLS = [
   // Existing-treatment answers (hygiene Slice 2b) — a jsonb ARRAY, NULL when the
   // visit sent none. See the 1793000000000_tc_hygiene_intake_existing_tx migration.
   'existing_tx',
+  // What the front desk takes payment for (checkout v2) — a jsonb ARRAY of
+  // labels, NULL when none. See the 1793300000000_tc_hygiene_intake_collect migration.
+  'collect_at_checkout',
+  // The records the handoff's treatment needs (checkout v2), same migration.
+  'records_needed',
 ];
 
 /**
@@ -156,7 +161,7 @@ const INTAKE_COLS = [
  * (ortho_screening) is JSON-encoded by the driver, an array is not. So these
  * are encoded here, explicitly.
  */
-const JSONB_ARRAY_COLS = new Set(['existing_tx']);
+const JSONB_ARRAY_COLS = new Set(['existing_tx', 'collect_at_checkout', 'records_needed']);
 
 /** `INSERT INTO t (a, b) VALUES ($1, $2)` for a column list. */
 function insertSql(table, cols) {

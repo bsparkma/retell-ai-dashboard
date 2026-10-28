@@ -108,6 +108,32 @@ export const TcCheckoutNextVisit = z
   .strict();
 export type TcCheckoutNextVisit = z.infer<typeof TcCheckoutNextVisit>;
 
+/**
+ * What the front desk takes payment for (checkout v2) — LABELS, not ids. A
+ * checkout is a snapshot, never a reference, so it carries the words the
+ * hygiene slip showed. Six at most: five chips and one "Other".
+ */
+export const TcCollectAtCheckout = z.array(z.string().min(1).max(200)).max(6);
+export type TcCollectAtCheckout = z.infer<typeof TcCollectAtCheckout>;
+
+/**
+ * Where a record stands — the hygiene slip's three answers, spelled the same
+ * (shared/hyg/contract.ts RecordStatusSchema; a test pins that they match).
+ */
+export const TcCheckoutRecordStatus = z.enum(["needed", "on_file", "taken_today"]);
+export type TcCheckoutRecordStatus = z.infer<typeof TcCheckoutRecordStatus>;
+export const TC_CHECKOUT_RECORD_STATUS_LABELS: Record<TcCheckoutRecordStatus, string> = {
+  needed: "Needed",
+  on_file: "On file",
+  taken_today: "Taken today",
+};
+export const TC_CHECKOUT_RECORDS_MAX = 60;
+/** One record the planned treatment needs ("Pre-op PA"), and where it stands. */
+export const TcCheckoutRecord = z
+  .object({ record: z.string().min(1).max(120), status: TcCheckoutRecordStatus })
+  .strict();
+export type TcCheckoutRecord = z.infer<typeof TcCheckoutRecord>;
+
 /** The whole snapshot a checkout carries. */
 export const TcCheckoutSnapshot = z
   .object({
@@ -130,6 +156,17 @@ export const TcCheckoutSnapshot = z
      * was never loaded sends none.
      */
     existingTx: z.array(ExistingTxHandoffItemSchema).max(EXISTING_TX_HANDOFF_MAX).optional(),
+    /**
+     * What to take payment for at the desk (checkout v2): the slip's chips and
+     * "Other", as the front desk reads them. OPTIONAL and additive for the same
+     * reason as existingTx; absent or empty means nothing to collect.
+     */
+    collectAtCheckout: TcCollectAtCheckout.optional(),
+    /**
+     * The records the staged treatment needs and where each stands (checkout
+     * v2). OPTIONAL and additive; absent when the treatment needs none.
+     */
+    records: z.array(TcCheckoutRecord).max(TC_CHECKOUT_RECORDS_MAX).optional(),
   })
   .strict();
 export type TcCheckoutSnapshot = z.infer<typeof TcCheckoutSnapshot>;
