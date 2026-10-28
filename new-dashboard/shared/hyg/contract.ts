@@ -53,6 +53,9 @@ import {
 // re-exported: backend/hyg/contract.entry.ts exports orthoScreening.ts beside
 // this file, and exporting a name twice is an esbuild error.
 import { OrthoScreeningSchema } from "./orthoScreening";
+// Slice 2a/2b's existing treatment. Imported one direction only, NOT re-exported,
+// for the same reason: the entry exports existingTx.ts beside this file.
+import { ExistingTxDispositionSchema, ExistingTxSaveResponseSchema } from "./existingTx";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Offices
@@ -1120,8 +1123,39 @@ export const StagedWriteSchema = z.object({
   sentBy: z.string().nullable(),
   sentAt: z.string().nullable(),
   updatedAt: z.string(),
+  /**
+   * The stored words no longer say what was answered about the existing
+   * treatment: an answer was saved after this was staged. COMPUTED BY THE
+   * SERVER on every visit response (backend/services/hyg/existingTxStale.js),
+   * with the same digest the Send refuses on — never inferred by the client.
+   * Optional so a response from before the field still parses; absent reads as
+   * "not known to be out of date", which is what such a server could say.
+   */
+  existingTxStale: z.boolean().optional(),
 });
 export type StagedWrite = z.infer<typeof StagedWriteSchema>;
+
+/**
+ * PUT …/existing-tx/:procNum, as this page reads it: the stored row, plus the
+ * visit's staged writes read back AFTER the save — so a note staged before the
+ * answer shows "Out of date" the moment the save succeeds.
+ */
+export const ExistingTxSaveViewSchema = ExistingTxSaveResponseSchema.extend({
+  stagedWrites: z.array(StagedWriteSchema),
+});
+export type ExistingTxSaveView = z.infer<typeof ExistingTxSaveViewSchema>;
+
+/** PUT …/existing-tx — the bulk answer: every stored row, and the staged writes after it. */
+export const ExistingTxBatchResponseSchema = z.object({
+  success: z.literal(true),
+  office: OfficeIdSchema,
+  aptNum: z.number().int().positive(),
+  items: z.array(
+    z.object({ procNum: z.number().int().positive(), disposition: ExistingTxDispositionSchema }),
+  ),
+  stagedWrites: z.array(StagedWriteSchema),
+});
+export type ExistingTxBatchResponse = z.infer<typeof ExistingTxBatchResponseSchema>;
 
 /**
  * The ortho screening's TC send, once it landed (item 33).

@@ -55,6 +55,7 @@ import {
   type TcCheckoutPriority,
 } from "@shared/tc/checkout";
 import type { OfficeId } from "@shared/tc/contract";
+import { ExistingTreatmentFromHygiene } from "@/features/tc/checkout/HygieneTreatmentPanel";
 
 const PRIORITY_CLASS: Record<TcCheckoutPriority, string> = {
   urgent: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
@@ -247,6 +248,18 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
                   )}
                 </dl>
               </section>
+
+              {/* Slice 2b: what was said at the visit about the treatment ALREADY
+                  planned in Open Dental — every item the hygiene module carried,
+                  "Not discussed" included, grouped in the ratified order. This
+                  sheet IS the front desk's checkout panel; 2b drew the block only
+                  on the case view's HygieneTreatmentPanel, so a checkout carried
+                  the answers and nobody at the desk could see them. */}
+              {snap.existingTx && snap.existingTx.length > 0 ? (
+                <section data-testid="checkout-existing-tx">
+                  <ExistingTreatmentFromHygiene items={snap.existingTx} />
+                </section>
+              ) : null}
 
               {(snap.frontDeskNote || snap.financialNote) && (
                 <section className="space-y-1 text-sm">

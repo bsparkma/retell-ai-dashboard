@@ -69,11 +69,16 @@ import {
 } from "@shared/hyg/perioSend";
 import {
   ExistingTxResponseSchema,
-  ExistingTxSaveResponseSchema,
+  type ExistingTxBatchEntry,
   type ExistingTxDispositionInput,
   type ExistingTxResponse,
-  type ExistingTxSaveResponse,
 } from "@shared/hyg/existingTx";
+import {
+  ExistingTxBatchResponseSchema,
+  ExistingTxSaveViewSchema,
+  type ExistingTxBatchResponse,
+  type ExistingTxSaveView,
+} from "@shared/hyg/contract";
 
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:5000/api";
 
@@ -934,19 +939,23 @@ export async function fetchExistingTx(
   );
 }
 
-/** Slice 2a: store one procedure's answers. The response is the stored row. */
+/**
+ * Slice 2a: store one procedure's answers. The response is the stored row, and
+ * the visit's staged writes read back after it — so a note staged before this
+ * answer says "Out of date" from the server's own comparison.
+ */
 export async function saveExistingTxDisposition(
   office: OfficeId,
   aptNum: number,
   procNum: number,
   input: ExistingTxDispositionInput,
-): Promise<ExistingTxSaveResponse> {
+): Promise<ExistingTxSaveView> {
   return mutate(
     "PUT",
     `/visit/${aptNum}/existing-tx/${procNum}`,
     { office },
     (raw) => {
-      const parsed = ExistingTxSaveResponseSchema.safeParse(raw);
+      const parsed = ExistingTxSaveViewSchema.safeParse(raw);
       if (!parsed.success) {
         throw new HygApiError(
           "CareIN saved something this page could not read back",
@@ -958,6 +967,35 @@ export async function saveExistingTxDisposition(
       return parsed.data;
     },
     input,
+  );
+}
+
+/**
+ * The "Select" bulk answer: many procedures' WHOLE dispositions, stored all or
+ * nothing by the server, with the staged writes read back after.
+ */
+export async function saveExistingTxBatch(
+  office: OfficeId,
+  aptNum: number,
+  items: ExistingTxBatchEntry[],
+): Promise<ExistingTxBatchResponse> {
+  return mutate(
+    "PUT",
+    `/visit/${aptNum}/existing-tx`,
+    { office },
+    (raw) => {
+      const parsed = ExistingTxBatchResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new HygApiError(
+          "CareIN saved something this page could not read back",
+          0,
+          "CONTRACT_MISMATCH",
+          { issues: parsed.error.issues.slice(0, 5) },
+        );
+      }
+      return parsed.data;
+    },
+    { items },
   );
 }
 

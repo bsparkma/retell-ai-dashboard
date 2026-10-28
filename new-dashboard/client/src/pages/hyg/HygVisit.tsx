@@ -73,6 +73,7 @@ import {
   isOfficeId,
   type HygSlip,
   type SendConfirmation,
+  type StagedWrite,
   type StagedWriteKind,
   type TreatmentItemInput,
 } from "@shared/hyg/contract";
@@ -86,6 +87,7 @@ import {
   openVisit,
   removeTreatmentItem,
   retryStagedWrite,
+  saveExistingTxBatch,
   saveExistingTxDisposition,
   saveSlip,
   sendOrthoScreening,
@@ -109,7 +111,11 @@ import { VisitNoteFields } from "@/features/hyg/visit/VisitNoteFields";
 import { StagedWritesTray, type TrayPerio } from "@/features/hyg/visit/StagedWritesTray";
 import { TreatmentItems } from "@/features/hyg/visit/TreatmentItems";
 import { ExistingTreatment, type ExistingTxState } from "@/features/hyg/visit/ExistingTreatment";
-import { countNotDiscussed, type ExistingTxDispositionInput } from "@shared/hyg/existingTx";
+import {
+  countNotDiscussed,
+  type ExistingTxDisposition,
+  type ExistingTxDispositionInput,
+} from "@shared/hyg/existingTx";
 import { OrthoScreening } from "@/features/hyg/visit/OrthoScreening";
 import { CheckoutAlert } from "@/features/hyg/visit/CheckoutAlert";
 import type { OrthoScreening as OrthoScreeningValue } from "@shared/hyg/orthoScreening";
@@ -499,27 +505,86 @@ export default function HygVisit() {
   }, [office, aptNum, date, adopt]);
 
   /**
-   * Store one row's answers. The row shows the SERVER's read-back, never the
-   * tap. Queued behind the row's previous save, so quick taps reach the server
-   * in the order they were made and the last one is what is stored.
+   * The out-of-date flags as the server read them back after an answer was
+   * saved. The tray's "Out of date" is the SERVER's digest comparison, carried
+   * here — never worked out on this page.
+   *
+   * ONLY THE FLAGS, AND ONLY ONTO THE SAME ROW. A save is not serialized against
+   * Stage or Remove, so its read-back may predate a stage that answered first;
+   * replacing the list with it would drop or rewind that row. A flag is copied
+   * only onto the row it was computed for — same id, same updatedAt — and the
+   * rows themselves stay whatever the page last adopted.
    */
-  const onSaveExistingTx = useCallback(
-    (procNum: number, input: ExistingTxDispositionInput) => {
-      if (!isOfficeId(office)) return;
+  const adoptStagedWrites = useCallback((stagedWrites: StagedWrite[]) => {
+    const seen = new Map(stagedWrites.map((w) => [w.id, w]));
+    setPage((prev) =>
+      prev && prev.visit
+        ? {
+            ...prev,
+            visit: {
+              ...prev.visit,
+              stagedWrites: prev.visit.stagedWrites.map((w) => {
+                const read = seen.get(w.id);
+                return read && read.updatedAt === w.updatedAt && read.existingTxStale !== undefined
+                  ? { ...w, existingTxStale: read.existingTxStale }
+                  : w;
+              }),
+            },
+          }
+        : prev,
+    );
+  }, []);
+
+  /**
+   * Store answers — one row, or many at once (a group answered together, or the
+   * "Select" bulk answer). The rows show the SERVER's read-back, never the tap.
+   *
+   * QUEUED PER ROW. A save waits for every earlier save of each row it touches,
+   * so quick taps reach the server in the order they were made and the last one
+   * is what is stored — whether it went alone or in a batch. One row goes
+   * through the single PUT; several go through the bulk PUT, which the server
+   * stores all or nothing.
+   */
+  const queueExistingTx = useCallback(
+    (entries: { procNum: number; input: ExistingTxDispositionInput }[]) => {
+      if (!isOfficeId(office) || entries.length === 0) return;
       const chains = existingChains.current;
       const pending = existingPending.current;
       const context = existingContextRef.current;
       // A queue from before a visit change: nothing it says applies any more.
       const live = () => chains === existingChains.current && context === existingContextRef.current;
+      const procNums = entries.map((e) => e.procNum);
 
-      pending.set(procNum, (pending.get(procNum) ?? 0) + 1);
-      setExistingSaving((prev) => new Set(prev).add(procNum));
+      for (const procNum of procNums) pending.set(procNum, (pending.get(procNum) ?? 0) + 1);
+      setExistingSaving((prev) => {
+        const next = new Set(prev);
+        for (const procNum of procNums) next.add(procNum);
+        return next;
+      });
 
-      const saveOne = async () => {
+      const saveAll = async () => {
         if (!live()) return;
-        setExistingErrors(({ [procNum]: _dropped, ...rest }) => rest);
+        setExistingErrors((prev) => {
+          const next = { ...prev };
+          for (const procNum of procNums) delete next[procNum];
+          return next;
+        });
         try {
-          const res = await saveExistingTxDisposition(office, aptNum, procNum, input);
+          const stored = new Map<number, ExistingTxDisposition>();
+          let stagedWrites: StagedWrite[];
+          if (entries.length === 1) {
+            const res = await saveExistingTxDisposition(office, aptNum, entries[0].procNum, entries[0].input);
+            stored.set(res.procNum, res.disposition);
+            stagedWrites = res.stagedWrites;
+          } else {
+            const res = await saveExistingTxBatch(
+              office,
+              aptNum,
+              entries.map((e) => ({ procNum: e.procNum, ...e.input })),
+            );
+            for (const row of res.items) stored.set(row.procNum, row.disposition);
+            stagedWrites = res.stagedWrites;
+          }
           if (!live()) return;
           setExistingTx((prev) =>
             prev.status === "ready"
@@ -527,13 +592,15 @@ export default function HygVisit() {
                   ...prev,
                   data: {
                     ...prev.data,
-                    items: prev.data.items.map((i) =>
-                      i.procNum === procNum ? { ...i, disposition: res.disposition } : i,
-                    ),
+                    items: prev.data.items.map((i) => {
+                      const d = stored.get(i.procNum);
+                      return d ? { ...i, disposition: d } : i;
+                    }),
                   },
                 }
               : prev,
           );
+          adoptStagedWrites(stagedWrites);
         } catch (err) {
           if (!live()) return;
           if (err instanceof HygApiError && err.code === "EXISTING_TX_FROZEN") {
@@ -541,26 +608,43 @@ export default function HygVisit() {
               prev.status === "ready" ? { ...prev, data: { ...prev.data, frozen: true } } : prev,
             );
           }
-          setExistingErrors((prev) => ({
-            ...prev,
-            [procNum]:
-              err instanceof HygApiError ? err.message : "That answer was not saved. Try again.",
-          }));
+          const message =
+            err instanceof HygApiError
+              ? err.message
+              : entries.length === 1
+                ? "That answer was not saved. Try again."
+                : "Those answers were not saved. Try again.";
+          setExistingErrors((prev) => {
+            const next = { ...prev };
+            for (const procNum of procNums) next[procNum] = message;
+            return next;
+          });
         } finally {
-          const left = (pending.get(procNum) ?? 1) - 1;
-          pending.set(procNum, left);
-          if (left === 0 && live()) {
+          const done: number[] = [];
+          for (const procNum of procNums) {
+            const left = (pending.get(procNum) ?? 1) - 1;
+            pending.set(procNum, left);
+            if (left === 0) done.push(procNum);
+          }
+          if (done.length > 0 && live()) {
             setExistingSaving((prev) => {
               const next = new Set(prev);
-              next.delete(procNum);
+              for (const procNum of done) next.delete(procNum);
               return next;
             });
           }
         }
       };
-      chains.set(procNum, (chains.get(procNum) ?? Promise.resolve()).then(saveOne));
+      const before = Promise.all(procNums.map((n) => chains.get(n) ?? Promise.resolve()));
+      const mine = before.then(saveAll);
+      for (const procNum of procNums) chains.set(procNum, mine);
     },
-    [office, aptNum],
+    [office, aptNum, adoptStagedWrites],
+  );
+
+  const onSaveExistingTx = useCallback(
+    (procNum: number, input: ExistingTxDispositionInput) => queueExistingTx([{ procNum, input }]),
+    [queueExistingTx],
   );
 
   /**
@@ -1026,9 +1110,12 @@ export default function HygVisit() {
                 onStart={() => void onStartExistingTx()}
                 onRetry={() => void loadExistingTx(true)}
                 onSave={(procNum, input) => void onSaveExistingTx(procNum, input)}
+                onSaveMany={(entries) => void queueExistingTx(entries)}
+                asOf={page.visit?.visitDate ?? date}
               />
               <TreatmentItems
                 items={items}
+                plannedInOd={existingTx.status === "ready" ? existingTx.data.items : []}
                 busy={busy}
                 onAdd={(input: TreatmentItemInput) =>
                   void run(() => addTreatmentItem(office, aptNum, input))

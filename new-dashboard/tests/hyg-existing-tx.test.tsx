@@ -200,6 +200,8 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
           aptNum: 900001,
           procNum,
           disposition: { ...input, updatedBy: "hygienist@carein.ai", updatedAt: "2026-09-08T13:05:00.000Z" },
+          // RULING (compact round): a save answers with the staged writes read back after it.
+          stagedWrites: server.staged,
         };
       },
     ),
@@ -243,15 +245,37 @@ afterEach(cleanup);
 
 const pressed = (id: string) => screen.getByTestId(id).getAttribute("aria-pressed");
 
+/**
+ * RULING (compact round): rows start COLLAPSED, one per tooth; a tap opens the
+ * editor. This opens the row a procedure is on and returns its editor.
+ */
+async function openRow(procNum: number) {
+  const proc = await screen.findByTestId(`hyg-existing-tx-proc-${procNum}`);
+  const toggle = proc.closest("button");
+  if (!toggle) throw new Error("no row toggle");
+  fireEvent.click(toggle);
+  return screen.findByTestId(`hyg-existing-tx-row-${procNum}`);
+}
+
+/** RULING (compact round): the note sits behind "+ note". */
+function openNote(procNum: number) {
+  fireEvent.click(screen.getByTestId(`hyg-existing-tx-add-note-${procNum}`));
+  return screen.getByTestId(`hyg-existing-tx-note-${procNum}`) as HTMLInputElement;
+}
+
 describe("the list", () => {
   it("sits above Treatment identified today, and reads once on open", async () => {
     renderVisit();
     const section = await screen.findByTestId("hyg-existing-tx");
-    await screen.findByTestId("hyg-existing-tx-row-5001");
+    await screen.findByTestId("hyg-existing-tx-proc-5001");
     const today = screen.getByTestId("hyg-treatment");
     // DOCUMENT_POSITION_FOLLOWING: the treatment section comes after this one.
     expect(section.compareDocumentPosition(today) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(section.textContent).toContain("Existing treatment (from Open Dental)");
+    // RULING (compact round): the heading counts what is there and what was said.
+    expect(screen.getByTestId("hyg-existing-tx-heading").textContent).toBe(
+      "Existing treatment (1) · 0 answered · 0 urgent",
+    );
+    expect(section.textContent).toContain("from Open Dental");
     expect(server.reads).toEqual([false]);
   });
 
@@ -275,40 +299,51 @@ describe("the list", () => {
       item({ procNum: 5001, dateTp: null }),
     ];
     renderVisit();
-    const row = await screen.findByTestId("hyg-existing-tx-row-5002");
-    expect(row.textContent).toContain("D2740");
-    expect(row.textContent).toContain("#3");
-    expect(row.textContent).toContain("Planned 20 Jun 2026");
+    // RULING (compact round): an item already on a scheduled appointment sits in
+    // the collapsed "Already scheduled (N)" subsection, one tap away.
+    fireEvent.click(await screen.findByTestId("hyg-existing-tx-show-scheduled"));
+    const group = screen.getByTestId("hyg-existing-tx-group-scheduled-3");
+    expect(group.textContent).toContain("D2740");
+    expect(group.textContent).toContain("#3");
+    expect(group.textContent).toContain("Planned 20 Jun 2026");
+    expect(within(group).getByTestId("hyg-existing-tx-gscheduled-scheduled-3").textContent).toBe("Already scheduled");
+    const row = await openRow(5002);
     expect(within(row).getByTestId("hyg-existing-tx-scheduled-5002").textContent).toBe("Already scheduled");
     expect(within(row).getByTestId("hyg-existing-tx-last-5002").textContent).toBe(
       "Last discussed 1 Jun 2026: Wants to wait (6 months)",
     );
-    const other = screen.getByTestId("hyg-existing-tx-row-5001");
-    expect(other.textContent).toContain("#30 MO");
+    const other = screen.getByTestId("hyg-existing-tx-group-30");
+    expect(other.textContent).toContain("#30");
+    expect(other.textContent).toContain("D2392");
+    expect(other.textContent).toContain("MO");
     expect(other.textContent).toContain("Planned date not recorded");
-    expect(within(other).queryByTestId("hyg-existing-tx-scheduled-5001")).toBeNull();
-    expect(within(other).queryByTestId("hyg-existing-tx-last-5001")).toBeNull();
+    const otherRow = await openRow(5001);
+    expect(within(otherRow).queryByTestId("hyg-existing-tx-scheduled-5001")).toBeNull();
+    expect(within(otherRow).queryByTestId("hyg-existing-tx-last-5001")).toBeNull();
   });
 
-  it("groups under Watch only what the server flagged, in the server's order", async () => {
+  // RULING (compact round): Watch is a BADGE on the row, not a separate list,
+  // and rows are in tooth order. Still only what the server flagged.
+  it("badges Watch only what the server flagged; rows in tooth order", async () => {
     server.items = [
-      item({ procNum: 5003, dateTp: "2026-07-01" }),
-      item({ procNum: 5004, dateTp: "2026-06-01", watch: true, priorityName: "Watch" }),
-      item({ procNum: 5001, dateTp: "2026-05-01" }),
+      item({ procNum: 5003, tooth: "30", dateTp: "2026-07-01" }),
+      item({ procNum: 5004, tooth: "14", dateTp: "2026-06-01", watch: true, priorityName: "Watch" }),
+      item({ procNum: 5001, tooth: "3", dateTp: "2026-05-01" }),
     ];
     renderVisit();
-    const watch = await screen.findByTestId("hyg-existing-tx-watch");
-    expect(within(watch).getByTestId("hyg-existing-tx-row-5004")).toBeTruthy();
-    expect(within(watch).queryByTestId("hyg-existing-tx-row-5003")).toBeNull();
-    const rows = screen.getAllByTestId(/^hyg-existing-tx-row-/).map((r) => r.dataset.testid);
-    expect(rows).toEqual(["hyg-existing-tx-row-5003", "hyg-existing-tx-row-5001", "hyg-existing-tx-row-5004"]);
+    await screen.findByTestId("hyg-existing-tx-proc-5004");
+    expect(screen.getByTestId("hyg-existing-tx-gwatch-14").textContent).toBe("Watch");
+    expect(screen.queryByTestId("hyg-existing-tx-gwatch-30")).toBeNull();
+    expect(screen.queryByTestId("hyg-existing-tx-gwatch-3")).toBeNull();
+    const rows = screen.getAllByTestId(/^hyg-existing-tx-group-/).map((r) => r.dataset.testid);
+    expect(rows).toEqual(["hyg-existing-tx-group-3", "hyg-existing-tx-group-14", "hyg-existing-tx-group-30"]);
   });
 
-  it("no Watch group at all when nothing is flagged", async () => {
+  it("no Watch badge at all when nothing is flagged", async () => {
     server.items = [item({ procNum: 5001, priorityName: "Urgent" })];
     renderVisit();
-    await screen.findByTestId("hyg-existing-tx-row-5001");
-    expect(screen.queryByTestId("hyg-existing-tx-watch")).toBeNull();
+    await screen.findByTestId("hyg-existing-tx-proc-5001");
+    expect(screen.queryByTestId(/^hyg-existing-tx-gwatch-/)).toBeNull();
   });
 
   it("an empty plan says so in words", async () => {
@@ -321,7 +356,9 @@ describe("the list", () => {
 
   it("rows are divs, and no button sits inside a button", async () => {
     renderVisit();
-    const row = await screen.findByTestId("hyg-existing-tx-row-5001");
+    // RULING (compact round): the row is the tooth group, opened.
+    await openRow(5001);
+    const row = screen.getByTestId("hyg-existing-tx-group-30");
     expect(row.tagName).toBe("DIV");
     for (const button of within(row).getAllByRole("button")) {
       expect(button.querySelector("button, a, input, textarea, select")).toBeNull();
@@ -340,7 +377,7 @@ describe("the failure", () => {
     expect(screen.queryByTestId(/^hyg-existing-tx-row-/)).toBeNull();
 
     fireEvent.click(screen.getByTestId("hyg-existing-tx-retry"));
-    await screen.findByTestId("hyg-existing-tx-row-5001");
+    await screen.findByTestId("hyg-existing-tx-proc-5001"); // RULING (compact round): rows start collapsed
     expect(server.reads).toEqual([false, true]);
   });
 });
@@ -352,7 +389,7 @@ describe("before the visit exists", () => {
     const start = await screen.findByTestId("hyg-existing-tx-start");
     expect(server.reads).toEqual([]);
     fireEvent.click(start);
-    await screen.findByTestId("hyg-existing-tx-row-5001");
+    await screen.findByTestId("hyg-existing-tx-proc-5001"); // RULING (compact round): rows start collapsed
     expect(server.opens).toBe(1);
     expect(server.reads).toEqual([false]);
   });
@@ -361,7 +398,7 @@ describe("before the visit exists", () => {
 describe("the chips", () => {
   it("Not discussed is the default, and is drawn dashed — never like an answer", async () => {
     renderVisit();
-    await screen.findByTestId("hyg-existing-tx-row-5001");
+    await openRow(5001); // RULING (compact round): rows start collapsed
     expect(pressed("hyg-existing-tx-patient-5001-not_discussed")).toBe("true");
     expect(screen.getByTestId("hyg-existing-tx-patient-5001-not_discussed").className).toContain("border-dashed");
     expect(screen.getByTestId("hyg-existing-tx-patient-5001-not_discussed").className).not.toContain("border-primary");
@@ -380,7 +417,7 @@ describe("the chips", () => {
 
   it("a picked answer is the SERVER's read-back, drawn as an answer", async () => {
     renderVisit();
-    await screen.findByTestId("hyg-existing-tx-row-5001");
+    await openRow(5001); // RULING (compact round): rows start collapsed
     fireEvent.click(screen.getByTestId("hyg-existing-tx-patient-5001-ready_to_schedule"));
     await waitFor(() => expect(pressed("hyg-existing-tx-patient-5001-ready_to_schedule")).toBe("true"));
     expect(server.saves).toEqual([
@@ -392,7 +429,7 @@ describe("the chips", () => {
 
   it("Wants to wait reveals the timeframe; another answer clears it", async () => {
     renderVisit();
-    await screen.findByTestId("hyg-existing-tx-row-5001");
+    await openRow(5001); // RULING (compact round): rows start collapsed
     fireEvent.click(screen.getByTestId("hyg-existing-tx-patient-5001-wants_to_wait"));
     fireEvent.click(await screen.findByTestId("hyg-existing-tx-wait-5001-6_months"));
     await waitFor(() => expect(pressed("hyg-existing-tx-wait-5001-6_months")).toBe("true"));
@@ -415,7 +452,7 @@ describe("the chips", () => {
 
   it("Getting worse → urgent shows a red Urgent pill and says it is CareIN only", async () => {
     renderVisit();
-    await screen.findByTestId("hyg-existing-tx-row-5001");
+    await openRow(5001); // RULING (compact round): rows start collapsed
     expect(screen.queryByTestId("hyg-existing-tx-urgent-5001")).toBeNull();
     fireEvent.click(screen.getByTestId("hyg-existing-tx-clinical-5001-worse_urgent"));
     const pill = await screen.findByTestId("hyg-existing-tx-urgent-5001");
@@ -434,8 +471,8 @@ describe("the chips", () => {
   it("a note then a chip, tapped while the note is still saving, keeps BOTH — in order", async () => {
     server.saveDelay = 150;
     renderVisit();
-    await screen.findByTestId("hyg-existing-tx-row-5001");
-    const note = screen.getByTestId("hyg-existing-tx-note-5001");
+    await openRow(5001); // RULING (compact round): rows start collapsed
+    const note = openNote(5001);
     fireEvent.change(note, { target: { value: "sensitive to cold" } });
     fireEvent.blur(note);
     // The note's save is in flight: the chip is still there to tap, and a
@@ -454,8 +491,8 @@ describe("the chips", () => {
 
   it("the note saves on blur, trimmed, and only when it changed", async () => {
     renderVisit();
-    await screen.findByTestId("hyg-existing-tx-row-5001");
-    const note = screen.getByTestId("hyg-existing-tx-note-5001") as HTMLInputElement;
+    await openRow(5001); // RULING (compact round): rows start collapsed
+    const note = openNote(5001);
     expect(note.maxLength).toBe(500);
     fireEvent.change(note, { target: { value: "  sensitive to cold  " } });
     fireEvent.blur(note);
@@ -483,18 +520,22 @@ describe("once the visit is sent", () => {
     ];
     renderVisit();
     await screen.findByTestId("hyg-existing-tx-frozen");
-    const row = screen.getByTestId("hyg-existing-tx-row-5001");
+    // RULING (compact round): a locked row still opens, to read; nothing in it is live.
+    const row = await openRow(5001);
     for (const button of within(row).getAllByRole("button")) {
       expect((button as HTMLButtonElement).disabled).toBe(true);
     }
     expect(pressed("hyg-existing-tx-patient-5001-declined")).toBe("true");
-    expect((screen.getByTestId("hyg-existing-tx-note-5001") as HTMLInputElement).disabled).toBe(true);
+    // RULING (compact round): the note is behind "+ note", which is locked too.
+    expect((screen.getByTestId("hyg-existing-tx-add-note-5001") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByTestId("hyg-existing-tx-select-mode")).toBeNull();
   });
 
   it("a sent note on this page locks them without a re-read", async () => {
     server.staged = [stagedWrite("note", "Written")];
     renderVisit();
     await screen.findByTestId("hyg-existing-tx-frozen");
+    await openRow(5001); // RULING (compact round): rows start collapsed
     expect((screen.getByTestId("hyg-existing-tx-patient-5001-declined") as HTMLButtonElement).disabled).toBe(true);
   });
 
@@ -503,6 +544,7 @@ describe("once the visit is sent", () => {
       server.staged = [staged];
       renderVisit();
       await screen.findByTestId("hyg-existing-tx-frozen");
+      await openRow(5001); // RULING (compact round): rows start collapsed
       expect((screen.getByTestId("hyg-existing-tx-patient-5001-declined") as HTMLButtonElement).disabled).toBe(true);
       cleanup();
     }
@@ -511,7 +553,7 @@ describe("once the visit is sent", () => {
   it("a save the server refuses as frozen says why, and locks the section", async () => {
     server.saveRefusal = "EXISTING_TX_FROZEN";
     renderVisit();
-    await screen.findByTestId("hyg-existing-tx-row-5001");
+    await openRow(5001); // RULING (compact round): rows start collapsed
     fireEvent.click(screen.getByTestId("hyg-existing-tx-patient-5001-declined"));
     const err = await screen.findByTestId("hyg-existing-tx-error-5001");
     expect(err.textContent).toContain("can no longer be changed");
@@ -540,7 +582,7 @@ describe("at Send", () => {
       }),
     ];
     renderVisit();
-    await screen.findByTestId("hyg-existing-tx-row-5001");
+    await screen.findByTestId("hyg-existing-tx-proc-5001"); // RULING (compact round): rows start collapsed
     fireEvent.click(screen.getByTestId("hyg-send-all"));
     const reminder = await screen.findByTestId("hyg-confirm-existing-not-discussed");
     expect(reminder.textContent).toContain("2 existing items not discussed");
