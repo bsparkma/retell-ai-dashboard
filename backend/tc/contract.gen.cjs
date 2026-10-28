@@ -15792,7 +15792,15 @@ var TcHygieneIntake = import_zod4.z.object({
    * — restated here because that module imports nothing of this one). NULLABLE
    * and ADDITIVE, exactly like existingTx.
    */
-  collectAtCheckout: import_zod4.z.array(import_zod4.z.string().min(1).max(200)).max(6).nullable().default(null)
+  collectAtCheckout: import_zod4.z.array(import_zod4.z.string().min(1).max(200)).max(6).nullable().default(null),
+  /**
+   * The records the handoff's treatment needs and where each stands (checkout
+   * v2) — the list its staged preview showed. Same shape as a checkout
+   * snapshot's `records`; NULLABLE and ADDITIVE.
+   */
+  records: import_zod4.z.array(
+    import_zod4.z.object({ record: import_zod4.z.string().min(1).max(120), status: import_zod4.z.enum(["needed", "on_file", "taken_today"]) }).strict()
+  ).max(60).nullable().default(null)
 });
 var TcCase = import_zod4.z.object({
   caseId: Uuid,
@@ -16187,7 +16195,8 @@ function caseToRows(tcCase, newId) {
     flag_urgent: c.hygieneIntake.flagUrgent,
     ortho_screening: c.hygieneIntake.orthoScreening,
     existing_tx: c.hygieneIntake.existingTx,
-    collect_at_checkout: c.hygieneIntake.collectAtCheckout
+    collect_at_checkout: c.hygieneIntake.collectAtCheckout,
+    records_needed: c.hygieneIntake.records
   } : null;
   return { caseRow, phaseRows, itemRows, objectionRows, followupRows, eventRows, hygieneIntakeRow };
 }
@@ -16311,7 +16320,8 @@ function caseFromRows(rows) {
       flagUrgent: hygieneIntakeRow.flag_urgent,
       orthoScreening: hygieneIntakeRow.ortho_screening ?? null,
       existingTx: hygieneIntakeRow.existing_tx ?? null,
-      collectAtCheckout: hygieneIntakeRow.collect_at_checkout ?? null
+      collectAtCheckout: hygieneIntakeRow.collect_at_checkout ?? null,
+      records: hygieneIntakeRow.records_needed ?? null
     } : null
   });
 }

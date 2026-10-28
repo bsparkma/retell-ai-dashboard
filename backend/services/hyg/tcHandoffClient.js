@@ -164,14 +164,16 @@ const RADIOGRAPH_MAP = Object.freeze({
  * @param {{ items?: unknown[] } | undefined} existingTx
  * @returns {object[]|undefined}
  */
-function existingTxForTc(existingTx) {
+function existingTxForTc(existingTx, { quiet = false } = {}) {
   const items = existingTx && Array.isArray(existingTx.items) ? existingTx.items : [];
   const valid = items
     .map((i) => contract.ExistingTxHandoffItemSchema.safeParse(i))
     .filter((r) => r.success)
     .map((r) => r.data);
   const parsed = valid.slice(0, contract.EXISTING_TX_HANDOFF_MAX);
-  if (parsed.length !== items.length) {
+  // `quiet`: the preview and the out-of-date check run this on every visit
+  // read; only a SEND is worth a log line.
+  if (parsed.length !== items.length && !quiet) {
     // Counts only — never a code, a tooth or a PatNum.
     console.warn(
       `[hyghandoff] existing treatment: ${items.length} item(s), ${items.length - valid.length} not ` +
@@ -190,6 +192,7 @@ function buildIntake({ visit, appointment, handoffCategory, date, existingTx }) 
   // the desk to pay. Refused only with none of the three.
   const carried = existingTxForTc(existingTx);
   const collect = collectForTc(visit.slip);
+  const records = recordsForTc(items, visit.slip);
   if (items.length === 0 && contract.countTcActionable(carried || []) === 0 && !collect) {
     return {
       ok: false,
@@ -295,8 +298,10 @@ function buildIntake({ visit, appointment, handoffCategory, date, existingTx }) 
       sourceKey: sourceKeyFor(visit, 'handoff'),
       // Slice 2b. Absent when there is nothing to carry.
       ...(carried ? { existingTx: carried } : {}),
-      // Checkout v2. Absent when there is nothing to collect.
+      // Checkout v2. Absent when there is nothing to collect, or no record is
+      // needed — the same records the handoff's preview lists.
       ...(collect ? { collectAtCheckout: collect } : {}),
+      ...(records ? { records } : {}),
     },
   };
 }

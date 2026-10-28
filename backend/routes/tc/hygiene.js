@@ -346,6 +346,7 @@ router.post(
         existingTx: input.existingTx ?? null,
         // Checkout v2. Null for every intake that carried nothing to collect.
         collectAtCheckout: input.collectAtCheckout ?? null,
+        records: input.records ?? null,
       },
     });
 

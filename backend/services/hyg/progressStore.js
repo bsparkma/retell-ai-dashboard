@@ -122,7 +122,7 @@ async function readDayProgress(pool, { office, aptNums }) {
     `SELECT visit_id,
             (CASE WHEN jsonb_typeof(slip->'collectAtCheckout'->'items') = 'array'
                   THEN jsonb_array_length(slip->'collectAtCheckout'->'items') ELSE 0 END
-             + CASE WHEN btrim(COALESCE(slip->'collectAtCheckout'->>'other', '')) <> '' THEN 1 ELSE 0 END
+             + CASE WHEN COALESCE(slip->'collectAtCheckout'->>'other', '') ~ '[^[:space:]]' THEN 1 ELSE 0 END
             )::int AS collect_count
        FROM hyg_visit
       WHERE office = $1 AND visit_id = ANY($2::uuid[])`,

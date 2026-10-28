@@ -428,7 +428,7 @@ class FakeHygDb extends FakeAuditDb {
           const slip = FakeHygDb.json(v.slip) || {};
           const c = slip.collectAtCheckout || {};
           const items = Array.isArray(c.items) ? c.items.length : 0;
-          const other = typeof c.other === 'string' && c.other.trim() !== '' ? 1 : 0;
+          const other = typeof c.other === 'string' && /[^\s]/.test(c.other) ? 1 : 0;
           return { visit_id: v.visit_id, collect_count: items + other };
         });
       return { rows, rowCount: rows.length };

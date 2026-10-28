@@ -395,3 +395,26 @@ test('4: a handoff staged by the previous build (its fixed "as they stand" line)
   assert.notEqual(visitStore.fingerprintPreview(legacy.preview), visitStore.fingerprintPreview(current.preview));
   assert.equal(existingTxStale.staleReason(legacy, { visit: v, existingTx: tx }), 'handoff');
 });
+
+test('review fix: the TC case intake carries the same records its staged preview lists', () => {
+  const v = visit({ recordsStatus: { 'Pre-op PA': 'on_file' } }, [item({ code: 'Crown' })]);
+  const preview = compose('tc-handoff', v).preview;
+  const built = tcHandoff.buildIntake({
+    visit: v, appointment: APPOINTMENT, handoffCategory: 'Restorative', date: '2026-09-08', existingTx: NONE,
+  });
+  assert.deepEqual(built.body.records, [
+    { record: 'Pre-op PA', status: 'on_file' },
+    { record: 'Missing teeth note', status: 'needed' },
+    { record: 'New/replacement noted', status: 'needed' },
+  ]);
+  for (const r of built.body.records) {
+    const label = contract.RECORD_STATUS_LABELS[r.status];
+    assert.ok(preview.includes(`  ${r.record} -- ${label}`), `${r.record} is in the preview`);
+  }
+  // No records needed: no key — the body every older visit sent.
+  const none = tcHandoff.buildIntake({
+    visit: visit({}, [item({ code: 'Amal' })]), appointment: APPOINTMENT, handoffCategory: 'Restorative',
+    date: '2026-09-08', existingTx: NONE,
+  });
+  assert.equal('records' in none.body, false);
+});

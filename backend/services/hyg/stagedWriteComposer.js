@@ -617,7 +617,7 @@ function composeRaw(kind, { visit, items, actor, signature, draft, existingTx })
      */
     // WHAT TC WILL RECEIVE, not what is stored: the existing items that pass the
     // handoff schema, capped — tcHandoffClient.existingTxForTc, the send's own.
-    const carried = tcHandoff.existingTxForTc(existingTx) || [];
+    const carried = tcHandoff.existingTxForTc(existingTx, { quiet: true }) || [];
     const actionable = contract.countTcActionable(carried);
     const collect = contract.collectAtCheckoutLabels(slip.collectAtCheckout);
     if (items.length === 0 && actionable === 0 && collect.length === 0) {

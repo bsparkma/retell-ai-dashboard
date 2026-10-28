@@ -232,7 +232,7 @@ function ConfirmSend({
                   ) : null}
                   {/* CHECKOUT V2: A REMINDER, NEVER A GATE. The note simply prints
                       no medical-history line; Send stays enabled. */}
-                  {!medicalHistoryRecorded ? (
+                  {!medicalHistoryRecorded && writes.some((w) => w.kind === "note") ? (
                     <p
                       className="rounded-lg border border-dashed border-muted-foreground/40 px-3 py-2 text-xs"
                       data-testid="hyg-confirm-medical-history"

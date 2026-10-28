@@ -173,6 +173,8 @@ export interface TcHygieneIntakeRow {
   existing_tx?: ExistingTxHandoffItem[] | null;
   /** jsonb array of labels, NULLABLE (checkout v2). Optional for the same reason. */
   collect_at_checkout?: string[] | null;
+  /** jsonb array, NULLABLE (checkout v2). Optional for the same reason. */
+  records_needed?: { record: string; status: "needed" | "on_file" | "taken_today" }[] | null;
 }
 
 export interface TcCaseRows {
@@ -333,6 +335,7 @@ export function caseToRows(tcCase: TcCase, newId: () => string): TcCaseRows {
         ortho_screening: c.hygieneIntake.orthoScreening,
         existing_tx: c.hygieneIntake.existingTx,
         collect_at_checkout: c.hygieneIntake.collectAtCheckout,
+        records_needed: c.hygieneIntake.records,
       }
     : null;
 
@@ -472,6 +475,7 @@ export function caseFromRows(rows: TcCaseRows): TcCase {
           orthoScreening: hygieneIntakeRow.ortho_screening ?? null,
           existingTx: hygieneIntakeRow.existing_tx ?? null,
           collectAtCheckout: hygieneIntakeRow.collect_at_checkout ?? null,
+          records: hygieneIntakeRow.records_needed ?? null,
         }
       : null,
   });

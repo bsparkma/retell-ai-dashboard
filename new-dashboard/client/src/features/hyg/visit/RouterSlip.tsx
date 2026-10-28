@@ -401,7 +401,8 @@ export function RouterSlip({
             type="text"
             defaultValue={slip.collectAtCheckout.other}
             maxLength={COLLECT_OTHER_MAX}
-            onBlur={(e) => set("collectAtCheckout", { ...slip.collectAtCheckout, other: e.target.value })}
+            // Trimmed on the way in, so a blank "Other" is stored as nothing.
+            onBlur={(e) => set("collectAtCheckout", { ...slip.collectAtCheckout, other: e.target.value.trim() })}
             placeholder="Other"
             aria-label="Other item to collect at checkout"
             data-testid="hyg-slip-collect-other"

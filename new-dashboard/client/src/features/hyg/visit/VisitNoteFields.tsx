@@ -42,7 +42,7 @@ import {
   type NoteField,
   type VisitType,
 } from "@shared/hyg/noteTemplates";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   MEDICAL_HISTORY_MAX,
   medicalHistoryLine,
@@ -184,6 +184,13 @@ function MedicalHistoryField({
   useEffect(() => {
     if (noChanges) setText("");
   }, [noChanges]);
+  // A different stored sentence (a reload, a reset) replaces the box's — but
+  // never while she is in it, where the box is the newer of the two.
+  const box = useRef<HTMLTextAreaElement>(null);
+  const stored = value?.status === "changes" ? value.text : null;
+  useEffect(() => {
+    if (stored !== null && document.activeElement !== box.current) setText(stored);
+  }, [stored]);
 
   const typed = (next: string) => {
     const capped = next.slice(0, MEDICAL_HISTORY_MAX);
@@ -208,6 +215,7 @@ function MedicalHistoryField({
           testId="hyg-medical-history-none"
         />
         <textarea
+          ref={box}
           value={text}
           maxLength={MEDICAL_HISTORY_MAX}
           onChange={(e) => typed(e.target.value)}

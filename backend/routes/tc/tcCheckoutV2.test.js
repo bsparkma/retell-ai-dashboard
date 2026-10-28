@@ -79,6 +79,15 @@ test('an intake with nothing to collect stores NULL; one with a list stores and 
     const some = await api(baseUrl, 'POST', POST, { ...INTAKE, collectAtCheckout: ['Fl2', 'Mouthwash'] });
     assert.equal(some.status, 201, JSON.stringify(some.body));
     assert.deepEqual(some.body.case.hygieneIntake.collectAtCheckout, ['Fl2', 'Mouthwash']);
+    assert.equal(some.body.case.hygieneIntake.records, null);
+
+    // Review fix: the records the handoff's preview listed ride the intake too.
+    const withRecords = await api(baseUrl, 'POST', POST, {
+      ...INTAKE,
+      records: [{ record: 'Pano', status: 'needed' }],
+    });
+    assert.equal(withRecords.status, 201, JSON.stringify(withRecords.body));
+    assert.deepEqual(withRecords.body.case.hygieneIntake.records, [{ record: 'Pano', status: 'needed' }]);
   } finally {
     await close();
   }
