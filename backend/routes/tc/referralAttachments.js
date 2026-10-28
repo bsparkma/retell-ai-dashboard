@@ -49,7 +49,10 @@ const blob = require('../../services/tc/referralAttachmentStore');
 const MAX_BYTES = contract.TC_REFERRAL_ATTACHMENT_MAX_BYTES;
 const MAX_FILES = contract.TC_REFERRAL_ATTACHMENT_MAX_FILES;
 
-/** While a referral is still being decided, files may be added to it. */
+/**
+ * While a referral is still being decided, files may be added to it. The
+ * default window; the TC staff route widens it (R6.9a, referrals.js).
+ */
 const ATTACHABLE_STATUSES = Object.freeze(['draft', 'pending_signoff']);
 
 const ATTACHMENT_COLS = [
@@ -148,9 +151,19 @@ function refuse(res, status, error, code) {
  * POST — one file onto one referral.
  *
  * @param {{ officeOf: (req) => string, referralIdOf: (req) => string,
- *           guard?: (req, referralRow) => (Promise<null | [number, string, string]> | null | [number, string, string]) }} opts
+ *           guard?: (req, referralRow) => (Promise<null | [number, string, string]> | null | [number, string, string]),
+ *           attachableStatuses?: readonly string[], lockedMessage?: string }} opts
+ *   attachableStatuses / lockedMessage: the status window and its refusal
+ *   sentence, read under the row lock. Default: ATTACHABLE_STATUSES. Only the
+ *   TC staff route widens it (R6.9a).
  */
-function uploadHandler({ officeOf, referralIdOf, guard }) {
+function uploadHandler({
+  officeOf,
+  referralIdOf,
+  guard,
+  attachableStatuses = ATTACHABLE_STATUSES,
+  lockedMessage = 'Files can be added only while a referral is a draft or awaiting sign-off.',
+}) {
   return async (req, res) => {
     const office = officeOf(req);
     const referralId = referralIdOf(req);
@@ -194,8 +207,8 @@ function uploadHandler({ officeOf, referralIdOf, guard }) {
           const g = await guard(req, ref);
           if (g) throw refusal(...g);
         }
-        if (!ATTACHABLE_STATUSES.includes(ref.status)) {
-          throw refusal(409, 'Files can be added only while a referral is a draft or awaiting sign-off.', 'REFERRAL_LOCKED');
+        if (!attachableStatuses.includes(ref.status)) {
+          throw refusal(409, lockedMessage, 'REFERRAL_LOCKED');
         }
         const existing = await listRows(client, office, referralId);
         if (existing.length >= MAX_FILES) {

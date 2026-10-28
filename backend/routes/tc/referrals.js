@@ -57,6 +57,8 @@
  *
  *   R4 (item 55) — attachments (./referralAttachments.js):
  *   POST   /:id/attachments       one image or PDF (multipart "file"), ≤10 MB, ≤5
+ *                                  (R6.9a: also once sent / acknowledged /
+ *                                  patient seen, for what the specialist sends back)
  *   GET    /:id/attachments       the referral's files (metadata)
  *   GET    /:id/attachments/:aid  the bytes — audited on every view
  *
@@ -565,7 +567,28 @@ router.put(
 // ── R4: attachments ─────────────────────────────────────────────────────────
 
 const tcAttachmentOpts = { officeOf: (req) => req.tcOffice, referralIdOf: (req) => req.params.id };
-router.post('/:id/attachments', attachments.receiveFile, h(attachments.uploadHandler(tcAttachmentOpts)));
+// R6.9a: staff may also attach once the referral went out — the specialist's
+// returned report or fax. Closed, declined and cancelled stay shut, and so
+// does approved (not yet sent). The cap, the bytes rules and no-delete are
+// R4's, unchanged. The doctor's sign-off route and hygiene keep R4's window.
+const TC_STAFF_ATTACHABLE_STATUSES = Object.freeze([
+  ...attachments.ATTACHABLE_STATUSES,
+  'sent',
+  'acknowledged',
+  'patient_seen',
+]);
+router.post(
+  '/:id/attachments',
+  attachments.receiveFile,
+  h(
+    attachments.uploadHandler({
+      ...tcAttachmentOpts,
+      attachableStatuses: TC_STAFF_ATTACHABLE_STATUSES,
+      lockedMessage:
+        'Files can be added only while a referral is a draft, awaiting sign-off, sent, acknowledged, or the patient has been seen.',
+    })
+  )
+);
 router.get('/:id/attachments', h(attachments.listHandler(tcAttachmentOpts)));
 router.get('/:id/attachments/:attachmentId', h(attachments.viewHandler(tcAttachmentOpts)));
 

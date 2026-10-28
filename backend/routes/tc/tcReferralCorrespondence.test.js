@@ -15,8 +15,9 @@
  *   O  office server-derived: another office's referral is a 404, a doctor
  *      (no tc.full) is refused at the mount
  *   A  a file with it goes through R4's route UNCHANGED: its cap of 5 refuses
- *      the sixth honestly and the logged contact stands; after sign-off R4
- *      refuses by status (REFERRAL_LOCKED)
+ *      the sixth honestly and the logged contact stands; once closed R4
+ *      refuses by status (REFERRAL_LOCKED) — R6.9a opened sent / acknowledged
+ *      / patient seen to staff
  *   C  the card line: lastCorrespondence on the hub and the case list, from
  *      the one batched events query (no per-row query)
  *
@@ -329,11 +330,13 @@ test('A: at the cap of 5, R4 refuses the sixth file honestly — and the logged 
   assert.equal(db.table('tc_referral_events').filter((e) => e.verb === 'correspondence').length, 1, 'the contact stays logged');
 });
 
-test('A: after sign-off R4 refuses any file by status (REFERRAL_LOCKED); its rule is unchanged', async (t) => {
+test('A: once closed R4 refuses any file by status (REFERRAL_LOCKED); its default rule is unchanged', async (t) => {
+  // R6.9a widened the STAFF window to sent / acknowledged / patient seen, so
+  // this pins a status that stays shut (closed) instead of `sent`.
   switchReferrals(t);
   fakeBlob(t);
   const { baseUrl, db } = await boot(t);
-  const { id } = await walkTo(baseUrl, db, 'sent');
+  const { id } = await walkTo(baseUrl, db, 'closed');
   assert.equal((await log(baseUrl, id)).status, 201);
   const r = await upload(baseUrl, id, 'fax.png');
   assert.equal(r.status, 409);
