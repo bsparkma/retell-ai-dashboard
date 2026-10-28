@@ -55,7 +55,7 @@ test('the verb CHECK is dropped and re-added, inline, equal to the contract: R5 
   const [sql] = checksNamed(calls, 'tc_referral_events_verb_check');
   assert.match(sql, /^verb IS NULL OR verb IN \(/);
   // R6.9: this migration is history; its list is the frozen R5B one (the live
-  // vocabulary, TC_REFERRAL_ALL_EVENT_VERBS, is pinned by 1792800000000's test).
+  // vocabulary, TC_REFERRAL_ALL_EVENT_VERBS, is pinned by 1793100000000's test).
   assert.deepEqual(inList(sql), [...contract.TC_REFERRAL_R5B_EVENT_VERBS]);
   assert.deepEqual(
     [...contract.TC_REFERRAL_R5B_EVENT_VERBS],

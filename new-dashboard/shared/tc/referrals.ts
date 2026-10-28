@@ -364,7 +364,7 @@ export const TC_REFERRAL_R5B_EVENT_VERBS = [...TC_REFERRAL_R5_EVENT_VERBS, ...TC
  * R6.9 (correspondence log): staff recording a contact with the specialist's
  * office or the patient — a call, an email, a fax — that happened OUTSIDE the
  * app. It never moves the status (from = to); it sends and triggers nothing.
- * The CHECK on tc_referral_events.verb (1792800000000) carries
+ * The CHECK on tc_referral_events.verb (1793100000000) carries
  * TC_REFERRAL_R5B_EVENT_VERBS followed by exactly this one; that migration's
  * test pins the equality.
  */
@@ -380,7 +380,7 @@ export type TcReferralEventVerb = z.infer<typeof TcReferralEventVerb>;
 
 /**
  * Which way the contact went, with whom, and how. Each list is the CHECK on
- * its tc_referral_events column (1792800000000), inline; that migration's test
+ * its tc_referral_events column (1793100000000), inline; that migration's test
  * pins them equal.
  */
 export const TC_REFERRAL_CORRESPONDENCE_DIRECTIONS = ["to", "from"] as const;

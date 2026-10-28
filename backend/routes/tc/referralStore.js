@@ -239,7 +239,7 @@ const EVENT_COLS = [
   'at',
   'note',
   'verb',
-  // R6.9 (1792800000000): set only on a `correspondence` row.
+  // R6.9 (1793100000000): set only on a `correspondence` row.
   'correspondence_direction',
   'correspondence_party',
   'correspondence_channel',

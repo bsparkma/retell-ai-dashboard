@@ -19,7 +19,7 @@ Staff can now record a contact with the specialist's office or the patient on a 
      If the audit write fails, the event rolls back. The answer is the referral as read back afterwards.
    - The status never changes. Nothing is sent, and Open Dental is not touched.
    - **The case panel's referral rows do not use the hub's detail component**, so the action lives only in the hub. The brief allowed for this.
-2. **Vocabulary.** New migration `1792800000000_tc_referral_correspondence` (develop's newest was 1792700000000):
+2. **Vocabulary.** New migration `1793100000000_tc_referral_correspondence` (develop's newest was 1793000000000 after #279/#280; first pushed as 1792800000000 and renumbered when hyg took that number):
    - The verb CHECK is widened to R5b's list plus `correspondence`. A test pins it equal to `TC_REFERRAL_ALL_EVENT_VERBS`.
    - Three nullable columns on `tc_referral_events`: `correspondence_direction`, `correspondence_party` and `correspondence_channel`. Each has its own vocabulary CHECK, pinned equal to the contract.
    - Three more CHECKs: only a correspondence row carries those three facts, and it always carries all three; a correspondence row always has from = to; its note is 1–2000 characters.
@@ -79,7 +79,7 @@ No dashboard test was edited.
   - The three CHECKs on fields, status and note.
   - No new status or table; the send-fields CHECK is untouched.
   - `down()` restores R5b exactly.
-  - Numbered above 1792700000000.
+  - Numbered above 1793000000000.
   - Schema replay finds all three columns.
 - **Dashboard `referrals-correspondence-log.test.tsx` (25):**
   - Labels, latest wins, the card line, and that it is not a move (an open return and a failed send survive it).

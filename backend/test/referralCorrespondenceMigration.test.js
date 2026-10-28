@@ -1,12 +1,12 @@
 'use strict';
 
 /**
- * R6.9's tenant migration, 1792800000000_tc_referral_correspondence: the
+ * R6.9's tenant migration, 1793100000000_tc_referral_correspondence: the
  * event-verb CHECK widened to R5b's verbs + `correspondence` (equal to the
  * shared contract), the three nullable columns and their vocabulary CHECKs
  * (equal to the contract), the fields / status / note CHECKs, no new referral
  * status, a clean down that restores R5b's verb CHECK exactly, and numbered
- * above develop's newest (1792700000000).
+ * above develop's newest (1793000000000).
  */
 
 const assert = require('node:assert/strict');
@@ -14,11 +14,11 @@ const test = require('node:test');
 const fs = require('node:fs');
 
 const { buildTenantSchema, MIGRATIONS_DIR } = require('../scripts/lib/tenantSchemaReplay');
-const migration = require('../migrations-tenant/1792800000000_tc_referral_correspondence.js');
+const migration = require('../migrations-tenant/1793100000000_tc_referral_correspondence.js');
 const r5b = require('../migrations-tenant/1792500000000_tc_referral_links.js');
 const contract = require('../tc/contract.gen.cjs');
 
-const FILE = '1792800000000_tc_referral_correspondence.js';
+const FILE = '1793100000000_tc_referral_correspondence.js';
 
 function capture(mig, direction = 'up') {
   const calls = [];
@@ -129,14 +129,14 @@ test("down() relabels correspondence rows, drops the CHECKs and columns, and res
   assert.equal(checksNamed(calls, 'tc_referral_events_verb_check')[0], checksNamed(capture(r5b), 'tc_referral_events_verb_check')[0]);
 });
 
-test("numbered above develop's newest (1792700000000); unique; filename order = numeric order", () => {
+test("numbered above develop's newest (1793000000000); unique; filename order = numeric order", () => {
   const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => /^\d+_/.test(f)).sort();
   assert.ok(files.includes(FILE));
-  assert.ok(files.includes('1792700000000_tc_provider_directory.js'));
+  assert.ok(files.includes('1793000000000_tc_hygiene_intake_existing_tx.js'));
   const nums = files.map((f) => Number(f.split('_')[0]));
   assert.equal(new Set(nums).size, nums.length, 'unique numbers');
   assert.deepEqual([...nums].sort((a, b) => a - b), nums, 'filename order = numeric order');
-  assert.ok(Number(FILE.split('_')[0]) > 1792700000000);
+  assert.ok(Number(FILE.split('_')[0]) > 1793000000000);
 });
 
 test('every column the store reads and writes exists once every migration has run', () => {

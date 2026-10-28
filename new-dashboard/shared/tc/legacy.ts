@@ -457,6 +457,7 @@ export function legacyCaseToTc(input: unknown, newId: () => string): TcCase {
       // The legacy TC app never had an ortho screening (item 33). Stated rather
       // than left to the schema default, so this mapping names every field.
       orthoScreening: null,
+      existingTx: null,
     });
   }
 

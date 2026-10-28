@@ -78,6 +78,7 @@ import {
 } from "@shared/hyg/contract";
 import {
   addTreatmentItem,
+  fetchExistingTx,
   fetchPerio,
   fetchPerioSend,
   fetchVisit,
@@ -85,6 +86,7 @@ import {
   openVisit,
   removeTreatmentItem,
   retryStagedWrite,
+  saveExistingTxDisposition,
   saveSlip,
   sendOrthoScreening,
   alertCheckout,
@@ -106,6 +108,8 @@ import { RouterSlip } from "@/features/hyg/visit/RouterSlip";
 import { VisitNoteFields } from "@/features/hyg/visit/VisitNoteFields";
 import { StagedWritesTray, type TrayPerio } from "@/features/hyg/visit/StagedWritesTray";
 import { TreatmentItems } from "@/features/hyg/visit/TreatmentItems";
+import { ExistingTreatment, type ExistingTxState } from "@/features/hyg/visit/ExistingTreatment";
+import { countNotDiscussed, type ExistingTxDispositionInput } from "@shared/hyg/existingTx";
 import { OrthoScreening } from "@/features/hyg/visit/OrthoScreening";
 import { CheckoutAlert } from "@/features/hyg/visit/CheckoutAlert";
 import type { OrthoScreening as OrthoScreeningValue } from "@shared/hyg/orthoScreening";
@@ -115,6 +119,13 @@ import { VisitReferral } from "@/features/hyg/visit/VisitReferral";
 
 /** How long after the last keystroke the slip is stored. */
 const SAVE_DEBOUNCE_MS = 800;
+
+/** Slice 2a: the section's failure sentence, whatever failed. */
+const EXISTING_TX_UNAVAILABLE = "Couldn't load existing treatment from Open Dental";
+/** The staged-write states that lock the existing-treatment answers (the server's rule). */
+const EXISTING_TX_LOCKING: ReadonlySet<string> = new Set(["Sending", "Written", "Failed", "Amending"]);
+/** The staged writes that carry the existing-treatment answers (the server's FREEZING_KINDS). */
+const EXISTING_TX_CARRIERS: ReadonlySet<string> = new Set(["router", "note", "tc-handoff"]);
 
 function Chip({ label, tone }: { label: string; tone: "alert" | "unknown" }) {
   return (
@@ -409,6 +420,148 @@ export default function HygVisit() {
       if (mounted.current) setPerioRunning(false);
     }
   }, [office, aptNum, applyPerioStep]);
+
+  /**
+   * SLICE 2a: the existing treatment from Open Dental, and this visit's answers.
+   *
+   * ONE READ PER VISIT OPEN, keyed on the visit row — the server reads whose
+   * plan it is off that row, so there is nothing to read until it exists — plus
+   * the section's own Retry. The server caches its read for up to ten minutes, so
+   * a reload of this page is not a second trip to the practice either.
+   */
+  const [existingTx, setExistingTx] = useState<ExistingTxState>({ status: "not_started" });
+  const [existingSaving, setExistingSaving] = useState<ReadonlySet<number>>(new Set());
+  const [existingErrors, setExistingErrors] = useState<Record<number, string>>({});
+  const visitId = page?.visit?.visitId ?? null;
+
+  /**
+   * WHICH VISIT A RESPONSE BELONGS TO. A ProcNum is only unique within one
+   * patient's chart in one office, so an answer that comes back after the page
+   * moved to another visit must not land on a row that happens to share the
+   * number. Every read and save checks this before it touches state.
+   */
+  const existingContext = `${office}|${aptNum}|${visitId ?? ""}`;
+  const existingContextRef = useRef(existingContext);
+  existingContextRef.current = existingContext;
+  /** The newest read wins; an older Retry that answers late is dropped. */
+  const existingReadSeq = useRef(0);
+  /** One row's saves go out IN ORDER, each after the last has answered. */
+  const existingChains = useRef(new Map<number, Promise<void>>());
+  const existingPending = useRef(new Map<number, number>());
+
+  const loadExistingTx = useCallback(
+    async (refresh: boolean, signal?: AbortSignal) => {
+      if (!isOfficeId(office)) return;
+      const seq = ++existingReadSeq.current;
+      const context = existingContextRef.current;
+      const current = () =>
+        !signal?.aborted && seq === existingReadSeq.current && context === existingContextRef.current;
+      setExistingTx({ status: "loading" });
+      try {
+        const data = await fetchExistingTx(office, aptNum, { refresh }, signal);
+        if (!current()) return;
+        setExistingTx({ status: "ready", data });
+        setExistingErrors({});
+      } catch {
+        if (!current()) return;
+        // The same sentence whatever failed: the list is not known, and that
+        // is the one thing the section must not paper over with "none".
+        setExistingTx({ status: "error", message: EXISTING_TX_UNAVAILABLE });
+      }
+    },
+    [office, aptNum],
+  );
+
+  useEffect(() => {
+    // A different visit starts clean: nothing pending, no row errors.
+    existingChains.current = new Map();
+    existingPending.current = new Map();
+    setExistingSaving(new Set());
+    setExistingErrors({});
+    if (visitId === null) {
+      setExistingTx({ status: "not_started" });
+      return;
+    }
+    const controller = new AbortController();
+    void loadExistingTx(false, controller.signal);
+    return () => controller.abort();
+  }, [visitId, loadExistingTx]);
+
+  /** "Show existing treatment" before the visit exists: start it, then the effect reads. */
+  const onStartExistingTx = useCallback(async () => {
+    if (!isOfficeId(office)) return;
+    setExistingTx({ status: "loading" });
+    try {
+      adopt(await openVisit(office, aptNum, date));
+    } catch {
+      setExistingTx({ status: "error", message: EXISTING_TX_UNAVAILABLE });
+    }
+  }, [office, aptNum, date, adopt]);
+
+  /**
+   * Store one row's answers. The row shows the SERVER's read-back, never the
+   * tap. Queued behind the row's previous save, so quick taps reach the server
+   * in the order they were made and the last one is what is stored.
+   */
+  const onSaveExistingTx = useCallback(
+    (procNum: number, input: ExistingTxDispositionInput) => {
+      if (!isOfficeId(office)) return;
+      const chains = existingChains.current;
+      const pending = existingPending.current;
+      const context = existingContextRef.current;
+      // A queue from before a visit change: nothing it says applies any more.
+      const live = () => chains === existingChains.current && context === existingContextRef.current;
+
+      pending.set(procNum, (pending.get(procNum) ?? 0) + 1);
+      setExistingSaving((prev) => new Set(prev).add(procNum));
+
+      const saveOne = async () => {
+        if (!live()) return;
+        setExistingErrors(({ [procNum]: _dropped, ...rest }) => rest);
+        try {
+          const res = await saveExistingTxDisposition(office, aptNum, procNum, input);
+          if (!live()) return;
+          setExistingTx((prev) =>
+            prev.status === "ready"
+              ? {
+                  ...prev,
+                  data: {
+                    ...prev.data,
+                    items: prev.data.items.map((i) =>
+                      i.procNum === procNum ? { ...i, disposition: res.disposition } : i,
+                    ),
+                  },
+                }
+              : prev,
+          );
+        } catch (err) {
+          if (!live()) return;
+          if (err instanceof HygApiError && err.code === "EXISTING_TX_FROZEN") {
+            setExistingTx((prev) =>
+              prev.status === "ready" ? { ...prev, data: { ...prev.data, frozen: true } } : prev,
+            );
+          }
+          setExistingErrors((prev) => ({
+            ...prev,
+            [procNum]:
+              err instanceof HygApiError ? err.message : "That answer was not saved. Try again.",
+          }));
+        } finally {
+          const left = (pending.get(procNum) ?? 1) - 1;
+          pending.set(procNum, left);
+          if (left === 0 && live()) {
+            setExistingSaving((prev) => {
+              const next = new Set(prev);
+              next.delete(procNum);
+              return next;
+            });
+          }
+        }
+      };
+      chains.set(procNum, (chains.get(procNum) ?? Promise.resolve()).then(saveOne));
+    },
+    [office, aptNum],
+  );
 
   /**
    * Run a mutation, making sure the visit exists first.
@@ -722,6 +875,18 @@ export default function HygVisit() {
   const items = page.visit?.items ?? [];
   const staged = page.visit?.stagedWrites ?? [];
 
+  // The answers lock the moment the note, slip or TC handoff — the three writes
+  // that carry them — leaves Draft/Staged. Read off the tray's own rows, so a
+  // Send pressed on this page locks them without a re-read. The server refuses
+  // an edit (409) either way; this is the screen saying so first.
+  const existingLocked = staged.some(
+    (w) => EXISTING_TX_CARRIERS.has(w.kind) && EXISTING_TX_LOCKING.has(w.state),
+  );
+  const existingTxShown: ExistingTxState =
+    existingTx.status === "ready" && existingLocked && !existingTx.data.frozen
+      ? { ...existingTx, data: { ...existingTx.data, frozen: true } }
+      : existingTx;
+
   // ITEM 15: can the staged chart ride Send? Only when its own record has been
   // read (a correction and an in-flight send are both on it), and only with a
   // provider to file the exam under.
@@ -854,6 +1019,14 @@ export default function HygVisit() {
                 onChange={onSlipChange}
               />
               <RouterSlip slip={draft} recordsNeeded={page.recordsNeeded} onChange={onSlipChange} />
+              <ExistingTreatment
+                state={existingTxShown}
+                saving={existingSaving}
+                rowErrors={existingErrors}
+                onStart={() => void onStartExistingTx()}
+                onRetry={() => void loadExistingTx(true)}
+                onSave={(procNum, input) => void onSaveExistingTx(procNum, input)}
+              />
               <TreatmentItems
                 items={items}
                 busy={busy}
@@ -883,6 +1056,9 @@ export default function HygVisit() {
             handoffCategory={page.handoffCategory}
             patientName={page.appointment.patientName ?? "this patient"}
             itemCount={items.length}
+            existingNotDiscussed={
+              existingTxShown.status === "ready" ? countNotDiscussed(existingTxShown.data.items) : 0
+            }
             busy={busy}
             sending={sending}
             onStage={(kind) => void onStage(kind)}

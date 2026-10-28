@@ -201,6 +201,9 @@ test('the module owns source files, so the scan below is scanning something', ()
   // Item 35's perio voice route and its budget, so every scan below covers them.
   assert.ok(files.some((f) => f.endsWith(path.join('hyg', 'voice.js'))));
   assert.ok(files.some((f) => f.endsWith('voiceBudget.js')));
+  // Slice 2a's reader and store, named for the same reason.
+  assert.ok(files.some((f) => f.endsWith('existingTreatment.js')));
+  assert.ok(files.some((f) => f.endsWith('existingTxStore.js')));
 });
 
 /**
@@ -605,6 +608,91 @@ test('driving the visit MUTATIONS to success reaches no Open Dental write verb',
     });
     assert.equal(slip.status, 200);
 
+    assert.deepEqual(od.writes, [], 'not one Open Dental write verb was reached');
+  } finally {
+    await app.close();
+  }
+});
+
+test('Slice 2a: existing treatment, read and answered, reaches Open Dental by GET only', async () => {
+  // The section READS the patient's plan from Open Dental and stores what the
+  // hygienist tapped in CareIN only. Driving both routes to SUCCESS against the
+  // throwing client proves neither path reaches a write verb.
+  const { FakeHygDb } = require('./hygTestUtils');
+  const db = new FakeHygDb();
+  db.hyg_visit.push({
+    visit_id: db.nextId('visit'),
+    office: 'roland',
+    apt_num: 900001,
+    pat_num: 12827,
+    visit_date: DATE,
+    slip: {},
+    created_by: 'hygienist@carein.ai',
+    created_at: new Date(),
+    updated_at: new Date(),
+  });
+  const od = new FakeOd({
+    '/procedurelogs': [
+      { ProcNum: 5001, PatNum: 12827, AptNum: 777, ProcStatus: 'TP', procCode: 'D2392', DateTP: '2026-05-01' },
+    ],
+    '/appointments': [{ AptNum: 777, PatNum: 12827, AptStatus: 'Scheduled' }],
+  });
+  const app = await bootHygApp({ db, od });
+  try {
+    const read = await api(app.baseUrl, 'GET', '/api/hyg/visit/900001/existing-tx?office=roland&refresh=1');
+    assert.equal(read.status, 200, 'the read must actually SUCCEED, or this proves nothing');
+    assert.equal(read.body.items.length, 1);
+    const saved = await api(app.baseUrl, 'PUT', '/api/hyg/visit/900001/existing-tx/5001?office=roland', {
+      body: { clinical: 'worse_urgent', patient: 'wants_to_wait', waitTimeframe: 'next_recall', note: null },
+    });
+    assert.equal(saved.status, 200, 'the save must actually SUCCEED, or this proves nothing');
+    assert.equal(db.hyg_existing_tx_disposition.length, 1, 'it landed in CareIN');
+    assert.deepEqual(od.writes, [], 'not one Open Dental write verb was reached');
+    assert.ok(od.calls.length > 0, 'and Open Dental really was read');
+  } finally {
+    await app.close();
+  }
+});
+
+test('Slice 2a: the TC reader the existing-treatment read reuses names no write transport', () => {
+  // existingTreatment.js reaches Open Dental through routes/tc/odReads.js, which
+  // is outside this module's scan above. It is GET-only by construction; this
+  // keeps it that way from here too.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'tc', 'odReads.js'), 'utf8');
+  assert.ok(!WRITE_TRANSPORT.test(src), 'odReads.js must not name an Open Dental write verb');
+  const reader = fs.readFileSync(path.join(__dirname, '..', '..', 'services', 'hyg', 'existingTreatment.js'), 'utf8');
+  assert.match(reader, /require\('\.\.\/\.\.\/routes\/tc\/odReads'\)/, 'the reuse is real');
+});
+
+test('Slice 2b: composing the note and Router with existing treatment reaches no Open Dental write', async () => {
+  // The answers ride the note and the Router into the chart ONLY through the
+  // existing human-approved visit Send (GroupNote / Images upload). Staging them
+  // — the step that builds what she approves — must reach no write verb.
+  const { FakeHygDb } = require('./hygTestUtils');
+  const db = new FakeHygDb();
+  const od = new FakeOd({
+    '/appointments': [apptRow({ AptNum: 900001, PatNum: 12827, AptDateTime: DATE + ' 08:00:00' })],
+    '/operatories': [operatoryRow()],
+    '/appointmenttypes': [{ AppointmentTypeNum: 3, AppointmentTypeName: 'Prophy Adult' }],
+    '/providers': [{ ProvNum: 7, Abbr: 'HYG1' }],
+    '/patients/12827': patientRow(),
+    '/procedurelogs': [{ ProcNum: 5001, PatNum: 12827, AptNum: 0, ProcStatus: 'TP', procCode: 'D2740', DateTP: '2026-06-20' }],
+  });
+  const app = await bootHygApp({ db, od });
+  const q = '?office=roland&date=' + DATE;
+  try {
+    assert.equal((await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/open' + q)).status, 200);
+    assert.equal((await api(app.baseUrl, 'GET', '/api/hyg/visit/900001/existing-tx?office=roland')).status, 200);
+    const put = await api(app.baseUrl, 'PUT', '/api/hyg/visit/900001/existing-tx/5001?office=roland', {
+      body: { clinical: 'no_change', patient: 'declined', waitTimeframe: null, note: null },
+    });
+    assert.equal(put.status, 200);
+    for (const kind of ['note', 'router']) {
+      const staged = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/staged-writes' + q, { body: { kind } });
+      assert.equal(staged.status, 201, kind);
+      const row = staged.body.visit.stagedWrites.find((w) => w.kind === kind);
+      assert.ok(row.preview.some((l) => /Existing treatment/.test(l)), `the ${kind} really carries the section`);
+    }
     assert.deepEqual(od.writes, [], 'not one Open Dental write verb was reached');
   } finally {
     await app.close();

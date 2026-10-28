@@ -14813,10 +14813,10 @@ var require_zod = __commonJS({
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.z = void 0;
-    var z7 = __importStar(require_external());
-    exports2.z = z7;
+    var z8 = __importStar(require_external());
+    exports2.z = z8;
     __exportStar(require_external(), exports2);
-    exports2.default = z7;
+    exports2.default = z8;
   }
 });
 
@@ -14831,7 +14831,26 @@ __export(contract_entry_exports, {
   DX_LABELS: () => DX_LABELS,
   DxCodeSchema: () => DxCodeSchema,
   EXAM_STATUS_LABELS: () => EXAM_STATUS_LABELS,
+  EXISTING_TX_CLINICAL: () => EXISTING_TX_CLINICAL,
+  EXISTING_TX_CLINICAL_LABELS: () => EXISTING_TX_CLINICAL_LABELS,
+  EXISTING_TX_HANDOFF_MAX: () => EXISTING_TX_HANDOFF_MAX,
+  EXISTING_TX_NOTE_MAX: () => EXISTING_TX_NOTE_MAX,
+  EXISTING_TX_PATIENT: () => EXISTING_TX_PATIENT,
+  EXISTING_TX_PATIENT_LABELS: () => EXISTING_TX_PATIENT_LABELS,
+  EXISTING_TX_TC_GROUP_ORDER: () => EXISTING_TX_TC_GROUP_ORDER,
+  EXISTING_TX_WAIT: () => EXISTING_TX_WAIT,
+  EXISTING_TX_WAIT_LABELS: () => EXISTING_TX_WAIT_LABELS,
   ExamStatusSchema: () => ExamStatusSchema,
+  ExistingTxClinicalSchema: () => ExistingTxClinicalSchema,
+  ExistingTxDispositionInputSchema: () => ExistingTxDispositionInputSchema,
+  ExistingTxDispositionSchema: () => ExistingTxDispositionSchema,
+  ExistingTxHandoffItemSchema: () => ExistingTxHandoffItemSchema,
+  ExistingTxItemSchema: () => ExistingTxItemSchema,
+  ExistingTxLastDiscussedSchema: () => ExistingTxLastDiscussedSchema,
+  ExistingTxPatientSchema: () => ExistingTxPatientSchema,
+  ExistingTxResponseSchema: () => ExistingTxResponseSchema,
+  ExistingTxSaveResponseSchema: () => ExistingTxSaveResponseSchema,
+  ExistingTxWaitSchema: () => ExistingTxWaitSchema,
   FlagSourceSchema: () => FlagSourceSchema,
   HYG_DAY_SCOPES: () => HYG_DAY_SCOPES,
   HYG_ERROR_CODES: () => HYG_ERROR_CODES,
@@ -14993,12 +15012,13 @@ __export(contract_entry_exports, {
   VisitUpsertRequestSchema: () => VisitUpsertRequestSchema,
   XRAY_OPTIONS: () => XRAY_OPTIONS,
   YesNoSchema: () => YesNoSchema,
-  ZodError: () => import_zod6.ZodError,
+  ZodError: () => import_zod7.ZodError,
   bleedSupPlaqCalcBits: () => bleedSupPlaqCalcBits,
   chartingOrder: () => chartingOrder,
   comparePerioReadback: () => comparePerioReadback,
   controlLabel: () => controlLabel,
   controlsFor: () => controlsFor,
+  countNotDiscussed: () => countNotDiscussed,
   countPerioChart: () => countPerioChart,
   defaultPerioSweep: () => defaultPerioSweep,
   deriveCategory: () => deriveCategory,
@@ -15014,12 +15034,14 @@ __export(contract_entry_exports, {
   flagsFromBits: () => flagsFromBits,
   formatOrthoMonths: () => formatOrthoMonths,
   freeFieldsFor: () => freeFieldsFor,
+  groupExistingTxForTc: () => groupExistingTxForTc,
   hasPerioChartLine: () => hasPerioChartLine,
   isAnswered: () => isAnswered,
   isChildVisit: () => isChildVisit,
   isOfficeId: () => isOfficeId,
   isOrthoSendable: () => isOrthoSendable,
   isPatientRight: () => isPatientRight,
+  isWatchPriority: () => isWatchPriority,
   isWellFormedArchString: () => isWellFormedArchString,
   normalizePerioChart: () => normalizePerioChart,
   orthoConcernsText: () => orthoConcernsText,
@@ -15060,7 +15082,7 @@ __export(contract_entry_exports, {
   withPerioMobility: () => withPerioMobility,
   withPerioSite: () => withPerioSite,
   withPerioSkipped: () => withPerioSkipped,
-  z: () => import_zod6.z
+  z: () => import_zod7.z
 });
 module.exports = __toCommonJS(contract_entry_exports);
 
@@ -16512,7 +16534,11 @@ var HYG_VISIT_ERROR_CODES = [
   "ATTACHMENT_LIMIT",
   "REFERRAL_LOCKED",
   "REFERRAL_STORAGE_UNAVAILABLE",
-  "REFERRAL_TRANSITION_NOT_ALLOWED"
+  "REFERRAL_TRANSITION_NOT_ALLOWED",
+  // Slice 2a: existing treatment dispositions.
+  "INVALID_PROC_NUM",
+  "PROC_NOT_IN_PLAN",
+  "EXISTING_TX_FROZEN"
 ];
 
 // shared/hyg/records.ts
@@ -17797,8 +17823,149 @@ var HygPerioSendResponseSchema = import_zod5.z.object({
   paused: import_zod5.z.string().nullable()
 });
 
+// shared/hyg/existingTx.ts
+var import_zod6 = __toESM(require_zod(), 1);
+var EXISTING_TX_CLINICAL = [
+  "no_change",
+  "worse_urgent",
+  "re_evaluate",
+  "no_longer_needed"
+];
+var ExistingTxClinicalSchema = import_zod6.z.enum(EXISTING_TX_CLINICAL);
+var EXISTING_TX_PATIENT = [
+  "not_discussed",
+  "ready_to_schedule",
+  "wants_to_wait",
+  "see_plan_again",
+  "cost_questions",
+  "declined"
+];
+var ExistingTxPatientSchema = import_zod6.z.enum(EXISTING_TX_PATIENT);
+var EXISTING_TX_WAIT = ["1_month", "3_months", "6_months", "next_recall"];
+var ExistingTxWaitSchema = import_zod6.z.enum(EXISTING_TX_WAIT);
+var EXISTING_TX_NOTE_MAX = 500;
+var EXISTING_TX_CLINICAL_LABELS = {
+  no_change: "No change",
+  worse_urgent: "Getting worse \u2192 urgent",
+  re_evaluate: "Re-evaluate",
+  no_longer_needed: "No longer needed"
+};
+var EXISTING_TX_PATIENT_LABELS = {
+  not_discussed: "Not discussed",
+  ready_to_schedule: "Ready to schedule",
+  wants_to_wait: "Wants to wait",
+  see_plan_again: "Wants to see the plan again",
+  cost_questions: "Cost questions",
+  declined: "Declined"
+};
+var EXISTING_TX_WAIT_LABELS = {
+  "1_month": "1 month",
+  "3_months": "3 months",
+  "6_months": "6 months",
+  next_recall: "Next recall"
+};
+function isWatchPriority(priorityName) {
+  return typeof priorityName === "string" && priorityName.trim().toLowerCase() === "watch";
+}
+var ExistingTxDispositionInputSchema = import_zod6.z.object({
+  clinical: ExistingTxClinicalSchema.nullable(),
+  patient: ExistingTxPatientSchema,
+  waitTimeframe: ExistingTxWaitSchema.nullable(),
+  note: import_zod6.z.string().max(EXISTING_TX_NOTE_MAX).nullable()
+}).strict().superRefine((value, ctx) => {
+  if (value.waitTimeframe !== null && value.patient !== "wants_to_wait") {
+    ctx.addIssue({
+      code: import_zod6.z.ZodIssueCode.custom,
+      path: ["waitTimeframe"],
+      message: "A wait timeframe goes only with \u201CWants to wait\u201D"
+    });
+  }
+});
+var ExistingTxDispositionSchema = import_zod6.z.object({
+  clinical: ExistingTxClinicalSchema.nullable(),
+  patient: ExistingTxPatientSchema,
+  waitTimeframe: ExistingTxWaitSchema.nullable(),
+  note: import_zod6.z.string().nullable(),
+  updatedBy: import_zod6.z.string(),
+  updatedAt: import_zod6.z.string()
+});
+var ExistingTxLastDiscussedSchema = import_zod6.z.object({
+  visitDate: import_zod6.z.string(),
+  patient: ExistingTxPatientSchema,
+  waitTimeframe: ExistingTxWaitSchema.nullable(),
+  clinical: ExistingTxClinicalSchema.nullable()
+});
+var ExistingTxItemSchema = import_zod6.z.object({
+  procNum: import_zod6.z.number().int().positive(),
+  code: import_zod6.z.string(),
+  description: import_zod6.z.string(),
+  /** '' when Open Dental has no tooth on the procedure. */
+  tooth: import_zod6.z.string(),
+  surface: import_zod6.z.string(),
+  /** 'YYYY-MM-DD', or null when Open Dental carries its null date. */
+  dateTp: import_zod6.z.string().nullable(),
+  /** Open Dental's own priority name, or null when it has none. */
+  priorityName: import_zod6.z.string().nullable(),
+  /** `isWatchPriority(priorityName)`, computed once on the server. */
+  watch: import_zod6.z.boolean(),
+  /** On an appointment Open Dental reports as Scheduled. */
+  scheduled: import_zod6.z.boolean(),
+  /** Null until somebody taps something for this visit. */
+  disposition: ExistingTxDispositionSchema.nullable(),
+  lastDiscussed: ExistingTxLastDiscussedSchema.nullable()
+});
+var ExistingTxResponseSchema = import_zod6.z.object({
+  success: import_zod6.z.literal(true),
+  office: import_zod6.z.enum(["roland", "valley"]),
+  aptNum: import_zod6.z.number().int().positive(),
+  /** The visit's note or slip has been sent: the answers are locked. */
+  frozen: import_zod6.z.boolean(),
+  /** When the server's Open Dental read was taken (it may be cached). */
+  readAt: import_zod6.z.string(),
+  items: import_zod6.z.array(ExistingTxItemSchema)
+});
+var ExistingTxSaveResponseSchema = import_zod6.z.object({
+  success: import_zod6.z.literal(true),
+  office: import_zod6.z.enum(["roland", "valley"]),
+  aptNum: import_zod6.z.number().int().positive(),
+  procNum: import_zod6.z.number().int().positive(),
+  disposition: ExistingTxDispositionSchema
+});
+function countNotDiscussed(items) {
+  return items.filter((i) => i.disposition === null || i.disposition.patient === "not_discussed").length;
+}
+var EXISTING_TX_HANDOFF_MAX = 200;
+var ExistingTxHandoffItemSchema = import_zod6.z.object({
+  procNum: import_zod6.z.number().int().positive(),
+  code: import_zod6.z.string().max(40),
+  description: import_zod6.z.string().max(300),
+  tooth: import_zod6.z.string().max(40),
+  surface: import_zod6.z.string().max(20),
+  dateTp: import_zod6.z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
+  priorityName: import_zod6.z.string().max(100).nullable(),
+  scheduled: import_zod6.z.boolean(),
+  clinical: ExistingTxClinicalSchema.nullable(),
+  patient: ExistingTxPatientSchema,
+  waitTimeframe: ExistingTxWaitSchema.nullable(),
+  note: import_zod6.z.string().max(EXISTING_TX_NOTE_MAX).nullable()
+}).strict();
+var EXISTING_TX_TC_GROUP_ORDER = [
+  "ready_to_schedule",
+  "see_plan_again",
+  "cost_questions",
+  "wants_to_wait",
+  "declined",
+  "not_discussed"
+];
+function groupExistingTxForTc(items) {
+  return EXISTING_TX_TC_GROUP_ORDER.map((patient) => ({
+    patient,
+    items: items.filter((i) => i.patient === patient)
+  })).filter((g) => g.items.length > 0);
+}
+
 // ../backend/hyg/contract.entry.ts
-var import_zod6 = __toESM(require_zod());
+var import_zod7 = __toESM(require_zod());
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   CORRECTED_OPTION_SPELLINGS,
@@ -17809,7 +17976,26 @@ var import_zod6 = __toESM(require_zod());
   DX_LABELS,
   DxCodeSchema,
   EXAM_STATUS_LABELS,
+  EXISTING_TX_CLINICAL,
+  EXISTING_TX_CLINICAL_LABELS,
+  EXISTING_TX_HANDOFF_MAX,
+  EXISTING_TX_NOTE_MAX,
+  EXISTING_TX_PATIENT,
+  EXISTING_TX_PATIENT_LABELS,
+  EXISTING_TX_TC_GROUP_ORDER,
+  EXISTING_TX_WAIT,
+  EXISTING_TX_WAIT_LABELS,
   ExamStatusSchema,
+  ExistingTxClinicalSchema,
+  ExistingTxDispositionInputSchema,
+  ExistingTxDispositionSchema,
+  ExistingTxHandoffItemSchema,
+  ExistingTxItemSchema,
+  ExistingTxLastDiscussedSchema,
+  ExistingTxPatientSchema,
+  ExistingTxResponseSchema,
+  ExistingTxSaveResponseSchema,
+  ExistingTxWaitSchema,
   FlagSourceSchema,
   HYG_DAY_SCOPES,
   HYG_ERROR_CODES,
@@ -17977,6 +18163,7 @@ var import_zod6 = __toESM(require_zod());
   comparePerioReadback,
   controlLabel,
   controlsFor,
+  countNotDiscussed,
   countPerioChart,
   defaultPerioSweep,
   deriveCategory,
@@ -17992,12 +18179,14 @@ var import_zod6 = __toESM(require_zod());
   flagsFromBits,
   formatOrthoMonths,
   freeFieldsFor,
+  groupExistingTxForTc,
   hasPerioChartLine,
   isAnswered,
   isChildVisit,
   isOfficeId,
   isOrthoSendable,
   isPatientRight,
+  isWatchPriority,
   isWellFormedArchString,
   normalizePerioChart,
   orthoConcernsText,

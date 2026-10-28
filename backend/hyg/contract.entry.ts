@@ -52,6 +52,9 @@ export * from "../../new-dashboard/shared/hyg/perioSend";
 // summary function the hygiene screen and the TC case both render. contract.ts
 // imports it without re-exporting, so nothing here is exported twice.
 export * from "../../new-dashboard/shared/hyg/orthoScreening";
+// Existing treatment dispositions (Slice 2a): the CHECK vocabularies, the PUT
+// body the route parses, and the Watch rule the server stamps on each item.
+export * from "../../new-dashboard/shared/hyg/existingTx";
 // The routes compose small request shapes from contract pieces; export the SAME
 // zod instance so those shapes and the contract schemas share one library
 // version. ZodError is what the 400-shaping helper switches on.

@@ -37,6 +37,8 @@
  */
 import { z } from "zod";
 
+import { EXISTING_TX_HANDOFF_MAX, ExistingTxHandoffItemSchema } from "../hyg/existingTx";
+
 /** The intake kinds `POST /api/tc/hygiene-intakes` accepts. */
 export const TcIntakeKind = z.enum(["hygiene", "ortho", "checkout"]);
 export type TcIntakeKind = z.infer<typeof TcIntakeKind>;
@@ -121,6 +123,13 @@ export const TcCheckoutSnapshot = z
     notesPending: z.boolean(),
     frontDeskNote: z.string().max(4000),
     financialNote: z.string().max(4000),
+    /**
+     * The patient's EXISTING Open Dental plan and what was said about it
+     * (hygiene Slice 2b). OPTIONAL and additive: every snapshot stored before
+     * this has no such key and parses exactly as it did, and a visit whose plan
+     * was never loaded sends none.
+     */
+    existingTx: z.array(ExistingTxHandoffItemSchema).max(EXISTING_TX_HANDOFF_MAX).optional(),
   })
   .strict();
 export type TcCheckoutSnapshot = z.infer<typeof TcCheckoutSnapshot>;

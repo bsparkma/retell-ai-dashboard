@@ -67,6 +67,13 @@ import {
   type HygPerioSendResponse,
   type PerioSendRequest,
 } from "@shared/hyg/perioSend";
+import {
+  ExistingTxResponseSchema,
+  ExistingTxSaveResponseSchema,
+  type ExistingTxDispositionInput,
+  type ExistingTxResponse,
+  type ExistingTxSaveResponse,
+} from "@shared/hyg/existingTx";
 
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:5000/api";
 
@@ -893,6 +900,64 @@ export async function retryStagedWrite(
     `/visit/${aptNum}/staged-writes/${kind}/retry`,
     { office },
     parseVisit,
+  );
+}
+
+/**
+ * Slice 2a: the patient's treatment-planned procedures, with this visit's
+ * answers. The SERVER reads Open Dental for the office and PatNum on the stored
+ * visit — nothing here names a patient. `refresh` is the Retry button: it skips
+ * the server's short cache.
+ */
+export async function fetchExistingTx(
+  office: OfficeId,
+  aptNum: number,
+  { refresh = false }: { refresh?: boolean } = {},
+  signal?: AbortSignal,
+): Promise<ExistingTxResponse> {
+  return get(
+    `/visit/${aptNum}/existing-tx`,
+    refresh ? { office, refresh: "1" } : { office },
+    (raw) => {
+      const parsed = ExistingTxResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new HygApiError(
+          "CareIN returned existing treatment this page could not read",
+          0,
+          "CONTRACT_MISMATCH",
+          { issues: parsed.error.issues.slice(0, 5) },
+        );
+      }
+      return parsed.data;
+    },
+    signal,
+  );
+}
+
+/** Slice 2a: store one procedure's answers. The response is the stored row. */
+export async function saveExistingTxDisposition(
+  office: OfficeId,
+  aptNum: number,
+  procNum: number,
+  input: ExistingTxDispositionInput,
+): Promise<ExistingTxSaveResponse> {
+  return mutate(
+    "PUT",
+    `/visit/${aptNum}/existing-tx/${procNum}`,
+    { office },
+    (raw) => {
+      const parsed = ExistingTxSaveResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new HygApiError(
+          "CareIN saved something this page could not read back",
+          0,
+          "CONTRACT_MISMATCH",
+          { issues: parsed.error.issues.slice(0, 5) },
+        );
+      }
+      return parsed.data;
+    },
+    input,
   );
 }
 

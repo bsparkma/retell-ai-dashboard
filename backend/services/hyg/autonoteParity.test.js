@@ -704,3 +704,46 @@ test('a suggestion is never a stored decision on its own', () => {
   assert.equal(slip.visitType, null);
   assert.equal(slip.visitTypeSource, null);
 });
+
+/**
+ * SLICE 2b — EXISTING TREATMENT RIDES ALONG AND CHANGES NOTHING ELSE.
+ *
+ * The template's lines are exactly the ones the snapshot above pins; the
+ * existing-treatment section is appended after them and before the name
+ * block, and only the items somebody said something about appear.
+ */
+test('existing treatment is appended after the template, and the template is untouched', () => {
+  const v = visit('adult_prophy_recall');
+  const without = noteFor('adult_prophy_recall').preview;
+  const withTx = composer.compose('note', {
+    visit: v,
+    items: v.items,
+    actor: ACTOR,
+    signature: SIGNATURE,
+    existingTx: {
+      status: 'loaded',
+      items: [
+        { procNum: 5001, code: 'D2740', description: 'Crown', tooth: '30', surface: '', dateTp: '2026-06-20',
+          priorityName: null, scheduled: false, clinical: 'worse_urgent', patient: 'wants_to_wait',
+          waitTimeframe: '3_months', note: null },
+        { procNum: 5002, code: 'D2391', description: 'Composite', tooth: '14', surface: 'O', dateTp: null,
+          priorityName: null, scheduled: false, clinical: null, patient: 'not_discussed',
+          waitTimeframe: null, note: null },
+      ],
+    },
+  }).preview;
+
+  const nameAt = without.findIndex((l) => l.startsWith('Entered in CareIN by'));
+  const blockStart = without.findIndex((l, i) => i < nameAt && SIGNATURE.includes(l));
+  const bodyEnd = blockStart > 0 ? blockStart - 1 : nameAt;
+  // Everything up to the signature block is byte-for-byte the same.
+  assert.deepEqual(withTx.slice(0, bodyEnd), without.slice(0, bodyEnd));
+  // Then the section, then the same signature and name block.
+  const added = withTx.slice(bodyEnd, bodyEnd + 3);
+  assert.deepEqual(added, [
+    '',
+    'Existing treatment reviewed (1):',
+    '  #30 D2740 Crown -- getting worse, moved to urgent; patient wants to wait (3 months).',
+  ]);
+  assert.deepEqual(withTx.slice(bodyEnd + 3), without.slice(bodyEnd));
+});
