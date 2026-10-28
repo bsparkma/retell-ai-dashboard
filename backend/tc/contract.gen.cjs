@@ -14947,6 +14947,10 @@ __export(contract_entry_exports, {
   TC_REFERRAL_ATTACHMENT_MAX_BYTES: () => TC_REFERRAL_ATTACHMENT_MAX_BYTES,
   TC_REFERRAL_ATTACHMENT_MAX_FILES: () => TC_REFERRAL_ATTACHMENT_MAX_FILES,
   TC_REFERRAL_ATTACHMENT_TYPES: () => TC_REFERRAL_ATTACHMENT_TYPES,
+  TC_REFERRAL_CHART_MILESTONES: () => TC_REFERRAL_CHART_MILESTONES,
+  TC_REFERRAL_CHART_MILESTONE_LABELS: () => TC_REFERRAL_CHART_MILESTONE_LABELS,
+  TC_REFERRAL_CHART_NOTE_EVENT_VERBS: () => TC_REFERRAL_CHART_NOTE_EVENT_VERBS,
+  TC_REFERRAL_CHART_NOTE_MAX: () => TC_REFERRAL_CHART_NOTE_MAX,
   TC_REFERRAL_CHIP_LABELS: () => TC_REFERRAL_CHIP_LABELS,
   TC_REFERRAL_CORRESPONDENCE_CHANNELS: () => TC_REFERRAL_CORRESPONDENCE_CHANNELS,
   TC_REFERRAL_CORRESPONDENCE_DIRECTIONS: () => TC_REFERRAL_CORRESPONDENCE_DIRECTIONS,
@@ -14960,6 +14964,7 @@ __export(contract_entry_exports, {
   TC_REFERRAL_PATIENT_REASON_MAX: () => TC_REFERRAL_PATIENT_REASON_MAX,
   TC_REFERRAL_R5B_EVENT_VERBS: () => TC_REFERRAL_R5B_EVENT_VERBS,
   TC_REFERRAL_R5_EVENT_VERBS: () => TC_REFERRAL_R5_EVENT_VERBS,
+  TC_REFERRAL_R69_EVENT_VERBS: () => TC_REFERRAL_R69_EVENT_VERBS,
   TC_REFERRAL_SEND_EVENT_VERBS: () => TC_REFERRAL_SEND_EVENT_VERBS,
   TC_REFERRAL_SOURCE_KINDS_R2: () => TC_REFERRAL_SOURCE_KINDS_R2,
   TC_REFERRAL_STATUS_LABELS: () => TC_REFERRAL_STATUS_LABELS,
@@ -15018,6 +15023,10 @@ __export(contract_entry_exports, {
   TcProviderListResponse: () => TcProviderListResponse,
   TcReferral: () => TcReferral,
   TcReferralAttachment: () => TcReferralAttachment,
+  TcReferralChartMilestone: () => TcReferralChartMilestone,
+  TcReferralChartNoteAvailability: () => TcReferralChartNoteAvailability,
+  TcReferralChartNoteRecord: () => TcReferralChartNoteRecord,
+  TcReferralChartNoteRequest: () => TcReferralChartNoteRequest,
   TcReferralCorrespondenceChannel: () => TcReferralCorrespondenceChannel,
   TcReferralCorrespondenceDirection: () => TcReferralCorrespondenceDirection,
   TcReferralCorrespondenceKind: () => TcReferralCorrespondenceKind,
@@ -15097,6 +15106,9 @@ __export(contract_entry_exports, {
   readBlock: () => readBlock,
   readBlocks: () => readBlocks,
   referralCanLogCorrespondence: () => referralCanLogCorrespondence,
+  referralChartMilestones: () => referralChartMilestones,
+  referralChartNoteDraft: () => referralChartNoteDraft,
+  referralChartNoteOdSafe: () => referralChartNoteOdSafe,
   referralChipFor: () => referralChipFor,
   referralChipTop: () => referralChipTop,
   referralCorrespondenceLabel: () => referralCorrespondenceLabel,
@@ -17740,7 +17752,9 @@ var REFERRAL_LINK_ACTORS = {
 };
 var TC_REFERRAL_R5B_EVENT_VERBS = [...TC_REFERRAL_R5_EVENT_VERBS, ...TC_REFERRAL_LINK_EVENT_VERBS];
 var TC_REFERRAL_CORRESPONDENCE_EVENT_VERBS = ["correspondence"];
-var TC_REFERRAL_ALL_EVENT_VERBS = [...TC_REFERRAL_R5B_EVENT_VERBS, ...TC_REFERRAL_CORRESPONDENCE_EVENT_VERBS];
+var TC_REFERRAL_R69_EVENT_VERBS = [...TC_REFERRAL_R5B_EVENT_VERBS, ...TC_REFERRAL_CORRESPONDENCE_EVENT_VERBS];
+var TC_REFERRAL_CHART_NOTE_EVENT_VERBS = ["chart_note_written"];
+var TC_REFERRAL_ALL_EVENT_VERBS = [...TC_REFERRAL_R69_EVENT_VERBS, ...TC_REFERRAL_CHART_NOTE_EVENT_VERBS];
 var TcReferralEventVerb = import_zod9.z.enum(TC_REFERRAL_ALL_EVENT_VERBS);
 var TC_REFERRAL_CORRESPONDENCE_DIRECTIONS = ["to", "from"];
 var TC_REFERRAL_CORRESPONDENCE_PARTIES = ["specialist", "patient"];
@@ -17762,6 +17776,31 @@ var TcReferralLastCorrespondence = TcReferralCorrespondenceKind.extend({
   actor: import_zod9.z.string(),
   at: import_zod9.z.string()
 });
+var TC_REFERRAL_CHART_MILESTONES = ["sent", "received", "scheduled", "seen", "declined", "closed"];
+var TcReferralChartMilestone = import_zod9.z.enum(TC_REFERRAL_CHART_MILESTONES);
+var TC_REFERRAL_CHART_MILESTONE_LABELS = {
+  sent: "Referral sent",
+  received: "Specialist confirmed receipt",
+  scheduled: "Patient scheduled",
+  seen: "Patient seen",
+  declined: "Referral declined",
+  closed: "Referral closed"
+};
+var TC_REFERRAL_CHART_NOTE_MAX = 2e3;
+var TcReferralChartNoteRequest = import_zod9.z.object({
+  milestone: TcReferralChartMilestone,
+  note: import_zod9.z.string().trim().min(1, "Write the note").max(TC_REFERRAL_CHART_NOTE_MAX)
+}).strict();
+var TcReferralChartNoteRecord = import_zod9.z.object({
+  milestone: TcReferralChartMilestone,
+  commLogNum: import_zod9.z.number().int().positive(),
+  commType: import_zod9.z.number().int().positive()
+});
+var TcReferralChartNoteAvailability = import_zod9.z.object({
+  available: import_zod9.z.boolean(),
+  code: import_zod9.z.string().nullable(),
+  reason: import_zod9.z.string().nullable()
+});
 var TcReferralEvent = import_zod9.z.object({
   eventId: import_zod9.z.string().uuid(),
   fromStatus: TcReferralStatus.nullable(),
@@ -17772,7 +17811,9 @@ var TcReferralEvent = import_zod9.z.object({
   /** R6: what happened. null on rows written before R6. */
   verb: TcReferralEventVerb.nullable().optional(),
   /** R6.9: on a `correspondence` row, which way, with whom, how. null otherwise. */
-  correspondence: TcReferralCorrespondenceKind.nullable().optional()
+  correspondence: TcReferralCorrespondenceKind.nullable().optional(),
+  /** R6.10: on a `chart_note_written` row, the milestone and the commlog. null otherwise. */
+  chartNote: TcReferralChartNoteRecord.nullable().optional()
 });
 var TcReferralReceived = import_zod9.z.object({
   at: import_zod9.z.string(),
@@ -17857,7 +17898,14 @@ var TcReferral = import_zod9.z.object({
    * R6.9: the latest correspondence staff logged (whatever the status since).
    * null when none was logged. On list reads.
    */
-  lastCorrespondence: TcReferralLastCorrespondence.nullable().optional()
+  lastCorrespondence: TcReferralLastCorrespondence.nullable().optional(),
+  /**
+   * R6.10: the chosen directory entry's specialist name, for the drafted chart
+   * notes. null when none is chosen or the entry names nobody. Detail read only.
+   */
+  specialistName: import_zod9.z.string().nullable().optional(),
+  /** R6.10: can this office's charts take a referral note right now? Detail read only. */
+  chartNotes: TcReferralChartNoteAvailability.optional()
 });
 var TcReferralVerb = import_zod9.z.enum([
   "submit",
@@ -17984,7 +18032,9 @@ var NON_MOVE_VERBS = [
   "send_conflict",
   ...TC_REFERRAL_LINK_EVENT_VERBS,
   // R6.9: a logged contact; the status stays where it is.
-  ...TC_REFERRAL_CORRESPONDENCE_EVENT_VERBS
+  ...TC_REFERRAL_CORRESPONDENCE_EVENT_VERBS,
+  // R6.10: a chart note written; the status stays where it is.
+  ...TC_REFERRAL_CHART_NOTE_EVENT_VERBS
 ];
 function isStatusMove(e) {
   return !e.verb || !NON_MOVE_VERBS.includes(e.verb);
@@ -18059,6 +18109,92 @@ function referralDateLabel(ymd) {
   if (!m) return ymd;
   const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
   return d.toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric", year: "numeric" });
+}
+var OD_SAFE_REPLACEMENTS = {
+  "\u2018": "'",
+  "\u2019": "'",
+  "\u201A": "'",
+  "\u201B": "'",
+  "\u2032": "'",
+  "\u201C": '"',
+  "\u201D": '"',
+  "\u201E": '"',
+  "\u201F": '"',
+  "\u2033": '"',
+  "\xAB": '"',
+  "\xBB": '"',
+  "\u2013": "-",
+  "\u2014": "--",
+  "\u2015": "--",
+  "\u2026": "...",
+  "\u2022": "-",
+  "\xB7": "-",
+  "\xA0": " ",
+  "\u2007": " ",
+  "\u2009": " ",
+  "\u202F": " ",
+  "\u200B": ""
+};
+var OD_SAFE_PATTERN = new RegExp(`[${Object.keys(OD_SAFE_REPLACEMENTS).join("")}]`, "g");
+function referralChartNoteOdSafe(text) {
+  return text.replace(OD_SAFE_PATTERN, (ch) => OD_SAFE_REPLACEMENTS[ch] ?? ch);
+}
+var CHART_MILESTONE_EVENTS = {
+  sent: { verbs: ["send", "mark_sent"], legacy: (e) => e.toStatus === "sent" && e.fromStatus !== "sent" },
+  received: { verbs: ["mark_acknowledged"], legacy: (e) => e.toStatus === "acknowledged" && e.fromStatus === "sent" },
+  scheduled: { verbs: ["patient_scheduled"], legacy: null },
+  seen: { verbs: ["mark_patient_seen"], legacy: (e) => e.toStatus === "patient_seen" && e.fromStatus !== "patient_seen" },
+  declined: { verbs: ["decline"], legacy: (e) => e.toStatus === "declined" && e.fromStatus !== "declined" },
+  closed: { verbs: ["close"], legacy: (e) => e.toStatus === "closed" && e.fromStatus !== "closed" }
+};
+function referralChartMilestones(events) {
+  const list = events ?? [];
+  const out = [];
+  for (const milestone of TC_REFERRAL_CHART_MILESTONES) {
+    const rule = CHART_MILESTONE_EVENTS[milestone];
+    const reached = [...list].reverse().find((e) => e.verb ? rule.verbs.includes(e.verb) : rule.legacy !== null && rule.legacy(e));
+    if (!reached) continue;
+    const note = list.find((e) => e.verb === "chart_note_written" && e.chartNote?.milestone === milestone);
+    out.push({
+      milestone,
+      at: reached.at,
+      eventNote: reached.note,
+      written: note && note.chartNote ? { at: note.at, actor: note.actor, commLogNum: note.chartNote.commLogNum, note: note.note } : null
+    });
+  }
+  return out;
+}
+function referralSpecialistPhrase(r) {
+  const name = (r.specialistName ?? "").trim();
+  const practice = (r.practiceName ?? "").trim();
+  if (name && practice) return `${name} at ${practice}`;
+  if (name || practice) return name || practice;
+  const specialty = r.specialty.trim().toLowerCase();
+  if (!specialty) return "the specialist";
+  return `${/^[aeiou]/.test(specialty) ? "an" : "a"} ${specialty} specialist`;
+}
+function referralReasonClause(r) {
+  const reason = r.reason.trim().replace(/[.\s]+$/, "");
+  return reason ? ` for ${reason.charAt(0).toLowerCase()}${reason.slice(1)}` : "";
+}
+function referralNoteClause(note) {
+  const n = note.trim().replace(/[.\s]+$/, "");
+  return n ? `: ${n}.` : ".";
+}
+function referralChartNoteDraft(milestone, facts, eventNote = "") {
+  const who = referralSpecialistPhrase(facts);
+  const Who = who.charAt(0).toUpperCase() + who.slice(1);
+  const reason = referralReasonClause(facts);
+  const date = facts.scheduledDate ? referralDateLabel(facts.scheduledDate) : null;
+  const text = {
+    sent: `Referral sent to ${who}${reason}.`,
+    received: `${Who} confirmed receipt of the referral${reason}.`,
+    scheduled: `Patient scheduled with ${who}${date ? ` on ${date}` : " (no date given)"}.`,
+    seen: `Patient seen by ${who}${reason}.`,
+    declined: `Referral to ${who} declined by the doctor${referralNoteClause(eventNote)}`,
+    closed: `Referral to ${who} closed${referralNoteClause(eventNote)}`
+  }[milestone];
+  return referralChartNoteOdSafe(text);
 }
 function referralResponseBadges(r) {
   const received = r.received ?? null;
@@ -18454,6 +18590,10 @@ function odToothText(tooth) {
   TC_REFERRAL_ATTACHMENT_MAX_BYTES,
   TC_REFERRAL_ATTACHMENT_MAX_FILES,
   TC_REFERRAL_ATTACHMENT_TYPES,
+  TC_REFERRAL_CHART_MILESTONES,
+  TC_REFERRAL_CHART_MILESTONE_LABELS,
+  TC_REFERRAL_CHART_NOTE_EVENT_VERBS,
+  TC_REFERRAL_CHART_NOTE_MAX,
   TC_REFERRAL_CHIP_LABELS,
   TC_REFERRAL_CORRESPONDENCE_CHANNELS,
   TC_REFERRAL_CORRESPONDENCE_DIRECTIONS,
@@ -18467,6 +18607,7 @@ function odToothText(tooth) {
   TC_REFERRAL_PATIENT_REASON_MAX,
   TC_REFERRAL_R5B_EVENT_VERBS,
   TC_REFERRAL_R5_EVENT_VERBS,
+  TC_REFERRAL_R69_EVENT_VERBS,
   TC_REFERRAL_SEND_EVENT_VERBS,
   TC_REFERRAL_SOURCE_KINDS_R2,
   TC_REFERRAL_STATUS_LABELS,
@@ -18525,6 +18666,10 @@ function odToothText(tooth) {
   TcProviderListResponse,
   TcReferral,
   TcReferralAttachment,
+  TcReferralChartMilestone,
+  TcReferralChartNoteAvailability,
+  TcReferralChartNoteRecord,
+  TcReferralChartNoteRequest,
   TcReferralCorrespondenceChannel,
   TcReferralCorrespondenceDirection,
   TcReferralCorrespondenceKind,
@@ -18604,6 +18749,9 @@ function odToothText(tooth) {
   readBlock,
   readBlocks,
   referralCanLogCorrespondence,
+  referralChartMilestones,
+  referralChartNoteDraft,
+  referralChartNoteOdSafe,
   referralChipFor,
   referralChipTop,
   referralCorrespondenceLabel,

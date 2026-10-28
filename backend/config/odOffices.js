@@ -53,6 +53,19 @@ const { OpenDentalService } = require('./openDental');
  * DefNum 486 must therefore NEVER be written to Riley's database (486 is not a
  * CommLogType there at all), and 451 must never be written to Roland's.
  *
+ * `referralCommTypeDefNum` (R6.10) is the same kind of number for a second
+ * type, "Referral" — the commlog type a referral milestone's chart note is
+ * written with. Same mechanism exactly (env override, else the verified
+ * per-practice default), verified live on 2026-10-28 against both practices:
+ *
+ *     Roland       "Referral" = DefNum 491
+ *     Riley/valley "Referral" = DefNum 452
+ *
+ * Same rule: 491 never goes to Riley's database, 452 never to Roland's. An
+ * office with no referral DefNum configured (no default, no override) gets
+ * null, and a referral chart note there is REFUSED with a named reason — it
+ * never falls back to the call-note type or any other.
+ *
  * `odEnabled` is THE reversible switch for an office's Open Dental access: flip it
  * and that office's calls get the full worklist action set and its TC screens read
  * its charts; flip it back and neither does.
@@ -75,6 +88,8 @@ const { OpenDentalService } = require('./openDental');
  * @property {string} customerKeySecret    Key Vault secret NAME (never a value)
  * @property {string} commTypeEnv          process.env key overriding commTypeDefNum
  * @property {number} defaultCommTypeDefNum verified default for this practice
+ * @property {string} referralCommTypeEnv  process.env key overriding the referral DefNum
+ * @property {number|null} defaultReferralCommTypeDefNum verified "Referral" DefNum; null = none configured
  * @type {Readonly<Record<string, OdOfficeSettings>>}
  */
 // Outer map frozen (no office may be added or removed at runtime); the entries
@@ -97,6 +112,8 @@ const OFFICE_OD_SETTINGS = Object.freeze({
     customerKeySecret: 'opendental-customer-key',
     commTypeEnv: 'OPENDENTAL_CAREIN_COMMTYPE_DEFNUM',
     defaultCommTypeDefNum: 486,
+    referralCommTypeEnv: 'OPENDENTAL_REFERRAL_COMMTYPE_DEFNUM',
+    defaultReferralCommTypeDefNum: 491,
   }),
   valley: ({
     officeKey: 'valley',
@@ -106,6 +123,8 @@ const OFFICE_OD_SETTINGS = Object.freeze({
     customerKeySecret: 'opendental-customer-key-valley',
     commTypeEnv: 'OPENDENTAL_CAREIN_COMMTYPE_DEFNUM_VALLEY',
     defaultCommTypeDefNum: 451,
+    referralCommTypeEnv: 'OPENDENTAL_REFERRAL_COMMTYPE_DEFNUM_VALLEY',
+    defaultReferralCommTypeDefNum: 452,
   }),
 });
 
@@ -176,6 +195,7 @@ const clientCache = new Map();
  * @property {string} officeKey        the office this client is bound to
  * @property {string} officeName       display name (for UI + log lines)
  * @property {number} commTypeDefNum   this practice's "CareIN AI Call" DefNum
+ * @property {number|null} referralCommTypeDefNum this practice's "Referral" DefNum; null = not configured
  * @property {any}    client           OpenDentalService instance for this office
  */
 
@@ -201,6 +221,42 @@ function commTypeDefNumFor(settings) {
   const raw = process.env[settings.commTypeEnv];
   const parsed = parseInt(raw, 10);
   return Number.isInteger(parsed) ? parsed : settings.defaultCommTypeDefNum;
+}
+
+/**
+ * This office's "Referral" commlog DefNum (R6.10): env override, else the
+ * verified per-practice default — the mechanism commTypeDefNumFor uses. A
+ * non-numeric or non-positive override falls back to the default; an office
+ * with neither gets null, which the caller must treat as a refusal.
+ * @param {OdOfficeSettings|undefined} settings
+ * @returns {number|null}
+ */
+function referralCommTypeDefNumFor(settings) {
+  if (!settings) return null;
+  const parsed = parseInt(process.env[settings.referralCommTypeEnv], 10);
+  if (Number.isInteger(parsed) && parsed > 0) return parsed;
+  const fallback = settings.defaultReferralCommTypeDefNum;
+  return Number.isInteger(fallback) && fallback > 0 ? fallback : null;
+}
+
+/**
+ * Why (if at all) a referral chart note cannot be written for an office right
+ * now: the office's own Open Dental readiness first, then a configured
+ * "Referral" DefNum. Pure — no network, no client built — so the detail read
+ * can show the reason beside a disabled button.
+ * @param {string} officeKey
+ * @returns {{ code: string, message: string } | null}
+ */
+function referralChartNoteBlockReason(officeKey) {
+  const blocked = odBlockReason(officeKey);
+  if (blocked) return blocked;
+  if (referralCommTypeDefNumFor(OFFICE_OD_SETTINGS[officeKey]) === null) {
+    return {
+      code: 'REFERRAL_COMMTYPE_NOT_CONFIGURED',
+      message: `No "Referral" chart note type is configured for ${OFFICES[officeKey].officeName}, so nothing can be written to its charts`,
+    };
+  }
+  return null;
 }
 
 /**
@@ -458,6 +514,7 @@ function getOdOffice(officeKey) {
     officeKey: key,
     officeName: officeConfig.officeName,
     commTypeDefNum: commTypeDefNumFor(settings),
+    referralCommTypeDefNum: referralCommTypeDefNumFor(settings),
     client,
   });
 
@@ -515,6 +572,7 @@ module.exports = {
   isHygOdReady,
   hygSwitchState,
   isChartTargetOffice,
+  referralChartNoteBlockReason,
   describeOffice,
   getOdOffice,
   assertOfficeMatch,

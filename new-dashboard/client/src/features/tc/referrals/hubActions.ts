@@ -22,7 +22,9 @@
 import {
   REFERRAL_MARK_LABELS,
   referralCanLogCorrespondence,
+  referralChartMilestones,
   referralNextStatus,
+  type TcReferralEvent,
   type TcReferralMoveVerb,
   type TcReferralStatus,
   type TcReferralVerb,
@@ -128,6 +130,16 @@ export function hubActionPlan(
  */
 export function hubCanLogCorrespondence(status: TcReferralStatus, viewer: HubViewer): boolean {
   return viewer.tcFull && referralCanLogCorrespondence(status);
+}
+
+/**
+ * R6.10: is the "Chart note" section drawn? To a tc.full viewer (the route is
+ * tc.full) when the referral has reached at least one milestone — the shared
+ * rule the server applies. Whether the office can take a note at all is the
+ * section's own disabled state (TcReferral.chartNotes), not a reason to hide it.
+ */
+export function hubCanWriteChartNotes(events: readonly TcReferralEvent[] | undefined, viewer: HubViewer): boolean {
+  return viewer.tcFull && referralChartMilestones(events).length > 0;
 }
 
 /** The button's words. Submit names where it goes when the policy is known. */
