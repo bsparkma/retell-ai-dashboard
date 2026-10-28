@@ -157,10 +157,12 @@ async function upload(baseUrl, referralId, name) {
 
 // ── V: the verb ─────────────────────────────────────────────────────────────
 
-test('V: `correspondence` is an event verb, last in CHECK order, and never a move', () => {
-  const verbs = [...contract.TcReferralEventVerb.options];
+test('V: `correspondence` is an event verb, last in R6.9\'s CHECK order, and never a move', () => {
+  // R6.10 appended `chart_note_written` after it; R6.9's own list is frozen.
+  const verbs = [...contract.TC_REFERRAL_R69_EVENT_VERBS];
   assert.equal(verbs[verbs.length - 1], 'correspondence');
-  assert.deepEqual([...contract.TC_REFERRAL_ALL_EVENT_VERBS], [...contract.TC_REFERRAL_R5B_EVENT_VERBS, 'correspondence']);
+  assert.ok(contract.TcReferralEventVerb.options.includes('correspondence'));
+  assert.deepEqual([...contract.TC_REFERRAL_R69_EVENT_VERBS], [...contract.TC_REFERRAL_R5B_EVENT_VERBS, 'correspondence']);
   assert.equal(contract.TcReferralVerb.options.includes('correspondence'), false, 'not a verb a move route can name');
   // A correspondence row after a move does not hide that move's meaning.
   const ev = (over) => ({ eventId: randomUUID(), fromStatus: 'draft', toStatus: 'draft', actor: 'a', at: NOW.toISOString(), note: '', ...over });

@@ -36,6 +36,24 @@ const { contract, actorEmail, auditTc } = require('./helpers');
 const { withTenantTx } = require('./tx');
 const tenantDb = require('../../platform/tenantDb');
 const store = require('./referralStore');
+const odOffices = require('../../config/odOffices');
+const { isOdWriteDisabled } = require('../../middleware/envGuards');
+
+/**
+ * R6.10: can this office's charts take a referral chart note right now? Config
+ * only (the office's Open Dental readiness, its "Referral" DefNum, the
+ * environment's write switch) — no Open Dental call, so a detail read stays a
+ * read. The write route asks the same questions again, and more.
+ * @param {string} office
+ * @returns {{ available: boolean, code: string|null, reason: string|null }}
+ */
+function chartNoteAvailability(office) {
+  if (isOdWriteDisabled()) {
+    return { available: false, code: 'OD_WRITE_DISABLED', reason: 'Open Dental writes are switched off in this environment' };
+  }
+  const blocked = odOffices.referralChartNoteBlockReason(office);
+  return blocked ? { available: false, code: blocked.code, reason: blocked.message } : { available: true, code: null, reason: null };
+}
 
 /** referralCreate requires this module, so its directory check is resolved at call time. */
 const directoryProblem = (...args) => require('./referralCreate').directoryProblem(...args);
@@ -271,6 +289,10 @@ async function readBack(req, referralId, office = req.tcOffice) {
     const events = await store.listEvents(pool, office, referralId);
     const out = store.toReferral(row, names.get(String(row.directory_entry_id)) ?? null, events);
     out.specialistEmail = emails.get(String(row.directory_entry_id)) ?? null;
+    // R6.10: what the drafted chart notes are worded from, and whether this
+    // office's charts can take one at all.
+    out.specialistName = await store.specialistName(pool, office, row);
+    out.chartNotes = chartNoteAvailability(office);
     return out;
   });
 }
@@ -282,6 +304,7 @@ module.exports = {
   editFields,
   reopen,
   readBack,
+  chartNoteAvailability,
   setClockForTests,
   clock: () => clock(),
 };

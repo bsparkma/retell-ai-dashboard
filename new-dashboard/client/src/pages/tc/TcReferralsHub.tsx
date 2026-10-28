@@ -47,6 +47,11 @@
  * on any status but a draft. It is a history line — never a move, never a
  * send — and the card shows the latest as a muted "Last contact" line.
  *
+ * CHART NOTES (R6.10). For each milestone the referral has reached, the panel
+ * offers a drafted note (features/tc/referrals/ChartNotes) that staff may
+ * edit; "Write to chart" writes the exact text shown above it to the patient's
+ * Open Dental chart. Only that click writes — nothing here does on its own.
+ *
  * Every state shown is the server's answer: nothing reads as saved, moved,
  * marked or sent before the server confirms it.
  */
@@ -96,11 +101,13 @@ import {
   hubActionLabel,
   hubActionPlan,
   hubCanLogCorrespondence,
+  hubCanWriteChartNotes,
   signoffViewHref,
   type HubViewer,
 } from "@/features/tc/referrals/hubActions";
 import { SignoffActions, signoffDoneLine } from "@/features/tc/referrals/SignoffActions";
 import { LogCorrespondence } from "@/features/tc/referrals/LogCorrespondence";
+import { ChartNotes } from "@/features/tc/referrals/ChartNotes";
 import {
   AttachmentList,
   ReferralResponseSignals,
@@ -834,6 +841,8 @@ export function HubDetail({
   const editable = r ? asViewer.tcFull && REFERRAL_FIELD_EDITABLE_STATUSES.includes(r.status) : false;
   // R6.9: through the hub's own (tc.full) routes only.
   const canLog = r ? !viaSignoff && hubCanLogCorrespondence(r.status, asViewer) : false;
+  // R6.10: through the hub's own (tc.full) routes only.
+  const canChartNote = r ? !viaSignoff && hubCanWriteChartNotes(r.events, asViewer) : false;
   const returned = r ? referralReturnedLine(r.returned) : null;
 
   return (
@@ -1047,6 +1056,17 @@ export function HubDetail({
                 )}
                 {serverError && <p className="text-sm text-destructive">{serverError}</p>}
               </div>
+            )}
+
+            {canChartNote && (
+              <ChartNotes
+                office={office}
+                referral={r}
+                onWritten={(next) => {
+                  setR(next);
+                  onChanged();
+                }}
+              />
             )}
 
             <div className="space-y-1">
