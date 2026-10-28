@@ -53,6 +53,27 @@ export function primaryToNumber(letter: string): number {
   return PRIMARY_OFFSET + PRIMARY_LETTERS.indexOf(letter) + 1;
 }
 
+/**
+ * Open Dental's tooth text as this picker's tooth numbers: "30" → [30], a
+ * primary letter → its number, "2,3" or "2-4" → the set, "" → the whole mouth.
+ * Null when the text is anything else, so a caller shows Open Dental's own words
+ * rather than a guess.
+ */
+export function odToothNumbers(tooth: string): number[] | "mouth" | null {
+  const text = tooth.trim();
+  if (text === "") return "mouth";
+  const out: number[] = [];
+  for (const part of text.split(",").map((p) => p.trim()).filter(Boolean)) {
+    const range = /^(\d{1,2})-(\d{1,2})$/.exec(part);
+    if (/^\d{1,2}$/.test(part)) out.push(Number(part));
+    else if (/^[A-T]$/.test(part)) out.push(primaryToNumber(part));
+    else if (range && Number(range[1]) <= Number(range[2])) {
+      for (let n = Number(range[1]); n <= Number(range[2]); n++) out.push(n);
+    } else return null;
+  }
+  return out.length > 0 ? out : null;
+}
+
 function ToothButton({
   tooth,
   selected,

@@ -69,7 +69,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { ToothPicker, toothLabel, type Dentition } from "./ToothPicker";
+import { odToothNumbers, ToothPicker, toothLabel, type Dentition } from "./ToothPicker";
+import type { ExistingTxItem } from "@shared/hyg/existingTx";
 
 /**
  * The key an item is grouped under: its tooth set, exactly.
@@ -101,10 +102,10 @@ export function toothGroupLabel(key: string): string {
  * first-appearance order keeps her own sequence rather than re-sorting her work
  * into tooth-number order she never chose.
  */
-export function groupByTooth(
-  items: readonly TreatmentItem[],
-): { key: string; label: string; items: TreatmentItem[] }[] {
-  const groups: { key: string; label: string; items: TreatmentItem[] }[] = [];
+export function groupByTooth<T extends Pick<TreatmentItem, "teeth">>(
+  items: readonly T[],
+): { key: string; label: string; items: T[] }[] {
+  const groups: { key: string; label: string; items: T[] }[] = [];
   const index = new Map<string, number>();
   for (const item of items) {
     const key = toothGroupKey(item);
@@ -373,9 +374,15 @@ export function TreatmentItems({
   onPatch,
   onRemove,
   onReviewAndSend,
+  plannedInOd = [],
 }: {
   items: TreatmentItem[];
   busy: boolean;
+  /**
+   * The procedures Open Dental already has planned (the existing-treatment
+   * read). Only for the hint below — it never blocks an add.
+   */
+  plannedInOd?: readonly Pick<ExistingTxItem, "procNum" | "tooth" | "code" | "description">[];
   onAdd: (input: TreatmentItemInput) => void;
   onPatch: (itemId: string, patch: Partial<TreatmentItemInput>) => void;
   onRemove: (itemId: string) => void;
@@ -392,6 +399,29 @@ export function TreatmentItems({
   } | null>(null);
 
   const groups = useMemo(() => groupByTooth(items), [items]);
+
+  /**
+   * ALREADY PLANNED IN OPEN DENTAL, for the teeth picked right now: "#30 already
+   * has planned in Open Dental: Crown (D2740), Build-up (D2950)". A HINT, never a
+   * block — re-proposing something planned is sometimes exactly right, and the
+   * hygienist decides. Whole-mouth items name no tooth, so they hint nothing.
+   */
+  const odHints = useMemo(() => {
+    const out: { tooth: number; text: string }[] = [];
+    for (const tooth of [...selected].sort((a, b) => a - b)) {
+      const planned = plannedInOd.filter((p) => {
+        const teeth = odToothNumbers(p.tooth);
+        return Array.isArray(teeth) && teeth.includes(tooth);
+      });
+      if (planned.length === 0) continue;
+      const names = planned.map((p) => {
+        const name = p.description.split(/ - |, /)[0].trim() || p.code;
+        return p.code && name !== p.code ? `${name} (${p.code})` : name;
+      });
+      out.push({ tooth, text: `#${toothLabel(tooth)} already has planned in Open Dental: ${names.join(", ")}` });
+    }
+    return out;
+  }, [selected, plannedInOd]);
 
   const counts = useMemo(() => {
     const out: Record<number, number> = {};
@@ -501,6 +531,15 @@ export function TreatmentItems({
             </span>
           )}
         </div>
+        {odHints.length > 0 ? (
+          <ul className="mb-2 space-y-0.5 text-xs text-amber-800 dark:text-amber-300" data-testid="hyg-od-planned-hint">
+            {odHints.map((h) => (
+              <li key={h.tooth} data-testid={`hyg-od-planned-hint-${h.tooth}`}>
+                {h.text}
+              </li>
+            ))}
+          </ul>
+        ) : null}
         <div className="space-y-2">
           {CODE_GROUPS.map((group) => (
             <div key={group.label} className="flex flex-wrap items-center gap-1.5">

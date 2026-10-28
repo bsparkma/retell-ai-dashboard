@@ -331,6 +331,13 @@ export function StagedWritesTray({
       w.state === "Staged" &&
       (SENDABLE.includes(w.kind) || (w.kind === "perio" && perio !== null && perio.sendable)),
   );
+  /**
+   * OUT OF DATE: the server says these stored words no longer match the
+   * existing-treatment answers (StagedWrite.existingTxStale — its digest, the
+   * one the Send refuses on). The Send would refuse the whole batch, so it waits
+   * for a re-stage here rather than failing there.
+   */
+  const staleReady = ready.filter((w) => w.existingTxStale === true);
 
   /**
    * A handoff with nothing to hand off cannot be staged, and the card says so
@@ -366,7 +373,9 @@ export function StagedWritesTray({
               key={kind}
               className={cn(
                 "rounded-xl border p-3",
-                write?.state === "Written"
+                write?.existingTxStale
+                  ? "border-amber-500/60 bg-amber-50 dark:bg-amber-950/30"
+                  : write?.state === "Written"
                   ? "border-emerald-500/40 bg-emerald-500/5"
                   : write?.state === "Failed"
                     ? "border-destructive/40 bg-destructive/5"
@@ -541,17 +550,60 @@ export function StagedWritesTray({
                 </p>
               ) : null}
 
-              {write && write.state !== "Written" && write.preview.length > 0 ? (
-                <ul
-                  className="mt-2 space-y-0.5 border-t border-border/60 pt-2 text-xs text-muted-foreground"
-                  data-testid={`hyg-staged-preview-${kind}`}
+              {/* OUT OF DATE — the server's word for it, never a guess here. The
+                  stored preview stays visible so she can see what would have
+                  gone, but struck through and labelled: it is not what the
+                  visit says any more, and it must never read as current. */}
+              {write?.existingTxStale ? (
+                <div
+                  className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/50 bg-background p-2 text-xs text-amber-800 dark:text-amber-300"
+                  data-testid={`hyg-stale-${kind}`}
                 >
-                  {write.preview.map((line, i) => (
-                    <li key={i} className={previewLineClass(line)}>
-                      {line.trim()}
-                    </li>
-                  ))}
-                </ul>
+                  <span className="flex items-start gap-1.5 font-semibold">
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                    {write.state === "Failed"
+                      ? "Out of date — answers changed. Retry, then stage again"
+                      : "Out of date — answers changed. Stage again"}
+                  </span>
+                  {write.state === "Staged" ? (
+                    <button
+                      type="button"
+                      onClick={() => onStage(kind)}
+                      disabled={busy || sending}
+                      data-testid={`hyg-restage-${kind}`}
+                      className={cn(TAP, "border-amber-600/50 bg-background text-foreground hover:bg-accent/50")}
+                    >
+                      Stage again
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {write && write.state !== "Written" && write.preview.length > 0 ? (
+                <div className="mt-2 border-t border-border/60 pt-2">
+                  {write.existingTxStale ? (
+                    <p
+                      className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300"
+                      data-testid={`hyg-staged-preview-stale-${kind}`}
+                    >
+                      Out of date — not what will be sent
+                    </p>
+                  ) : null}
+                  <ul
+                    className={cn(
+                      "space-y-0.5 text-xs text-muted-foreground",
+                      write.existingTxStale && "line-through opacity-60",
+                    )}
+                    data-testid={`hyg-staged-preview-${kind}`}
+                    aria-label={write.existingTxStale ? "Out-of-date staged words" : undefined}
+                  >
+                    {write.preview.map((line, i) => (
+                      <li key={i} className={previewLineClass(line)}>
+                        {line.trim()}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               ) : null}
 
               {/* WHERE IT LANDED. "It was sent" and "here it is" are different
@@ -596,13 +648,13 @@ export function StagedWritesTray({
       <div className="rounded-xl border border-dashed border-border p-3">
         <button
           type="button"
-          disabled={busy || sending || ready.length === 0}
+          disabled={busy || sending || ready.length === 0 || staleReady.length > 0}
           onClick={() => setConfirming(ready)}
           data-testid="hyg-send-all"
           className={cn(
             TAP,
             "flex w-full items-center justify-center gap-2",
-            ready.length === 0
+            ready.length === 0 || staleReady.length > 0
               ? "cursor-not-allowed border-border text-muted-foreground"
               : "border-primary bg-primary text-primary-foreground",
           )}
@@ -617,7 +669,9 @@ export function StagedWritesTray({
         <p className="mt-2 text-xs text-muted-foreground" data-testid="hyg-send-all-reason">
           {ready.length === 0
             ? "Stage the slip, the note, the handoff or the perio chart, then send them together."
-            : "You will see exactly what is written before anything is sent."}
+            : staleReady.length > 0
+              ? `Stage the ${staleReady.map((w) => KIND_LABELS[w.kind].toLowerCase()).join(" and ")} again first — the existing-treatment answers changed after it was staged.`
+              : "You will see exactly what is written before anything is sent."}
         </p>
         {/* A refusal about the SEND rather than about one write — the stale
             preview case, which stops everything on purpose. */}
