@@ -280,7 +280,7 @@ test('a ProcNum not in this visit’s plan is a 404 and stores nothing', async (
   }
 });
 
-test('frozen after send: a sent note or slip refuses edits with 409; a sent perio chart does not', async () => {
+test('frozen after send: a sent note, slip or TC handoff refuses edits with 409; a sent perio chart does not', async () => {
   for (const [kind, state, frozen] of [
     ['note', 'Written', true],
     ['router', 'Written', true],
@@ -291,7 +291,11 @@ test('frozen after send: a sent note or slip refuses edits with 409; a sent peri
     ['note', 'Staged', false],
     ['router', 'Draft', false],
     ['perio', 'Written', false],
-    ['tc-handoff', 'Written', false],
+    // Slice 2b: the handoff now CARRIES these answers, so sending it freezes
+    // them — what TC holds and what the visit says can never disagree.
+    ['tc-handoff', 'Written', true],
+    ['tc-handoff', 'Sending', true],
+    ['tc-handoff', 'Staged', false],
   ]) {
     const db = new FakeHygDb();
     const visit = visitRow(db, { office: 'roland', aptNum: 900001, patNum: 12827 });
@@ -493,6 +497,8 @@ test('PUT stores the whole disposition with the SERVER’s snapshot, and reads i
       surface: 'DO',
       date_tp: '2026-05-01',
       priority_name: 'Watch',
+      // Slice 2b: the Router's "Already scheduled", as the server's read said it.
+      scheduled: false,
     });
     const update = db.audit.find((a) => a.action === 'UPDATE');
     assert.equal(update.resource_type, 'hyg_existing_tx');

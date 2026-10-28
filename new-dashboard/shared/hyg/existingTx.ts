@@ -182,3 +182,59 @@ export function countNotDiscussed(items: readonly Pick<ExistingTxItem, "disposit
   return items.filter((i) => i.disposition === null || i.disposition.patient === "not_discussed")
     .length;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Slice 2b: what leaves the hygiene module — the note, the Router, and TC
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The most items one handoff carries. Far past any real plan; a bound, not a quota. */
+export const EXISTING_TX_HANDOFF_MAX = 200;
+
+/**
+ * One existing-treatment item as it is HANDED ON: the server's own snapshot of
+ * the procedure, both answers, the timeframe and the note. No fee, no PatNum.
+ *
+ * Built by the SERVER from the stored dispositions and their `proc_snapshot`
+ * (and, for items nobody answered, the plan the server last read) — never from
+ * a request. TC stores it as sent; it does not follow later Open Dental edits.
+ */
+export const ExistingTxHandoffItemSchema = z
+  .object({
+    procNum: z.number().int().positive(),
+    code: z.string().max(40),
+    description: z.string().max(300),
+    tooth: z.string().max(40),
+    surface: z.string().max(20),
+    dateTp: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
+    priorityName: z.string().max(100).nullable(),
+    scheduled: z.boolean(),
+    clinical: ExistingTxClinicalSchema.nullable(),
+    patient: ExistingTxPatientSchema,
+    waitTimeframe: ExistingTxWaitSchema.nullable(),
+    note: z.string().max(EXISTING_TX_NOTE_MAX).nullable(),
+  })
+  .strict();
+export type ExistingTxHandoffItem = z.infer<typeof ExistingTxHandoffItemSchema>;
+
+/**
+ * The order a treatment coordinator works them in: the ones ready to book
+ * first, the ones nobody asked about last.
+ */
+export const EXISTING_TX_TC_GROUP_ORDER: readonly ExistingTxPatient[] = [
+  "ready_to_schedule",
+  "see_plan_again",
+  "cost_questions",
+  "wants_to_wait",
+  "declined",
+  "not_discussed",
+];
+
+/** Items grouped by the patient's answer, in EXISTING_TX_TC_GROUP_ORDER; empty groups dropped. */
+export function groupExistingTxForTc<T extends Pick<ExistingTxHandoffItem, "patient">>(
+  items: readonly T[],
+): { patient: ExistingTxPatient; items: T[] }[] {
+  return EXISTING_TX_TC_GROUP_ORDER.map((patient) => ({
+    patient,
+    items: items.filter((i) => i.patient === patient),
+  })).filter((g) => g.items.length > 0);
+}

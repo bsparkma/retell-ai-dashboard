@@ -222,6 +222,15 @@ class FakeHygDb extends FakeAuditDb {
     }
   }
 
+  /** hyg_visit_existing_tx_read_check, as Postgres would refuse it. */
+  checkExistingTxRead(value) {
+    if (value === null) return null;
+    if (typeof value !== 'object' || Array.isArray(value) || !['loaded', 'failed'].includes(value.status)) {
+      throw new Error('hyg_visit_existing_tx_read_check violated: ' + JSON.stringify(value).slice(0, 60));
+    }
+    return value;
+  }
+
   /** A stored disposition as the driver returns it: bigint as a string. */
   existingTxOut(r) {
     return {
@@ -395,6 +404,33 @@ class FakeHygDb extends FakeAuditDb {
         counts.set(r.visit_id, (counts.get(r.visit_id) || 0) + 1);
       }
       const rows = [...counts].map(([visit_id, item_count]) => ({ visit_id, item_count }));
+      return { rows, rowCount: rows.length };
+    }
+
+    // ── Slice 2b: the visit's recorded existing-treatment read ─────────────
+    if (/^\s*WITH writes AS \(\s*SELECT state FROM hyg_staged_write\s+WHERE office = \$1 AND visit_id = \$2 AND kind = ANY\(\$5::text\[\]\)\s+FOR SHARE\s*\)\s*UPDATE hyg_visit SET existing_tx_read = \$3::jsonb\s+WHERE office = \$1 AND visit_id = \$2\s+AND \(existing_tx_read IS NULL OR existing_tx_read->>'readAt' IS DISTINCT FROM \$4::text\)\s+AND \(SELECT count\(\*\) FROM writes WHERE state = ANY\(\$6::text\[\]\)\) = 0/i.test(text)) {
+      const [office, visitId, value, readAt, kinds, states] = params;
+      const row = this.hyg_visit.find((v) => v.office === office && v.visit_id === visitId);
+      if (!row || this.existingTxFrozen(office, visitId, kinds, states)) return { rows: [], rowCount: 0 };
+      const cur = row.existing_tx_read ?? null;
+      if (cur && cur.readAt === readAt) return { rows: [], rowCount: 0 };
+      row.existing_tx_read = this.checkExistingTxRead(FakeHygDb.json(value));
+      return { rows: [], rowCount: 1 };
+    }
+    if (/^\s*WITH writes AS \(\s*SELECT state FROM hyg_staged_write\s+WHERE office = \$1 AND visit_id = \$2 AND kind = ANY\(\$4::text\[\]\)\s+FOR SHARE\s*\)\s*UPDATE hyg_visit SET existing_tx_read = \$3::jsonb\s+WHERE office = \$1 AND visit_id = \$2 AND existing_tx_read IS NULL\s+AND \(SELECT count\(\*\) FROM writes WHERE state = ANY\(\$5::text\[\]\)\) = 0/i.test(text)) {
+      const [office, visitId, value, kinds, states] = params;
+      const row = this.hyg_visit.find((v) => v.office === office && v.visit_id === visitId);
+      if (!row || (row.existing_tx_read ?? null) !== null || this.existingTxFrozen(office, visitId, kinds, states)) {
+        return { rows: [], rowCount: 0 };
+      }
+      row.existing_tx_read = this.checkExistingTxRead(FakeHygDb.json(value));
+      return { rows: [], rowCount: 1 };
+    }
+    if (/^\s*SELECT existing_tx_read FROM hyg_visit WHERE office = \$1 AND visit_id = \$2\s*$/i.test(text)) {
+      const [office, visitId] = params;
+      const rows = this.hyg_visit
+        .filter((v) => v.office === office && v.visit_id === visitId)
+        .map((v) => ({ existing_tx_read: v.existing_tx_read ?? null }));
       return { rows, rowCount: rows.length };
     }
 

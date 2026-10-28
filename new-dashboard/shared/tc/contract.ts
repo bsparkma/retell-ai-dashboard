@@ -23,6 +23,8 @@ import { EmailBlocks } from "./emailBlocks";
 // the hygiene slip stores this object and TC carries it, so the schema lives
 // with the screening rather than being restated here.
 import { OrthoScreeningSchema } from "../hyg/orthoScreening";
+// Existing treatment answers (hygiene Slice 2b) — the same one-vocabulary rule.
+import { EXISTING_TX_HANDOFF_MAX, ExistingTxHandoffItemSchema } from "../hyg/existingTx";
 
 // ── Shared primitives ────────────────────────────────────────────────────────
 
@@ -381,6 +383,14 @@ export const TcHygieneIntake = z.object({
    * surfaces that do not render structure yet.
    */
   orthoScreening: OrthoScreeningSchema.nullable().default(null),
+  /**
+   * What the hygienist recorded about the patient's EXISTING Open Dental plan
+   * at this visit (hygiene Slice 2b): each item's snapshot, both answers, the
+   * timeframe and the note. NULLABLE and ADDITIVE, exactly like orthoScreening:
+   * every intake before this, and every visit with no plan loaded, is `null`
+   * and renders as it always did.
+   */
+  existingTx: z.array(ExistingTxHandoffItemSchema).max(EXISTING_TX_HANDOFF_MAX).nullable().default(null),
 });
 export type TcHygieneIntake = z.infer<typeof TcHygieneIntake>;
 

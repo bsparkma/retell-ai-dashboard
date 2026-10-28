@@ -498,6 +498,16 @@ describe("once the visit is sent", () => {
     expect((screen.getByTestId("hyg-existing-tx-patient-5001-declined") as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it("Slice 2b: a sent TC handoff locks them too, and so does an amendment", async () => {
+    for (const staged of [stagedWrite("tc-handoff", "Written"), stagedWrite("note", "Amending")]) {
+      server.staged = [staged];
+      renderVisit();
+      await screen.findByTestId("hyg-existing-tx-frozen");
+      expect((screen.getByTestId("hyg-existing-tx-patient-5001-declined") as HTMLButtonElement).disabled).toBe(true);
+      cleanup();
+    }
+  });
+
   it("a save the server refuses as frozen says why, and locks the section", async () => {
     server.saveRefusal = "EXISTING_TX_FROZEN";
     renderVisit();
