@@ -309,3 +309,21 @@ test('C: day progress applies the tc step to a TC-actionable visit with no items
   assert.equal(deriveVisitProgress({ ...base, tcActionableCount: 0 }).steps.tc.state, 'not_applicable');
   assert.equal(deriveVisitProgress({ ...base, tcActionableCount: 1 }).steps.tc.state, 'none');
 });
+
+test('review fix M2: an existing-treatment-only handoff files where a restorative case files', () => {
+  const built = tcHandoff.buildIntake({
+    visit: visit(),
+    appointment: { patientName: 'Test 2, Stedi', providerName: 'DOC1', opName: 'Hyg 1' },
+    handoffCategory: contract.deriveCategory([]),
+    date: '2026-09-08',
+    existingTx: existing('ready_to_schedule'),
+  });
+  assert.equal(built.body.category, tcHandoff.CATEGORY_MAP.Restorative);
+  assert.equal(built.body.category, 'single_tooth');
+});
+
+test('review fix M1: the Sealant draft prints the ordinary Findings line, not a relabelled one', () => {
+  const lines = compose('note', visit({}, { visitType: 'sealant', visitTypeSource: 'manual', hygieneFindings: '#3, #14' })).preview;
+  assert.ok(lines.includes('Findings: #3, #14'));
+  assert.ok(!lines.some((l) => l.startsWith('Teeth sealed')));
+});

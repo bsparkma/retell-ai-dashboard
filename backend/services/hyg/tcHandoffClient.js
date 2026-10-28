@@ -103,6 +103,9 @@ const CATEGORY_MAP = Object.freeze({
   Cosmetic: 'cosmetic',
   Perio: 'quadrant',
   Restorative: 'single_tooth',
+  // Also the category of a handoff with NO new items (feedback round 1):
+  // deriveCategory([]) is 'Other', and existing Open Dental treatment is tooth
+  // work, so it files where a restorative case files. Pinned by a test.
   Other: 'single_tooth',
 });
 

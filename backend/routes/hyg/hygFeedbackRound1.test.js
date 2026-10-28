@@ -147,3 +147,27 @@ test('A1: the staged note names only the examining doctor the stored slip picked
     await app.close();
   }
 });
+
+test('review fix H1: a doctor picked on an exam template does not follow the slip to one without an exam', async () => {
+  const app = await bootHygApp({ od: od() });
+  try {
+    const open = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/open' + Q);
+    for (const visitType of ['perio_maint', 'srp_quad_1', 'laser', 'fl2', null]) {
+      const slip = {
+        ...open.body.visit.slip,
+        visitType,
+        visitTypeSource: visitType ? 'manual' : null,
+        // Tapped on Adult Prophy Recall, then the type was switched: the pick survives.
+        noteFields: { drs: { grades: ['Joe Farmer'], detail: '' } },
+      };
+      const saved = await api(app.baseUrl, 'PUT', '/api/hyg/visit/900001' + Q, { body: { slip } });
+      assert.equal(saved.status, 200, JSON.stringify(saved.body));
+      const staged = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/staged-writes' + Q, { body: { kind: 'note' } });
+      assert.equal(staged.status, 201, JSON.stringify(staged.body));
+      const text = staged.body.visit.stagedWrites.find((w) => w.kind === 'note').preview.join('\n');
+      assert.ok(!text.includes('Joe Farmer'), `${visitType}: a stale examiner was printed`);
+    }
+  } finally {
+    await app.close();
+  }
+});

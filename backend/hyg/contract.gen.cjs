@@ -15551,7 +15551,9 @@ var NOTE_TEMPLATES = {
   srp_quad_3: srpQuad(3),
   srp_quad_4: srpQuad(4),
   // No practice auto note to follow: the prophy notes' S/O/P frame around the
-  // procedure. Which teeth were sealed is what she types into its own line.
+  // procedure. The ordinary Findings line, NOT relabelled — that box is the
+  // slip's hygiene findings, which also reach TC as areas of concern, so a
+  // "Teeth sealed" label would put the sealed teeth in a TC case as a concern.
   sealant: {
     visitType: "sealant",
     autoNote: null,
@@ -15564,7 +15566,7 @@ var NOTE_TEMPLATES = {
         t: "text",
         text: "A:  Teeth isolated, etched, rinsed and dried. Sealant placed and light cured. Occlusion checked."
       },
-      { t: "free", field: "findings", label: "Teeth sealed" },
+      { t: "free", field: "findings", label: "Findings" },
       { t: "blank" },
       { t: "plan" },
       { t: "blank" },

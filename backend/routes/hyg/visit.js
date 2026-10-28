@@ -213,7 +213,16 @@ function signatureFor(req, office, visit) {
   const email = req.user && typeof req.user.email === 'string' ? req.user.email.trim() : '';
   // The examining doctor is the one the SLIP names, from the stored visit —
   // never a request field. Feedback round 1: only that doctor is printed.
-  const drs = visit && visit.slip && visit.slip.noteFields && visit.slip.noteFields.drs;
+  //
+  // AND ONLY WHEN THIS VISIT TYPE HAS AN EXAM. Switching the visit type keeps
+  // the slip's other answers, so a doctor tapped on Adult Prophy survives a
+  // switch to Perio Maint or a draft with no exam clause. That pick is not an
+  // examiner of THIS note, and a typed-name line for a doctor the body says
+  // did not examine would be a false line in a chart (review round 1, H1).
+  const slip = (visit && visit.slip) || {};
+  const hasExam =
+    contract.VISIT_TYPES.includes(slip.visitType) && contract.controlsFor(slip.visitType).includes('drs');
+  const drs = hasExam && slip.noteFields ? slip.noteFields.drs : null;
   const examiningDoctors = drs && Array.isArray(drs.grades) ? drs.grades : [];
   return hygStaff.signatureBlock({
     office,
