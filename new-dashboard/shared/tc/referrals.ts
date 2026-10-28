@@ -353,11 +353,74 @@ export const REFERRAL_LINK_ACTORS = {
   patient: "system:patient-link",
 } as const;
 
+/**
+ * The verbs R5b's CHECK (1792500000000) was written with: R5's, then the four
+ * link verbs. Frozen, because that migration is history and its test pins THIS
+ * list; the live vocabulary is TC_REFERRAL_ALL_EVENT_VERBS below.
+ */
+export const TC_REFERRAL_R5B_EVENT_VERBS = [...TC_REFERRAL_R5_EVENT_VERBS, ...TC_REFERRAL_LINK_EVENT_VERBS] as const;
+
+/**
+ * R6.9 (correspondence log): staff recording a contact with the specialist's
+ * office or the patient — a call, an email, a fax — that happened OUTSIDE the
+ * app. It never moves the status (from = to); it sends and triggers nothing.
+ * The CHECK on tc_referral_events.verb (1793100000000) carries
+ * TC_REFERRAL_R5B_EVENT_VERBS followed by exactly this one; that migration's
+ * test pins the equality.
+ */
+export const TC_REFERRAL_CORRESPONDENCE_EVENT_VERBS = ["correspondence"] as const;
+
 /** Every event verb, in CHECK order: what tc_referral_events.verb may hold today. */
-export const TC_REFERRAL_ALL_EVENT_VERBS = [...TC_REFERRAL_R5_EVENT_VERBS, ...TC_REFERRAL_LINK_EVENT_VERBS] as const;
+export const TC_REFERRAL_ALL_EVENT_VERBS = [...TC_REFERRAL_R5B_EVENT_VERBS, ...TC_REFERRAL_CORRESPONDENCE_EVENT_VERBS] as const;
 
 export const TcReferralEventVerb = z.enum(TC_REFERRAL_ALL_EVENT_VERBS);
 export type TcReferralEventVerb = z.infer<typeof TcReferralEventVerb>;
+
+// ── R6.9: the correspondence log's vocabulary ───────────────────────────────
+
+/**
+ * Which way the contact went, with whom, and how. Each list is the CHECK on
+ * its tc_referral_events column (1793100000000), inline; that migration's test
+ * pins them equal.
+ */
+export const TC_REFERRAL_CORRESPONDENCE_DIRECTIONS = ["to", "from"] as const;
+export const TC_REFERRAL_CORRESPONDENCE_PARTIES = ["specialist", "patient"] as const;
+export const TC_REFERRAL_CORRESPONDENCE_CHANNELS = ["phone", "email", "fax", "other"] as const;
+export const TcReferralCorrespondenceDirection = z.enum(TC_REFERRAL_CORRESPONDENCE_DIRECTIONS);
+export type TcReferralCorrespondenceDirection = z.infer<typeof TcReferralCorrespondenceDirection>;
+export const TcReferralCorrespondenceParty = z.enum(TC_REFERRAL_CORRESPONDENCE_PARTIES);
+export type TcReferralCorrespondenceParty = z.infer<typeof TcReferralCorrespondenceParty>;
+export const TcReferralCorrespondenceChannel = z.enum(TC_REFERRAL_CORRESPONDENCE_CHANNELS);
+export type TcReferralCorrespondenceChannel = z.infer<typeof TcReferralCorrespondenceChannel>;
+
+/** The note's cap, in characters; the server refuses longer (zod) and so does the database (CHECK). */
+export const TC_REFERRAL_CORRESPONDENCE_NOTE_MAX = 2000;
+
+/** The three facts a correspondence row carries beyond its note. */
+export const TcReferralCorrespondenceKind = z.object({
+  direction: TcReferralCorrespondenceDirection,
+  party: TcReferralCorrespondenceParty,
+  channel: TcReferralCorrespondenceChannel,
+});
+export type TcReferralCorrespondenceKind = z.infer<typeof TcReferralCorrespondenceKind>;
+
+/**
+ * POST /api/tc/referrals/:id/correspondence — what staff say happened. Strict:
+ * an office, a status, an actor, a date or any other extra field is a 400. The
+ * office is the request's server-derived one; the time is the server's clock.
+ */
+export const TcReferralCorrespondenceRequest = TcReferralCorrespondenceKind.extend({
+  note: z.string().trim().min(1, "Say what was said").max(TC_REFERRAL_CORRESPONDENCE_NOTE_MAX),
+}).strict();
+export type TcReferralCorrespondenceRequest = z.infer<typeof TcReferralCorrespondenceRequest>;
+
+/** The latest correspondence, as a list read carries it (see TcReferral.lastCorrespondence). */
+export const TcReferralLastCorrespondence = TcReferralCorrespondenceKind.extend({
+  note: z.string(),
+  actor: z.string(),
+  at: z.string(),
+});
+export type TcReferralLastCorrespondence = z.infer<typeof TcReferralLastCorrespondence>;
 
 /** One transition (or, since R6, one edit), as the referral's history shows it. */
 export const TcReferralEvent = z.object({
@@ -369,6 +432,8 @@ export const TcReferralEvent = z.object({
   note: z.string(),
   /** R6: what happened. null on rows written before R6. */
   verb: TcReferralEventVerb.nullable().optional(),
+  /** R6.9: on a `correspondence` row, which way, with whom, how. null otherwise. */
+  correspondence: TcReferralCorrespondenceKind.nullable().optional(),
 });
 export type TcReferralEvent = z.infer<typeof TcReferralEvent>;
 
@@ -461,6 +526,11 @@ export const TcReferral = z.object({
    * recorded. On list reads.
    */
   patientEmail: TcReferralPatientEmailRecord.nullable().optional(),
+  /**
+   * R6.9: the latest correspondence staff logged (whatever the status since).
+   * null when none was logged. On list reads.
+   */
+  lastCorrespondence: TcReferralLastCorrespondence.nullable().optional(),
 });
 export type TcReferral = z.infer<typeof TcReferral>;
 
@@ -715,6 +785,8 @@ const NON_MOVE_VERBS: readonly TcReferralEventVerb[] = [
   "send_failed",
   "send_conflict",
   ...TC_REFERRAL_LINK_EVENT_VERBS,
+  // R6.9: a logged contact; the status stays where it is.
+  ...TC_REFERRAL_CORRESPONDENCE_EVENT_VERBS,
 ];
 
 /** Did this history row move the status? (Pre-R6 rows carry no verb and always did.) */
@@ -780,6 +852,63 @@ export function referralResponses(events: readonly TcReferralEvent[] | undefined
         }
       : null,
   };
+}
+
+// ── R6.9: correspondence ────────────────────────────────────────────────────
+
+/**
+ * Where staff may log correspondence: everywhere but a draft (nothing has gone
+ * anywhere yet, so there is no one to have corresponded with about it).
+ */
+export const REFERRAL_CORRESPONDENCE_STATUSES: readonly TcReferralStatus[] = TcReferralStatus.options.filter(
+  (s) => s !== "draft",
+);
+
+/** May correspondence be logged on a referral in `status`? Pure; the server asks the same. */
+export function referralCanLogCorrespondence(status: TcReferralStatus): boolean {
+  return REFERRAL_CORRESPONDENCE_STATUSES.includes(status);
+}
+
+/** The latest correspondence row in a history (oldest first), or null. Pure; the server derives the list field with it. */
+export function referralLastCorrespondence(
+  events: readonly TcReferralEvent[] | undefined,
+): TcReferralLastCorrespondence | null {
+  const last = [...(events ?? [])].reverse().find((e) => e.verb === "correspondence" && e.correspondence);
+  if (!last || !last.correspondence) return null;
+  return { ...last.correspondence, note: last.note, actor: last.actor, at: last.at };
+}
+
+const CORRESPONDENCE_CHANNEL_NOUNS: Record<TcReferralCorrespondenceChannel, string> = {
+  phone: "Phone call",
+  email: "Email",
+  fax: "Fax",
+  other: "Contact",
+};
+const CORRESPONDENCE_PARTY_WORDS: Record<TcReferralCorrespondenceParty, string> = {
+  specialist: "specialist's office",
+  patient: "the patient",
+};
+
+/** The history's label: "Phone call from specialist's office", "Email to the patient". Pure. */
+export function referralCorrespondenceLabel(k: TcReferralCorrespondenceKind): string {
+  return `${CORRESPONDENCE_CHANNEL_NOUNS[k.channel]} ${k.direction} ${CORRESPONDENCE_PARTY_WORDS[k.party]}`;
+}
+
+/**
+ * The card's muted line: "Last contact: phone from specialist, Oct 27". null
+ * when none was logged. `timeZone` only for tests; the browser's otherwise.
+ * Pure.
+ */
+export function referralLastContactLine(
+  last: TcReferralLastCorrespondence | null | undefined,
+  timeZone?: string,
+): string | null {
+  if (!last) return null;
+  const d = new Date(last.at);
+  const day = Number.isNaN(d.getTime())
+    ? last.at
+    : d.toLocaleDateString("en-US", { month: "short", day: "numeric", ...(timeZone ? { timeZone } : {}) });
+  return `Last contact: ${last.channel} ${last.direction} ${last.party}, ${day}`;
 }
 
 /** "Tue, Nov 3, 2026" for a 'YYYY-MM-DD'; the raw value if it does not parse. Pure. */
