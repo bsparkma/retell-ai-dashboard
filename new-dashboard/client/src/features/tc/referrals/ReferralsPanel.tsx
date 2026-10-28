@@ -16,6 +16,7 @@
  * the sidebar reads the same as before).
  */
 import { useCallback, useEffect, useState } from "react";
+import { teethText } from "@shared/hyg/teeth";
 import { toast } from "sonner";
 import { Loader2, Paperclip, Plus, Send } from "lucide-react";
 
@@ -144,10 +145,10 @@ export function ReferralStatusBadge({ status }: { status: TcReferralStatus }) {
   );
 }
 
-/** "#3, #14" / "Whole mouth" / "" */
+/** "#3, #14" / "B, I" (primary) / "Whole mouth" / "" */
 export function teethLabel(t: TcReferralTeeth): string {
   if (t === "mouth") return "Whole mouth";
-  return t.length ? `#${t.join(", #")}` : "";
+  return t.length ? teethText(t) : "";
 }
 
 // ── Attachments (item 55) ───────────────────────────────────────────────────

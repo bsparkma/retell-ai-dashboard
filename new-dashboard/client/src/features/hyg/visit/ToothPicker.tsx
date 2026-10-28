@@ -25,33 +25,19 @@ import {
   UPPER_PERMANENT,
   UPPER_PRIMARY,
 } from "@/lib/hyg/dentition";
+import { primaryToNumber, toothLabel } from "@shared/hyg/teeth";
 import { cn } from "@/lib/utils";
 
 export type Dentition = "adult" | "primary";
 
 /**
- * Primary teeth are LETTERS in this codebase's dentition module and the
- * contract stores `teeth` as numbers. A primary tooth is stored as its letter's
- * position offset by 100 — A → 101, T → 120 — so the two dentitions cannot
- * collide in one array and a stored value is always self-describing.
- *
- * This is the only place that mapping exists. If it ever needs to be somewhere
- * else, it moves to dentition.ts rather than being written twice.
+ * Primary teeth are LETTERS on the chart and NUMBERS in storage (100 + the
+ * letter's position, B → 102). That encoding, and how a tooth prints, live in
+ * `shared/hyg/teeth.ts` — the server prints teeth into the chart note too, and
+ * a mapping only the client knew is how "#102" reached a note. Re-exported so
+ * this module's existing imports keep working.
  */
-export const PRIMARY_OFFSET = 100;
-
-const PRIMARY_LETTERS = [...UPPER_PRIMARY, ...LOWER_PRIMARY];
-
-export function toothLabel(tooth: number): string {
-  if (tooth > PRIMARY_OFFSET) {
-    return PRIMARY_LETTERS[tooth - PRIMARY_OFFSET - 1] ?? String(tooth);
-  }
-  return String(tooth);
-}
-
-export function primaryToNumber(letter: string): number {
-  return PRIMARY_OFFSET + PRIMARY_LETTERS.indexOf(letter) + 1;
-}
+export { PRIMARY_OFFSET, primaryToNumber, teethText, toothLabel, toothText } from "@shared/hyg/teeth";
 
 /**
  * Open Dental's tooth text as this picker's tooth numbers: "30" → [30], a

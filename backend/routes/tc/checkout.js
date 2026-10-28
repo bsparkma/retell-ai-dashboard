@@ -218,7 +218,7 @@ async function enter(req, res) {
 function procedureLines(snapshot) {
   const procs = snapshot && Array.isArray(snapshot.procedures) ? snapshot.procedures : [];
   return procs.map((p) => {
-    const teeth = p.teeth === 'mouth' ? 'Whole mouth' : `#${(p.teeth || []).join(', #')}`;
+    const teeth = p.teeth === 'mouth' ? 'Whole mouth' : contract.teethText(p.teeth || []);
     return `${teeth} ${p.code} (${p.priority})`;
   });
 }
@@ -232,7 +232,7 @@ const PHASE_POSITION_UNIQUE = 'tc_case_phases_case_position_unique';
 /** "#3 O", "#3, #4 MO", "Whole mouth", or "" — the plan item's tooth column. */
 function toothText(p) {
   if (p.teeth === 'mouth') return 'Whole mouth';
-  const teeth = Array.isArray(p.teeth) && p.teeth.length ? `#${p.teeth.join(', #')}` : '';
+  const teeth = Array.isArray(p.teeth) && p.teeth.length ? contract.teethText(p.teeth) : '';
   const surfaces = Array.isArray(p.surfaces) ? p.surfaces.join('') : '';
   return [teeth, surfaces].filter(Boolean).join(' ').slice(0, 200);
 }
@@ -894,3 +894,6 @@ router.delete(
 module.exports = router;
 module.exports.setClockForTests = setClockForTests;
 module.exports.officeToday = officeToday;
+// Exported for the tests: TC's own text for a hygiene procedure (feedback round 1
+// pins that a primary tooth prints as its letter here too).
+module.exports.procedureLines = procedureLines;

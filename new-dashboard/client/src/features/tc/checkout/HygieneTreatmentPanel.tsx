@@ -43,6 +43,7 @@ import {
   type TcCheckoutProcedure,
 } from "@shared/tc/checkout";
 import type { OfficeId } from "@shared/tc/contract";
+import { odToothText, teethText } from "@shared/hyg/teeth";
 import {
   EXISTING_TX_CLINICAL_LABELS,
   EXISTING_TX_PATIENT_LABELS,
@@ -74,9 +75,9 @@ const URGENCY_BY_PRIORITY: Record<TcCheckoutPriority, "high" | "medium" | "low">
   cosmetic: "low",
 };
 
-function teethText(p: TcCheckoutProcedure): string {
+function teethLine(p: TcCheckoutProcedure): string {
   if (p.teeth === "mouth") return "Whole mouth";
-  const teeth = p.teeth.length ? `#${p.teeth.join(", #")}` : "";
+  const teeth = p.teeth.length ? teethText(p.teeth) : "";
   return [teeth, p.surfaces.join("")].filter(Boolean).join(" ") || "—";
 }
 
@@ -104,7 +105,7 @@ export function ExistingTreatmentFromHygiene({ items }: { items: readonly Existi
           </p>
           <ul className="space-y-1">
             {g.items.map((i) => {
-              const where = i.tooth ? `#${i.tooth}${i.surface ? ` ${i.surface}` : ""}` : i.surface;
+              const where = i.tooth ? `${odToothText(i.tooth)}${i.surface ? ` ${i.surface}` : ""}` : i.surface;
               return (
                 <li
                   key={i.procNum}
@@ -329,7 +330,7 @@ function VisitBlock({
               const key = `${h.handoffId}:${item.index}`;
               return (
                 <TableRow key={key} data-testid="tc-hygiene-item">
-                  <TableCell className="whitespace-nowrap">{teethText(p)}</TableCell>
+                  <TableCell className="whitespace-nowrap">{teethLine(p)}</TableCell>
                   <TableCell className="font-medium">
                     {p.code}
                     {p.scheduleNext && (

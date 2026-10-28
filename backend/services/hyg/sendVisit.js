@@ -137,7 +137,11 @@ const PAYLOAD_SCHEMAS = {
       aptNum: contract.z.number().int().positive(),
       patNum: contract.z.number().int().positive(),
       category: contract.HandoffCategorySchema,
-      items: contract.z.array(contract.z.record(contract.z.string(), contract.z.unknown())).min(1),
+      // Feedback round 1: EMPTY IS VALID — a handoff for existing treatment the
+      // patient wants to act on carries no new items. "Nothing at all to hand
+      // off" is refused by tcHandoff.buildIntake at send, against the answers
+      // as they stand then, not by this shape check.
+      items: contract.z.array(contract.z.record(contract.z.string(), contract.z.unknown())),
     })
     .strict(),
 };

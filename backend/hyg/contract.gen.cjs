@@ -14828,6 +14828,7 @@ __export(contract_entry_exports, {
   CheckoutDeliverySchema: () => CheckoutDeliverySchema,
   CheckoutSendSchema: () => CheckoutSendSchema,
   DONE_TODAY_OPTIONS: () => DONE_TODAY_OPTIONS,
+  DRAFT_VISIT_TYPES: () => DRAFT_VISIT_TYPES,
   DX_LABELS: () => DX_LABELS,
   DxCodeSchema: () => DxCodeSchema,
   EXAM_STATUS_LABELS: () => EXAM_STATUS_LABELS,
@@ -14838,6 +14839,7 @@ __export(contract_entry_exports, {
   EXISTING_TX_NOTE_MAX: () => EXISTING_TX_NOTE_MAX,
   EXISTING_TX_PATIENT: () => EXISTING_TX_PATIENT,
   EXISTING_TX_PATIENT_LABELS: () => EXISTING_TX_PATIENT_LABELS,
+  EXISTING_TX_TC_ACTIONABLE: () => EXISTING_TX_TC_ACTIONABLE,
   EXISTING_TX_TC_GROUP_ORDER: () => EXISTING_TX_TC_GROUP_ORDER,
   EXISTING_TX_WAIT: () => EXISTING_TX_WAIT,
   EXISTING_TX_WAIT_LABELS: () => EXISTING_TX_WAIT_LABELS,
@@ -14885,6 +14887,7 @@ __export(contract_entry_exports, {
   HygVisitResponseSchema: () => HygVisitResponseSchema,
   HygVisitSchema: () => HygVisitSchema,
   HygWarningSchema: () => HygWarningSchema,
+  LOWER_PRIMARY: () => LOWER_PRIMARY,
   MOTIVATION_LABELS: () => MOTIVATION_LABELS,
   MotivationCodeSchema: () => MotivationCodeSchema,
   NOTE_CONTROLS: () => NOTE_CONTROLS,
@@ -14958,6 +14961,8 @@ __export(contract_entry_exports, {
   PERIO_TOOTH_COUNT: () => PERIO_TOOTH_COUNT,
   PERIO_UNREADABLE_NAMED: () => PERIO_UNREADABLE_NAMED,
   PERIO_UPPER_TEETH: () => PERIO_UPPER_TEETH,
+  PRIMARY_OFFSET: () => PRIMARY_OFFSET,
+  PROMPT_ONLY_CONTROLS: () => PROMPT_ONLY_CONTROLS,
   PerioArchPathSchema: () => PerioArchPathSchema,
   PerioArchPlanSchema: () => PerioArchPlanSchema,
   PerioArchStringFieldSchema: () => PerioArchStringFieldSchema,
@@ -15009,6 +15014,7 @@ __export(contract_entry_exports, {
   TreatmentItemUpdateRequestSchema: () => TreatmentItemUpdateRequestSchema,
   TreatmentPrioritySchema: () => TreatmentPrioritySchema,
   TreatmentStatusSchema: () => TreatmentStatusSchema,
+  UPPER_PRIMARY: () => UPPER_PRIMARY,
   VISIT_TYPES: () => VISIT_TYPES,
   VISIT_TYPE_AUTONOTE: () => VISIT_TYPE_AUTONOTE,
   VISIT_TYPE_LABELS: () => VISIT_TYPE_LABELS,
@@ -15025,8 +15031,10 @@ __export(contract_entry_exports, {
   controlsFor: () => controlsFor,
   countNotDiscussed: () => countNotDiscussed,
   countPerioChart: () => countPerioChart,
+  countTcActionable: () => countTcActionable,
   defaultPerioSweep: () => defaultPerioSweep,
   deriveCategory: () => deriveCategory,
+  doneTodayChoices: () => doneTodayChoices,
   emptyNoteField: () => emptyNoteField,
   emptyOrthoScreening: () => emptyOrthoScreening,
   emptyPerioChart: () => emptyPerioChart,
@@ -15046,9 +15054,11 @@ __export(contract_entry_exports, {
   isOfficeId: () => isOfficeId,
   isOrthoSendable: () => isOrthoSendable,
   isPatientRight: () => isPatientRight,
+  isPrimaryTooth: () => isPrimaryTooth,
   isWatchPriority: () => isWatchPriority,
   isWellFormedArchString: () => isWellFormedArchString,
   normalizePerioChart: () => normalizePerioChart,
+  odToothText: () => odToothText,
   orthoConcernsText: () => orthoConcernsText,
   orthoScreeningRows: () => orthoScreeningRows,
   orthoScreeningSummary: () => orthoScreeningSummary,
@@ -15073,6 +15083,7 @@ __export(contract_entry_exports, {
   perioUnreadableRef: () => perioUnreadableRef,
   pickOne: () => pickOne,
   planPerioSend: () => planPerioSend,
+  primaryToNumber: () => primaryToNumber,
   recordsNeededFor: () => recordsNeededFor,
   renderVisitNote: () => renderVisitNote,
   sameCursor: () => sameCursor,
@@ -15082,8 +15093,11 @@ __export(contract_entry_exports, {
   slipNoteField: () => slipNoteField,
   stepPerioCursor: () => stepPerioCursor,
   suggestVisitType: () => suggestVisitType,
+  teethText: () => teethText,
   toggleAfterOrtho: () => toggleAfterOrtho,
   toggleMany: () => toggleMany,
+  toothLabel: () => toothLabel,
+  toothText: () => toothText,
   withPerioMobility: () => withPerioMobility,
   withPerioSite: () => withPerioSite,
   withPerioSkipped: () => withPerioSkipped,
@@ -15101,7 +15115,16 @@ var VisitTypeSchema = import_zod.z.enum([
   "adult_prophy_recall",
   "child_prophy_np",
   "child_prophy_recall",
-  "perio_maint"
+  "perio_maint",
+  "srp_quad_1",
+  "srp_quad_2",
+  "srp_quad_3",
+  "srp_quad_4",
+  "sealant",
+  "laser",
+  "fmd",
+  "d4346",
+  "fl2"
 ]);
 var VISIT_TYPES = VisitTypeSchema.options;
 var VISIT_TYPE_LABELS = {
@@ -15109,14 +15132,46 @@ var VISIT_TYPE_LABELS = {
   adult_prophy_recall: "Adult Prophy Recall",
   child_prophy_np: "Child Prophy NP",
   child_prophy_recall: "Child Prophy Recall",
-  perio_maint: "Perio Maint"
+  perio_maint: "Perio Maint",
+  srp_quad_1: "SRP Quad 1",
+  srp_quad_2: "SRP Quad 2",
+  srp_quad_3: "SRP Quad 3",
+  srp_quad_4: "SRP Quad 4",
+  sealant: "Sealant",
+  laser: "Laser",
+  fmd: "FMD",
+  d4346: "4346",
+  fl2: "Fl2"
 };
+var DRAFT_VISIT_TYPES = /* @__PURE__ */ new Set([
+  "srp_quad_1",
+  "srp_quad_2",
+  "srp_quad_3",
+  "srp_quad_4",
+  "sealant",
+  "laser",
+  "fmd",
+  "d4346",
+  "fl2"
+]);
 var VISIT_TYPE_AUTONOTE = {
   adult_prophy_np: "Adult Prophy NP",
   adult_prophy_recall: "Adult Prophy Recall",
   child_prophy_np: "Child Prophy NP",
   child_prophy_recall: "Child Prophy Recall",
-  perio_maint: "Perio Maint"
+  perio_maint: "Perio Maint",
+  // Drafts: the nearest auto note each was written from. The quadrant notes
+  // share the upper and lower SRP notes; FMD and 4346 share one note.
+  srp_quad_1: "SRP Upper",
+  srp_quad_2: "SRP Upper",
+  srp_quad_3: "SRP Lower",
+  srp_quad_4: "SRP Lower",
+  // The practice has no sealant auto note. NULL, never a borrowed name.
+  sealant: null,
+  laser: "LAPT CO2 laser",
+  fmd: "FMD/4346",
+  d4346: "FMD/4346",
+  fl2: "Fluoride Varnish"
 };
 function isChildVisit(type) {
   return type === "child_prophy_np" || type === "child_prophy_recall";
@@ -15137,7 +15192,11 @@ var NoteControlIdSchema = import_zod.z.enum([
   "ste",
   "hte",
   "pedBehavior",
-  "drs"
+  "drs",
+  // Feedback round 1, for the SRP and FMD drafts.
+  "anesthetic",
+  "carps",
+  "inflammation"
 ]);
 var PLAQUE_OPTIONS = ["Minimal", "Moderate", "Heavy", "none"];
 var BLEEDING_OPTIONS = ["Minimal", "Moderate", "Heavy", "None"];
@@ -15218,8 +15277,33 @@ var NOTE_CONTROLS = {
    * that ends up in the wrong practice's chart note. `backend/config/hygStaff.js`
    * holds them per office and the form is handed them at runtime.
    */
-  drs: { descript: "Drs", label: "Doctor", options: [], multi: true }
+  drs: { descript: "Drs", label: "Doctor", options: [], multi: true },
+  /**
+   * FEEDBACK ROUND 1 — TYPED, NOT PICKED. The export's Anesthetic list is a
+   * sentence BUILDER for Open Dental's prompt ("Carps of Septocaine…", then
+   * "1", "2", "3", then the next agent's "1", "2"…): its repeated bare numbers
+   * mean nothing as chips. So the row is the detail box alone, and she types
+   * what was given. PROMPT_ONLY_CONTROLS names this and the parity test pins it.
+   */
+  anesthetic: { descript: "Anesthetic", label: "Anesthetic", options: [], multi: true },
+  carps: {
+    descript: "Carps",
+    label: "Total Carps",
+    options: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"],
+    multi: false
+  },
+  /**
+   * TYPED, NOT PICKED. The SRP and FMD notes have an `[Prompt:"Inflammaiton"]`
+   * hole (their spelling) with NO AutoNoteControl behind it — Open Dental asks
+   * for free text there. The descript keeps their spelling so the hole is
+   * recognisably theirs; the label the note prints is spelled correctly.
+   */
+  inflammation: { descript: "Inflammaiton", label: "Inflammation", options: [], multi: false }
 };
+var PROMPT_ONLY_CONTROLS = /* @__PURE__ */ new Set([
+  "anesthetic",
+  "inflammation"
+]);
 var CORRECTED_OPTION_SPELLINGS = {
   "Inflamamtion/bleeding Severe": "Inflammation/bleeding Severe",
   Advaced: "Advanced"
@@ -15247,6 +15331,77 @@ function fieldText(field) {
 var NoteFreeFieldSchema = import_zod.z.enum(["chiefComplaint", "findings", "rtc"]);
 function assessment(exam, fluoride, findings = true) {
   return { t: "assessment", exam, fluoride, findings };
+}
+var PROPHY_PROCEDURE = "Polished, flossed, scaled as needed";
+function srpQuad(quad) {
+  const upper = quad <= 2;
+  return {
+    visitType: `srp_quad_${quad}`,
+    autoNote: upper ? "SRP Upper" : "SRP Lower",
+    lines: [
+      { t: "subjective", text: "Patient presents for SRP appointment.", ccLabel: "CC" },
+      { t: "blank" },
+      { t: "objective", same: true },
+      { t: "control", id: "boneLoss", label: "SRP needed due to bone loss" },
+      { t: "blank" },
+      { t: "assessment", exam: null, fluoride: false, findings: false, procedure: null },
+      { t: "blank" },
+      { t: "control", id: "perioClass", label: "Perio class" },
+      { t: "perioChart" },
+      {
+        t: "text",
+        text: upper ? "Anesthetic sites: PSA, MSA, ASA, 30 short. Topical anesthetic gel benzocaine 20%." : "Anesthetic sites: IA, LB, Mental, Anterior Infiltration, 30 short. Topical anesthetic gel benzocaine 20%."
+      },
+      { t: "control", id: "anesthetic" },
+      { t: "control", id: "carps" },
+      { t: "text", text: `Cavitron and hand scaled Quad ${quad}` },
+      { t: "control", id: "calculus" },
+      { t: "control", id: "plaque" },
+      { t: "control", id: "bleeding" },
+      { t: "control", id: "inflammation" },
+      { t: "blank" },
+      { t: "plan" },
+      { t: "blank" },
+      { t: "free", field: "rtc", label: "RTC" }
+    ]
+  };
+}
+function fmdLike(visitType, code) {
+  return {
+    visitType,
+    autoNote: "FMD/4346",
+    lines: [
+      { t: "text", text: "S:  Patient has irritated gum tissues causing bleeding and sensitivity." },
+      { t: "blank" },
+      { t: "objective", same: true },
+      { t: "control", id: "inflammation", label: "Inflammation/bleeding" },
+      { t: "blank" },
+      { t: "text", text: `A:  ${code} needed to get gums to ideal health.` },
+      { t: "blank" },
+      { t: "text", text: `P:  ${code}` },
+      { t: "blank" },
+      {
+        t: "assessment",
+        exam: null,
+        fluoride: false,
+        findings: false,
+        procedure: "Cavitron and hand scaled full mouth, flossed and checked",
+        lead: false
+      },
+      { t: "blank" },
+      { t: "control", id: "oh" },
+      { t: "control", id: "perioClass", label: "Perio" },
+      { t: "control", id: "calculus" },
+      { t: "control", id: "plaque" },
+      { t: "control", id: "bleeding" },
+      { t: "control", id: "stain" },
+      { t: "control", id: "mallampati" },
+      { t: "blank" },
+      { t: "control", id: "pedBehavior" },
+      { t: "blank" },
+      { t: "free", field: "rtc", label: "RTC" }
+    ]
+  };
 }
 var NOTE_TEMPLATES = {
   adult_prophy_np: {
@@ -15389,6 +15544,71 @@ var NOTE_TEMPLATES = {
       { t: "blank" },
       { t: "free", field: "rtc", label: "RTC" }
     ]
+  },
+  // ── DRAFTS, feedback round 1 — pending the practice hygienist's approval ──
+  srp_quad_1: srpQuad(1),
+  srp_quad_2: srpQuad(2),
+  srp_quad_3: srpQuad(3),
+  srp_quad_4: srpQuad(4),
+  // No practice auto note to follow: the prophy notes' S/O/P frame around the
+  // procedure. The ordinary Findings line, NOT relabelled — that box is the
+  // slip's hygiene findings, which also reach TC as areas of concern, so a
+  // "Teeth sealed" label would put the sealed teeth in a TC case as a concern.
+  sealant: {
+    visitType: "sealant",
+    autoNote: null,
+    lines: [
+      { t: "subjective", text: "Patient presents for sealant appointment.", ccLabel: "Chief complaint" },
+      { t: "blank" },
+      { t: "objective", same: true },
+      { t: "blank" },
+      {
+        t: "text",
+        text: "A:  Teeth isolated, etched, rinsed and dried. Sealant placed and light cured. Occlusion checked."
+      },
+      { t: "free", field: "findings", label: "Findings" },
+      { t: "blank" },
+      { t: "plan" },
+      { t: "blank" },
+      { t: "free", field: "rtc", label: "RTC" }
+    ]
+  },
+  // From `LAPT CO2 laser`. The source's fixed "UR quad" becomes whichever Laser
+  // chips she tapped on the slip, so the note never names a quadrant nobody
+  // lasered. The source's first line ("In addition to procedures and anesthetic
+  // used include:") is an instruction to the person typing, and is dropped.
+  laser: {
+    visitType: "laser",
+    autoNote: "LAPT CO2 laser",
+    lines: [
+      { t: "text", text: "Laser Periodontal Therapy, bacterial reduction with CO2 laser." },
+      { t: "doneAreas", prefix: "laser-", label: "Quadrants" },
+      {
+        t: "text",
+        text: "1.5/20 HZ @ .7 watts, PW 100mm handpiece, perio insert with perio tip, 30 sec or less per tooth."
+      },
+      { t: "text", text: "No adverse reactions. Post op instructions given. Laser safety glasses worn." },
+      { t: "blank" },
+      { t: "free", field: "rtc", label: "RTC" }
+    ]
+  },
+  fmd: fmdLike("fmd", "FMD"),
+  d4346: fmdLike("d4346", "4346"),
+  // From `Fluoride Varnish` ("5% sodium fluoride varnish"), in the prophy frame.
+  fl2: {
+    visitType: "fl2",
+    autoNote: "Fluoride Varnish",
+    lines: [
+      { t: "subjective", text: "Patient presents for fluoride application.", ccLabel: "Chief complaint" },
+      { t: "blank" },
+      { t: "objective", same: true },
+      { t: "blank" },
+      { t: "text", text: "A:  5% sodium fluoride varnish applied." },
+      { t: "blank" },
+      { t: "plan" },
+      { t: "blank" },
+      { t: "free", field: "rtc", label: "RTC" }
+    ]
   }
 };
 function controlsFor(visitType) {
@@ -15472,12 +15692,11 @@ function renderVisitNote(input) {
         }
         break;
       case "assessment": {
-        const parts = [
-          `A:   ${labelled("STE", fieldText(field("ste")))}`,
-          labelled("HTE", fieldText(field("hte")))
-        ];
+        const ste = labelled("STE", fieldText(field("ste")));
+        const parts = [l.lead === false ? ste : `A:   ${ste}`, labelled("HTE", fieldText(field("hte")))];
         const fluoride = l.fluoride && input.doneToday.includes("fluoride");
-        parts.push(`Polished, flossed, scaled as needed${fluoride ? ", FL2TX" : ""}.`);
+        const procedure = l.procedure === void 0 ? PROPHY_PROCEDURE : l.procedure;
+        if (procedure !== null) parts.push(`${procedure}${fluoride ? ", FL2TX" : ""}.`);
         if (l.exam !== null) {
           const drs = fieldText(field("drs"));
           parts.push(`${drs ? `Dr. ${drs}` : "Dr."} performed ${l.exam} exam.`);
@@ -15502,6 +15721,11 @@ function renderVisitNote(input) {
       case "control":
         out.push(labelled(l.label ?? NOTE_CONTROLS[l.id].label, fieldText(field(l.id))));
         break;
+      case "doneAreas": {
+        const areas = input.doneToday.filter((id) => id.startsWith(l.prefix)).map((id) => id.slice(l.prefix.length).toUpperCase());
+        out.push(labelled(l.label, areas.join(", ")));
+        break;
+      }
       case "free":
         out.push(labelled(l.label, FREE_FIELD_READERS[l.field](input).trim()));
         break;
@@ -15936,6 +16160,14 @@ function groupExistingTxForTc(items) {
     items: items.filter((i) => i.patient === patient)
   })).filter((g) => g.items.length > 0);
 }
+var EXISTING_TX_TC_ACTIONABLE = [
+  "ready_to_schedule",
+  "see_plan_again",
+  "cost_questions"
+];
+function countTcActionable(items) {
+  return items.filter((i) => EXISTING_TX_TC_ACTIONABLE.includes(i.patient)).length;
+}
 
 // shared/hyg/contract.ts
 var OfficeIdSchema = import_zod4.z.enum(["roland", "valley"]);
@@ -16345,11 +16577,20 @@ var DONE_TODAY_OPTIONS = [
   { id: "srp-ul", label: "SRP UL" },
   { id: "srp-lr", label: "SRP LR" },
   { id: "srp-ll", label: "SRP LL" },
+  { id: "add-pmt", label: "ADD PMT" },
+  { id: "laser-ur", label: "Laser UR" },
+  { id: "laser-ul", label: "Laser UL" },
+  { id: "laser-ll", label: "Laser LL" },
+  { id: "laser-lr", label: "Laser LR" },
   { id: "fluoride", label: "Fluoride" },
   { id: "sealants", label: "Sealants" },
   { id: "irrigation", label: "Irrigation" },
-  { id: "polish", label: "Polish" }
+  { id: "ofi", label: "OFI" },
+  { id: "polish", label: "Polish", retired: true }
 ];
+function doneTodayChoices(picked) {
+  return DONE_TODAY_OPTIONS.filter((o) => !o.retired || picked.includes(o.id));
+}
 var XRAY_OPTIONS = ["FMX", "PANO", "BW-4", "BW-2", "PA"];
 var NextVisitSchema = import_zod4.z.object({
   type: import_zod4.z.string().max(120).nullable(),
@@ -18009,6 +18250,36 @@ var HygPerioSendResponseSchema = import_zod6.z.object({
 
 // ../backend/hyg/contract.entry.ts
 var import_zod7 = __toESM(require_zod());
+
+// shared/hyg/teeth.ts
+var UPPER_PRIMARY = "ABCDEFGHIJ".split("");
+var LOWER_PRIMARY = "TSRQPONMLK".split("");
+var PRIMARY_OFFSET = 100;
+var PRIMARY_LETTERS = [...UPPER_PRIMARY, ...LOWER_PRIMARY];
+function isPrimaryTooth(tooth) {
+  return tooth > PRIMARY_OFFSET && tooth <= PRIMARY_OFFSET + PRIMARY_LETTERS.length;
+}
+function toothLabel(tooth) {
+  if (tooth > PRIMARY_OFFSET) {
+    return PRIMARY_LETTERS[tooth - PRIMARY_OFFSET - 1] ?? String(tooth);
+  }
+  return String(tooth);
+}
+function primaryToNumber(letter) {
+  return PRIMARY_OFFSET + PRIMARY_LETTERS.indexOf(letter) + 1;
+}
+function toothText(tooth) {
+  return isPrimaryTooth(tooth) ? toothLabel(tooth) : `#${toothLabel(tooth)}`;
+}
+function teethText(teeth) {
+  return teeth.map(toothText).join(", ");
+}
+function odToothText(tooth) {
+  const t = tooth.trim();
+  if (t === "") return "";
+  if (/^[A-T]$/.test(t)) return t;
+  return `#${t}`;
+}
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   CORRECTED_OPTION_SPELLINGS,
@@ -18016,6 +18287,7 @@ var import_zod7 = __toESM(require_zod());
   CheckoutDeliverySchema,
   CheckoutSendSchema,
   DONE_TODAY_OPTIONS,
+  DRAFT_VISIT_TYPES,
   DX_LABELS,
   DxCodeSchema,
   EXAM_STATUS_LABELS,
@@ -18026,6 +18298,7 @@ var import_zod7 = __toESM(require_zod());
   EXISTING_TX_NOTE_MAX,
   EXISTING_TX_PATIENT,
   EXISTING_TX_PATIENT_LABELS,
+  EXISTING_TX_TC_ACTIONABLE,
   EXISTING_TX_TC_GROUP_ORDER,
   EXISTING_TX_WAIT,
   EXISTING_TX_WAIT_LABELS,
@@ -18073,6 +18346,7 @@ var import_zod7 = __toESM(require_zod());
   HygVisitResponseSchema,
   HygVisitSchema,
   HygWarningSchema,
+  LOWER_PRIMARY,
   MOTIVATION_LABELS,
   MotivationCodeSchema,
   NOTE_CONTROLS,
@@ -18146,6 +18420,8 @@ var import_zod7 = __toESM(require_zod());
   PERIO_TOOTH_COUNT,
   PERIO_UNREADABLE_NAMED,
   PERIO_UPPER_TEETH,
+  PRIMARY_OFFSET,
+  PROMPT_ONLY_CONTROLS,
   PerioArchPathSchema,
   PerioArchPlanSchema,
   PerioArchStringFieldSchema,
@@ -18197,6 +18473,7 @@ var import_zod7 = __toESM(require_zod());
   TreatmentItemUpdateRequestSchema,
   TreatmentPrioritySchema,
   TreatmentStatusSchema,
+  UPPER_PRIMARY,
   VISIT_TYPES,
   VISIT_TYPE_AUTONOTE,
   VISIT_TYPE_LABELS,
@@ -18213,8 +18490,10 @@ var import_zod7 = __toESM(require_zod());
   controlsFor,
   countNotDiscussed,
   countPerioChart,
+  countTcActionable,
   defaultPerioSweep,
   deriveCategory,
+  doneTodayChoices,
   emptyNoteField,
   emptyOrthoScreening,
   emptyPerioChart,
@@ -18234,9 +18513,11 @@ var import_zod7 = __toESM(require_zod());
   isOfficeId,
   isOrthoSendable,
   isPatientRight,
+  isPrimaryTooth,
   isWatchPriority,
   isWellFormedArchString,
   normalizePerioChart,
+  odToothText,
   orthoConcernsText,
   orthoScreeningRows,
   orthoScreeningSummary,
@@ -18261,6 +18542,7 @@ var import_zod7 = __toESM(require_zod());
   perioUnreadableRef,
   pickOne,
   planPerioSend,
+  primaryToNumber,
   recordsNeededFor,
   renderVisitNote,
   sameCursor,
@@ -18270,8 +18552,11 @@ var import_zod7 = __toESM(require_zod());
   slipNoteField,
   stepPerioCursor,
   suggestVisitType,
+  teethText,
   toggleAfterOrtho,
   toggleMany,
+  toothLabel,
+  toothText,
   withPerioMobility,
   withPerioSite,
   withPerioSkipped,

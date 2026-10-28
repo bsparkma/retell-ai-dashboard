@@ -35,6 +35,7 @@ import {
   emptyNoteField,
   hasPerioChartLine,
   NOTE_CONTROLS,
+  DRAFT_VISIT_TYPES,
   VISIT_TYPE_LABELS,
   VISIT_TYPES,
   type NoteControlId,
@@ -128,7 +129,7 @@ function GradeRow({
             testId={`hyg-note-${id}-${option.replace(/\s+/g, "-").toLowerCase()}`}
           />
         ))}
-        {options.length === 0 ? (
+        {options.length === 0 && id === "drs" ? (
           // Only reachable for the doctor row before an office has answered.
           <span className="text-xs italic text-muted-foreground">
             No doctors are configured for this office.
@@ -136,8 +137,9 @@ function GradeRow({
         ) : null}
         <input
           type="text"
-          // The half of the line their notes actually carry.
-          placeholder="where / detail"
+          // The half of the line their notes actually carry. A TYPED row
+          // (anesthetic, inflammation) has no chips, so this is the whole answer.
+          placeholder={options.length === 0 && id !== "drs" ? "type it" : "where / detail"}
           defaultValue={value.detail}
           onBlur={(e) => onChange({ ...value, detail: e.target.value })}
           data-testid={`hyg-note-${id}-detail`}
@@ -194,7 +196,9 @@ export function VisitNoteFields({
           {VISIT_TYPES.map((type) => (
             <Chip
               key={type}
-              label={VISIT_TYPE_LABELS[type]}
+              // A draft template says so on its chip: its wording is not yet the
+              // practice's own (feedback round 1).
+              label={DRAFT_VISIT_TYPES.has(type) ? `${VISIT_TYPE_LABELS[type]} (draft)` : VISIT_TYPE_LABELS[type]}
               active={visitType === type}
               onClick={() => pickType(type)}
               testId={`hyg-note-type-${type}`}

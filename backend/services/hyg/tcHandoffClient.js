@@ -103,6 +103,9 @@ const CATEGORY_MAP = Object.freeze({
   Cosmetic: 'cosmetic',
   Perio: 'quadrant',
   Restorative: 'single_tooth',
+  // Also the category of a handoff with NO new items (feedback round 1):
+  // deriveCategory([]) is 'Other', and existing Open Dental treatment is tooth
+  // work, so it files where a restorative case files. Pinned by a test.
   Other: 'single_tooth',
 });
 
@@ -180,11 +183,17 @@ function existingTxForTc(existingTx) {
 
 function buildIntake({ visit, appointment, handoffCategory, date, existingTx }) {
   const items = Array.isArray(visit.items) ? visit.items : [];
-  if (items.length === 0) {
+  // Feedback round 1: refuse only when there is NEITHER new treatment NOR an
+  // existing-treatment answer TC has to act on. Checked again here, at send,
+  // because the answers may have changed since the handoff was staged.
+  const carried = existingTxForTc(existingTx);
+  if (items.length === 0 && contract.countTcActionable(carried || []) === 0) {
     return {
       ok: false,
       code: 'NOTHING_TO_STAGE',
-      error: 'There is no treatment on this visit to hand off',
+      error:
+        'There is nothing on this visit to hand off: no treatment identified today and no ' +
+        'existing treatment for the treatment coordinator to act on',
     };
   }
 
@@ -217,6 +226,12 @@ function buildIntake({ visit, appointment, handoffCategory, date, existingTx }) 
 
   const slip = visit.slip || {};
   const priorities = new Set(items.map((i) => i.priority));
+  // With no new treatment, the existing items set the urgency: one the
+  // hygienist marked "getting worse -> urgent" is urgent; otherwise preventative
+  // (existing treatment is restorative work, never cosmetic by default).
+  if (items.length === 0) {
+    priorities.add((carried || []).some((i) => i.clinical === 'worse_urgent') ? 'urgent' : 'preventative');
+  }
   const urgency = priorities.has('urgent')
     ? URGENCY_BY_PRIORITY.urgent
     : priorities.has('preventative')
@@ -238,10 +253,10 @@ function buildIntake({ visit, appointment, handoffCategory, date, existingTx }) 
       ? 'prophy'
       : 'none';
 
-  const carried = existingTxForTc(existingTx);
-
+  // An EXPLICITLY empty treatment list when nothing new was found: '' rather
+  // than a made-up line, and the existing items ride in `existingTx`.
   const treatmentLines = items.map((item) => {
-    const teeth = item.teeth === 'mouth' ? 'Whole mouth' : `#${(item.teeth || []).join(', #')}`;
+    const teeth = item.teeth === 'mouth' ? 'Whole mouth' : contract.teethText(item.teeth || []);
     return `${teeth} ${item.code} (${item.priority})`;
   });
 

@@ -55,9 +55,15 @@ import { z } from "zod";
 /**
  * Which of the practice's hygiene notes this visit is.
  *
- * Five, matching the five hygiene AutoNotes. SRP, FMD/4346 and the laser notes
- * are deliberately absent: they carry anesthetic, carps and quadrant detail
- * that this form has no fields for, and half a template is worse than none.
+ * The first five match the five hygiene AutoNotes, line for line.
+ *
+ * FEEDBACK ROUND 1 added nine more — SRP Quad 1–4, Sealant, Laser, FMD, 4346
+ * and Fl2. THEY ARE DRAFTS (DRAFT_VISIT_TYPES below), written in this file's
+ * structure from the practice's nearest auto notes (`SRP Upper` / `SRP Lower`,
+ * `FMD/4346`, `LAPT CO2 laser`, `Fluoride Varnish`; Sealant has no source), and
+ * they are pending the practice hygienist's approval. The picker marks them as
+ * drafts. Anesthetic and inflammation are typed text on these notes, not
+ * chips — see NOTE_CONTROLS.
  */
 export const VisitTypeSchema = z.enum([
   "adult_prophy_np",
@@ -65,6 +71,15 @@ export const VisitTypeSchema = z.enum([
   "child_prophy_np",
   "child_prophy_recall",
   "perio_maint",
+  "srp_quad_1",
+  "srp_quad_2",
+  "srp_quad_3",
+  "srp_quad_4",
+  "sealant",
+  "laser",
+  "fmd",
+  "d4346",
+  "fl2",
 ]);
 export type VisitType = z.infer<typeof VisitTypeSchema>;
 
@@ -77,7 +92,33 @@ export const VISIT_TYPE_LABELS: Record<VisitType, string> = {
   child_prophy_np: "Child Prophy NP",
   child_prophy_recall: "Child Prophy Recall",
   perio_maint: "Perio Maint",
+  srp_quad_1: "SRP Quad 1",
+  srp_quad_2: "SRP Quad 2",
+  srp_quad_3: "SRP Quad 3",
+  srp_quad_4: "SRP Quad 4",
+  sealant: "Sealant",
+  laser: "Laser",
+  fmd: "FMD",
+  d4346: "4346",
+  fl2: "Fl2",
 };
+
+/**
+ * The visit types whose templates are DRAFTS pending the practice hygienist's
+ * approval (feedback round 1). Marked "draft" in the picker, so nobody takes a
+ * draft's wording for the practice's own.
+ */
+export const DRAFT_VISIT_TYPES: ReadonlySet<VisitType> = new Set<VisitType>([
+  "srp_quad_1",
+  "srp_quad_2",
+  "srp_quad_3",
+  "srp_quad_4",
+  "sealant",
+  "laser",
+  "fmd",
+  "d4346",
+  "fl2",
+]);
 
 /**
  * The AutoNoteName in Open Dental each visit type re-states.
@@ -86,12 +127,24 @@ export const VISIT_TYPE_LABELS: Record<VisitType, string> = {
  * stray whitespace (`"Adult Prophy Recall "`), and the parity test matches on
  * these — trimmed — rather than on what a picker happens to show.
  */
-export const VISIT_TYPE_AUTONOTE: Record<VisitType, string> = {
+export const VISIT_TYPE_AUTONOTE: Record<VisitType, string | null> = {
   adult_prophy_np: "Adult Prophy NP",
   adult_prophy_recall: "Adult Prophy Recall",
   child_prophy_np: "Child Prophy NP",
   child_prophy_recall: "Child Prophy Recall",
   perio_maint: "Perio Maint",
+  // Drafts: the nearest auto note each was written from. The quadrant notes
+  // share the upper and lower SRP notes; FMD and 4346 share one note.
+  srp_quad_1: "SRP Upper",
+  srp_quad_2: "SRP Upper",
+  srp_quad_3: "SRP Lower",
+  srp_quad_4: "SRP Lower",
+  // The practice has no sealant auto note. NULL, never a borrowed name.
+  sealant: null,
+  laser: "LAPT CO2 laser",
+  fmd: "FMD/4346",
+  d4346: "FMD/4346",
+  fl2: "Fluoride Varnish",
 };
 
 /** Whether a visit type is a child's. Drives the behaviour scale and FL2TX. */
@@ -146,6 +199,10 @@ export const NoteControlIdSchema = z.enum([
   "hte",
   "pedBehavior",
   "drs",
+  // Feedback round 1, for the SRP and FMD drafts.
+  "anesthetic",
+  "carps",
+  "inflammation",
 ]);
 export type NoteControlId = z.infer<typeof NoteControlIdSchema>;
 
@@ -245,7 +302,38 @@ export const NOTE_CONTROLS: Record<NoteControlId, NoteControl> = {
    * holds them per office and the form is handed them at runtime.
    */
   drs: { descript: "Drs", label: "Doctor", options: [], multi: true },
+  /**
+   * FEEDBACK ROUND 1 — TYPED, NOT PICKED. The export's Anesthetic list is a
+   * sentence BUILDER for Open Dental's prompt ("Carps of Septocaine…", then
+   * "1", "2", "3", then the next agent's "1", "2"…): its repeated bare numbers
+   * mean nothing as chips. So the row is the detail box alone, and she types
+   * what was given. PROMPT_ONLY_CONTROLS names this and the parity test pins it.
+   */
+  anesthetic: { descript: "Anesthetic", label: "Anesthetic", options: [], multi: true },
+  carps: {
+    descript: "Carps",
+    label: "Total Carps",
+    options: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"],
+    multi: false,
+  },
+  /**
+   * TYPED, NOT PICKED. The SRP and FMD notes have an `[Prompt:"Inflammaiton"]`
+   * hole (their spelling) with NO AutoNoteControl behind it — Open Dental asks
+   * for free text there. The descript keeps their spelling so the hole is
+   * recognisably theirs; the label the note prints is spelled correctly.
+   */
+  inflammation: { descript: "Inflammaiton", label: "Inflammation", options: [], multi: false },
 };
+
+/**
+ * Rows that are TYPED rather than picked: no chips, only the detail box. Their
+ * options are empty on purpose, and the parity test skips the option and
+ * response-type comparison for exactly these, with the reason beside each.
+ */
+export const PROMPT_ONLY_CONTROLS: ReadonlySet<NoteControlId> = new Set<NoteControlId>([
+  "anesthetic",
+  "inflammation",
+]);
 
 /**
  * The two spellings this file deliberately corrects, source → ours.
@@ -316,8 +404,26 @@ export type NoteLine =
   | { t: "control"; id: NoteControlId; label?: string }
   /** `RTC: <text>` — blank after the colon when nothing was typed. */
   | { t: "free"; field: NoteFreeField; label: string }
-  /** The A: line, which packs STE, HTE, the doctor and the findings into one. */
-  | { t: "assessment"; exam: "comp" | "periodic" | null; fluoride: boolean; findings: boolean }
+  /**
+   * The A: line, which packs STE, HTE, the doctor and the findings into one.
+   * `procedure` is the sentence after HTE — "Polished, flossed, scaled as
+   * needed." on the prophy notes when absent; null prints none (the SRP
+   * drafts). `lead: false` drops the "A:" (FMD/4346 prints STE/HTE alone).
+   */
+  | {
+      t: "assessment";
+      exam: "comp" | "periodic" | null;
+      fluoride: boolean;
+      findings: boolean;
+      procedure?: string | null;
+      lead?: boolean;
+    }
+  /**
+   * Which of the slip's Done-today chips with this id prefix were picked, by
+   * area: `Quadrants: UR, UL` for `laser-ur`, `laser-ul`. Blank after the colon
+   * when none were — never a quadrant nobody tapped.
+   */
+  | { t: "doneAreas"; prefix: string; label: string }
   /** The S: line, whose wording differs per template and whose tail is the CC. */
   | { t: "subjective"; text: string; ccLabel: string }
   /** The O: line, plus the radiographs when any were taken. */
@@ -329,8 +435,8 @@ export type NoteLine =
 
 export interface NoteTemplate {
   visitType: VisitType;
-  /** The AutoNoteName this re-states. */
-  autoNote: string;
+  /** The AutoNoteName this re-states — null for a draft with no source (Sealant). */
+  autoNote: string | null;
   lines: readonly NoteLine[];
 }
 
@@ -341,6 +447,96 @@ function assessment(
   findings = true,
 ): NoteLine {
   return { t: "assessment", exam, fluoride, findings };
+}
+
+const PROPHY_PROCEDURE = "Polished, flossed, scaled as needed";
+
+/**
+ * DRAFT (feedback round 1): one SRP quadrant, from `SRP Upper` (quads 1, 2) or
+ * `SRP Lower` (3, 4). ONE shape, parameterised by the quadrant: the only
+ * differences are the quad number and the upper/lower injection sites the
+ * source notes print. Two source lines are deliberately NOT carried — "neg
+ * aspirations, pt tolerated well" and "Procedure lasted 1 hour and 37 minutes"
+ * are flat claims no template can know; she types them, or they are not said.
+ * Pending the practice hygienist's approval.
+ */
+function srpQuad(quad: 1 | 2 | 3 | 4): NoteTemplate {
+  const upper = quad <= 2;
+  return {
+    visitType: `srp_quad_${quad}` as VisitType,
+    autoNote: upper ? "SRP Upper" : "SRP Lower",
+    lines: [
+      { t: "subjective", text: "Patient presents for SRP appointment.", ccLabel: "CC" },
+      { t: "blank" },
+      { t: "objective", same: true },
+      { t: "control", id: "boneLoss", label: "SRP needed due to bone loss" },
+      { t: "blank" },
+      { t: "assessment", exam: null, fluoride: false, findings: false, procedure: null },
+      { t: "blank" },
+      { t: "control", id: "perioClass", label: "Perio class" },
+      { t: "perioChart" },
+      {
+        t: "text",
+        text: upper
+          ? "Anesthetic sites: PSA, MSA, ASA, 30 short. Topical anesthetic gel benzocaine 20%."
+          : "Anesthetic sites: IA, LB, Mental, Anterior Infiltration, 30 short. Topical anesthetic gel benzocaine 20%.",
+      },
+      { t: "control", id: "anesthetic" },
+      { t: "control", id: "carps" },
+      { t: "text", text: `Cavitron and hand scaled Quad ${quad}` },
+      { t: "control", id: "calculus" },
+      { t: "control", id: "plaque" },
+      { t: "control", id: "bleeding" },
+      { t: "control", id: "inflammation" },
+      { t: "blank" },
+      { t: "plan" },
+      { t: "blank" },
+      { t: "free", field: "rtc", label: "RTC" },
+    ],
+  };
+}
+
+/**
+ * DRAFT (feedback round 1): FMD and 4346 share the practice's `FMD/4346` note;
+ * the A: and P: lines name which one this is. The source's prefilled "RTC: 6-8
+ * wks fine scale" becomes the ordinary RTC box. Pending approval.
+ */
+function fmdLike(visitType: "fmd" | "d4346", code: "FMD" | "4346"): NoteTemplate {
+  return {
+    visitType,
+    autoNote: "FMD/4346",
+    lines: [
+      { t: "text", text: "S:  Patient has irritated gum tissues causing bleeding and sensitivity." },
+      { t: "blank" },
+      { t: "objective", same: true },
+      { t: "control", id: "inflammation", label: "Inflammation/bleeding" },
+      { t: "blank" },
+      { t: "text", text: `A:  ${code} needed to get gums to ideal health.` },
+      { t: "blank" },
+      { t: "text", text: `P:  ${code}` },
+      { t: "blank" },
+      {
+        t: "assessment",
+        exam: null,
+        fluoride: false,
+        findings: false,
+        procedure: "Cavitron and hand scaled full mouth, flossed and checked",
+        lead: false,
+      },
+      { t: "blank" },
+      { t: "control", id: "oh" },
+      { t: "control", id: "perioClass", label: "Perio" },
+      { t: "control", id: "calculus" },
+      { t: "control", id: "plaque" },
+      { t: "control", id: "bleeding" },
+      { t: "control", id: "stain" },
+      { t: "control", id: "mallampati" },
+      { t: "blank" },
+      { t: "control", id: "pedBehavior" },
+      { t: "blank" },
+      { t: "free", field: "rtc", label: "RTC" },
+    ],
+  };
 }
 
 /**
@@ -493,6 +689,76 @@ export const NOTE_TEMPLATES: Record<VisitType, NoteTemplate> = {
       // Its A: line has no Findings slot, and dropping what a hygienist typed is
       // worse than one extra line. So the box gets its own line here instead.
       { t: "free", field: "findings", label: "Findings" },
+      { t: "blank" },
+      { t: "free", field: "rtc", label: "RTC" },
+    ],
+  },
+
+  // ── DRAFTS, feedback round 1 — pending the practice hygienist's approval ──
+  srp_quad_1: srpQuad(1),
+  srp_quad_2: srpQuad(2),
+  srp_quad_3: srpQuad(3),
+  srp_quad_4: srpQuad(4),
+
+  // No practice auto note to follow: the prophy notes' S/O/P frame around the
+  // procedure. The ordinary Findings line, NOT relabelled — that box is the
+  // slip's hygiene findings, which also reach TC as areas of concern, so a
+  // "Teeth sealed" label would put the sealed teeth in a TC case as a concern.
+  sealant: {
+    visitType: "sealant",
+    autoNote: null,
+    lines: [
+      { t: "subjective", text: "Patient presents for sealant appointment.", ccLabel: "Chief complaint" },
+      { t: "blank" },
+      { t: "objective", same: true },
+      { t: "blank" },
+      {
+        t: "text",
+        text: "A:  Teeth isolated, etched, rinsed and dried. Sealant placed and light cured. Occlusion checked.",
+      },
+      { t: "free", field: "findings", label: "Findings" },
+      { t: "blank" },
+      { t: "plan" },
+      { t: "blank" },
+      { t: "free", field: "rtc", label: "RTC" },
+    ],
+  },
+
+  // From `LAPT CO2 laser`. The source's fixed "UR quad" becomes whichever Laser
+  // chips she tapped on the slip, so the note never names a quadrant nobody
+  // lasered. The source's first line ("In addition to procedures and anesthetic
+  // used include:") is an instruction to the person typing, and is dropped.
+  laser: {
+    visitType: "laser",
+    autoNote: "LAPT CO2 laser",
+    lines: [
+      { t: "text", text: "Laser Periodontal Therapy, bacterial reduction with CO2 laser." },
+      { t: "doneAreas", prefix: "laser-", label: "Quadrants" },
+      {
+        t: "text",
+        text: "1.5/20 HZ @ .7 watts, PW 100mm handpiece, perio insert with perio tip, 30 sec or less per tooth.",
+      },
+      { t: "text", text: "No adverse reactions. Post op instructions given. Laser safety glasses worn." },
+      { t: "blank" },
+      { t: "free", field: "rtc", label: "RTC" },
+    ],
+  },
+
+  fmd: fmdLike("fmd", "FMD"),
+  d4346: fmdLike("d4346", "4346"),
+
+  // From `Fluoride Varnish` ("5% sodium fluoride varnish"), in the prophy frame.
+  fl2: {
+    visitType: "fl2",
+    autoNote: "Fluoride Varnish",
+    lines: [
+      { t: "subjective", text: "Patient presents for fluoride application.", ccLabel: "Chief complaint" },
+      { t: "blank" },
+      { t: "objective", same: true },
+      { t: "blank" },
+      { t: "text", text: "A:  5% sodium fluoride varnish applied." },
+      { t: "blank" },
+      { t: "plan" },
       { t: "blank" },
       { t: "free", field: "rtc", label: "RTC" },
     ],
@@ -671,12 +937,11 @@ export function renderVisitNote(input: RenderNoteInput): string[] {
         break;
 
       case "assessment": {
-        const parts = [
-          `A:   ${labelled("STE", fieldText(field("ste")))}`,
-          labelled("HTE", fieldText(field("hte"))),
-        ];
+        const ste = labelled("STE", fieldText(field("ste")));
+        const parts = [l.lead === false ? ste : `A:   ${ste}`, labelled("HTE", fieldText(field("hte")))];
         const fluoride = l.fluoride && input.doneToday.includes("fluoride");
-        parts.push(`Polished, flossed, scaled as needed${fluoride ? ", FL2TX" : ""}.`);
+        const procedure = l.procedure === undefined ? PROPHY_PROCEDURE : l.procedure;
+        if (procedure !== null) parts.push(`${procedure}${fluoride ? ", FL2TX" : ""}.`);
         if (l.exam !== null) {
           const drs = fieldText(field("drs"));
           // `Dr.` with nothing after it is the source template's own blank.
@@ -709,6 +974,14 @@ export function renderVisitNote(input: RenderNoteInput): string[] {
       case "control":
         out.push(labelled(l.label ?? NOTE_CONTROLS[l.id].label, fieldText(field(l.id))));
         break;
+
+      case "doneAreas": {
+        const areas = input.doneToday
+          .filter((id) => id.startsWith(l.prefix))
+          .map((id) => id.slice(l.prefix.length).toUpperCase());
+        out.push(labelled(l.label, areas.join(", ")));
+        break;
+      }
 
       case "free":
         out.push(labelled(l.label, FREE_FIELD_READERS[l.field](input).trim()));

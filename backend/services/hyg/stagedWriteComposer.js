@@ -140,7 +140,9 @@ function line(value) {
 function teethLabel(item) {
   if (item.teeth === 'mouth') return 'Whole mouth';
   if (!Array.isArray(item.teeth) || item.teeth.length === 0) return 'No teeth recorded';
-  return item.teeth.map((t) => '#' + t).join(', ');
+  // Shared with the client's tooth picker: '#30', and a primary tooth as its
+  // letter ('B'), never the stored 102. See new-dashboard/shared/hyg/teeth.ts.
+  return contract.teethText(item.teeth);
 }
 
 /**
@@ -321,7 +323,7 @@ const EXISTING_PATIENT_PHRASES = Object.freeze({
 
 /** "#30 MO D2392 Resin-based composite…" — the tooth first, as the rest of the slip reads. */
 function existingLabel(item) {
-  const where = item.tooth ? `#${item.tooth}${item.surface ? ' ' + item.surface : ''}` : item.surface;
+  const where = item.tooth ? `${contract.odToothText(item.tooth)}${item.surface ? ' ' + item.surface : ''}` : item.surface;
   return [where, item.code, item.description].filter(Boolean).join(' ') || 'Procedure';
 }
 
@@ -569,11 +571,26 @@ function composeRaw(kind, { visit, items, actor, signature, draft, existingTx })
   }
 
   if (kind === 'tc-handoff') {
-    if (items.length === 0) {
+    /*
+     * REFUSE ONLY WHEN THERE IS NEITHER (feedback round 1).
+     *
+     * A handoff used to need at least one "Treatment identified today" item.
+     * But a visit can find nothing new and still leave TC real work: the
+     * patient is ready to book existing treatment, wants to see the plan again,
+     * or has cost questions about it. That visit hands off with an EXPLICITLY
+     * EMPTY treatment list and the existing-treatment answers, which the send
+     * reads as they stand (sendVisit.sendHandoff). Only a visit with no new
+     * treatment AND no TC-actionable answer has nothing to hand off.
+     */
+    const actionable = contract.countTcActionable(
+      existingTx && Array.isArray(existingTx.items) ? existingTx.items : []
+    );
+    if (items.length === 0 && actionable === 0) {
       return {
         empty:
-          'There is no treatment on this visit to hand off. An empty case in a treatment ' +
-          "coordinator's queue is worse than no case.",
+          'There is nothing on this visit to hand off: no treatment identified today, and no ' +
+          'existing treatment the patient is ready to schedule, wants to see again, or has cost ' +
+          "questions about. An empty case in a treatment coordinator's queue is worse than no case.",
       };
     }
     // deriveCategory has already been given the answer, item by item. Asking a
@@ -582,9 +599,14 @@ function composeRaw(kind, { visit, items, actor, signature, draft, existingTx })
     const category = contract.deriveCategory(items);
     const lines = [
       `Category: ${category}`,
-      `Treatment (${items.length}):`,
+      items.length > 0 ? `Treatment (${items.length}):` : 'Treatment identified today: none',
       ...items.map((item) => '  ' + itemLine(item)),
     ];
+    if (items.length === 0) {
+      // A FIXED line, not a count: the handoff reads the answers when it is
+      // SENT, so printing them here would be words that can go out of date.
+      lines.push('Existing treatment answers go with it, as they stand when it is sent.');
+    }
     const motivations = [
       ...new Set(items.flatMap((i) => (Array.isArray(i.motivation) ? i.motivation : []))),
     ];
@@ -597,7 +619,10 @@ function composeRaw(kind, { visit, items, actor, signature, draft, existingTx })
     lines.push(...recordsLines(items, slip.recordsStatus || {}));
     return {
       title: 'Hygiene handoff',
-      summary: `${items.length} ${items.length === 1 ? 'item' : 'items'} to the treatment coordinator (${category})`,
+      summary:
+        items.length > 0
+          ? `${items.length} ${items.length === 1 ? 'item' : 'items'} to the treatment coordinator (${category})`
+          : 'Existing treatment to the treatment coordinator — nothing new today',
       preview: lines,
       payload: {
         kind: 'tc-handoff',

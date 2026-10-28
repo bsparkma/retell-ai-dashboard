@@ -3,8 +3,9 @@
 /**
  * The day-card progress read, in Postgres — every statement it owns.
  *
- * READ-ONLY, AND ONLY OUR OWN TABLES. Four fixed SELECTs over hyg_visit,
- * hyg_staged_write, hyg_perio_send and hyg_treatment_item. No Open Dental, no
+ * READ-ONLY, AND ONLY OUR OWN TABLES. Five fixed SELECTs over hyg_visit,
+ * hyg_staged_write, hyg_perio_send, hyg_treatment_item and
+ * hyg_existing_tx_disposition (a count only — feedback round 1). No Open Dental, no
  * write, and no column that carries a patient: not pat_num, not the slip, not a
  * preview or payload. What leaves here is AptNums, states and counts.
  *
@@ -13,6 +14,11 @@
  * alone would hand roland's 100 the state of valley's 100.
  */
 
+const contract = require('../../hyg/contract.gen.cjs');
+
+/** The answers that are work for a treatment coordinator — the contract's list. */
+const TC_ACTIONABLE = [...contract.EXISTING_TX_TC_ACTIONABLE];
+
 /**
  * Rows for one office's set of appointments.
  *
@@ -20,6 +26,7 @@
  * @param {{ office: string, aptNums: number[] }} args
  * @returns {Promise<Map<number, {
  *   checkoutSentAt: unknown, checkoutFinalAt: unknown, treatmentItemCount: number,
+ *   tcActionableCount: number,
  *   stagedWrites: Array<{ kind: string, state: string, hasError: boolean }>,
  *   latestPerioSendState: string | null,
  * }>>} keyed by AptNum; an appointment with no visit is absent.
@@ -44,6 +51,7 @@ async function readDayProgress(pool, { office, aptNums }) {
       checkoutSentAt: row.checkout_sent_at ?? null,
       checkoutFinalAt: row.checkout_final_at ?? null,
       treatmentItemCount: 0,
+      tcActionableCount: 0,
       stagedWrites: [],
       latestPerioSendState: null,
     };
@@ -89,6 +97,20 @@ async function readDayProgress(pool, { office, aptNums }) {
   for (const row of items.rows) {
     const entry = byVisit.get(row.visit_id);
     if (entry) entry.treatmentItemCount = Number(row.item_count);
+  }
+
+  // Feedback round 1: existing-treatment answers TC has to act on also make a
+  // handoff to send. A count again — never the answers, never a ProcNum.
+  const actionable = await pool.query(
+    `SELECT visit_id, COUNT(*)::int AS actionable_count
+       FROM hyg_existing_tx_disposition
+      WHERE office = $1 AND visit_id = ANY($2::uuid[]) AND patient = ANY($3::text[])
+      GROUP BY visit_id`,
+    [office, visitIds, TC_ACTIONABLE]
+  );
+  for (const row of actionable.rows) {
+    const entry = byVisit.get(row.visit_id);
+    if (entry) entry.tcActionableCount = Number(row.actionable_count);
   }
 
   return byApt;

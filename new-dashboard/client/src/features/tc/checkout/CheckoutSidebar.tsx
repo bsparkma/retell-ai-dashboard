@@ -55,6 +55,7 @@ import {
   type TcCheckoutPriority,
 } from "@shared/tc/checkout";
 import type { OfficeId } from "@shared/tc/contract";
+import { teethText } from "@shared/hyg/teeth";
 import { ExistingTreatmentFromHygiene } from "@/features/tc/checkout/HygieneTreatmentPanel";
 
 const PRIORITY_CLASS: Record<TcCheckoutPriority, string> = {
@@ -80,9 +81,9 @@ export function PriorityChip({ priority }: { priority: TcCheckoutPriority | null
   );
 }
 
-function teethText(teeth: number[] | "mouth"): string {
+function teethLine(teeth: number[] | "mouth"): string {
   if (teeth === "mouth") return "Whole mouth";
-  return teeth.length ? `#${teeth.join(", #")}` : "—";
+  return teeth.length ? teethText(teeth) : "—";
 }
 
 export interface CheckoutSidebarProps {
@@ -216,7 +217,7 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
                     {snap.procedures.map((p, i) => (
                       <li key={i} className="rounded-lg border border-border p-2.5 text-sm">
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-medium text-foreground">{teethText(p.teeth)} {p.code}</span>
+                          <span className="font-medium text-foreground">{teethLine(p.teeth)} {p.code}</span>
                           {p.surfaces.length > 0 && <span className="text-muted-foreground">{p.surfaces.join("")}</span>}
                           <PriorityChip priority={p.priority} />
                           {p.scheduleNext && <Badge variant="outline">Schedule next visit</Badge>}

@@ -844,18 +844,38 @@ export const PERIO_STAGE_LABELS: Record<PerioStage, string> = {
 export const PerioGradeSchema = z.enum(["a", "b", "c"]);
 export type PerioGrade = z.infer<typeof PerioGradeSchema>;
 
-/** What was done in the chair today. Chip ids, so no screen invents its own. */
-export const DONE_TODAY_OPTIONS = [
+/**
+ * What was done in the chair today. Chip ids, so no screen invents its own.
+ *
+ * RETIRED IS HIDDEN, NOT DELETED (feedback round 1). `polish` is no longer
+ * offered as a choice, but a slip saved before carries `"polish"` in its
+ * `doneToday`, and that slip must still render the chip as picked, print it on
+ * the Router and the note, and re-save it unchanged — the same rule the slip
+ * schema follows for old JSON. So the option stays, marked `retired`, and the
+ * form shows a retired chip ONLY on a slip that already has it.
+ */
+export const DONE_TODAY_OPTIONS: readonly { id: string; label: string; retired?: true }[] = [
   { id: "prophy", label: "Prophy" },
   { id: "srp-ur", label: "SRP UR" },
   { id: "srp-ul", label: "SRP UL" },
   { id: "srp-lr", label: "SRP LR" },
   { id: "srp-ll", label: "SRP LL" },
+  { id: "add-pmt", label: "ADD PMT" },
+  { id: "laser-ur", label: "Laser UR" },
+  { id: "laser-ul", label: "Laser UL" },
+  { id: "laser-ll", label: "Laser LL" },
+  { id: "laser-lr", label: "Laser LR" },
   { id: "fluoride", label: "Fluoride" },
   { id: "sealants", label: "Sealants" },
   { id: "irrigation", label: "Irrigation" },
-  { id: "polish", label: "Polish" },
-] as const;
+  { id: "ofi", label: "OFI" },
+  { id: "polish", label: "Polish", retired: true },
+];
+
+/** The chips the form offers on THIS slip: every live option, plus a retired one it already has. */
+export function doneTodayChoices(picked: readonly string[]): readonly { id: string; label: string; retired?: true }[] {
+  return DONE_TODAY_OPTIONS.filter((o) => !o.retired || picked.includes(o.id));
+}
 
 export const XRAY_OPTIONS = ["FMX", "PANO", "BW-4", "BW-2", "PA"] as const;
 

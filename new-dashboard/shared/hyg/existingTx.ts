@@ -280,3 +280,22 @@ export function groupExistingTxForTc<T extends Pick<ExistingTxHandoffItem, "pati
     items: items.filter((i) => i.patient === patient),
   })).filter((g) => g.items.length > 0);
 }
+
+/**
+ * The patient answers that are WORK FOR A TREATMENT COORDINATOR (feedback round
+ * 1): she is ready to book, wants to see the plan again, or has cost questions.
+ * A visit with one of these has something to hand off even when nothing new
+ * was found today, so the TC handoff and its staging card are available for it.
+ * "Wants to wait" and "Declined" are recorded and carried, but are not by
+ * themselves a reason to open a case.
+ */
+export const EXISTING_TX_TC_ACTIONABLE: readonly ExistingTxPatient[] = [
+  "ready_to_schedule",
+  "see_plan_again",
+  "cost_questions",
+];
+
+/** How many items carry a TC-actionable answer. */
+export function countTcActionable(items: readonly { patient: ExistingTxPatient }[]): number {
+  return items.filter((i) => EXISTING_TX_TC_ACTIONABLE.includes(i.patient)).length;
+}

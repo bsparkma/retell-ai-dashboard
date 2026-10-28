@@ -295,12 +295,19 @@ export function StagedWritesTray({
   perio = null,
   onResumePerio = () => undefined,
   existingNotDiscussed = 0,
+  existingTcActionable = 0,
 }: {
   staged: StagedWrite[];
   handoffCategory: HandoffCategory;
   patientName: string;
   /** How many treatment items are on the visit. See `handoffUnavailable`. */
   itemCount: number;
+  /**
+   * Feedback round 1: existing items whose answer is work for TC (ready to
+   * schedule, see the plan again, cost questions). Any of them makes the
+   * handoff stageable with no new treatment. See `handoffUnavailable`.
+   */
+  existingTcActionable?: number;
   /**
    * Slice 2a: existing Open Dental items nobody discussed at this visit. The
    * confirm mentions them; it never refuses on them.
@@ -349,8 +356,12 @@ export function StagedWritesTray({
    * learns the wrong thing twice: that there is a category, and that Stage
    * would do something. The server refuses this with NOTHING_TO_STAGE either
    * way; this is the screen saying the same thing before the round trip.
+   *
+   * Feedback round 1: "nothing" means neither new treatment NOR an existing
+   * answer TC has to act on — the server's own rule.
    */
-  const handoffUnavailable = itemCount === 0;
+  const handoffUnavailable = itemCount === 0 && existingTcActionable === 0;
+  const handoffExistingOnly = itemCount === 0 && existingTcActionable > 0;
 
   return (
     <section className="space-y-3" data-testid="hyg-staged-tray">
@@ -403,7 +414,16 @@ export function StagedWritesTray({
                         className="mt-0.5 text-xs text-muted-foreground"
                         data-testid="hyg-handoff-no-items"
                       >
-                        No treatment items yet — add them above and this becomes stageable.
+                        Nothing for TC yet — add treatment above, or answer an existing item as
+                        ready to schedule, see the plan again, or cost questions.
+                      </p>
+                    ) : handoffExistingOnly ? (
+                      <p
+                        className="mt-0.5 text-xs text-muted-foreground"
+                        data-testid="hyg-handoff-existing-only"
+                      >
+                        No new treatment today — it carries the existing treatment the patient
+                        wants to act on ({existingTcActionable}).
                       </p>
                     ) : (
                       <p className="mt-0.5 text-xs text-muted-foreground">
