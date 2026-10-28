@@ -14935,6 +14935,8 @@ __export(contract_entry_exports, {
   TC_CHECKOUT_OUTCOME_LABELS: () => TC_CHECKOUT_OUTCOME_LABELS,
   TC_CHECKOUT_PRIORITY_LABELS: () => TC_CHECKOUT_PRIORITY_LABELS,
   TC_CHECKOUT_PRIORITY_ORDER: () => TC_CHECKOUT_PRIORITY_ORDER,
+  TC_CHECKOUT_RECORDS_MAX: () => TC_CHECKOUT_RECORDS_MAX,
+  TC_CHECKOUT_RECORD_STATUS_LABELS: () => TC_CHECKOUT_RECORD_STATUS_LABELS,
   TC_CHECKOUT_STATUS_LABELS: () => TC_CHECKOUT_STATUS_LABELS,
   TC_CHECKOUT_WAITING: () => TC_CHECKOUT_WAITING,
   TC_EMAIL_IDENTITY_FIELD_LABELS: () => TC_EMAIL_IDENTITY_FIELD_LABELS,
@@ -14984,11 +14986,14 @@ __export(contract_entry_exports, {
   TcCheckoutPanelItem: () => TcCheckoutPanelItem,
   TcCheckoutPriority: () => TcCheckoutPriority,
   TcCheckoutProcedure: () => TcCheckoutProcedure,
+  TcCheckoutRecord: () => TcCheckoutRecord,
+  TcCheckoutRecordStatus: () => TcCheckoutRecordStatus,
   TcCheckoutSnapshot: () => TcCheckoutSnapshot,
   TcCheckoutStatus: () => TcCheckoutStatus,
   TcCheckoutSubmit: () => TcCheckoutSubmit,
   TcCheckoutSubmitResponse: () => TcCheckoutSubmitResponse,
   TcCheckoutSummary: () => TcCheckoutSummary,
+  TcCollectAtCheckout: () => TcCollectAtCheckout,
   TcCommunication: () => TcCommunication,
   TcContactConsent: () => TcContactConsent,
   TcEmailIdentityField: () => TcEmailIdentityField,
@@ -15780,7 +15785,22 @@ var TcHygieneIntake = import_zod4.z.object({
    * every intake before this, and every visit with no plan loaded, is `null`
    * and renders as it always did.
    */
-  existingTx: import_zod4.z.array(ExistingTxHandoffItemSchema).max(EXISTING_TX_HANDOFF_MAX).nullable().default(null)
+  existingTx: import_zod4.z.array(ExistingTxHandoffItemSchema).max(EXISTING_TX_HANDOFF_MAX).nullable().default(null),
+  /**
+   * What the front desk takes payment for (checkout v2): the slip's labels, as
+   * a checkout snapshot carries them (shared/tc/checkout.ts TcCollectAtCheckout
+   * — restated here because that module imports nothing of this one). NULLABLE
+   * and ADDITIVE, exactly like existingTx.
+   */
+  collectAtCheckout: import_zod4.z.array(import_zod4.z.string().min(1).max(200)).max(6).nullable().default(null),
+  /**
+   * The records the handoff's treatment needs and where each stands (checkout
+   * v2) — the list its staged preview showed. Same shape as a checkout
+   * snapshot's `records`; NULLABLE and ADDITIVE.
+   */
+  records: import_zod4.z.array(
+    import_zod4.z.object({ record: import_zod4.z.string().min(1).max(120), status: import_zod4.z.enum(["needed", "on_file", "taken_today"]) }).strict()
+  ).max(60).nullable().default(null)
 });
 var TcCase = import_zod4.z.object({
   caseId: Uuid,
@@ -16174,7 +16194,9 @@ function caseToRows(tcCase, newId) {
     patient_interest_level: c.hygieneIntake.patientInterestLevel,
     flag_urgent: c.hygieneIntake.flagUrgent,
     ortho_screening: c.hygieneIntake.orthoScreening,
-    existing_tx: c.hygieneIntake.existingTx
+    existing_tx: c.hygieneIntake.existingTx,
+    collect_at_checkout: c.hygieneIntake.collectAtCheckout,
+    records_needed: c.hygieneIntake.records
   } : null;
   return { caseRow, phaseRows, itemRows, objectionRows, followupRows, eventRows, hygieneIntakeRow };
 }
@@ -16297,7 +16319,9 @@ function caseFromRows(rows) {
       patientInterestLevel: hygieneIntakeRow.patient_interest_level,
       flagUrgent: hygieneIntakeRow.flag_urgent,
       orthoScreening: hygieneIntakeRow.ortho_screening ?? null,
-      existingTx: hygieneIntakeRow.existing_tx ?? null
+      existingTx: hygieneIntakeRow.existing_tx ?? null,
+      collectAtCheckout: hygieneIntakeRow.collect_at_checkout ?? null,
+      records: hygieneIntakeRow.records_needed ?? null
     } : null
   });
 }
@@ -17397,6 +17421,15 @@ var TcCheckoutNextVisit = import_zod7.z.object({
   /** The note's return-to-clinic line, verbatim. */
   rtc: import_zod7.z.string().max(4e3)
 }).strict();
+var TcCollectAtCheckout = import_zod7.z.array(import_zod7.z.string().min(1).max(200)).max(6);
+var TcCheckoutRecordStatus = import_zod7.z.enum(["needed", "on_file", "taken_today"]);
+var TC_CHECKOUT_RECORD_STATUS_LABELS = {
+  needed: "Needed",
+  on_file: "On file",
+  taken_today: "Taken today"
+};
+var TC_CHECKOUT_RECORDS_MAX = 60;
+var TcCheckoutRecord = import_zod7.z.object({ record: import_zod7.z.string().min(1).max(120), status: TcCheckoutRecordStatus }).strict();
 var TcCheckoutSnapshot = import_zod7.z.object({
   procedures: import_zod7.z.array(TcCheckoutProcedure).max(100),
   /** The highest priority among the procedures; null when there are none. */
@@ -17416,7 +17449,18 @@ var TcCheckoutSnapshot = import_zod7.z.object({
    * this has no such key and parses exactly as it did, and a visit whose plan
    * was never loaded sends none.
    */
-  existingTx: import_zod7.z.array(ExistingTxHandoffItemSchema).max(EXISTING_TX_HANDOFF_MAX).optional()
+  existingTx: import_zod7.z.array(ExistingTxHandoffItemSchema).max(EXISTING_TX_HANDOFF_MAX).optional(),
+  /**
+   * What to take payment for at the desk (checkout v2): the slip's chips and
+   * "Other", as the front desk reads them. OPTIONAL and additive for the same
+   * reason as existingTx; absent or empty means nothing to collect.
+   */
+  collectAtCheckout: TcCollectAtCheckout.optional(),
+  /**
+   * The records the staged treatment needs and where each stands (checkout
+   * v2). OPTIONAL and additive; absent when the treatment needs none.
+   */
+  records: import_zod7.z.array(TcCheckoutRecord).max(TC_CHECKOUT_RECORDS_MAX).optional()
 }).strict();
 var TcCheckoutSubmit = import_zod7.z.object({
   kind: import_zod7.z.literal("checkout"),
@@ -18578,6 +18622,8 @@ function odToothText(tooth) {
   TC_CHECKOUT_OUTCOME_LABELS,
   TC_CHECKOUT_PRIORITY_LABELS,
   TC_CHECKOUT_PRIORITY_ORDER,
+  TC_CHECKOUT_RECORDS_MAX,
+  TC_CHECKOUT_RECORD_STATUS_LABELS,
   TC_CHECKOUT_STATUS_LABELS,
   TC_CHECKOUT_WAITING,
   TC_EMAIL_IDENTITY_FIELD_LABELS,
@@ -18627,11 +18673,14 @@ function odToothText(tooth) {
   TcCheckoutPanelItem,
   TcCheckoutPriority,
   TcCheckoutProcedure,
+  TcCheckoutRecord,
+  TcCheckoutRecordStatus,
   TcCheckoutSnapshot,
   TcCheckoutStatus,
   TcCheckoutSubmit,
   TcCheckoutSubmitResponse,
   TcCheckoutSummary,
+  TcCollectAtCheckout,
   TcCommunication,
   TcContactConsent,
   TcEmailIdentityField,

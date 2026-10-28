@@ -69,8 +69,10 @@ import { Link, useParams, useSearch } from "wouter";
 import { AlertTriangle, ArrowLeft, HelpCircle, Loader2, RefreshCw } from "lucide-react";
 
 import {
+  collectAtCheckoutLabels,
   emptySlip,
   isOfficeId,
+  medicalHistoryLine,
   type HygSlip,
   type SendConfirmation,
   type StagedWrite,
@@ -526,8 +528,10 @@ export default function HygVisit() {
               ...prev.visit,
               stagedWrites: prev.visit.stagedWrites.map((w) => {
                 const read = seen.get(w.id);
+                // The reason rides with the flag (checkout v2), so a row read
+                // back current loses the reason it had.
                 return read && read.updatedAt === w.updatedAt && read.existingTxStale !== undefined
-                  ? { ...w, existingTxStale: read.existingTxStale }
+                  ? { ...w, existingTxStale: read.existingTxStale, staleReason: read.staleReason }
                   : w;
               }),
             },
@@ -1154,6 +1158,9 @@ export default function HygVisit() {
                   )
                 : 0
             }
+            collectCount={collectAtCheckoutLabels(draft.collectAtCheckout).length}
+            checkoutEnabled={page.checkoutEnabled === true}
+            medicalHistoryRecorded={medicalHistoryLine(draft.medicalHistory) !== null}
             busy={busy}
             sending={sending}
             onStage={(kind) => void onStage(kind)}

@@ -26,6 +26,8 @@
  * Adding them here would be adding fields nobody is standing in front of.
  */
 import {
+  COLLECT_AT_CHECKOUT_OPTIONS,
+  COLLECT_OTHER_MAX,
   doneTodayChoices,
   EXAM_STATUS_LABELS,
   ExamStatusSchema,
@@ -364,6 +366,49 @@ export function RouterSlip({
             data-testid="hyg-slip-financial"
           />
         </label>
+      </div>
+
+      {/* CHECKOUT V2: what the desk takes payment for. Rides the checkout alert
+          and the TC handoff; by itself it is enough to send the handoff, since
+          the patient has to stop at the desk to pay. */}
+      <div className="space-y-1.5" data-testid="hyg-slip-collect">
+        <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Collect at checkout
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {COLLECT_AT_CHECKOUT_OPTIONS.map((option) => {
+            const active = slip.collectAtCheckout.items.includes(option.id);
+            return (
+              <Chip
+                key={option.id}
+                label={option.label}
+                active={active}
+                onClick={() => {
+                  const picked = new Set<string>(slip.collectAtCheckout.items);
+                  if (active) picked.delete(option.id);
+                  else picked.add(option.id);
+                  // Stored in the option order, so the same answer is the same value.
+                  set("collectAtCheckout", {
+                    ...slip.collectAtCheckout,
+                    items: COLLECT_AT_CHECKOUT_OPTIONS.filter((o) => picked.has(o.id)).map((o) => o.id),
+                  });
+                }}
+                testId={`hyg-slip-collect-${option.id}`}
+              />
+            );
+          })}
+          <input
+            type="text"
+            defaultValue={slip.collectAtCheckout.other}
+            maxLength={COLLECT_OTHER_MAX}
+            // Trimmed on the way in, so a blank "Other" is stored as nothing.
+            onBlur={(e) => set("collectAtCheckout", { ...slip.collectAtCheckout, other: e.target.value.trim() })}
+            placeholder="Other"
+            aria-label="Other item to collect at checkout"
+            data-testid="hyg-slip-collect-other"
+            className="min-h-11 min-w-[10rem] flex-1 rounded-lg border border-border bg-background px-3 text-sm"
+          />
+        </div>
       </div>
     </section>
   );

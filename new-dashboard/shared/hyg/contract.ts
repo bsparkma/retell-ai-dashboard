@@ -879,6 +879,76 @@ export function doneTodayChoices(picked: readonly string[]): readonly { id: stri
 
 export const XRAY_OPTIONS = ["FMX", "PANO", "BW-4", "BW-2", "PA"] as const;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// MEDICAL HISTORY + COLLECT AT CHECKOUT (checkout v2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The medical-history update, as the hygienist answered it.
+ *
+ * ONE ANSWER, NOT TWO FIELDS: "no changes" and "these changes" exclude each
+ * other, so they are one value with two shapes rather than a boolean beside a
+ * text box that could both be set. `null` on the slip means nobody answered —
+ * which prints NOTHING on the note (a reminder at Send, never a gate).
+ */
+export const MEDICAL_HISTORY_MAX = 1000;
+export const MedicalHistorySchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("no_changes") }).strict(),
+  z.object({ status: z.literal("changes"), text: z.string().min(1).max(MEDICAL_HISTORY_MAX) }).strict(),
+]);
+export type MedicalHistory = z.infer<typeof MedicalHistorySchema>;
+
+/**
+ * The note's line for the answer, or null when there is none to print.
+ * Whitespace-only changes text is no answer — it prints nothing.
+ */
+export function medicalHistoryLine(answer: MedicalHistory | null | undefined): string | null {
+  if (!answer) return null;
+  if (answer.status === "no_changes") return "Medical history: reviewed, no changes";
+  const text = answer.text.trim();
+  return text ? `Medical history update: ${text}` : null;
+}
+
+/**
+ * What the patient must pay for at the desk on the way out. A fixed set the
+ * front desk recognises, plus free text for anything else.
+ */
+export const COLLECT_AT_CHECKOUT_OPTIONS = [
+  { id: "sealant", label: "Sealant" },
+  { id: "fl2", label: "Fl2" },
+  { id: "whitening_gel", label: "Whitening gel" },
+  { id: "mouthwash", label: "Mouthwash" },
+  { id: "fl2_toothpaste", label: "Fl2 toothpaste" },
+] as const;
+export const CollectAtCheckoutIdSchema = z.enum(["sealant", "fl2", "whitening_gel", "mouthwash", "fl2_toothpaste"]);
+export type CollectAtCheckoutId = z.infer<typeof CollectAtCheckoutIdSchema>;
+export const COLLECT_OTHER_MAX = 200;
+export const CollectAtCheckoutSchema = z
+  .object({
+    items: z.array(CollectAtCheckoutIdSchema).max(COLLECT_AT_CHECKOUT_OPTIONS.length),
+    other: z.string().max(COLLECT_OTHER_MAX),
+  })
+  .strict();
+export type CollectAtCheckout = z.infer<typeof CollectAtCheckoutSchema>;
+
+export function emptyCollectAtCheckout(): CollectAtCheckout {
+  return { items: [], other: "" };
+}
+
+/**
+ * The list the front desk reads: the picked chips in the option order (not
+ * tap order, so the same answer always reads the same), then "Other" trimmed.
+ * Empty when nothing is to be collected.
+ */
+export function collectAtCheckoutLabels(c: CollectAtCheckout | null | undefined): string[] {
+  if (!c) return [];
+  const picked = new Set<string>(c.items);
+  const out: string[] = COLLECT_AT_CHECKOUT_OPTIONS.filter((o) => picked.has(o.id)).map((o) => o.label);
+  const other = c.other.trim();
+  if (other) out.push(other);
+  return out;
+}
+
 /**
  * The next hygiene visit the front desk should book.
  *
@@ -999,6 +1069,15 @@ export const HygSlipSchema = z
     // TC was sent is the sheet this visit shows — a client cannot edit it after
     // the fact by sending a whole slip.
     orthoScreening: OrthoScreeningSchema.nullable().default(null),
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CHECKOUT V2 — defaulted for the same load-bearing reason as above
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** The medical-history update. `null` = not answered; the note prints no line. */
+    medicalHistory: MedicalHistorySchema.nullable().default(null),
+    /** What to take payment for at the desk. Rides the checkout alert and the TC handoff. */
+    collectAtCheckout: CollectAtCheckoutSchema.default({ items: [], other: "" }),
   })
   .strict();
 export type HygSlip = z.infer<typeof HygSlipSchema>;
@@ -1033,6 +1112,8 @@ export function emptySlip(): HygSlip {
     rtc: "",
     perioChartUpdated: null,
     orthoScreening: null,
+    medicalHistory: null,
+    collectAtCheckout: emptyCollectAtCheckout(),
   };
 }
 
@@ -1152,8 +1233,20 @@ export const StagedWriteSchema = z.object({
    * "not known to be out of date", which is what such a server could say.
    */
   existingTxStale: z.boolean().optional(),
+  /**
+   * WHY it is out of date (checkout v2). The flag above predates the other
+   * reasons and keeps its name so no reader has to change: it is now true for
+   * ANY of them, and this says which —
+   *   existing_tx      an existing-treatment answer changed (note, slip, handoff)
+   *   medical_history  the medical-history answer changed (note only)
+   *   handoff          what TC would receive changed: the items, the records,
+   *                    the existing answers or the collect-at-checkout list
+   * Absent whenever the flag is false, and from a server that predates it.
+   */
+  staleReason: z.enum(["existing_tx", "medical_history", "handoff"]).optional(),
 });
 export type StagedWrite = z.infer<typeof StagedWriteSchema>;
+export type StaleReason = NonNullable<StagedWrite["staleReason"]>;
 
 /**
  * PUT …/existing-tx/:procNum, as this page reads it: the stored row, plus the

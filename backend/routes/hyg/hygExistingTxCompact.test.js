@@ -90,7 +90,10 @@ async function stage(app, kind) {
 
 const staleOf = (writes) => Object.fromEntries(writes.map((w) => [w.kind, w.existingTxStale]));
 
-test('an answer saved after staging marks the note and Router out of date — never the handoff', async () => {
+// RULING (checkout v2), premise update: the TC handoff's preview now prints the
+// existing-treatment answers TC receives, so an answer saved after staging
+// marks it out of date too (it used to print a fixed line and never could).
+test('an answer saved after staging marks the note, the Router and the handoff out of date', async () => {
   const app = await bootHygApp({ od: od() });
   try {
     await opened(app);
@@ -102,12 +105,12 @@ test('an answer saved after staging marks the note and Router out of date — ne
     const put = await api(app.baseUrl, 'PUT', '/api/hyg/visit/900001/existing-tx/5001' + QO, { body: ANSWER });
     assert.equal(put.status, 200, JSON.stringify(put.body));
     // In the save's own response — the tray need not wait for another GET.
-    assert.deepEqual(staleOf(put.body.stagedWrites), { note: true, router: true, 'tc-handoff': false });
+    assert.deepEqual(staleOf(put.body.stagedWrites), { note: true, router: true, 'tc-handoff': true });
 
     // And on the visit GET.
     const visit = await api(app.baseUrl, 'GET', '/api/hyg/visit/900001' + Q);
     assert.equal(visit.status, 200);
-    assert.deepEqual(staleOf(visit.body.visit.stagedWrites), { note: true, router: true, 'tc-handoff': false });
+    assert.deepEqual(staleOf(visit.body.visit.stagedWrites), { note: true, router: true, 'tc-handoff': true });
 
     // The flag predicts the Send's refusal exactly: it still refuses (kept).
     const note = visit.body.visit.stagedWrites.find((w) => w.kind === 'note');
