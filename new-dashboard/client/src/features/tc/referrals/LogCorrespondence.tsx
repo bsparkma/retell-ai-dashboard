@@ -9,8 +9,8 @@
  *
  * An optional file goes through R4's upload route UNCHANGED, after the contact
  * is logged (so a refused file never loses the note): R4's own checks, its
- * status rule (only while a referral is a draft or awaiting sign-off) and its
- * cap of 5. Where R4 would refuse, the form says so instead of offering the
+ * status rule (the staff window: a draft, awaiting sign-off, sent,
+ * acknowledged or patient seen — R6.9a) and its cap of 5. Where R4 would refuse, the form says so instead of offering the
  * file; where it refuses anyway (two people at the fifth slot), its own words
  * are shown, file by file, and the contact stays logged.
  */
@@ -25,6 +25,7 @@ import { tcErrorMessage } from "@/features/tc/api";
 import { logReferralCorrespondence, uploadReferralAttachment } from "@/features/tc/referrals/referralsApi";
 import { AttachmentZone } from "@/features/tc/referrals/AttachmentZone";
 import { uploadAll } from "@/features/tc/referrals/ReferralsPanel";
+import { HUB_STAFF_ATTACHABLE_STATUSES } from "@/features/tc/referrals/hubActions";
 import type { OfficeId } from "@shared/tc/contract";
 import {
   TC_REFERRAL_ATTACHMENT_MAX_FILES,
@@ -34,18 +35,11 @@ import {
   type TcReferralCorrespondenceChannel,
   type TcReferralCorrespondenceDirection,
   type TcReferralCorrespondenceParty,
-  type TcReferralStatus,
 } from "@shared/tc/referrals";
 
-/**
- * Where R4 takes a file: its server rule (referralAttachments.js
- * ATTACHABLE_STATUSES), mirrored for the form only. The server decides.
- */
-export const R4_ATTACHABLE_STATUSES: readonly TcReferralStatus[] = ["draft", "pending_signoff"];
-
-/** R4's own refusal sentences, shown where its rule would refuse. */
+/** R4's own refusal sentences (the staff route's), shown where its rule would refuse. */
 export const CORRESPONDENCE_FILE_LOCKED_COPY =
-  "Files can be added only while a referral is a draft or awaiting sign-off, so this note goes in without one.";
+  "Files can be added only while a referral is a draft, awaiting sign-off, sent, acknowledged, or the patient has been seen, so this note goes in without one.";
 export const CORRESPONDENCE_FILE_FULL_COPY = `A referral can carry at most ${TC_REFERRAL_ATTACHMENT_MAX_FILES} files, so this note goes in without one.`;
 
 const CHANNEL_LABELS: Record<TcReferralCorrespondenceChannel, string> = {
@@ -95,7 +89,7 @@ export function LogCorrespondence({
   /** What happened to the file(s) after the contact was logged, in R4's words. */
   const [fileOutcome, setFileOutcome] = useState<string[]>([]);
 
-  const attachable = R4_ATTACHABLE_STATUSES.includes(r.status);
+  const attachable = HUB_STAFF_ATTACHABLE_STATUSES.includes(r.status);
   const full = filesAttached >= TC_REFERRAL_ATTACHMENT_MAX_FILES;
   const fileNote = !attachable ? CORRESPONDENCE_FILE_LOCKED_COPY : full ? CORRESPONDENCE_FILE_FULL_COPY : null;
 

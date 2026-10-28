@@ -124,6 +124,34 @@ export function hubActionPlan(
 }
 
 /**
+ * R6.9a: the TC staff upload window — the server's rule (routes/tc/referrals.js
+ * TC_STAFF_ATTACHABLE_STATUSES), mirrored for the UI only. The server decides.
+ * Approved (not yet sent), closed, declined and cancelled stay shut.
+ */
+export const HUB_STAFF_ATTACHABLE_STATUSES: readonly TcReferralStatus[] = [
+  "draft",
+  "pending_signoff",
+  "sent",
+  "acknowledged",
+  "patient_seen",
+];
+
+/**
+ * R6.9a: is the standalone "Add files" box drawn? To a tc.full viewer (the
+ * route is tc.full) once the referral went out — for the specialist's returned
+ * report or fax. A draft or a referral awaiting sign-off takes files through
+ * Edit, as before.
+ */
+export function hubCanAddFilesAfterSend(status: TcReferralStatus, viewer: HubViewer): boolean {
+  return (
+    viewer.tcFull &&
+    HUB_STAFF_ATTACHABLE_STATUSES.includes(status) &&
+    status !== "draft" &&
+    status !== "pending_signoff"
+  );
+}
+
+/**
  * R6.9: is "Log correspondence" offered? To a tc.full viewer (the route is
  * tc.full), on any status but a draft — the shared rule the server applies.
  * Not a move: it is outside the plan above and never changes the status.

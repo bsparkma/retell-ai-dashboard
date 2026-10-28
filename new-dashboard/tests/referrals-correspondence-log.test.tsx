@@ -354,8 +354,10 @@ describe("5: a file with it, through R4 unchanged", () => {
     expect(within(panel).queryByTestId("referral-attachment-zone")).toBeNull();
   });
 
-  it("after sign-off: no file offered — R4 takes files only while it is a draft or awaiting sign-off", async () => {
-    const { panel } = await openDetail(referral({ status: "sent" }));
+  // R6.9a opened sent / acknowledged / patient seen to staff files, so this
+  // pins a status that stays shut (closed) instead of `sent`.
+  it("once closed: no file offered — R4's staff window is shut there", async () => {
+    const { panel } = await openDetail(referral({ status: "closed" }));
     fireEvent.click(within(panel).getByTestId("tc-hub-correspondence-open"));
     expect(within(panel).getByTestId("tc-hub-correspondence-no-file").textContent).toBe(CORRESPONDENCE_FILE_LOCKED_COPY);
     expect(within(panel).queryByTestId("referral-attachment-zone")).toBeNull();

@@ -100,6 +100,7 @@ import {
   HUB_MARK_VERBS,
   hubActionLabel,
   hubActionPlan,
+  hubCanAddFilesAfterSend,
   hubCanLogCorrespondence,
   hubCanWriteChartNotes,
   signoffViewHref,
@@ -843,6 +844,8 @@ export function HubDetail({
   const canLog = r ? !viaSignoff && hubCanLogCorrespondence(r.status, asViewer) : false;
   // R6.10: through the hub's own (tc.full) routes only.
   const canChartNote = r ? !viaSignoff && hubCanWriteChartNotes(r.events, asViewer) : false;
+  // R6.9a: files after the referral went out, through the hub's own (tc.full) upload route.
+  const canAddFiles = r ? !viaSignoff && hubCanAddFilesAfterSend(r.status, asViewer) : false;
   const returned = r ? referralReturnedLine(r.returned) : null;
 
   return (
@@ -1040,6 +1043,14 @@ export function HubDetail({
                     onMark={() =>
                       void act(() => markReferral(office, r.referralId, mark, markText.trim()), `${REFERRAL_MARK_LABELS[mark]}: recorded`)
                     }
+                  />
+                )}
+                {canAddFiles && (
+                  <AddAttachments
+                    alreadyAttached={files.length}
+                    upload={(f) => uploadReferralAttachment(office, r.referralId, f)}
+                    onDone={reloadFiles}
+                    disabled={busy}
                   />
                 )}
                 {canLog && (
