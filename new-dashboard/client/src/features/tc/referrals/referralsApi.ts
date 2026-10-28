@@ -14,6 +14,7 @@ import {
   TcReferralSignoffSummary,
   TcReferralAttachment,
   TcReferralSendOutcome,
+  type TcReferralCorrespondenceRequest,
   type TcReferralCreateRequest,
   type TcReferralDirectoryInput,
   type TcReferralDoctorEdit,
@@ -234,6 +235,24 @@ export async function markReferral(
   return parse(
     ReferralResponse,
     await tcRequest<unknown>(`/tc/referrals/${referralId}/${MARK_PATHS[mark]}`, { office, method: "POST", body }),
+  ).referral;
+}
+
+// ── R6.9: the correspondence log ────────────────────────────────────────────
+
+/**
+ * Record a call / email / fax with the specialist's office or the patient that
+ * happened OUTSIDE the app. Never moves the status; sends nothing. Resolves
+ * with the referral read back, history included.
+ */
+export async function logReferralCorrespondence(
+  office: OfficeId,
+  referralId: string,
+  body: TcReferralCorrespondenceRequest,
+): Promise<TcReferral> {
+  return parse(
+    ReferralResponse,
+    await tcRequest<unknown>(`/tc/referrals/${referralId}/correspondence`, { office, method: "POST", body }),
   ).referral;
 }
 

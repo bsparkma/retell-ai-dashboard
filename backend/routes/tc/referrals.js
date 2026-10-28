@@ -37,6 +37,11 @@
  *   POST   /:id/mark-patient-seen acknowledged → patient_seen                  │ they send
  *   POST   /:id/close             patient_seen → closed                        ┘ nothing
  *
+ *   R6.9 — the correspondence log (./referralCorrespondence.js):
+ *   POST   /:id/correspondence    staff record a call / email / fax with the
+ *                                 specialist or patient; any status but a draft;
+ *                                 a history row, never a move; sends nothing
+ *
  *   R5 — email (./referralSend.js), dark unless tc_referral_email_enabled:
  *   POST   /:id/send-email        approved → sent, ONLY after ACS accepted
  *                                 the email; a failure leaves it approved
@@ -74,6 +79,7 @@ const transitions = require('./referralTransitions');
 const { createDraft, directoryProblem } = require('./referralCreate');
 const attachments = require('./referralAttachments');
 const referralSend = require('./referralSend');
+const correspondence = require('./referralCorrespondence');
 const odOffices = require('../../config/odOffices');
 const odReads = require('./odReads');
 
@@ -90,6 +96,7 @@ const {
   TcReferralMarkSentRequest,
   TcReferralMarkRequest,
   TcReferralSendRequest,
+  TcReferralCorrespondenceRequest,
 } = contract;
 
 const router = express.Router();
@@ -327,6 +334,8 @@ async function present(pool, office, rows, { withAttachmentCounts = false } = {}
     const response = responses.get(String(r.referral_id));
     out.received = response ? response.received : null;
     out.patientEmail = response ? response.patientEmail : null;
+    // R6.9: the card's "Last contact" line, from the same query.
+    out.lastCorrespondence = response ? response.lastCorrespondence : null;
     if (counts) out.attachmentCount = counts.get(String(r.referral_id)) ?? 0;
     return out;
   });
@@ -598,6 +607,25 @@ for (const mark of MARKS) {
     })
   );
 }
+
+// ── R6.9: the correspondence log ────────────────────────────────────────────
+
+/**
+ * POST /:id/correspondence — staff record a contact that happened outside the
+ * app. A history row, never a move; it sends nothing. Strict body (any extra
+ * field — an office, a status, a date — is a 400). See ./referralCorrespondence.js.
+ */
+router.post(
+  '/:id/correspondence',
+  h(async (req, res) => {
+    const id = ReferralId.safeParse(req.params.id);
+    if (!id.success) return badReferralId(res);
+    const body = parseBody(res, TcReferralCorrespondenceRequest, req.body ?? {});
+    if (!body) return undefined;
+    const out = await correspondence.logCorrespondence(req, { referralId: id.data, body });
+    return res.status(out.status).json(out.body);
+  })
+);
 
 // ── R5: email it to the specialist ──────────────────────────────────────────
 

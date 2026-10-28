@@ -42,6 +42,11 @@
  * seen" — are a person RECORDING that it happened. They email, fax and
  * trigger nothing, and they say so.
  *
+ * CORRESPONDENCE (R6.9). Staff log a call / email / fax with the specialist's
+ * office or the patient from the panel (features/tc/referrals/LogCorrespondence),
+ * on any status but a draft. It is a history line — never a move, never a
+ * send — and the card shows the latest as a muted "Last contact" line.
+ *
  * Every state shown is the server's answer: nothing reads as saved, moved,
  * marked or sent before the server confirms it.
  */
@@ -90,10 +95,12 @@ import {
   HUB_MARK_VERBS,
   hubActionLabel,
   hubActionPlan,
+  hubCanLogCorrespondence,
   signoffViewHref,
   type HubViewer,
 } from "@/features/tc/referrals/hubActions";
 import { SignoffActions, signoffDoneLine } from "@/features/tc/referrals/SignoffActions";
+import { LogCorrespondence } from "@/features/tc/referrals/LogCorrespondence";
 import {
   AttachmentList,
   ReferralResponseSignals,
@@ -120,6 +127,7 @@ import {
   TcReferralStatus,
   referralDateLabel,
   referralHubGroup,
+  referralLastContactLine,
   referralNextStatus,
   referralResponseBadges,
   referralReturnedLine,
@@ -597,6 +605,7 @@ function FilterSelect({
 export function HubCard({ referral: r, now, onOpen }: { referral: TcReferral; now: Date; onOpen: () => void }) {
   const returned = referralReturnedLine(r.returned);
   const patientEmailLine = referralResponseBadges(r).patientEmail;
+  const lastContact = referralLastContactLine(r.lastCorrespondence);
   return (
     <button
       type="button"
@@ -626,6 +635,11 @@ export function HubCard({ referral: r, now, onOpen }: { referral: TcReferral; no
       {patientEmailLine && (
         <p className="text-xs text-muted-foreground truncate" title={patientEmailLine} data-testid="referral-response-patient-email">
           {patientEmailLine}
+        </p>
+      )}
+      {lastContact && (
+        <p className="text-xs text-muted-foreground truncate" title={r.lastCorrespondence?.note} data-testid="referral-last-contact">
+          {lastContact}
         </p>
       )}
       {returned && (
@@ -818,6 +832,8 @@ export function HubDetail({
   const cancel = offered("cancel");
   const reopen = offered("reopen");
   const editable = r ? asViewer.tcFull && REFERRAL_FIELD_EDITABLE_STATUSES.includes(r.status) : false;
+  // R6.9: through the hub's own (tc.full) routes only.
+  const canLog = r ? !viaSignoff && hubCanLogCorrespondence(r.status, asViewer) : false;
   const returned = r ? referralReturnedLine(r.returned) : null;
 
   return (
@@ -1015,6 +1031,18 @@ export function HubDetail({
                     onMark={() =>
                       void act(() => markReferral(office, r.referralId, mark, markText.trim()), `${REFERRAL_MARK_LABELS[mark]}: recorded`)
                     }
+                  />
+                )}
+                {canLog && (
+                  <LogCorrespondence
+                    office={office}
+                    referral={r}
+                    filesAttached={files.length}
+                    onLogged={(next) => {
+                      setR(next);
+                      onChanged();
+                    }}
+                    onFilesChanged={reloadFiles}
                   />
                 )}
                 {serverError && <p className="text-sm text-destructive">{serverError}</p>}

@@ -14910,6 +14910,7 @@ __export(contract_entry_exports, {
   PreauthStatus: () => PreauthStatus,
   PreauthType: () => PreauthType,
   REFERRAL_ATTACHMENT_HINT: () => REFERRAL_ATTACHMENT_HINT,
+  REFERRAL_CORRESPONDENCE_STATUSES: () => REFERRAL_CORRESPONDENCE_STATUSES,
   REFERRAL_DOCTOR_EDITABLE_STATUSES: () => REFERRAL_DOCTOR_EDITABLE_STATUSES,
   REFERRAL_EDITABLE_STATUSES: () => REFERRAL_EDITABLE_STATUSES,
   REFERRAL_EMAIL_MISSING_COPY: () => REFERRAL_EMAIL_MISSING_COPY,
@@ -14945,11 +14946,17 @@ __export(contract_entry_exports, {
   TC_REFERRAL_ATTACHMENT_MAX_FILES: () => TC_REFERRAL_ATTACHMENT_MAX_FILES,
   TC_REFERRAL_ATTACHMENT_TYPES: () => TC_REFERRAL_ATTACHMENT_TYPES,
   TC_REFERRAL_CHIP_LABELS: () => TC_REFERRAL_CHIP_LABELS,
+  TC_REFERRAL_CORRESPONDENCE_CHANNELS: () => TC_REFERRAL_CORRESPONDENCE_CHANNELS,
+  TC_REFERRAL_CORRESPONDENCE_DIRECTIONS: () => TC_REFERRAL_CORRESPONDENCE_DIRECTIONS,
+  TC_REFERRAL_CORRESPONDENCE_EVENT_VERBS: () => TC_REFERRAL_CORRESPONDENCE_EVENT_VERBS,
+  TC_REFERRAL_CORRESPONDENCE_NOTE_MAX: () => TC_REFERRAL_CORRESPONDENCE_NOTE_MAX,
+  TC_REFERRAL_CORRESPONDENCE_PARTIES: () => TC_REFERRAL_CORRESPONDENCE_PARTIES,
   TC_REFERRAL_DOCTOR_NOTE_MAX: () => TC_REFERRAL_DOCTOR_NOTE_MAX,
   TC_REFERRAL_EVENT_VERBS: () => TC_REFERRAL_EVENT_VERBS,
   TC_REFERRAL_HUB_GROUPS: () => TC_REFERRAL_HUB_GROUPS,
   TC_REFERRAL_LINK_EVENT_VERBS: () => TC_REFERRAL_LINK_EVENT_VERBS,
   TC_REFERRAL_PATIENT_REASON_MAX: () => TC_REFERRAL_PATIENT_REASON_MAX,
+  TC_REFERRAL_R5B_EVENT_VERBS: () => TC_REFERRAL_R5B_EVENT_VERBS,
   TC_REFERRAL_R5_EVENT_VERBS: () => TC_REFERRAL_R5_EVENT_VERBS,
   TC_REFERRAL_SEND_EVENT_VERBS: () => TC_REFERRAL_SEND_EVENT_VERBS,
   TC_REFERRAL_SOURCE_KINDS_R2: () => TC_REFERRAL_SOURCE_KINDS_R2,
@@ -15009,6 +15016,11 @@ __export(contract_entry_exports, {
   TcProviderListResponse: () => TcProviderListResponse,
   TcReferral: () => TcReferral,
   TcReferralAttachment: () => TcReferralAttachment,
+  TcReferralCorrespondenceChannel: () => TcReferralCorrespondenceChannel,
+  TcReferralCorrespondenceDirection: () => TcReferralCorrespondenceDirection,
+  TcReferralCorrespondenceKind: () => TcReferralCorrespondenceKind,
+  TcReferralCorrespondenceParty: () => TcReferralCorrespondenceParty,
+  TcReferralCorrespondenceRequest: () => TcReferralCorrespondenceRequest,
   TcReferralCreateRequest: () => TcReferralCreateRequest,
   TcReferralDeclineRequest: () => TcReferralDeclineRequest,
   TcReferralDirectoryEntry: () => TcReferralDirectoryEntry,
@@ -15021,6 +15033,7 @@ __export(contract_entry_exports, {
   TcReferralFieldsEdit: () => TcReferralFieldsEdit,
   TcReferralHubQuery: () => TcReferralHubQuery,
   TcReferralInput: () => TcReferralInput,
+  TcReferralLastCorrespondence: () => TcReferralLastCorrespondence,
   TcReferralMarkRequest: () => TcReferralMarkRequest,
   TcReferralMarkSentRequest: () => TcReferralMarkSentRequest,
   TcReferralPatientEmailOutcome: () => TcReferralPatientEmailOutcome,
@@ -15077,11 +15090,15 @@ __export(contract_entry_exports, {
   providerDisplayName: () => providerDisplayName,
   readBlock: () => readBlock,
   readBlocks: () => readBlocks,
+  referralCanLogCorrespondence: () => referralCanLogCorrespondence,
   referralChipFor: () => referralChipFor,
   referralChipTop: () => referralChipTop,
+  referralCorrespondenceLabel: () => referralCorrespondenceLabel,
   referralDateLabel: () => referralDateLabel,
   referralEditSummary: () => referralEditSummary,
   referralHubGroup: () => referralHubGroup,
+  referralLastContactLine: () => referralLastContactLine,
+  referralLastCorrespondence: () => referralLastCorrespondence,
   referralLastReturn: () => referralLastReturn,
   referralLastSendProblem: () => referralLastSendProblem,
   referralNextStatus: () => referralNextStatus,
@@ -17712,8 +17729,30 @@ var REFERRAL_LINK_ACTORS = {
   specialist: "system:specialist-link",
   patient: "system:patient-link"
 };
-var TC_REFERRAL_ALL_EVENT_VERBS = [...TC_REFERRAL_R5_EVENT_VERBS, ...TC_REFERRAL_LINK_EVENT_VERBS];
+var TC_REFERRAL_R5B_EVENT_VERBS = [...TC_REFERRAL_R5_EVENT_VERBS, ...TC_REFERRAL_LINK_EVENT_VERBS];
+var TC_REFERRAL_CORRESPONDENCE_EVENT_VERBS = ["correspondence"];
+var TC_REFERRAL_ALL_EVENT_VERBS = [...TC_REFERRAL_R5B_EVENT_VERBS, ...TC_REFERRAL_CORRESPONDENCE_EVENT_VERBS];
 var TcReferralEventVerb = import_zod9.z.enum(TC_REFERRAL_ALL_EVENT_VERBS);
+var TC_REFERRAL_CORRESPONDENCE_DIRECTIONS = ["to", "from"];
+var TC_REFERRAL_CORRESPONDENCE_PARTIES = ["specialist", "patient"];
+var TC_REFERRAL_CORRESPONDENCE_CHANNELS = ["phone", "email", "fax", "other"];
+var TcReferralCorrespondenceDirection = import_zod9.z.enum(TC_REFERRAL_CORRESPONDENCE_DIRECTIONS);
+var TcReferralCorrespondenceParty = import_zod9.z.enum(TC_REFERRAL_CORRESPONDENCE_PARTIES);
+var TcReferralCorrespondenceChannel = import_zod9.z.enum(TC_REFERRAL_CORRESPONDENCE_CHANNELS);
+var TC_REFERRAL_CORRESPONDENCE_NOTE_MAX = 2e3;
+var TcReferralCorrespondenceKind = import_zod9.z.object({
+  direction: TcReferralCorrespondenceDirection,
+  party: TcReferralCorrespondenceParty,
+  channel: TcReferralCorrespondenceChannel
+});
+var TcReferralCorrespondenceRequest = TcReferralCorrespondenceKind.extend({
+  note: import_zod9.z.string().trim().min(1, "Say what was said").max(TC_REFERRAL_CORRESPONDENCE_NOTE_MAX)
+}).strict();
+var TcReferralLastCorrespondence = TcReferralCorrespondenceKind.extend({
+  note: import_zod9.z.string(),
+  actor: import_zod9.z.string(),
+  at: import_zod9.z.string()
+});
 var TcReferralEvent = import_zod9.z.object({
   eventId: import_zod9.z.string().uuid(),
   fromStatus: TcReferralStatus.nullable(),
@@ -17722,7 +17761,9 @@ var TcReferralEvent = import_zod9.z.object({
   at: import_zod9.z.string(),
   note: import_zod9.z.string(),
   /** R6: what happened. null on rows written before R6. */
-  verb: TcReferralEventVerb.nullable().optional()
+  verb: TcReferralEventVerb.nullable().optional(),
+  /** R6.9: on a `correspondence` row, which way, with whom, how. null otherwise. */
+  correspondence: TcReferralCorrespondenceKind.nullable().optional()
 });
 var TcReferralReceived = import_zod9.z.object({
   at: import_zod9.z.string(),
@@ -17802,7 +17843,12 @@ var TcReferral = import_zod9.z.object({
    * sent, skipped (the note names why), or failed. null when none was
    * recorded. On list reads.
    */
-  patientEmail: TcReferralPatientEmailRecord.nullable().optional()
+  patientEmail: TcReferralPatientEmailRecord.nullable().optional(),
+  /**
+   * R6.9: the latest correspondence staff logged (whatever the status since).
+   * null when none was logged. On list reads.
+   */
+  lastCorrespondence: TcReferralLastCorrespondence.nullable().optional()
 });
 var TcReferralVerb = import_zod9.z.enum([
   "submit",
@@ -17927,7 +17973,9 @@ var NON_MOVE_VERBS = [
   "doctor_edit",
   "send_failed",
   "send_conflict",
-  ...TC_REFERRAL_LINK_EVENT_VERBS
+  ...TC_REFERRAL_LINK_EVENT_VERBS,
+  // R6.9: a logged contact; the status stays where it is.
+  ...TC_REFERRAL_CORRESPONDENCE_EVENT_VERBS
 ];
 function isStatusMove(e) {
   return !e.verb || !NON_MOVE_VERBS.includes(e.verb);
@@ -17966,6 +18014,36 @@ function referralResponses(events) {
       at: mail.at
     } : null
   };
+}
+var REFERRAL_CORRESPONDENCE_STATUSES = TcReferralStatus.options.filter(
+  (s) => s !== "draft"
+);
+function referralCanLogCorrespondence(status) {
+  return REFERRAL_CORRESPONDENCE_STATUSES.includes(status);
+}
+function referralLastCorrespondence(events) {
+  const last = [...events ?? []].reverse().find((e) => e.verb === "correspondence" && e.correspondence);
+  if (!last || !last.correspondence) return null;
+  return { ...last.correspondence, note: last.note, actor: last.actor, at: last.at };
+}
+var CORRESPONDENCE_CHANNEL_NOUNS = {
+  phone: "Phone call",
+  email: "Email",
+  fax: "Fax",
+  other: "Contact"
+};
+var CORRESPONDENCE_PARTY_WORDS = {
+  specialist: "specialist's office",
+  patient: "the patient"
+};
+function referralCorrespondenceLabel(k) {
+  return `${CORRESPONDENCE_CHANNEL_NOUNS[k.channel]} ${k.direction} ${CORRESPONDENCE_PARTY_WORDS[k.party]}`;
+}
+function referralLastContactLine(last, timeZone) {
+  if (!last) return null;
+  const d = new Date(last.at);
+  const day = Number.isNaN(d.getTime()) ? last.at : d.toLocaleDateString("en-US", { month: "short", day: "numeric", ...timeZone ? { timeZone } : {} });
+  return `Last contact: ${last.channel} ${last.direction} ${last.party}, ${day}`;
 }
 function referralDateLabel(ymd) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
@@ -18300,6 +18378,7 @@ var import_zod12 = __toESM(require_zod());
   PreauthStatus,
   PreauthType,
   REFERRAL_ATTACHMENT_HINT,
+  REFERRAL_CORRESPONDENCE_STATUSES,
   REFERRAL_DOCTOR_EDITABLE_STATUSES,
   REFERRAL_EDITABLE_STATUSES,
   REFERRAL_EMAIL_MISSING_COPY,
@@ -18335,11 +18414,17 @@ var import_zod12 = __toESM(require_zod());
   TC_REFERRAL_ATTACHMENT_MAX_FILES,
   TC_REFERRAL_ATTACHMENT_TYPES,
   TC_REFERRAL_CHIP_LABELS,
+  TC_REFERRAL_CORRESPONDENCE_CHANNELS,
+  TC_REFERRAL_CORRESPONDENCE_DIRECTIONS,
+  TC_REFERRAL_CORRESPONDENCE_EVENT_VERBS,
+  TC_REFERRAL_CORRESPONDENCE_NOTE_MAX,
+  TC_REFERRAL_CORRESPONDENCE_PARTIES,
   TC_REFERRAL_DOCTOR_NOTE_MAX,
   TC_REFERRAL_EVENT_VERBS,
   TC_REFERRAL_HUB_GROUPS,
   TC_REFERRAL_LINK_EVENT_VERBS,
   TC_REFERRAL_PATIENT_REASON_MAX,
+  TC_REFERRAL_R5B_EVENT_VERBS,
   TC_REFERRAL_R5_EVENT_VERBS,
   TC_REFERRAL_SEND_EVENT_VERBS,
   TC_REFERRAL_SOURCE_KINDS_R2,
@@ -18399,6 +18484,11 @@ var import_zod12 = __toESM(require_zod());
   TcProviderListResponse,
   TcReferral,
   TcReferralAttachment,
+  TcReferralCorrespondenceChannel,
+  TcReferralCorrespondenceDirection,
+  TcReferralCorrespondenceKind,
+  TcReferralCorrespondenceParty,
+  TcReferralCorrespondenceRequest,
   TcReferralCreateRequest,
   TcReferralDeclineRequest,
   TcReferralDirectoryEntry,
@@ -18411,6 +18501,7 @@ var import_zod12 = __toESM(require_zod());
   TcReferralFieldsEdit,
   TcReferralHubQuery,
   TcReferralInput,
+  TcReferralLastCorrespondence,
   TcReferralMarkRequest,
   TcReferralMarkSentRequest,
   TcReferralPatientEmailOutcome,
@@ -18467,11 +18558,15 @@ var import_zod12 = __toESM(require_zod());
   providerDisplayName,
   readBlock,
   readBlocks,
+  referralCanLogCorrespondence,
   referralChipFor,
   referralChipTop,
+  referralCorrespondenceLabel,
   referralDateLabel,
   referralEditSummary,
   referralHubGroup,
+  referralLastContactLine,
+  referralLastCorrespondence,
   referralLastReturn,
   referralLastSendProblem,
   referralNextStatus,
