@@ -243,6 +243,10 @@ const EVENT_COLS = [
   'correspondence_direction',
   'correspondence_party',
   'correspondence_channel',
+  // R6.10 (1793200000000): set only on a `chart_note_written` row.
+  'chart_note_milestone',
+  'chart_note_commlog_num',
+  'chart_note_comm_type',
 ];
 
 /** jsonb teeth: pg returns the value; a fake may hold the JSON text. */
@@ -306,6 +310,10 @@ function toEvent(e) {
     correspondence:
       e.verb === 'correspondence' && e.correspondence_direction && e.correspondence_party && e.correspondence_channel
         ? { direction: e.correspondence_direction, party: e.correspondence_party, channel: e.correspondence_channel }
+        : null,
+    chartNote:
+      e.verb === 'chart_note_written' && e.chart_note_milestone && e.chart_note_commlog_num != null && e.chart_note_comm_type != null
+        ? { milestone: e.chart_note_milestone, commLogNum: Number(e.chart_note_commlog_num), commType: Number(e.chart_note_comm_type) }
         : null,
   };
 }
@@ -466,6 +474,30 @@ async function insertCorrespondenceEvent(q, { office, referralId, status, actor,
     'INSERT INTO tc_referral_events (event_id, office_id, referral_id, from_status, to_status, actor, at, note, verb, correspondence_direction, correspondence_party, correspondence_channel) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)',
     [randomUUID(), office, referralId, status, status, actor, at, note, 'correspondence', direction, party, channel]
   );
+}
+
+/**
+ * R6.10: a chart note row — a milestone's note was written to the patient's
+ * Open Dental chart. The status does not move (from = to = `status`, read
+ * under the row lock); `note` is the exact text written. The database pins
+ * from = to, the milestone vocabulary, and one row per milestone.
+ */
+async function insertChartNoteEvent(q, { office, referralId, status, actor, at, note, milestone, commLogNum, commType }) {
+  await q.query(
+    'INSERT INTO tc_referral_events (event_id, office_id, referral_id, from_status, to_status, actor, at, note, verb, chart_note_milestone, chart_note_commlog_num, chart_note_comm_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)',
+    [randomUUID(), office, referralId, status, status, actor, at, note, 'chart_note_written', milestone, commLogNum, commType]
+  );
+}
+
+/** R6.10: the chosen directory entry's specialist name, or null (detail read; one query). */
+async function specialistName(q, office, row) {
+  if (!row.directory_entry_id) return null;
+  const res = await q.query('SELECT specialist_name FROM tc_referral_directory WHERE office_id = $1 AND entry_id = $2', [
+    office,
+    String(row.directory_entry_id),
+  ]);
+  const name = res.rows[0] ? String(res.rows[0].specialist_name ?? '').trim() : '';
+  return name || null;
 }
 
 // ── R6 (item 56): field edits, the hub ──────────────────────────────────────
@@ -802,6 +834,8 @@ module.exports = {
   casStatus,
   insertEvent,
   insertCorrespondenceEvent,
+  insertChartNoteEvent,
+  specialistName,
   FIELD_COLUMNS,
   updateFields,
   listHub,

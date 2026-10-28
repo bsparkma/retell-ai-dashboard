@@ -42,6 +42,15 @@
  *                                 specialist or patient; any status but a draft;
  *                                 a history row, never a move; sends nothing
  *
+ *   R6.10 — chart notes (./referralChartNotes.js):
+ *   POST   /:id/chart-notes       a person writes ONE reached milestone's approved
+ *                                 note to the patient's Open Dental chart as a
+ *                                 commlog, through the voice module's writer, read
+ *                                 back before it is claimed; once per milestone; a
+ *                                 history row, never a move. Nothing else here
+ *                                 writes to a chart, and nothing calls this but the
+ *                                 click.
+ *
  *   R5 — email (./referralSend.js), dark unless tc_referral_email_enabled:
  *   POST   /:id/send-email        approved → sent, ONLY after ACS accepted
  *                                 the email; a failure leaves it approved
@@ -56,8 +65,9 @@
  *     on everything but /status, which answers `enabled: false` so the
  *     Settings page can hide the section without treating "off" as an error.
  *   - SENDING IS ONE ROUTE. Only POST /:id/send-email (and the auto-send after a
- *     doctor's approval) emails anything, through ./referralSend.js. No fax,
- *     no Open Dental read or write.
+ *     doctor's approval) emails anything, through ./referralSend.js. No fax.
+ *   - ONE CHART WRITE, BY HAND. The only Open Dental write is POST
+ *     /:id/chart-notes (R6.10), a person's click on text they have seen.
  *   - THE PATIENT IS NEVER FROM THE REQUEST. office + PatNum + name come from
  *     the case or checkout the referral is started from, read office-scoped.
  *   - Office from `?office=` through requireOffice, in every WHERE. A body can
@@ -80,6 +90,7 @@ const { createDraft, directoryProblem } = require('./referralCreate');
 const attachments = require('./referralAttachments');
 const referralSend = require('./referralSend');
 const correspondence = require('./referralCorrespondence');
+const chartNotes = require('./referralChartNotes');
 const odOffices = require('../../config/odOffices');
 const odReads = require('./odReads');
 
@@ -97,6 +108,7 @@ const {
   TcReferralMarkRequest,
   TcReferralSendRequest,
   TcReferralCorrespondenceRequest,
+  TcReferralChartNoteRequest,
 } = contract;
 
 const router = express.Router();
@@ -623,6 +635,26 @@ router.post(
     const body = parseBody(res, TcReferralCorrespondenceRequest, req.body ?? {});
     if (!body) return undefined;
     const out = await correspondence.logCorrespondence(req, { referralId: id.data, body });
+    return res.status(out.status).json(out.body);
+  })
+);
+
+// ── R6.10: chart notes ──────────────────────────────────────────────────────
+
+/**
+ * POST /:id/chart-notes — a person writes one milestone's approved note to the
+ * patient's Open Dental chart. THE ONLY CALLER of referralChartNotes. Strict
+ * body (a PatNum, an office, a type, a date — any extra field is a 400). See
+ * ./referralChartNotes.js for the order of everything else.
+ */
+router.post(
+  '/:id/chart-notes',
+  h(async (req, res) => {
+    const id = ReferralId.safeParse(req.params.id);
+    if (!id.success) return badReferralId(res);
+    const body = parseBody(res, TcReferralChartNoteRequest, req.body ?? {});
+    if (!body) return undefined;
+    const out = await chartNotes.writeChartNote(req, { referralId: id.data, body });
     return res.status(out.status).json(out.body);
   })
 );

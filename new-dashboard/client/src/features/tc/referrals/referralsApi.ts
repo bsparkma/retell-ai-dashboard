@@ -14,6 +14,8 @@ import {
   TcReferralSignoffSummary,
   TcReferralAttachment,
   TcReferralSendOutcome,
+  TcReferralChartMilestone,
+  type TcReferralChartNoteRequest,
   type TcReferralCorrespondenceRequest,
   type TcReferralCreateRequest,
   type TcReferralDirectoryInput,
@@ -254,6 +256,34 @@ export async function logReferralCorrespondence(
     ReferralResponse,
     await tcRequest<unknown>(`/tc/referrals/${referralId}/correspondence`, { office, method: "POST", body }),
   ).referral;
+}
+
+// ── R6.10: chart notes ──────────────────────────────────────────────────────
+
+const ChartNoteResponse = z.object({
+  success: z.literal(true),
+  milestone: TcReferralChartMilestone,
+  commLogNum: z.number().int().positive(),
+  referral: TcReferral,
+});
+
+/**
+ * Write ONE milestone's approved note to the patient's Open Dental chart. The
+ * body is the milestone and the exact words — the server takes the patient,
+ * the office, the commlog type and the date from the referral. Resolves only
+ * once the note was read back from Open Dental; anything else throws with the
+ * server's own sentence (and code), and nothing reads as written.
+ */
+export async function writeReferralChartNote(
+  office: OfficeId,
+  referralId: string,
+  body: TcReferralChartNoteRequest,
+): Promise<{ referral: TcReferral; commLogNum: number }> {
+  const out = parse(
+    ChartNoteResponse,
+    await tcRequest<unknown>(`/tc/referrals/${referralId}/chart-notes`, { office, method: "POST", body }),
+  );
+  return { referral: out.referral, commLogNum: out.commLogNum };
 }
 
 // ── R5: email it to the specialist ──────────────────────────────────────────

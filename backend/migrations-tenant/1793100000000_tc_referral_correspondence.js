@@ -7,9 +7,9 @@
  *
  * tc_referral_events
  *   verb CHECK                     R5b's list followed by `correspondence`.
- *                                  Equal to TC_REFERRAL_ALL_EVENT_VERBS in
- *                                  shared/tc/referrals.ts; this migration's
- *                                  test pins it.
+ *                                  Equal to TC_REFERRAL_R69_EVENT_VERBS (the
+ *                                  frozen R6.9 list) in shared/tc/referrals.ts;
+ *                                  this migration's test pins it.
  *   correspondence_direction text  to | from              ┐ NULL on every other
  *   correspondence_party     text  specialist | patient   │ row; all three set on
  *   correspondence_channel   text  phone | email | fax | other ┘ a correspondence row

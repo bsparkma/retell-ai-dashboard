@@ -239,8 +239,8 @@ test('T: `send` is the one new move — approved → sent, from nowhere else; th
   assert.equal(contract.TcReferralVerb.options.includes('send'), false, 'not a verb a route body or a mark can name');
   assert.equal(contract.TcReferralSendVerb.value, 'send');
   // The event verbs: R6's, then the three R5 adds, then (R5b) the four the
-  // links and the patient's notice add, then (R6.9) the correspondence log —
-  // none of which is a move.
+  // links and the patient's notice add, then (R6.9) the correspondence log,
+  // then (R6.10) the chart note — none of which is a move.
   assert.deepEqual([...contract.TcReferralEventVerb.options], [
     ...contract.TC_REFERRAL_EVENT_VERBS,
     'send',
@@ -251,6 +251,7 @@ test('T: `send` is the one new move — approved → sent, from nowhere else; th
     'patient_email_skipped',
     'patient_email_failed',
     'correspondence',
+    'chart_note_written',
   ]);
 });
 
