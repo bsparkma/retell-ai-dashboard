@@ -15364,12 +15364,13 @@ var ExistingTxPatientSchema = import_zod3.z.enum(EXISTING_TX_PATIENT);
 var EXISTING_TX_WAIT = ["1_month", "3_months", "6_months", "next_recall"];
 var ExistingTxWaitSchema = import_zod3.z.enum(EXISTING_TX_WAIT);
 var EXISTING_TX_NOTE_MAX = 500;
-var ExistingTxDispositionInputSchema = import_zod3.z.object({
+var DISPOSITION_FIELDS = {
   clinical: ExistingTxClinicalSchema.nullable(),
   patient: ExistingTxPatientSchema,
   waitTimeframe: ExistingTxWaitSchema.nullable(),
   note: import_zod3.z.string().max(EXISTING_TX_NOTE_MAX).nullable()
-}).strict().superRefine((value, ctx) => {
+};
+function waitOnlyWhenWaiting(value, ctx) {
   if (value.waitTimeframe !== null && value.patient !== "wants_to_wait") {
     ctx.addIssue({
       code: import_zod3.z.ZodIssueCode.custom,
@@ -15377,6 +15378,22 @@ var ExistingTxDispositionInputSchema = import_zod3.z.object({
       message: "A wait timeframe goes only with \u201CWants to wait\u201D"
     });
   }
+}
+var ExistingTxDispositionInputSchema = import_zod3.z.object(DISPOSITION_FIELDS).strict().superRefine(waitOnlyWhenWaiting);
+var EXISTING_TX_BATCH_MAX = 200;
+var ExistingTxBatchEntrySchema = import_zod3.z.object({ procNum: import_zod3.z.number().int().positive(), ...DISPOSITION_FIELDS }).strict().superRefine(waitOnlyWhenWaiting);
+var ExistingTxBatchRequestSchema = import_zod3.z.object({ items: import_zod3.z.array(ExistingTxBatchEntrySchema).min(1).max(EXISTING_TX_BATCH_MAX) }).strict().superRefine((value, ctx) => {
+  const seen = /* @__PURE__ */ new Set();
+  value.items.forEach((item, i) => {
+    if (seen.has(item.procNum)) {
+      ctx.addIssue({
+        code: import_zod3.z.ZodIssueCode.custom,
+        path: ["items", i, "procNum"],
+        message: "Each procedure may be answered once per request"
+      });
+    }
+    seen.add(item.procNum);
+  });
 });
 var ExistingTxDispositionSchema = import_zod3.z.object({
   clinical: ExistingTxClinicalSchema.nullable(),

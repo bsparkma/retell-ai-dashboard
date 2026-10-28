@@ -514,6 +514,48 @@ class FakeHygDb extends FakeAuditDb {
       this.hyg_existing_tx_disposition.push(created);
       return { rows: [this.existingTxOut(created)], rowCount: 1 };
     }
+    // The bulk answer (existingTxStore.saveDispositions): the same guard and
+    // upsert over a jsonb_to_recordset. ONE statement, so every CHECK runs before
+    // any row lands — a refusal on one row writes none, as Postgres would.
+    if (/^\s*WITH writes AS \(\s*SELECT state FROM hyg_staged_write\s+WHERE office = \$1::text AND visit_id = \$2::uuid AND kind = ANY\(\$6::text\[\]\)\s+FOR SHARE\s*\)\s*INSERT INTO hyg_existing_tx_disposition[\s\S]*FROM jsonb_to_recordset\(\$4::jsonb\)[\s\S]*WHERE \(SELECT count\(\*\) FROM writes WHERE state = ANY\(\$7::text\[\]\)\) = 0\s+ON CONFLICT \(office, visit_id, proc_num\) DO UPDATE/i.test(text)) {
+      const [office, visitId, patNum, recordset, actor, kinds, states] = params;
+      this.batchUpserts = (this.batchUpserts || 0) + 1;
+      if (this.existingTxFrozen(office, visitId, kinds, states)) return { rows: [], rowCount: 0 };
+      const incoming = FakeHygDb.json(recordset).map((x) => ({
+        office,
+        visit_id: visitId,
+        pat_num: Number(patNum),
+        proc_num: Number(x.proc_num),
+        clinical: x.clinical ?? null,
+        patient: x.patient,
+        wait_timeframe: x.wait_timeframe ?? null,
+        note: x.note ?? null,
+        proc_snapshot: x.proc_snapshot,
+        updated_by: actor,
+      }));
+      for (const row of incoming) this.checkExistingTx(row);
+      const out = [];
+      for (const row of incoming) {
+        const existing = this.hyg_existing_tx_disposition.find(
+          (r) => r.office === office && r.visit_id === visitId && r.proc_num === row.proc_num
+        );
+        if (existing) {
+          Object.assign(existing, {
+            clinical: row.clinical, patient: row.patient, wait_timeframe: row.wait_timeframe,
+            note: row.note, proc_snapshot: row.proc_snapshot, updated_by: actor, updated_at: new Date(),
+          });
+          out.push(this.existingTxOut(existing));
+        } else {
+          const now = new Date();
+          const created = {
+            id: this.nextId('etx'), ...row, created_by: actor, created_at: now, updated_at: now,
+          };
+          this.hyg_existing_tx_disposition.push(created);
+          out.push(this.existingTxOut(created));
+        }
+      }
+      return { rows: out, rowCount: out.length };
+    }
 
     // ── hyg_perio_send (item 12) ────────────────────────────────────────────
     // Matched FIRST: the chart's restage below would otherwise be read as one of

@@ -90,24 +90,66 @@ export function isWatchPriority(priorityName: string | null | undefined): boolea
  * The WHOLE disposition, replaced. `waitTimeframe` is allowed only with
  * `wants_to_wait`, the same rule the database CHECK enforces.
  */
+const DISPOSITION_FIELDS = {
+  clinical: ExistingTxClinicalSchema.nullable(),
+  patient: ExistingTxPatientSchema,
+  waitTimeframe: ExistingTxWaitSchema.nullable(),
+  note: z.string().max(EXISTING_TX_NOTE_MAX).nullable(),
+};
+
+/** The database CHECK's rule, in the schema: a timeframe only with "wants to wait". */
+function waitOnlyWhenWaiting(
+  value: { patient: ExistingTxPatient; waitTimeframe: ExistingTxWait | null },
+  ctx: z.RefinementCtx,
+): void {
+  if (value.waitTimeframe !== null && value.patient !== "wants_to_wait") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["waitTimeframe"],
+      message: "A wait timeframe goes only with “Wants to wait”",
+    });
+  }
+}
+
 export const ExistingTxDispositionInputSchema = z
-  .object({
-    clinical: ExistingTxClinicalSchema.nullable(),
-    patient: ExistingTxPatientSchema,
-    waitTimeframe: ExistingTxWaitSchema.nullable(),
-    note: z.string().max(EXISTING_TX_NOTE_MAX).nullable(),
-  })
+  .object(DISPOSITION_FIELDS)
+  .strict()
+  .superRefine(waitOnlyWhenWaiting);
+export type ExistingTxDispositionInput = z.infer<typeof ExistingTxDispositionInputSchema>;
+
+/** The most procedures one bulk answer may carry. The same bound as a handoff. */
+export const EXISTING_TX_BATCH_MAX = 200;
+
+/** One procedure in a bulk answer: which one, and its WHOLE disposition. */
+export const ExistingTxBatchEntrySchema = z
+  .object({ procNum: z.number().int().positive(), ...DISPOSITION_FIELDS })
+  .strict()
+  .superRefine(waitOnlyWhenWaiting);
+export type ExistingTxBatchEntry = z.infer<typeof ExistingTxBatchEntrySchema>;
+
+/**
+ * PUT /api/hyg/visit/:aptNum/existing-tx — the "Select" bulk answer.
+ *
+ * All or nothing on the server. A ProcNum may appear once: two answers for one
+ * procedure in one request is a contradiction, not a sequence.
+ */
+export const ExistingTxBatchRequestSchema = z
+  .object({ items: z.array(ExistingTxBatchEntrySchema).min(1).max(EXISTING_TX_BATCH_MAX) })
   .strict()
   .superRefine((value, ctx) => {
-    if (value.waitTimeframe !== null && value.patient !== "wants_to_wait") {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["waitTimeframe"],
-        message: "A wait timeframe goes only with “Wants to wait”",
-      });
-    }
+    const seen = new Set<number>();
+    value.items.forEach((item, i) => {
+      if (seen.has(item.procNum)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["items", i, "procNum"],
+          message: "Each procedure may be answered once per request",
+        });
+      }
+      seen.add(item.procNum);
+    });
   });
-export type ExistingTxDispositionInput = z.infer<typeof ExistingTxDispositionInputSchema>;
+export type ExistingTxBatchRequest = z.infer<typeof ExistingTxBatchRequestSchema>;
 
 /** A stored disposition, as read back. */
 export const ExistingTxDispositionSchema = z.object({

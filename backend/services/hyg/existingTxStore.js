@@ -187,6 +187,64 @@ async function saveDisposition(pool, { office, visit, procNum, input, snapshot, 
   return { ok: true, disposition: toDisposition(res.rows[0]) };
 }
 
+/**
+ * Store MANY procedures' answers — the "Select" bulk answer — all or nothing.
+ *
+ * ONE STATEMENT, so it is atomic without a transaction: the rows arrive as one
+ * jsonb array, `jsonb_to_recordset` turns it into rows, and the upsert and its
+ * freeze guard are the single-row statement's, unchanged. A frozen visit writes
+ * none of them; a CHECK refusal on any row refuses the statement, so it writes
+ * none of them either. Never part of a batch, never half of one.
+ *
+ * @param {import('pg').Pool} pool
+ * @param {{ office: string, visit: { visitId: string, patNum: number },
+ *           entries: { procNum: number, input: Record<string, any>, snapshot: Record<string, any> }[],
+ *           actor: string }} args
+ * @returns {Promise<{ ok: true, dispositions: Map<number, Record<string, any>> } | { ok: false, code: 'EXISTING_TX_FROZEN' }>}
+ */
+async function saveDispositions(pool, { office, visit, entries, actor }) {
+  const rows = entries.map((e) => ({
+    proc_num: e.procNum,
+    clinical: e.input.clinical,
+    patient: e.input.patient,
+    wait_timeframe: e.input.waitTimeframe,
+    note: e.input.note,
+    proc_snapshot: e.snapshot,
+  }));
+  const res = await pool.query(
+    `WITH writes AS (
+       SELECT state FROM hyg_staged_write
+        WHERE office = $1::text AND visit_id = $2::uuid AND kind = ANY($6::text[])
+        FOR SHARE
+     )
+     INSERT INTO hyg_existing_tx_disposition
+       (office, visit_id, pat_num, proc_num, clinical, patient, wait_timeframe, note,
+        proc_snapshot, created_by, updated_by)
+     SELECT $1::text, $2::uuid, $3::bigint, x.proc_num, x.clinical, x.patient, x.wait_timeframe,
+            x.note, x.proc_snapshot, $5::text, $5::text
+       FROM jsonb_to_recordset($4::jsonb)
+         AS x(proc_num bigint, clinical text, patient text, wait_timeframe text, note text,
+              proc_snapshot jsonb)
+      WHERE (SELECT count(*) FROM writes WHERE state = ANY($7::text[])) = 0
+     ON CONFLICT (office, visit_id, proc_num) DO UPDATE
+       SET clinical = EXCLUDED.clinical,
+           patient = EXCLUDED.patient,
+           wait_timeframe = EXCLUDED.wait_timeframe,
+           note = EXCLUDED.note,
+           proc_snapshot = EXCLUDED.proc_snapshot,
+           updated_by = EXCLUDED.updated_by,
+           updated_at = now()
+     RETURNING ${COLUMNS}`,
+    [office, visit.visitId, visit.patNum, JSON.stringify(rows), actor, FREEZING_KINDS, FROZEN_STATES]
+  );
+  // The guard is all-or-nothing: either every row was written or none was.
+  if (res.rowCount === 0) return { ok: false, code: 'EXISTING_TX_FROZEN' };
+  return {
+    ok: true,
+    dispositions: new Map(res.rows.map((r) => [Number(r.proc_num), toDisposition(r)])),
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Slice 2b: the plan the server last read, and what leaves the module
 // ─────────────────────────────────────────────────────────────────────────────
@@ -354,6 +412,7 @@ module.exports = {
   listForVisit,
   lastDiscussed,
   saveDisposition,
+  saveDispositions,
   recordLoaded,
   recordFailed,
   buildExistingTx,

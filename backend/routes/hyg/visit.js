@@ -81,6 +81,7 @@ const odPerio = require('../../services/hyg/odPerio');
 const odToothInitials = require('../../services/hyg/odToothInitials');
 const existingTreatment = require('../../services/hyg/existingTreatment');
 const existingTxStore = require('../../services/hyg/existingTxStore');
+const existingTxStale = require('../../services/hyg/existingTxStale');
 const { refuseUnlessTestPatient } = require('../../config/hygFixtureGate');
 const perioSend = require('../../services/hyg/perioSend');
 const perioDrift = require('../../services/hyg/perioDrift');
@@ -348,6 +349,16 @@ async function rememberAppointment(req, office, aptNum, appointment) {
  * would mean a stray request could start a visit with no appointment lookup
  * behind it, and therefore with no Open-Dental-derived PatNum.
  */
+/**
+ * The visit as a RESPONSE carries it: every staged write says whether its
+ * stored words still match the existing-treatment answers (existingTxStale.js).
+ * Every visit this router sends goes through here, so no mutation's answer can
+ * quietly drop the "Out of date" a GET would show.
+ */
+async function getVisitView(pool, { office, aptNum }) {
+  return existingTxStale.annotate(pool, await visitStore.getVisit(pool, { office, aptNum }));
+}
+
 async function loadForMutation(req, res, office, aptNum) {
   const visit = await tenantDb.withTenantDb(req, (pool) =>
     visitStore.getVisit(pool, { office, aptNum })
@@ -414,7 +425,7 @@ router.get(
     ]);
 
     const visit = await tenantDb.withTenantDb(req, (pool) =>
-      visitStore.getVisit(pool, { office, aptNum })
+      getVisitView(pool, { office, aptNum })
     );
 
     // ITEM 33: remember what Open Dental just said about this appointment, so
@@ -587,7 +598,7 @@ router.post(
         input,
         actor: actorEmail(req),
       });
-      return visitStore.getVisit(pool, { office, aptNum });
+      return getVisitView(pool, { office, aptNum });
     });
 
     await audit(req, {
@@ -630,7 +641,7 @@ router.put(
         actor: actorEmail(req),
       });
       if (!item) return null;
-      return visitStore.getVisit(pool, { office, aptNum });
+      return getVisitView(pool, { office, aptNum });
     });
 
     if (!result) {
@@ -679,7 +690,7 @@ router.delete(
         actor: actorEmail(req),
       });
       if (!removed) return null;
-      return visitStore.getVisit(pool, { office, aptNum });
+      return getVisitView(pool, { office, aptNum });
     });
 
     if (!result) {
@@ -968,7 +979,136 @@ router.put(
       // An identifier Open Dental minted, never a code or a name.
       sourceRef: `proc_num:${procNum}`,
     });
-    return res.json({ success: true, office, aptNum, procNum, disposition: saved.disposition });
+    // The staged writes AFTER the save: a note staged before this answer now
+    // says "Out of date", and says it in this response rather than on the next GET.
+    const after = await tenantDb.withTenantDb(req, (pool) => getVisitView(pool, { office, aptNum }));
+    return res.json({
+      success: true,
+      office,
+      aptNum,
+      procNum,
+      disposition: saved.disposition,
+      stagedWrites: after ? after.stagedWrites : [],
+    });
+  })
+);
+
+/**
+ * PUT /api/hyg/visit/:aptNum/existing-tx — the "Select" bulk answer.
+ *
+ * THE SINGLE PUT'S GUARDS, FOR EVERY ROW, AND ALL OR NOTHING:
+ *   - office and PatNum come off the STORED visit (loadForMutation), never the body;
+ *   - every ProcNum must be in this visit's own Open Dental read, or the WHOLE
+ *     batch is a 404 and nothing is written — one stranger ProcNum is not "most
+ *     of them saved";
+ *   - a frozen visit is a 409, checked first and again inside the one statement
+ *     that writes them all (existingTxStore.saveDispositions);
+ *   - audited exactly as the single PUT is: one UPDATE row per procedure, by the
+ *     identifier Open Dental minted.
+ * At most EXISTING_TX_BATCH_MAX (200) rows; a ProcNum may appear once.
+ */
+router.put(
+  '/:aptNum/existing-tx',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) {
+      return res.status(400).json({
+        success: false,
+        error: 'aptNum must be a positive whole number',
+        code: 'INVALID_APT_NUM',
+        office,
+      });
+    }
+    const body = parseBody(res, contract.ExistingTxBatchRequestSchema, req.body);
+    if (body === null) return undefined;
+
+    const visit = await loadForMutation(req, res, office, aptNum);
+    if (!visit) return undefined;
+
+    const frozenRefusal = {
+      success: false,
+      error: 'This visit has been sent, so its existing-treatment answers can no longer be changed',
+      code: 'EXISTING_TX_FROZEN',
+      office,
+    };
+    const frozen = await tenantDb.withTenantDb(req, (pool) =>
+      existingTxStore.isFrozen(pool, { office: visit.office, visitId: visit.visitId })
+    );
+    if (frozen) return res.status(409).json(frozenRefusal);
+
+    const read = await readExistingTxFor(visit, { refresh: false });
+    if (!read.ok) {
+      await auditHygDenial(req, 'hyg_existing_tx', aptNum, {
+        office,
+        result: read.status >= 500 ? 'ERROR' : 'UNAUTHORIZED',
+      });
+      return res.status(read.status).json(read.body);
+    }
+    const planned = new Map(read.items.map((i) => [i.procNum, i]));
+    if (body.items.some((entry) => !planned.has(entry.procNum))) {
+      await auditHygDenial(req, 'hyg_existing_tx', aptNum, { office, result: 'UNAUTHORIZED' });
+      return res.status(404).json({
+        success: false,
+        error:
+          "One or more of those procedures is not on this patient's treatment plan in Open Dental. " +
+          'Nothing was saved.',
+        code: 'PROC_NOT_IN_PLAN',
+        office,
+      });
+    }
+
+    const entries = body.items.map((entry) => {
+      const item = planned.get(entry.procNum);
+      return {
+        procNum: entry.procNum,
+        input: {
+          clinical: entry.clinical,
+          patient: entry.patient,
+          waitTimeframe: entry.waitTimeframe,
+          // A blank note is no note, exactly as the single PUT stores it.
+          note: entry.note === null ? null : entry.note.trim() || null,
+        },
+        // The SERVER's read of each procedure, never the client's.
+        snapshot: {
+          code: item.code,
+          description: item.description,
+          tooth: item.tooth,
+          surface: item.surface,
+          date_tp: item.dateTp,
+          priority_name: item.priorityName,
+          scheduled: item.scheduled,
+        },
+      };
+    });
+    const saved = await tenantDb.withTenantDb(req, (pool) =>
+      existingTxStore.saveDispositions(pool, {
+        office: visit.office,
+        visit,
+        entries,
+        actor: actorEmail(req),
+      })
+    );
+    if (!saved.ok) return res.status(409).json(frozenRefusal);
+
+    for (const entry of entries) {
+      await audit(req, {
+        action: 'UPDATE',
+        resourceType: 'hyg_existing_tx',
+        resourceId: aptNum,
+        result: 'SUCCESS',
+        office,
+        sourceRef: `proc_num:${entry.procNum}`,
+      });
+    }
+    const after = await tenantDb.withTenantDb(req, (pool) => getVisitView(pool, { office, aptNum }));
+    return res.json({
+      success: true,
+      office,
+      aptNum,
+      items: entries.map((e) => ({ procNum: e.procNum, disposition: saved.dispositions.get(e.procNum) })),
+      stagedWrites: after ? after.stagedWrites : [],
+    });
   })
 );
 
@@ -1017,7 +1157,7 @@ router.post(
           composer.compose(kind, { ...ctx, signature: signatureFor(req, office), existingTx }),
       });
       if (!staged.ok) return staged;
-      return { ok: true, visit: await visitStore.getVisit(pool, { office, aptNum }) };
+      return { ok: true, visit: await getVisitView(pool, { office, aptNum }) };
     });
 
     if (!outcome.ok) {
@@ -1085,7 +1225,7 @@ router.delete(
         amending: live !== null,
       });
       if (!removed.ok) return removed;
-      return { ok: true, visit: await visitStore.getVisit(pool, { office, aptNum }) };
+      return { ok: true, visit: await getVisitView(pool, { office, aptNum }) };
     });
 
     if (!outcome.ok) {
@@ -1167,7 +1307,7 @@ router.get(
     }
 
     const loaded = await tenantDb.withTenantDb(req, async (pool) => {
-      const visit = await visitStore.getVisit(pool, { office, aptNum });
+      const visit = await getVisitView(pool, { office, aptNum });
       if (!visit) return { visit: null, perio: null };
       return { visit, perio: await visitStore.getPerio(pool, { office, visitId: visit.visitId }) };
     });
@@ -1277,7 +1417,7 @@ router.get(
     const patNum = resolved.appointment.patNum;
 
     const visit = await tenantDb.withTenantDb(req, (pool) =>
-      visitStore.getVisit(pool, { office, aptNum })
+      getVisitView(pool, { office, aptNum })
     );
     if (visit && visit.patNum !== patNum) {
       // A chart composed for one patient must never be drawn beside another
@@ -1611,7 +1751,7 @@ router.get(
     const office = req.hygOffice;
     const aptNum = aptNumFrom(req);
     if (aptNum === null) return badAptNum(res, office);
-    const visit = await tenantDb.withTenantDb(req, (pool) => visitStore.getVisit(pool, { office, aptNum }));
+    const visit = await tenantDb.withTenantDb(req, (pool) => getVisitView(pool, { office, aptNum }));
     if (!visit) {
       return res.json({ success: true, office, aptNum, stagedWrite: null, send: null, live: null, paused: null });
     }
@@ -2081,7 +2221,7 @@ router.post(
       : null;
 
     const after = await tenantDb.withTenantDb(req, (pool) =>
-      visitStore.getVisit(pool, { office, aptNum })
+      getVisitView(pool, { office, aptNum })
     );
 
     const written = outcome.outcomes.filter((o) => o.state === 'Written').length;
@@ -2176,7 +2316,7 @@ router.post(
         actor: actorEmail(req),
       });
       if (!ok) return null;
-      return visitStore.getVisit(pool, { office, aptNum });
+      return getVisitView(pool, { office, aptNum });
     });
 
     if (!moved) {
@@ -2279,7 +2419,7 @@ router.post(
       // Lost the race: either the other press already landed (the idempotent
       // answer) or it is still talking to TC (nothing is claimed here).
       const current = await tenantDb.withTenantDb(req, (pool) =>
-        visitStore.getVisit(pool, { office, aptNum })
+        getVisitView(pool, { office, aptNum })
       );
       if (current && current.orthoSend) {
         return res.json({ ...visitPayload(current), alreadySent: true });
@@ -2346,7 +2486,7 @@ router.post(
 
     const visit =
       after ||
-      (await tenantDb.withTenantDb(req, (pool) => visitStore.getVisit(pool, { office, aptNum })));
+      (await tenantDb.withTenantDb(req, (pool) => getVisitView(pool, { office, aptNum })));
     return res.json({ ...visitPayload(visit), alreadySent: false });
   })
 );
@@ -2525,7 +2665,7 @@ router.post(
     if (!(await tcCheckout.isEnabled(office))) return checkoutDisabled(res, office);
 
     const current = await tenantDb.withTenantDb(req, (pool) =>
-      visitStore.getVisit(pool, { office, aptNum })
+      getVisitView(pool, { office, aptNum })
     );
     if (!current) {
       return res.status(404).json({
@@ -2542,7 +2682,7 @@ router.post(
       visitStore.claimCheckoutSend(pool, { office, aptNum })
     );
     if (!claimed) {
-      const now = await tenantDb.withTenantDb(req, (pool) => visitStore.getVisit(pool, { office, aptNum }));
+      const now = await tenantDb.withTenantDb(req, (pool) => getVisitView(pool, { office, aptNum }));
       if (now && now.checkoutSend) return res.json({ ...visitPayload(now), alreadySent: true });
       return res.status(409).json({
         success: false,
