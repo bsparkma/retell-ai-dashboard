@@ -208,9 +208,19 @@ function visitPayload(visit) {
  * @param {string} office
  * @returns {string[]}
  */
-function signatureFor(req, office) {
+function signatureFor(req, office, visit) {
   const name = req.user && typeof req.user.name === 'string' ? req.user.name.trim() : '';
-  return hygStaff.signatureBlock({ office, hygienistName: name || null });
+  const email = req.user && typeof req.user.email === 'string' ? req.user.email.trim() : '';
+  // The examining doctor is the one the SLIP names, from the stored visit —
+  // never a request field. Feedback round 1: only that doctor is printed.
+  const drs = visit && visit.slip && visit.slip.noteFields && visit.slip.noteFields.drs;
+  const examiningDoctors = drs && Array.isArray(drs.grades) ? drs.grades : [];
+  return hygStaff.signatureBlock({
+    office,
+    hygienistName: name || null,
+    hygienistEmail: email || null,
+    examiningDoctors,
+  });
 }
 
 /**
@@ -1154,10 +1164,12 @@ router.post(
 
     const outcome = await tenantDb.withTenantDb(req, async (pool) => {
       // SLICE 2b: the existing-treatment answers, from the STORED dispositions
-      // and their own snapshots — never from this request. Only the note and the
-      // slip print them; the handoff reads them at send time, frozen.
+      // and their own snapshots — never from this request. The note and the
+      // slip print them; the handoff reads them at send time, frozen, and asks
+      // only whether any is TC-actionable (feedback round 1: a visit with no new
+      // treatment can still hand off).
       const existingTx =
-        body.kind === 'note' || body.kind === 'router'
+        body.kind === 'note' || body.kind === 'router' || body.kind === 'tc-handoff'
           ? await existingTxStore.loadForSend(pool, { office, visitId: visit.visitId })
           : undefined;
       const staged = await visitStore.stageWrite(pool, {
@@ -1169,7 +1181,7 @@ router.post(
         // signed in and which office this is, and visitStore has no business
         // knowing either — it holds rows.
         compose: (kind, ctx) =>
-          composer.compose(kind, { ...ctx, signature: signatureFor(req, office), existingTx }),
+          composer.compose(kind, { ...ctx, signature: signatureFor(req, office, ctx.visit), existingTx }),
       });
       if (!staged.ok) return staged;
       return { ok: true, visit: await getVisitView(pool, { office, aptNum }) };

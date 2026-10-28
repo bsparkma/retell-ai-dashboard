@@ -113,6 +113,7 @@ import { TreatmentItems } from "@/features/hyg/visit/TreatmentItems";
 import { ExistingTreatment, type ExistingTxState } from "@/features/hyg/visit/ExistingTreatment";
 import {
   countNotDiscussed,
+  countTcActionable,
   type ExistingTxDisposition,
   type ExistingTxDispositionInput,
 } from "@shared/hyg/existingTx";
@@ -1145,6 +1146,13 @@ export default function HygVisit() {
             itemCount={items.length}
             existingNotDiscussed={
               existingTxShown.status === "ready" ? countNotDiscussed(existingTxShown.data.items) : 0
+            }
+            existingTcActionable={
+              existingTxShown.status === "ready"
+                ? countTcActionable(
+                    existingTxShown.data.items.map((i) => ({ patient: i.disposition?.patient ?? "not_discussed" })),
+                  )
+                : 0
             }
             busy={busy}
             sending={sending}

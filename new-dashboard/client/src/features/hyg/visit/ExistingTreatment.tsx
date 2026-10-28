@@ -61,6 +61,7 @@ import {
 import { cn } from "@/lib/utils";
 import { groupByTooth, toothGroupLabel } from "./TreatmentItems";
 import { odToothNumbers } from "./ToothPicker";
+import { odToothText } from "@shared/hyg/teeth";
 
 export type ExistingTxState =
   | { status: "not_started" }
@@ -92,7 +93,7 @@ export function formatPlainDate(iso: string): string {
 /** "#30 MO", "#3", or "" when Open Dental names no tooth. */
 function toothLabel(item: Pick<ExistingTxItem, "tooth" | "surface">): string {
   if (!item.tooth) return item.surface;
-  return item.surface ? `#${item.tooth} ${item.surface}` : `#${item.tooth}`;
+  return item.surface ? `${odToothText(item.tooth)} ${item.surface}` : odToothText(item.tooth);
 }
 
 /** "Last discussed 1 Jun 2026: Wants to wait (6 months)". */
@@ -153,7 +154,7 @@ export function groupExistingTx(items: readonly ExistingTxItem[]): ExistingTxGro
       other.set(key, g);
     } else if (teeth === null) {
       const key = `od:${item.tooth.trim()}`;
-      const g = other.get(key) ?? { key, label: `#${item.tooth.trim()}`, items: [] };
+      const g = other.get(key) ?? { key, label: odToothText(item.tooth), items: [] };
       g.items.push(item);
       other.set(key, g);
     } else {

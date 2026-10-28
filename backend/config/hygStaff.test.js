@@ -43,7 +43,9 @@ test('the doctor pick-list is the same people the block prints', () => {
   // entries. Two lists would eventually name two different sets of doctors.
   for (const office of ['roland', 'valley']) {
     const options = hygStaff.doctorOptions(office);
-    const block = hygStaff.signatureBlock({ office, hygienistName: null });
+    // RULING (feedback round 1): the block prints only the examining doctor(s)
+    // the slip picked, so pick every offered name to compare the two lists.
+    const block = hygStaff.signatureBlock({ office, hygienistName: null, examiningDoctors: options });
     assert.equal(options.length, block.length);
     for (let i = 0; i < options.length; i += 1) {
       assert.ok(
@@ -73,14 +75,17 @@ test('a hygienist the roster does not know is named, and nothing is invented', (
   assert.equal(block[0], 'Temp Hygienist');
   assert.ok(!block[0].includes('#'));
   assert.ok(!block[0].includes('RDH'));
-  // The office's doctors still appear: they are the office's, not hers.
-  assert.equal(block.length, hygStaff.doctorOptions('valley').length + 1);
+  // RULING (feedback round 1): no examining doctor picked, so no doctor line.
+  assert.equal(block.length, 1);
 });
 
-test('no hygienist at all still names the office, and never a blank line', () => {
+// RULING (feedback round 1): the block no longer lists the office's doctors by
+// default, so "nobody at all" is an EMPTY block — and still never a blank line.
+test('no hygienist and no examining doctor is an empty block, never a blank line', () => {
   const block = hygStaff.signatureBlock({ office: 'roland', hygienistName: null });
-  assert.equal(block.length, hygStaff.doctorOptions('roland').length);
-  for (const line of block) assert.ok(line.trim().length > 0);
+  assert.deepEqual(block, []);
+  const picked = hygStaff.signatureBlock({ office: 'roland', hygienistName: null, examiningDoctors: [''] });
+  assert.deepEqual(picked, [], 'an empty pick is no pick');
 });
 
 /**
@@ -92,7 +97,13 @@ test('no hygienist at all still names the office, and never a blank line', () =>
  * chart note.
  */
 test('an author who is also a supervising doctor is printed ONCE, with the licence', () => {
-  const block = hygStaff.signatureBlock({ office: 'roland', hygienistName: 'Beau Sparkman' });
+  // RULING (feedback round 1): the doctors printed are the slip's examining
+  // pick. The author examined, with one colleague; the third doctor did not.
+  const block = hygStaff.signatureBlock({
+    office: 'roland',
+    hygienistName: 'Beau Sparkman',
+    examiningDoctors: ['Beau Sparkman', 'Blain VanNice'],
+  });
 
   // The better line wins: name, credential and licence, not the bare name.
   assert.equal(block[0], 'Beau Sparkman DDS #6347');
@@ -102,11 +113,12 @@ test('an author who is also a supervising doctor is printed ONCE, with the licen
     1,
     'the author is named twice: ' + JSON.stringify(block)
   );
-  // Everyone else who supervises is still there. Deduplicating one person must
-  // not quietly shorten the list of who is responsible for the visit.
+  // The other examining doctor is still there. Deduplicating one person must
+  // not quietly drop someone else who examined.
   assert.ok(block.includes('Blain VanNice DDS #7971'));
-  assert.ok(block.includes('Joe Farmer DDS #7571'));
-  assert.equal(block.length, hygStaff.doctorOptions('roland').length);
+  // RULING (feedback round 1): a doctor who did not examine is not printed.
+  assert.ok(!block.some((l) => l.includes('Joe Farmer')));
+  assert.equal(block.length, 2);
 });
 
 test('the author match is case- and spacing-insensitive, like the roster', () => {
@@ -119,24 +131,85 @@ test('the author match is case- and spacing-insensitive, like the roster', () =>
   }
 });
 
-test('a HYGIENIST author is unchanged — every doctor still appears', () => {
-  // The other half of the rule. She is not in the doctor list, so nothing is
-  // removed from it.
-  const block = hygStaff.signatureBlock({ office: 'roland', hygienistName: 'Raegan McGee' });
-  assert.equal(block[0], 'Raegan McGee RDH #4251');
-  assert.equal(block.length, hygStaff.doctorOptions('roland').length + 1);
-  for (const doctor of hygStaff.doctorOptions('roland')) {
-    assert.ok(
-      block.some((l) => l.startsWith(doctor)),
-      doctor + ' vanished from the block'
-    );
-  }
+// RULING (feedback round 1): was "every doctor still appears". Now the
+// examining doctor appears, and only them.
+test('a HYGIENIST author is followed by the examining doctor, and only that doctor', () => {
+  const block = hygStaff.signatureBlock({
+    office: 'roland',
+    hygienistName: 'Raegan McGee',
+    examiningDoctors: ['Joe Farmer'],
+  });
+  assert.deepEqual(block, ['Raegan McGee RDH #4251', 'Joe Farmer DDS #7571']);
 });
 
 test('an author nobody knows is still named once, and gains nothing', () => {
   const block = hygStaff.signatureBlock({ office: 'roland', hygienistName: 'Temp Hygienist' });
   assert.equal(block[0], 'Temp Hygienist');
-  assert.equal(block.length, hygStaff.doctorOptions('roland').length + 1);
+  // RULING (feedback round 1): no examining doctor picked, so no doctor lines.
+  assert.equal(block.length, 1);
+});
+
+// ── Feedback round 1 ────────────────────────────────────────────────────────
+
+test('A1: only the doctor the slip picked is printed; nobody picked prints none', () => {
+  for (const office of ['roland', 'valley']) {
+    const one = hygStaff.signatureBlock({ office, hygienistName: 'Temp Hygienist', examiningDoctors: ['Blain VanNice'] });
+    assert.deepEqual(one, ['Temp Hygienist', 'Blain VanNice DDS #7971'], office);
+    const none = hygStaff.signatureBlock({ office, hygienistName: 'Temp Hygienist', examiningDoctors: [] });
+    assert.deepEqual(none, ['Temp Hygienist'], office);
+  }
+});
+
+test('A1: a pick is matched to THIS office, case-insensitively, and printed once', () => {
+  const block = hygStaff.signatureBlock({
+    office: 'valley',
+    hygienistName: null,
+    examiningDoctors: ['  blain  vannice ', 'Blain VanNice'],
+  });
+  assert.deepEqual(block, ['Blain VanNice DDS #7971']);
+  // A picked name this office does not list is printed as the name alone —
+  // never another office's licence, never an invented one.
+  const stranger = hygStaff.signatureBlock({ office: 'roland', hygienistName: null, examiningDoctors: ['Visiting Doctor'] });
+  assert.deepEqual(stranger, ['Visiting Doctor']);
+  const unknownOffice = hygStaff.signatureBlock({ office: 'unknown', hygienistName: null, examiningDoctors: ['Beau Sparkman'] });
+  assert.ok(!unknownOffice.join(' ').includes('#'), 'an office with no doctors lends no licence');
+});
+
+/** A synthetic roster: no real staff in this round's own tests. */
+const ROSTER = [
+  { fullName: 'Sample Hygienist', credential: 'RDH', license: '0000', signIn: ['Sample', 'sample.hyg@carein.ai'] },
+  { fullName: 'Pending Hygienist', credential: 'RDH', license: null, signIn: ['pending.hyg@carein.ai'] },
+  { fullName: 'Blank Licence', credential: 'RDH', license: '   ', signIn: [] },
+];
+
+test('A3: the hygienist prints as her FULL name and licence, matched by sign-in name or email', () => {
+  const byShortName = hygStaff.signatureBlock({ office: 'roland', hygienistName: 'Sample', roster: ROSTER });
+  assert.equal(byShortName[0], 'Sample Hygienist RDH #0000');
+  const byEmail = hygStaff.signatureBlock({
+    office: 'roland',
+    hygienistName: 'S. H.',
+    hygienistEmail: 'Sample.Hyg@carein.ai',
+    roster: ROSTER,
+  });
+  assert.equal(byEmail[0], 'Sample Hygienist RDH #0000');
+});
+
+test('A3: a missing licence prints the full name ONLY — never a placeholder or a number', () => {
+  for (const [name, email, expected] of [
+    [null, 'pending.hyg@carein.ai', 'Pending Hygienist'],
+    ['Blank Licence', null, 'Blank Licence'],
+  ]) {
+    const block = hygStaff.signatureBlock({ office: 'roland', hygienistName: name, hygienistEmail: email, roster: ROSTER });
+    assert.equal(block[0], expected);
+    assert.doesNotMatch(block[0], /#|RDH|TBD|XXXX|0000/);
+  }
+});
+
+test('A3: the shipped roster has a full name on every entry, and any licence is digits', () => {
+  for (const h of hygStaff.HYGIENISTS) {
+    assert.ok(h.fullName && h.fullName.includes(' '), 'a full name, not a first name');
+    assert.ok(h.license === null || /^\d+$/.test(h.license), `${h.fullName}: a licence is digits or null`);
+  }
 });
 
 test('no name appears twice in any block this file can produce', () => {
@@ -150,7 +223,12 @@ test('no name appears twice in any block this file can produce', () => {
   ];
   for (const office of ['roland', 'valley']) {
     for (const author of authors) {
-      const block = hygStaff.signatureBlock({ office, hygienistName: author });
+      // Every doctor picked too, so the dedupe is exercised against all of them.
+      const block = hygStaff.signatureBlock({
+        office,
+        hygienistName: author,
+        examiningDoctors: hygStaff.doctorOptions(office),
+      });
       // The NAME half of each line, so `Beau Sparkman` and
       // `Beau Sparkman DDS #6347` are recognised as one person.
       const names = block.map((l) =>

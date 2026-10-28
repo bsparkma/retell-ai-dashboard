@@ -26,7 +26,7 @@
  * Adding them here would be adding fields nobody is standing in front of.
  */
 import {
-  DONE_TODAY_OPTIONS,
+  doneTodayChoices,
   EXAM_STATUS_LABELS,
   ExamStatusSchema,
   PERIO_STAGE_LABELS,
@@ -162,7 +162,7 @@ export function RouterSlip({
       </h2>
 
       <Row label="Done today" testId="hyg-slip-done-today">
-        {DONE_TODAY_OPTIONS.map((option) => (
+        {doneTodayChoices(slip.doneToday).map((option) => (
           <Chip
             key={option.id}
             label={option.label}

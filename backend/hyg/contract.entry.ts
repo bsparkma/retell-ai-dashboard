@@ -59,3 +59,6 @@ export * from "../../new-dashboard/shared/hyg/existingTx";
 // zod instance so those shapes and the contract schemas share one library
 // version. ZodError is what the 400-shaping helper switches on.
 export { z, ZodError } from "zod";
+// How a stored tooth prints: "#30", or a primary tooth as its bare letter.
+// One home for the encoding, shared with the client's tooth picker.
+export * from "../../new-dashboard/shared/hyg/teeth";

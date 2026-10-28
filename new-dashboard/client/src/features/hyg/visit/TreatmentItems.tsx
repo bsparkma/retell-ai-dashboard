@@ -69,7 +69,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { odToothNumbers, ToothPicker, toothLabel, type Dentition } from "./ToothPicker";
+import { odToothNumbers, teethText, ToothPicker, toothText, type Dentition } from "./ToothPicker";
 import type { ExistingTxItem } from "@shared/hyg/existingTx";
 
 /**
@@ -91,7 +91,7 @@ export function toothGroupLabel(key: string): string {
   if (key === "") return "No teeth recorded";
   return key
     .split(",")
-    .map((t) => `#${toothLabel(Number(t))}`)
+    .map((t) => toothText(Number(t)))
     .join(", ");
 }
 
@@ -122,7 +122,9 @@ export function groupByTooth<T extends Pick<TreatmentItem, "teeth">>(
 
 /** The office's own shorthand, grouped the way the paper slip groups it. */
 const CODE_GROUPS: { label: string; category: TreatmentCategory; codes: string[] }[] = [
-  { label: "Restorative", category: "Restorative", codes: ["Comp", "Amal", "Crown", "PFM", "Onlay", "Build-up", "Veneer"] },
+  // SSC (stainless steel crown) — feedback round 1. A TOOTH item, on primary
+  // and permanent teeth alike, so it is NOT in MOUTH_LEVEL below.
+  { label: "Restorative", category: "Restorative", codes: ["Comp", "Amal", "Crown", "SSC", "PFM", "Onlay", "Build-up", "Veneer"] },
   { label: "Endo", category: "Endo", codes: ["RC", "Retreat", "Pulpotomy", "Pulp cap"] },
   { label: "Surgery", category: "Surgery", codes: ["EX", "AB"] },
   { label: "Perio", category: "Perio", codes: ["SRP", "Perio maint", "Graft ½", "Muco"] },
@@ -190,7 +192,7 @@ function ItemCard({
   onRemove: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const teeth = item.teeth === "mouth" ? "Whole mouth" : item.teeth.map(toothLabel).map((t) => `#${t}`).join(", ");
+  const teeth = item.teeth === "mouth" ? "Whole mouth" : teethText(item.teeth);
 
   return (
     <div
@@ -418,7 +420,7 @@ export function TreatmentItems({
         const name = p.description.split(/ - |, /)[0].trim() || p.code;
         return p.code && name !== p.code ? `${name} (${p.code})` : name;
       });
-      out.push({ tooth, text: `#${toothLabel(tooth)} already has planned in Open Dental: ${names.join(", ")}` });
+      out.push({ tooth, text: `${toothText(tooth)} already has planned in Open Dental: ${names.join(", ")}` });
     }
     return out;
   }, [selected, plannedInOd]);
@@ -509,7 +511,7 @@ export function TreatmentItems({
           {selected.length > 0 ? (
             <>
               <span data-testid="hyg-add-selection">
-                {selected.map((t) => `#${toothLabel(t)}`).join(", ")} — pick the work. It stays
+                {teethText(selected)} — pick the work. It stays
                 selected, so a build-up and a crown are two taps.
               </span>
               {/* The ONLY way the selection goes away by itself is this button

@@ -272,7 +272,8 @@ describe("pure: grouping and the default view", () => {
       item(5, { tooth: "", surface: "UR" }),
       item(6, { tooth: "A" }),
     ]);
-    expect(groups.map((g) => g.label)).toEqual(["#3", "#30", "#A", "UR", "Whole mouth"]);
+    // RULING (feedback round 1): a primary tooth prints as its bare letter, not "#A".
+    expect(groups.map((g) => g.label)).toEqual(["#3", "#30", "A", "UR", "Whole mouth"]);
     expect(groups.find((g) => g.label === "#30")?.items.map((i) => i.procNum)).toEqual([1, 4]);
   });
 

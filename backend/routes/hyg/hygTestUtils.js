@@ -406,6 +406,18 @@ class FakeHygDb extends FakeAuditDb {
       const rows = [...counts].map(([visit_id, item_count]) => ({ visit_id, item_count }));
       return { rows, rowCount: rows.length };
     }
+    // Feedback round 1: the day card's count of TC-actionable answers.
+    if (/^\s*SELECT visit_id, COUNT\(\*\)::int AS actionable_count\s+FROM hyg_existing_tx_disposition\s+WHERE office = \$1 AND visit_id = ANY\(\$2::uuid\[\]\) AND patient = ANY\(\$3::text\[\]\)\s+GROUP BY visit_id/i.test(text)) {
+      const [office, visitIds, patients] = params;
+      /** @type {Map<string, number>} */
+      const counts = new Map();
+      for (const r of this.hyg_existing_tx_disposition) {
+        if (r.office !== office || !visitIds.includes(r.visit_id) || !patients.includes(r.patient)) continue;
+        counts.set(r.visit_id, (counts.get(r.visit_id) || 0) + 1);
+      }
+      const rows = [...counts].map(([visit_id, actionable_count]) => ({ visit_id, actionable_count }));
+      return { rows, rowCount: rows.length };
+    }
 
     // ── Slice 2b: the visit's recorded existing-treatment read ─────────────
     if (/^\s*WITH writes AS \(\s*SELECT state FROM hyg_staged_write\s+WHERE office = \$1 AND visit_id = \$2 AND kind = ANY\(\$5::text\[\]\)\s+FOR SHARE\s*\)\s*UPDATE hyg_visit SET existing_tx_read = \$3::jsonb\s+WHERE office = \$1 AND visit_id = \$2\s+AND \(existing_tx_read IS NULL OR existing_tx_read->>'readAt' IS DISTINCT FROM \$4::text\)\s+AND \(SELECT count\(\*\) FROM writes WHERE state = ANY\(\$6::text\[\]\)\) = 0/i.test(text)) {

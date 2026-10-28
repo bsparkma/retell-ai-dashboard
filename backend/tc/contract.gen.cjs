@@ -14858,6 +14858,7 @@ __export(contract_entry_exports, {
   HeaderBlock: () => HeaderBlock,
   HighlightBlock: () => HighlightBlock,
   ImageBlock: () => ImageBlock,
+  LOWER_PRIMARY: () => LOWER_PRIMARY,
   LibraryCadenceConfig: () => LibraryCadenceConfig,
   LibraryCadenceTier: () => LibraryCadenceTier,
   LibraryCrownPricing: () => LibraryCrownPricing,
@@ -14905,6 +14906,7 @@ __export(contract_entry_exports, {
   OPPORTUNITIES_WINDOW_MIN_MONTHS: () => OPPORTUNITIES_WINDOW_MIN_MONTHS,
   OdTextConsent: () => OdTextConsent,
   OfficeId: () => OfficeId,
+  PRIMARY_OFFSET: () => PRIMARY_OFFSET,
   PatientInterestLevel: () => PatientInterestLevel,
   PerioStatus: () => PerioStatus,
   PreauthStatus: () => PreauthStatus,
@@ -15056,6 +15058,7 @@ __export(contract_entry_exports, {
   TcReferralsStatus: () => TcReferralsStatus,
   TcSmileSimulation: () => TcSmileSimulation,
   TextBlock: () => TextBlock,
+  UPPER_PRIMARY: () => UPPER_PRIMARY,
   Urgency: () => Urgency,
   Uuid: () => Uuid,
   VoiceHandoffDetail: () => VoiceHandoffDetail,
@@ -15079,14 +15082,17 @@ __export(contract_entry_exports, {
   htmlToPlainText: () => htmlToPlainText,
   intensityFor: () => intensityFor,
   isContactAttemptDetail: () => isContactAttemptDetail,
+  isPrimaryTooth: () => isPrimaryTooth,
   isVoiceHandoffDetail: () => isVoiceHandoffDetail,
   nurtureSchedule: () => nurtureSchedule,
   nurtureTemplateId: () => nurtureTemplateId,
   nurtureTokensIn: () => nurtureTokensIn,
   nurtureTouch: () => nurtureTouch,
   nurtureTrack: () => nurtureTrack,
+  odToothText: () => odToothText,
   preauthToRow: () => preauthToRow,
   presetViolations: () => presetViolations,
+  primaryToNumber: () => primaryToNumber,
   providerDisplayName: () => providerDisplayName,
   readBlock: () => readBlock,
   readBlocks: () => readBlocks,
@@ -15111,7 +15117,10 @@ __export(contract_entry_exports, {
   resolveNotificationLevel: () => resolveNotificationLevel,
   safeUrl: () => safeUrl,
   simulationToRow: () => simulationToRow,
+  teethText: () => teethText,
   templateToRow: () => templateToRow,
+  toothLabel: () => toothLabel,
+  toothText: () => toothText,
   unpricedCheckoutPhases: () => unpricedCheckoutPhases,
   userMapEntryToRow: () => userMapEntryToRow,
   z: () => import_zod12.z
@@ -18289,6 +18298,36 @@ var TcPreauthStartCaseRequest = import_zod11.z.object({}).strict();
 
 // ../backend/tc/contract.entry.ts
 var import_zod12 = __toESM(require_zod());
+
+// shared/hyg/teeth.ts
+var UPPER_PRIMARY = "ABCDEFGHIJ".split("");
+var LOWER_PRIMARY = "TSRQPONMLK".split("");
+var PRIMARY_OFFSET = 100;
+var PRIMARY_LETTERS = [...UPPER_PRIMARY, ...LOWER_PRIMARY];
+function isPrimaryTooth(tooth) {
+  return tooth > PRIMARY_OFFSET && tooth <= PRIMARY_OFFSET + PRIMARY_LETTERS.length;
+}
+function toothLabel(tooth) {
+  if (tooth > PRIMARY_OFFSET) {
+    return PRIMARY_LETTERS[tooth - PRIMARY_OFFSET - 1] ?? String(tooth);
+  }
+  return String(tooth);
+}
+function primaryToNumber(letter) {
+  return PRIMARY_OFFSET + PRIMARY_LETTERS.indexOf(letter) + 1;
+}
+function toothText(tooth) {
+  return isPrimaryTooth(tooth) ? toothLabel(tooth) : `#${toothLabel(tooth)}`;
+}
+function teethText(teeth) {
+  return teeth.map(toothText).join(", ");
+}
+function odToothText(tooth) {
+  const t = tooth.trim();
+  if (t === "") return "";
+  if (/^[A-T]$/.test(t)) return t;
+  return `#${t}`;
+}
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   ButtonBlock,
@@ -18326,6 +18365,7 @@ var import_zod12 = __toESM(require_zod());
   HeaderBlock,
   HighlightBlock,
   ImageBlock,
+  LOWER_PRIMARY,
   LibraryCadenceConfig,
   LibraryCadenceTier,
   LibraryCrownPricing,
@@ -18373,6 +18413,7 @@ var import_zod12 = __toESM(require_zod());
   OPPORTUNITIES_WINDOW_MIN_MONTHS,
   OdTextConsent,
   OfficeId,
+  PRIMARY_OFFSET,
   PatientInterestLevel,
   PerioStatus,
   PreauthStatus,
@@ -18524,6 +18565,7 @@ var import_zod12 = __toESM(require_zod());
   TcReferralsStatus,
   TcSmileSimulation,
   TextBlock,
+  UPPER_PRIMARY,
   Urgency,
   Uuid,
   VoiceHandoffDetail,
@@ -18547,14 +18589,17 @@ var import_zod12 = __toESM(require_zod());
   htmlToPlainText,
   intensityFor,
   isContactAttemptDetail,
+  isPrimaryTooth,
   isVoiceHandoffDetail,
   nurtureSchedule,
   nurtureTemplateId,
   nurtureTokensIn,
   nurtureTouch,
   nurtureTrack,
+  odToothText,
   preauthToRow,
   presetViolations,
+  primaryToNumber,
   providerDisplayName,
   readBlock,
   readBlocks,
@@ -18579,7 +18624,10 @@ var import_zod12 = __toESM(require_zod());
   resolveNotificationLevel,
   safeUrl,
   simulationToRow,
+  teethText,
   templateToRow,
+  toothLabel,
+  toothText,
   unpricedCheckoutPhases,
   userMapEntryToRow,
   z
