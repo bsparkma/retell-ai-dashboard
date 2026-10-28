@@ -1188,6 +1188,18 @@ class FakeHygDb extends FakeAuditDb {
       return { rows: [], rowCount: 1 };
     }
 
+    // existingTxStale.staleKinds: the carriers' stored digests only.
+    if (/^\s*SELECT kind, state, payload->>'existingTxDigest' AS existing_tx_digest\s+FROM hyg_staged_write\s+WHERE visit_id = \$1 AND office = \$2 AND kind = ANY\(\$3::text\[\]\) AND state = ANY\(\$4::text\[\]\)/i.test(text)) {
+      const [visitId, office, kinds, states] = params;
+      const rows = this.hyg_staged_write
+        .filter((r) => r.visit_id === visitId && r.office === office && kinds.includes(r.kind) && states.includes(r.state))
+        .map((r) => {
+          const payload = FakeHygDb.json(r.payload) || {};
+          const digest = payload.existingTxDigest;
+          return { kind: r.kind, state: r.state, existing_tx_digest: typeof digest === 'string' ? digest : null };
+        });
+      return { rows, rowCount: rows.length };
+    }
     if (/^\s*SELECT state FROM hyg_staged_write/i.test(text)) {
       const [visitId, office, kind] = params;
       const rows = this.hyg_staged_write

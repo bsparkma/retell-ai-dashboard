@@ -505,13 +505,33 @@ export default function HygVisit() {
   }, [office, aptNum, date, adopt]);
 
   /**
-   * The staged writes as the server read them back after an answer was saved.
-   * The tray's "Out of date" is the SERVER's digest comparison, carried here —
-   * never worked out on this page.
+   * The out-of-date flags as the server read them back after an answer was
+   * saved. The tray's "Out of date" is the SERVER's digest comparison, carried
+   * here — never worked out on this page.
+   *
+   * ONLY THE FLAGS, AND ONLY ONTO THE SAME ROW. A save is not serialized against
+   * Stage or Remove, so its read-back may predate a stage that answered first;
+   * replacing the list with it would drop or rewind that row. A flag is copied
+   * only onto the row it was computed for — same id, same updatedAt — and the
+   * rows themselves stay whatever the page last adopted.
    */
   const adoptStagedWrites = useCallback((stagedWrites: StagedWrite[]) => {
+    const seen = new Map(stagedWrites.map((w) => [w.id, w]));
     setPage((prev) =>
-      prev && prev.visit ? { ...prev, visit: { ...prev.visit, stagedWrites } } : prev,
+      prev && prev.visit
+        ? {
+            ...prev,
+            visit: {
+              ...prev.visit,
+              stagedWrites: prev.visit.stagedWrites.map((w) => {
+                const read = seen.get(w.id);
+                return read && read.updatedAt === w.updatedAt && read.existingTxStale !== undefined
+                  ? { ...w, existingTxStale: read.existingTxStale }
+                  : w;
+              }),
+            },
+          }
+        : prev,
     );
   }, []);
 

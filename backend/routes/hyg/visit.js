@@ -359,6 +359,21 @@ async function getVisitView(pool, { office, aptNum }) {
   return existingTxStale.annotate(pool, await visitStore.getVisit(pool, { office, aptNum }));
 }
 
+/**
+ * visitPayload, for a RESPONSE: the visit with its out-of-date flags. Every
+ * visit this router answers with goes through here — a slip save or an ortho
+ * send that answered without them would read as "not out of date" and quietly
+ * re-enable a Send the server will refuse. A visit already annotated (it came
+ * from getVisitView) is not read twice.
+ */
+async function viewPayload(req, visit) {
+  const annotated =
+    visit && visit.stagedWrites.some((w) => w.existingTxStale === undefined)
+      ? await tenantDb.withTenantDb(req, (pool) => existingTxStale.annotate(pool, visit))
+      : visit;
+  return visitPayload(annotated);
+}
+
 async function loadForMutation(req, res, office, aptNum) {
   const visit = await tenantDb.withTenantDb(req, (pool) =>
     visitStore.getVisit(pool, { office, aptNum })
@@ -519,7 +534,7 @@ router.post(
       sourceRef: null,
     });
 
-    return res.json({ ...visitPayload(visit), appointment: resolved.appointment });
+    return res.json({ ...await viewPayload(req, visit), appointment: resolved.appointment });
   })
 );
 
@@ -564,7 +579,7 @@ router.put(
       office,
       sourceRef: null,
     });
-    return res.json(visitPayload(visit));
+    return res.json(await viewPayload(req, visit));
   })
 );
 
@@ -609,7 +624,7 @@ router.post(
       office,
       sourceRef: null,
     });
-    return res.status(201).json(visitPayload(updated));
+    return res.status(201).json(await viewPayload(req, updated));
   })
 );
 
@@ -661,7 +676,7 @@ router.put(
       office,
       sourceRef: null,
     });
-    return res.json(visitPayload(result));
+    return res.json(await viewPayload(req, result));
   })
 );
 
@@ -710,7 +725,7 @@ router.delete(
       office,
       sourceRef: null,
     });
-    return res.json(visitPayload(result));
+    return res.json(await viewPayload(req, result));
   })
 );
 
@@ -1179,7 +1194,7 @@ router.post(
       office,
       sourceRef: null,
     });
-    return res.status(201).json(visitPayload(outcome.visit));
+    return res.status(201).json(await viewPayload(req, outcome.visit));
   })
 );
 
@@ -1245,7 +1260,7 @@ router.delete(
       office,
       sourceRef: null,
     });
-    return res.json(visitPayload(outcome.visit));
+    return res.json(await viewPayload(req, outcome.visit));
   })
 );
 
@@ -2236,7 +2251,7 @@ router.post(
     // was asked and reports what happened. A 500 here would say "we do not know
     // what happened", which would be a lie about a body full of outcomes.
     return res.json({
-      ...visitPayload(after),
+      ...await viewPayload(req, after),
       outcomes: outcome.outcomes,
       written,
       failed,
@@ -2336,7 +2351,7 @@ router.post(
       office,
       sourceRef: null,
     });
-    return res.json(visitPayload(moved));
+    return res.json(await viewPayload(req, moved));
   })
 );
 
@@ -2398,7 +2413,7 @@ router.post(
 
     // Already sent: say so, create nothing.
     if (ctx.visit.orthoSend) {
-      return res.json({ ...visitPayload(ctx.visit), alreadySent: true });
+      return res.json({ ...await viewPayload(req, ctx.visit), alreadySent: true });
     }
 
     const date = ctx.visit.visitDate || new Date().toISOString().slice(0, 10);
@@ -2422,7 +2437,7 @@ router.post(
         getVisitView(pool, { office, aptNum })
       );
       if (current && current.orthoSend) {
-        return res.json({ ...visitPayload(current), alreadySent: true });
+        return res.json({ ...await viewPayload(req, current), alreadySent: true });
       }
       return res.status(409).json({
         success: false,
@@ -2487,7 +2502,7 @@ router.post(
     const visit =
       after ||
       (await tenantDb.withTenantDb(req, (pool) => getVisitView(pool, { office, aptNum })));
-    return res.json({ ...visitPayload(visit), alreadySent: false });
+    return res.json({ ...await viewPayload(req, visit), alreadySent: false });
   })
 );
 
@@ -2676,14 +2691,14 @@ router.post(
       });
     }
     // Already alerted: say so, send nothing.
-    if (current.checkoutSend) return res.json({ ...visitPayload(current), alreadySent: true });
+    if (current.checkoutSend) return res.json({ ...await viewPayload(req, current), alreadySent: true });
 
     const claimed = await tenantDb.withTenantDb(req, (pool) =>
       visitStore.claimCheckoutSend(pool, { office, aptNum })
     );
     if (!claimed) {
       const now = await tenantDb.withTenantDb(req, (pool) => getVisitView(pool, { office, aptNum }));
-      if (now && now.checkoutSend) return res.json({ ...visitPayload(now), alreadySent: true });
+      if (now && now.checkoutSend) return res.json({ ...await viewPayload(req, now), alreadySent: true });
       return res.status(409).json({
         success: false,
         error: 'Checkout is already being alerted for this visit. Wait a moment and reload.',
@@ -2697,7 +2712,7 @@ router.post(
       await tenantDb.withTenantDb(req, (pool) => visitStore.releaseCheckoutClaim(pool, { office, aptNum }));
       return res.status(result.status).json({ success: false, error: result.error, code: result.code, office });
     }
-    return res.json({ ...visitPayload(result.visit), alreadySent: false });
+    return res.json({ ...await viewPayload(req, result.visit), alreadySent: false });
   })
 );
 
@@ -2727,7 +2742,7 @@ router.post(
     if (!result.ok) {
       return res.status(result.status).json({ success: false, error: result.error, code: result.code, office });
     }
-    return res.json({ ...visitPayload(result.visit), alreadySent: false });
+    return res.json({ ...await viewPayload(req, result.visit), alreadySent: false });
   })
 );
 

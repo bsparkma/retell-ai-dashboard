@@ -515,3 +515,21 @@ describe("the tray: out of date, by the server's word", () => {
     expect(screen.getByTestId("hyg-retry-note")).toBeTruthy();
   });
 });
+
+describe("review fix: a save's read-back only ever moves the flag on the row it read", () => {
+  it("a read-back of an OLDER version of the row (a stage answered first) changes nothing", async () => {
+    server.staged = [stagedWrite("note")];
+    server.staleAfterSave = ["note"];
+    renderVisit();
+    await screen.findByTestId("hyg-staged-note");
+    // The save's read-back predates a re-stage the page already adopted.
+    server.staged = [stagedWrite("note", { updatedAt: "2026-09-08T13:00:00.000Z" })];
+    fireEvent.click(await screen.findByTestId("hyg-existing-tx-toggle-30"));
+    fireEvent.click(screen.getByTestId("hyg-existing-tx-patient-5001-declined"));
+    await waitFor(() => expect(server.saves).toHaveLength(1));
+    await waitFor(() => expect(pressed("hyg-existing-tx-patient-5001-declined")).toBe("true"));
+    expect(screen.queryByTestId("hyg-stale-note")).toBeNull();
+    // …and the row the page shows is still the one it adopted, not the read-back's.
+    expect(screen.getByTestId("hyg-staged-note")).toBeTruthy();
+  });
+});

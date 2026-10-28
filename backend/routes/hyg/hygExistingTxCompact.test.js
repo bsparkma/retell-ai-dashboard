@@ -305,3 +305,22 @@ test('bulk: no visit is a 404 and the office is the stored visit’s, not the re
     await app.close();
   }
 });
+
+test('review fix: every visit response carries the flag — open, an item edit, not only the GET', async () => {
+  const app = await bootHygApp({ od: od() });
+  try {
+    await opened(app);
+    await stage(app, 'note');
+    await api(app.baseUrl, 'PUT', '/api/hyg/visit/900001/existing-tx/5001' + QO, { body: ANSWER });
+    // A response that dropped the flag would read as "not out of date" and let
+    // the tray re-enable a Send the server refuses.
+    const open = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/open' + Q);
+    assert.equal(open.status, 200);
+    assert.equal(staleOf(open.body.visit.stagedWrites).note, true, 'open');
+    const add = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/items' + Q, { body: { ...CROWN, teeth: [14] } });
+    assert.equal(add.status, 201);
+    assert.equal(staleOf(add.body.visit.stagedWrites).note, true, 'item add');
+  } finally {
+    await app.close();
+  }
+});

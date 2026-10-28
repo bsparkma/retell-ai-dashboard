@@ -39,20 +39,19 @@ const STALE_STATES = Object.freeze(['Staged', 'Failed']);
  * @returns {Promise<Set<string>>}
  */
 async function staleKinds(pool, { office, visitId }) {
+  // The digest alone, not the payload: previews are the bulk of a row.
   const staged = await pool.query(
-    `SELECT kind, state, payload FROM hyg_staged_write
-      WHERE visit_id = $1 AND office = $2`,
-    [visitId, office]
+    `SELECT kind, state, payload->>'existingTxDigest' AS existing_tx_digest
+       FROM hyg_staged_write
+      WHERE visit_id = $1 AND office = $2 AND kind = ANY($3::text[]) AND state = ANY($4::text[])`,
+    [visitId, office, CARRIER_KINDS, STALE_STATES]
   );
-  const carriers = staged.rows.filter(
-    (r) => CARRIER_KINDS.includes(r.kind) && STALE_STATES.includes(r.state)
-  );
+  const carriers = staged.rows;
   const stale = new Set();
   if (carriers.length === 0) return stale;
   const existingTx = await existingTxStore.loadForSend(pool, { office, visitId });
   for (const row of carriers) {
-    const payload = row.payload && typeof row.payload === 'object' ? row.payload : {};
-    const stagedDigest = typeof payload.existingTxDigest === 'string' ? payload.existingTxDigest : null;
+    const stagedDigest = typeof row.existing_tx_digest === 'string' ? row.existing_tx_digest : null;
     if (stagedDigest !== composer.existingTxDigest(row.kind, existingTx)) stale.add(row.kind);
   }
   return stale;
@@ -66,11 +65,17 @@ async function staleKinds(pool, { office, visitId }) {
  * @param {Record<string, any>|null} visit
  */
 async function annotate(pool, visit) {
-  if (!visit) return visit;
+  if (!visit || !Array.isArray(visit.stagedWrites)) return visit;
   const stale = await staleKinds(pool, { office: visit.office, visitId: visit.visitId });
   return {
     ...visit,
-    stagedWrites: visit.stagedWrites.map((w) => ({ ...w, existingTxStale: stale.has(w.kind) })),
+    // The row's OWN state must still be one that sends its stored words: the
+    // visit was read in a separate statement, and a row that moved to Sending
+    // in between is history, never "out of date".
+    stagedWrites: visit.stagedWrites.map((w) => ({
+      ...w,
+      existingTxStale: stale.has(w.kind) && STALE_STATES.includes(w.state),
+    })),
   };
 }
 
