@@ -16,7 +16,7 @@
  * NO NETWORK, NO BACKEND, NO PHI: synthetic names, roland fixture 12827.
  */
 import * as React from "react";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Router as WouterRouter } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
@@ -269,6 +269,22 @@ describe("the checkout workup view", () => {
     }
     release(handoff());
     await waitFor(() => expect((screen.getByTestId("workup-collected") as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it("review r2: two clicks inside ONE render (a double-click) still send only one save", async () => {
+    let release: (h: TcCheckoutHandoff) => void = () => {};
+    api.setCheckoutWorkup.mockImplementationOnce(() => new Promise<TcCheckoutHandoff>((r) => { release = r; }));
+    view(handoff());
+    const a = screen.getByTestId("workup-tick-0");
+    const b = screen.getByTestId("workup-referrals");
+    act(() => {
+      a.click();
+      b.click();
+    });
+    await waitFor(() => expect(api.setCheckoutWorkup).toHaveBeenCalledTimes(1));
+    release(handoff());
+    await waitFor(() => expect((b as HTMLButtonElement).disabled).toBe(false));
+    expect(api.setCheckoutWorkup).toHaveBeenCalledTimes(1);
   });
 
   it("review r1: a Ready-to-present or Collected tick made against a since-changed list reads as not done", () => {

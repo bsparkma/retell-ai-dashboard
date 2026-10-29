@@ -20,7 +20,7 @@
  * never the click; a box is disabled while its save is in flight. An answered
  * checkout's checklist is a record and renders read-only.
  */
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Check, CheckCircle2, ClipboardCopy, Clock, CreditCard, FileText } from "lucide-react";
 
@@ -163,12 +163,17 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
     return { applies: found?.applies ?? false, done: found?.done ?? false };
   };
 
-  // ONE save at a time (review round 1): every box waits while any tick is in
-  // flight, so two answers can never land out of order and the older
-  // read-back overwrite the newer one on screen.
+  // ONE save at a time (review rounds 1 and 2): every box waits while any tick
+  // is in flight, so two answers can never land out of order and the older
+  // read-back overwrite the newer one on screen. The ref is the real guard —
+  // state only disables the boxes on the NEXT render, so two clicks inside one
+  // render (a double-click) would otherwise both get through.
+  const inFlight = useRef(false);
   const locked = !editable || saving.size > 0;
 
   const tick = async (key: string, body: TcCheckoutWorkupRequest) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setSaving((prev) => new Set(prev).add(key));
     try {
       onChange(await setCheckoutWorkup(office, handoff.handoffId, body));
@@ -176,6 +181,7 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
       toast.error(tcErrorMessage(e));
       await onReload();
     } finally {
+      inFlight.current = false;
       setSaving((prev) => {
         const next = new Set(prev);
         next.delete(key);

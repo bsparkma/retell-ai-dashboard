@@ -994,11 +994,14 @@ function workupBox(snapshot, body) {
  * Conservative by design (review round 1): if another desk user flips the same
  * box between this commit and this read, it answers WORKUP_NOT_PERSISTED and
  * the client reloads. It can never call a tick saved that the row does not hold.
+ *
+ * One exception (review round 2): if a visit Send removed the box itself in
+ * that window, an UNtick holds — there is nothing left that could be ticked.
  */
 function workupHolds(handoff, body) {
   const w = handoff.workup;
   const box = workupBox(handoff.snapshot, body);
-  if (box.refusal) return false;
+  if (box.refusal) return body.done === false;
   if (!box.keyed) return (w.referrals !== null) === body.done;
   const m = box.get(w);
   return body.done ? Boolean(m) && m.key === box.key : !m;
