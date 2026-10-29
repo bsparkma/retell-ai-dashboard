@@ -103,7 +103,7 @@ would be a guess printed as a fact.
 **The chair grid is not gone**, one tap away under "Chairs". It is genuinely
 better for seeing two chairs running in parallel, and `groupByOperatory` already
 only draws chairs that HAVE appointments — so under the lens the doctors'
-columns disappear on their own, and Dr Farmer's column appears when a hygiene
+columns disappear on their own, and Dr Quinn's column appears when a hygiene
 appointment is parked in it.
 
 **2. The hidden count.** Same quiet tone as the existing `excludedByStatus`
@@ -143,7 +143,7 @@ set to block storage all throw rather than returning null.
 
 | | |
 | --- | --- |
-| `01-list` | **the one that matters** — the list default, the hidden-count line, and Mango, Lee at 10:30 sitting in **Dr Farmer's** chair |
+| `01-list` | **the one that matters** — the list default, the hidden-count line, and Mango, Lee at 10:30 sitting in **Dr Quinn's** chair |
 | `02-full-day` | the toggle on; the doctors' appointments are back and the notice is gone |
 | `03-picker` | filtered to one hygienist |
 | `04-grid` | the chair grid, still one tap away |

@@ -124,7 +124,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
       visit: visit(),
       recordsNeeded: [],
       handoffCategory: "Other" as const,
-      doctorOptions: ["Beau Sparkman"],
+      doctorOptions: ["Drew Example"],
     })),
     fetchPerioSend: vi.fn(async () => {
       throw new real.HygApiError("CareIN could not be reached", 0, null);
@@ -213,7 +213,7 @@ function tcCase(): TcCase {
     hygieneIntake: {
       submittedBy: "hygienist@carein.ai",
       submittedByName: "Hyg User",
-      hygienistName: "Raegan",
+      hygienistName: "Avery",
       submittedAt: "2026-09-08T14:42:00.000Z",
       operatory: "Hygiene 1",
       visitDate: "2026-09-08",

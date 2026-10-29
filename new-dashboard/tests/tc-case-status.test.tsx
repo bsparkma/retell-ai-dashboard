@@ -76,7 +76,7 @@ function makeCase(overrides: Partial<TcCase> = {}): TcCase {
     category: "implant",
     status: "presented",
     urgency: "medium",
-    doctorName: "Dr. Sparkman",
+    doctorName: "Dr. Example",
     diagnosingProvider: null,
     assignedTc: "tc-user",
     caseValueCents: 450_000,

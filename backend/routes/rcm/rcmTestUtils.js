@@ -1318,8 +1318,8 @@ class FakeOd {
     }
     if (path === '/patients') {
       // OD matches names by PREFIX — modelled, because it is the single most
-      // consequential behaviour of this endpoint (LName=Spark returned 18 rows
-      // live, the first being "Sparkman").
+      // consequential behaviour of this endpoint (LName=Samp returned 18 rows
+      // live, the first being "Sampleton").
       const pref = (field, value) =>
         this.rows.patients.filter((p) =>
           String(p[field] || '').toUpperCase().startsWith(String(value).toUpperCase())

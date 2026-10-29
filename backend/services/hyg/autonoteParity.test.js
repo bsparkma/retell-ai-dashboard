@@ -36,6 +36,11 @@ const composer = require('./stagedWriteComposer');
 const contract = require('../../hyg/contract.gen.cjs');
 const hygStaff = require('../../config/hygStaff');
 
+// No real staff in tests: the synthetic roster stands in for the shipped lists
+// for this whole file (Practice staff page).
+const { useSyntheticStaff } = require('../../config/hygStaff.fixture');
+useSyntheticStaff();
+
 const AUTONOTES = JSON.parse(
   fs.readFileSync(
     path.join(__dirname, '..', '..', '..', 'docs', 'hyg-autonotes', 'autonotes.json'),
@@ -246,7 +251,7 @@ function filledFields(visitType) {
       // RULING (feedback round 1): one of the office's own doctorOptions, as the
       // form offers it — the signature block now prints the picked doctor, so
       // the pick has to be a name the office config knows.
-      fields[id] = { grades: ['Beau Sparkman'], detail: '' };
+      fields[id] = { grades: ['Drew Example'], detail: '' };
       continue;
     }
     const control = contract.NOTE_CONTROLS[id];
@@ -313,7 +318,7 @@ function signatureFor(v) {
   const drs = v.slip.noteFields && v.slip.noteFields.drs;
   return hygStaff.signatureBlock({
     office: 'roland',
-    hygienistName: 'Raegan McGee',
+    hygienistName: 'Avery Example',
     examiningDoctors: drs ? drs.grades : [],
   });
 }
@@ -344,7 +349,7 @@ test('SNAPSHOT: Adult Prophy Recall renders the practice template, line for line
     '    Radiographs taken: BW-4',
     '',
     'A:   STE: Inflammation/bleeding Mild  HTE: RD, XD #14  Polished, flossed, scaled as needed.  ' +
-      'Dr. Beau Sparkman performed periodic exam.  Findings: Generalised light calculus, BOP UR.',
+      'Dr. Drew Example performed periodic exam.  Findings: Generalised light calculus, BOP UR.',
     '',
     'P:  Return for Recall in 6 months',
     '',
@@ -356,9 +361,9 @@ test('SNAPSHOT: Adult Prophy Recall renders the practice template, line for line
     'Mallampati: Class 1',
     'RTC: 6 mo recall',
     '',
-    'Raegan McGee RDH #4251',
+    'Avery Example RDH #9101',
     // RULING (feedback round 1): only the examining doctor the slip picked.
-    'Beau Sparkman DDS #6347',
+    'Drew Example DDS #9001',
     'Entered in CareIN by hygienist@carein.ai. Unsigned.',
   ]);
 });
@@ -372,7 +377,7 @@ test('SNAPSHOT: Adult Prophy NP keeps OH and Bone Loss, and says comp exam', () 
     '    Radiographs taken: BW-4',
     '',
     'A:   STE: Inflammation/bleeding Mild  HTE: RD, XD #14  Polished, flossed, scaled as needed.  ' +
-      'Dr. Beau Sparkman performed comp exam.  Findings: Generalised light calculus, BOP UR.',
+      'Dr. Drew Example performed comp exam.  Findings: Generalised light calculus, BOP UR.',
     '',
     'P:  Return for Recall in 6 months',
     '',
@@ -386,9 +391,9 @@ test('SNAPSHOT: Adult Prophy NP keeps OH and Bone Loss, and says comp exam', () 
     'Mallampati: Class 1',
     'RTC: 6 mo recall',
     '',
-    'Raegan McGee RDH #4251',
+    'Avery Example RDH #9101',
     // RULING (feedback round 1): only the examining doctor the slip picked.
-    'Beau Sparkman DDS #6347',
+    'Drew Example DDS #9001',
     'Entered in CareIN by hygienist@carein.ai. Unsigned.',
   ]);
 });
@@ -403,7 +408,7 @@ test('SNAPSHOT: a child note carries FL2TX and the behaviour scale', () => {
     '',
     'A:   STE: Inflammation/bleeding Mild  HTE: RD, XD #14  ' +
       'Polished, flossed, scaled as needed, FL2TX.  ' +
-      'Dr. Beau Sparkman performed periodic exam.  Findings: Generalised light calculus, BOP UR.',
+      'Dr. Drew Example performed periodic exam.  Findings: Generalised light calculus, BOP UR.',
     '',
     'P:  Return for Recall in 6 months',
     '',
@@ -417,9 +422,9 @@ test('SNAPSHOT: a child note carries FL2TX and the behaviour scale', () => {
     '',
     'RTC: 6 mo recall',
     '',
-    'Raegan McGee RDH #4251',
+    'Avery Example RDH #9101',
     // RULING (feedback round 1): only the examining doctor the slip picked.
-    'Beau Sparkman DDS #6347',
+    'Drew Example DDS #9001',
     'Entered in CareIN by hygienist@carein.ai. Unsigned.',
   ]);
 });
@@ -450,7 +455,7 @@ test('SNAPSHOT: Perio Maint asks sub and supra separately and has no exam clause
     '',
     'RTC: 6 mo recall',
     '',
-    'Raegan McGee RDH #4251',
+    'Avery Example RDH #9101',
     // RULING (feedback round 1): Perio Maint has no exam, so no doctor is named.
     'Entered in CareIN by hygienist@carein.ai. Unsigned.',
   ]);
@@ -464,7 +469,7 @@ test('SNAPSHOT: Child Prophy NP', () => {
   );
   assert.equal(preview[2], 'O:  Reviewed medical history with patient.');
   // RULING (feedback round 1): the fixture picks a configured doctor name.
-  assert.match(preview[5], /FL2TX\.  Dr\. Beau Sparkman performed comp exam\./);
+  assert.match(preview[5], /FL2TX\.  Dr\. Drew Example performed comp exam\./);
   assert.ok(preview.includes('Pediatric behavior: 1- uncooperative/combative'));
 });
 
@@ -581,10 +586,10 @@ test('the signature block comes from config, carries the licence, and stays unsi
   const composed = noteFor('adult_prophy_recall');
   const text = composed.preview.join('\n');
 
-  assert.ok(text.includes('Raegan McGee RDH #4251'), 'her licence line');
+  assert.ok(text.includes('Avery Example RDH #9101'), 'her licence line');
   // RULING (feedback round 1): the EXAMINING doctor, not the office list.
-  assert.ok(text.includes('Beau Sparkman DDS #6347'), 'the examining doctor');
-  assert.ok(!text.includes('Blain VanNice'), 'a doctor who did not examine is not named');
+  assert.ok(text.includes('Drew Example DDS #9001'), 'the examining doctor');
+  assert.ok(!text.includes('Morgan Example'), 'a doctor who did not examine is not named');
   assert.ok(text.includes('Unsigned'));
   // The compliance rule this module is built on, restated for the new lines.
   assert.doesNotMatch(text, /(?<!un)\bsigned\b/i);

@@ -33,7 +33,7 @@ describe("parseTenant / parseAuthUser modules field", () => {
   it("threads modules through the full /auth/me body", () => {
     const user = parseAuthUser({
       authenticated: true,
-      user: { name: "Beau", email: "b@carein.ai", tenantId: "tid" },
+      user: { name: "Drew", email: "b@carein.ai", tenantId: "tid" },
       tenant: { slug: "carein", displayName: "CareIN", modules: ["voice", "tc"] },
     });
     expect(user?.tenant?.modules).toEqual(["voice", "tc"]);

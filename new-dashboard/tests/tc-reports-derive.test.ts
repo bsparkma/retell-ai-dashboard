@@ -21,7 +21,7 @@ function mkCase(overrides: Partial<ReportCase> = {}): ReportCase {
     caseValueCents: 100_000, // $1,000
     category: "single_tooth",
     assignedTc: "sarah",
-    doctorName: "Dr. Sparkman",
+    doctorName: "Dr. Example",
     referralSource: null,
     lostReason: null,
     createdAt: "2026-07-15T10:00:00.000Z",
@@ -190,7 +190,7 @@ describe("deriveTcPerformance / deriveProviderPerformance", () => {
   it("groups providers by doctorName with a Not recorded fallback", () => {
     const rows = deriveProviderPerformance(FIXTURE_CASES);
     const names = rows.map((r) => r.name);
-    expect(names).toContain("Dr. Sparkman");
+    expect(names).toContain("Dr. Example");
     expect(names).toContain("Dr. Lee");
     expect(names).toContain("Not recorded");
     const lee = rows.find((r) => r.name === "Dr. Lee");

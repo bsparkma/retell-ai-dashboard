@@ -27,8 +27,8 @@ vi.mock("@/lib/auth", async (importOriginal) => {
   return {
     ...real,
     fetchCurrentUser: vi.fn(async () => ({
-      name: "Beau Sparkman",
-      email: "beau@carein.ai",
+      name: "Drew Example",
+      email: "drew.example@carein.ai",
       tenantId: "tenant-1",
       tenant: { slug: "carein", displayName: "CareIN Dental", modules: ["voice", "tc"] },
     })),

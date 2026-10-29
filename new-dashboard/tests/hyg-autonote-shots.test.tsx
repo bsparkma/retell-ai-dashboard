@@ -61,7 +61,7 @@ class ResizeObserverStub {
 }
 (globalThis as Record<string, unknown>).ResizeObserver ??= ResizeObserverStub;
 
-const DOCTORS = ["Beau Sparkman", "Blain VanNice", "Joe Farmer"];
+const DOCTORS = ["Drew Example", "Morgan Example", "Quinn Example"];
 
 const fixtures = vi.hoisted(() => ({
   apptTypeLabel: "Adult Prophy RC" as string | null,
@@ -195,7 +195,7 @@ describe.skipIf(!SHOOT)("clinic note screenshot dumps", () => {
       noteFields: {
         ste: field(["WNL"]),
         hte: field(["RD", "XD"], "#14"),
-        drs: field(["Beau Sparkman"]),
+        drs: field(["Drew Example"]),
         perioStatus: field(["Mild"]),
         plaque: field(["Moderate"], "U ant"),
         calculus: field(["Slight"], "Lower ant and U post"),
@@ -262,7 +262,7 @@ describe.skipIf(!SHOOT)("clinic note screenshot dumps", () => {
           "    Radiographs taken: BW-4",
           "",
           "A:   STE: WNL  HTE: RD, XD #14  Polished, flossed, scaled as needed.  " +
-            "Dr. Beau Sparkman performed periodic exam.  Findings: Generalised light calculus, BOP UR.",
+            "Dr. Drew Example performed periodic exam.  Findings: Generalised light calculus, BOP UR.",
           "",
           "P:  Return for Recall in 6 months",
           "",
@@ -274,10 +274,10 @@ describe.skipIf(!SHOOT)("clinic note screenshot dumps", () => {
           "Mallampati: Class 2",
           "RTC: 6 mo recall",
           "",
-          "Raegan McGee RDH #4251",
-          "Beau Sparkman DDS #6347",
-          "Blain VanNice DDS #7971",
-          "Joe Farmer DDS #7571",
+          "Avery Example RDH #9101",
+          "Drew Example DDS #9001",
+          "Morgan Example DDS #9002",
+          "Quinn Example DDS #9003",
           "Entered in CareIN by hygienist@carein.ai. Unsigned.",
         ],
         previewFingerprint: "sha256:fixture",

@@ -155,7 +155,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
     visit: visit(),
     recordsNeeded: [],
     handoffCategory: "Restorative" as const,
-    doctorOptions: ["Beau Sparkman"],
+    doctorOptions: ["Drew Example"],
   });
   const disposition = (input: ExistingTxDispositionInput) => ({
     ...input,
@@ -174,7 +174,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
       visit: visit(),
       recordsNeeded: [],
       handoffCategory: "Restorative" as const,
-      doctorOptions: ["Beau Sparkman"],
+      doctorOptions: ["Drew Example"],
     })),
     openVisit: vi.fn(async () => mutation()),
     addTreatmentItem: vi.fn(async () => {

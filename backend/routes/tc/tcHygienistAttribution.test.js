@@ -74,7 +74,7 @@ test('a submission with no pick is attributed to the signed-in user', async () =
   const db = dbWithSubmissionReads();
   const { baseUrl, close } = await bootTcApp({
     role: 'hygiene',
-    user: { email: 'raegan@carein.ai', name: 'Raegan', tenantId: 'x' },
+    user: { email: 'avery@carein.ai', name: 'Avery', tenantId: 'x' },
     db,
   });
   try {
@@ -82,9 +82,9 @@ test('a submission with no pick is attributed to the signed-in user', async () =
     assert.equal(res.status, 201, JSON.stringify(res.body));
 
     const row = db.table('tc_hygiene_intakes')[0];
-    assert.equal(row.submitted_by, 'raegan@carein.ai', 'audit identity');
-    assert.equal(row.submitted_by_name, 'Raegan');
-    assert.equal(row.hygienist_name, 'Raegan', 'defaults to the signed-in display name');
+    assert.equal(row.submitted_by, 'avery@carein.ai', 'audit identity');
+    assert.equal(row.submitted_by_name, 'Avery');
+    assert.equal(row.hygienist_name, 'Avery', 'defaults to the signed-in display name');
   } finally {
     await close();
   }
@@ -257,7 +257,7 @@ test('GET /hygienists lists the tenant\'s active hygiene users with derived labe
   registry.listTenantUsersByRole = async (_tenantId, role) => {
     assert.equal(role, 'hygiene');
     return [
-      { email: 'raegan@carein.ai', role: 'hygiene', status: 'active' },
+      { email: 'avery@carein.ai', role: 'hygiene', status: 'active' },
       { email: 'mary.beth@carein.ai', role: 'hygiene', status: 'active' },
       { email: 'temp@carein.ai', role: 'hygiene', status: 'active' },
     ];
@@ -268,7 +268,7 @@ test('GET /hygienists lists the tenant\'s active hygiene users with derived labe
     const res = await api(baseUrl, 'GET', '/api/tc/hygiene-intakes/hygienists?office=valley');
     assert.equal(res.status, 200, JSON.stringify(res.body));
     assert.deepEqual(res.body.hygienists, [
-      { email: 'raegan@carein.ai', label: 'Raegan' },
+      { email: 'avery@carein.ai', label: 'Avery' },
       { email: 'mary.beth@carein.ai', label: 'Mary Beth' },
       { email: 'temp@carein.ai', label: 'Temp' },
     ]);

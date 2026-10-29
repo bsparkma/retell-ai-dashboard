@@ -93,7 +93,7 @@ function appt(over: Partial<HygAppointment>): HygAppointment {
     opIsHygiene: true,
     provNum: 1,
     provHyg: 7,
-    providerName: "Raegan",
+    providerName: "Avery",
     apptTypeLabel: "Prophy Adult",
     confirmedStatus: "Confirmed",
     aptStatus: "Scheduled",
