@@ -3,13 +3,14 @@
  * Pulls real data from backend /api/admin/* endpoints
  */
 import { useState, useEffect, useCallback } from "react";
+import { Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
   Building2, Users, Settings, CheckCircle2, AlertCircle,
   Globe, Key, Bell, ChevronRight, ChevronDown, RefreshCw, Loader2,
-  Play, Square,
+  Play, Square, IdCard,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -339,6 +340,42 @@ export default function Admin() {
           {error}
         </div>
       )}
+
+      {/* People — the hub's links to the two pages that manage who works here.
+          Above the tabs so they show whichever tab is open (the page opens on
+          Integrations). No permission check here: both pages sit under /admin,
+          which already demands admin.all for this whole page (ROUTE_PERMISSIONS). */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-4xl" data-testid="admin-people-links">
+        {([
+          {
+            href: "/admin/users",
+            icon: Users,
+            title: "Users",
+            detail: "Who can sign in, and what each person's role lets them do",
+          },
+          {
+            href: "/admin/staff",
+            icon: IdCard,
+            title: "Practice staff",
+            detail: "Hygienist names, licence numbers and sign-ins",
+          },
+        ] as const).map(({ href, icon: Icon, title, detail }) => (
+          <Link key={href} href={href} className="block" data-testid={`admin-link-${href.split("/").pop()}`}>
+            <Card className="hover:shadow-md transition-shadow h-full">
+              <CardContent className="p-5 flex items-center gap-4">
+                <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0">
+                  <Icon size={18} className="text-primary" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold text-foreground">{title}</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">{detail}</div>
+                </div>
+                <ChevronRight size={16} className="text-muted-foreground flex-shrink-0" />
+              </CardContent>
+            </Card>
+          </Link>
+        ))}
+      </div>
 
       {/* Tab nav */}
       <div className="flex items-center gap-0 border-b overflow-x-auto">
