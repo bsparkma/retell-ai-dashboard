@@ -353,11 +353,154 @@ export const REFERRAL_LINK_ACTORS = {
   patient: "system:patient-link",
 } as const;
 
+/**
+ * The verbs R5b's CHECK (1792500000000) was written with: R5's, then the four
+ * link verbs. Frozen, because that migration is history and its test pins THIS
+ * list; the live vocabulary is TC_REFERRAL_ALL_EVENT_VERBS below.
+ */
+export const TC_REFERRAL_R5B_EVENT_VERBS = [...TC_REFERRAL_R5_EVENT_VERBS, ...TC_REFERRAL_LINK_EVENT_VERBS] as const;
+
+/**
+ * R6.9 (correspondence log): staff recording a contact with the specialist's
+ * office or the patient — a call, an email, a fax — that happened OUTSIDE the
+ * app. It never moves the status (from = to); it sends and triggers nothing.
+ * The CHECK on tc_referral_events.verb (1793100000000) carries
+ * TC_REFERRAL_R5B_EVENT_VERBS followed by exactly this one; that migration's
+ * test pins the equality.
+ */
+export const TC_REFERRAL_CORRESPONDENCE_EVENT_VERBS = ["correspondence"] as const;
+
+/**
+ * The verbs R6.9's CHECK (1793100000000) was written with: R5b's, then
+ * `correspondence`. Frozen, because that migration is history and its test
+ * pins THIS list; the live vocabulary is TC_REFERRAL_ALL_EVENT_VERBS below.
+ */
+export const TC_REFERRAL_R69_EVENT_VERBS = [...TC_REFERRAL_R5B_EVENT_VERBS, ...TC_REFERRAL_CORRESPONDENCE_EVENT_VERBS] as const;
+
+/**
+ * R6.10 (chart notes): a milestone's note was written to the patient's Open
+ * Dental chart as a commlog, by a person who saw the exact text. It never
+ * moves the status (from = to). The row carries the milestone, the CommlogNum
+ * Open Dental minted and the commlog type it was written with; its note is the
+ * exact text written. The CHECK on tc_referral_events.verb (1793200000000)
+ * carries TC_REFERRAL_R69_EVENT_VERBS followed by exactly this one; that
+ * migration's test pins the equality.
+ */
+export const TC_REFERRAL_CHART_NOTE_EVENT_VERBS = ["chart_note_written"] as const;
+
 /** Every event verb, in CHECK order: what tc_referral_events.verb may hold today. */
-export const TC_REFERRAL_ALL_EVENT_VERBS = [...TC_REFERRAL_R5_EVENT_VERBS, ...TC_REFERRAL_LINK_EVENT_VERBS] as const;
+export const TC_REFERRAL_ALL_EVENT_VERBS = [...TC_REFERRAL_R69_EVENT_VERBS, ...TC_REFERRAL_CHART_NOTE_EVENT_VERBS] as const;
 
 export const TcReferralEventVerb = z.enum(TC_REFERRAL_ALL_EVENT_VERBS);
 export type TcReferralEventVerb = z.infer<typeof TcReferralEventVerb>;
+
+// ── R6.9: the correspondence log's vocabulary ───────────────────────────────
+
+/**
+ * Which way the contact went, with whom, and how. Each list is the CHECK on
+ * its tc_referral_events column (1793100000000), inline; that migration's test
+ * pins them equal.
+ */
+export const TC_REFERRAL_CORRESPONDENCE_DIRECTIONS = ["to", "from"] as const;
+export const TC_REFERRAL_CORRESPONDENCE_PARTIES = ["specialist", "patient"] as const;
+export const TC_REFERRAL_CORRESPONDENCE_CHANNELS = ["phone", "email", "fax", "other"] as const;
+export const TcReferralCorrespondenceDirection = z.enum(TC_REFERRAL_CORRESPONDENCE_DIRECTIONS);
+export type TcReferralCorrespondenceDirection = z.infer<typeof TcReferralCorrespondenceDirection>;
+export const TcReferralCorrespondenceParty = z.enum(TC_REFERRAL_CORRESPONDENCE_PARTIES);
+export type TcReferralCorrespondenceParty = z.infer<typeof TcReferralCorrespondenceParty>;
+export const TcReferralCorrespondenceChannel = z.enum(TC_REFERRAL_CORRESPONDENCE_CHANNELS);
+export type TcReferralCorrespondenceChannel = z.infer<typeof TcReferralCorrespondenceChannel>;
+
+/** The note's cap, in characters; the server refuses longer (zod) and so does the database (CHECK). */
+export const TC_REFERRAL_CORRESPONDENCE_NOTE_MAX = 2000;
+
+/** The three facts a correspondence row carries beyond its note. */
+export const TcReferralCorrespondenceKind = z.object({
+  direction: TcReferralCorrespondenceDirection,
+  party: TcReferralCorrespondenceParty,
+  channel: TcReferralCorrespondenceChannel,
+});
+export type TcReferralCorrespondenceKind = z.infer<typeof TcReferralCorrespondenceKind>;
+
+/**
+ * POST /api/tc/referrals/:id/correspondence — what staff say happened. Strict:
+ * an office, a status, an actor, a date or any other extra field is a 400. The
+ * office is the request's server-derived one; the time is the server's clock.
+ */
+export const TcReferralCorrespondenceRequest = TcReferralCorrespondenceKind.extend({
+  note: z.string().trim().min(1, "Say what was said").max(TC_REFERRAL_CORRESPONDENCE_NOTE_MAX),
+}).strict();
+export type TcReferralCorrespondenceRequest = z.infer<typeof TcReferralCorrespondenceRequest>;
+
+/** The latest correspondence, as a list read carries it (see TcReferral.lastCorrespondence). */
+export const TcReferralLastCorrespondence = TcReferralCorrespondenceKind.extend({
+  note: z.string(),
+  actor: z.string(),
+  at: z.string(),
+});
+export type TcReferralLastCorrespondence = z.infer<typeof TcReferralLastCorrespondence>;
+
+// ── R6.10: chart notes' vocabulary ──────────────────────────────────────────
+
+/**
+ * The milestones a referral's chart note can record, in the order a referral
+ * reaches them. The CHECK on tc_referral_events.chart_note_milestone
+ * (1793200000000) carries exactly these, inline; that migration's test pins
+ * them equal.
+ *
+ *   sent       it went to the specialist (the app's send, or marked sent)
+ *   received   the specialist confirmed receipt (their link, or marked by staff)
+ *   scheduled  the patient is scheduled with the specialist (date when given)
+ *   seen       the specialist saw the patient
+ *   declined   the doctor declined it, with the reason
+ *   closed     it was closed, with the note given
+ */
+export const TC_REFERRAL_CHART_MILESTONES = ["sent", "received", "scheduled", "seen", "declined", "closed"] as const;
+export const TcReferralChartMilestone = z.enum(TC_REFERRAL_CHART_MILESTONES);
+export type TcReferralChartMilestone = z.infer<typeof TcReferralChartMilestone>;
+
+export const TC_REFERRAL_CHART_MILESTONE_LABELS: Record<TcReferralChartMilestone, string> = {
+  sent: "Referral sent",
+  received: "Specialist confirmed receipt",
+  scheduled: "Patient scheduled",
+  seen: "Patient seen",
+  declined: "Referral declined",
+  closed: "Referral closed",
+};
+
+/** The note's cap, in characters; the server refuses longer (zod) and so does the database (CHECK). */
+export const TC_REFERRAL_CHART_NOTE_MAX = 2000;
+
+/**
+ * POST /api/tc/referrals/:id/chart-notes — a person approving ONE milestone's
+ * note, in the exact words to be written. Strict: a PatNum, an office, a
+ * commlog type, a date or any other extra field is a 400. The patient and the
+ * office come from the referral row, the type from the office's configuration,
+ * the time from the milestone itself.
+ */
+export const TcReferralChartNoteRequest = z
+  .object({
+    milestone: TcReferralChartMilestone,
+    note: z.string().trim().min(1, "Write the note").max(TC_REFERRAL_CHART_NOTE_MAX),
+  })
+  .strict();
+export type TcReferralChartNoteRequest = z.infer<typeof TcReferralChartNoteRequest>;
+
+/** On a `chart_note_written` row: which milestone, and what Open Dental minted. */
+export const TcReferralChartNoteRecord = z.object({
+  milestone: TcReferralChartMilestone,
+  commLogNum: z.number().int().positive(),
+  commType: z.number().int().positive(),
+});
+export type TcReferralChartNoteRecord = z.infer<typeof TcReferralChartNoteRecord>;
+
+/** Whether this office can take a chart note at all, and if not, why — on the detail read. */
+export const TcReferralChartNoteAvailability = z.object({
+  available: z.boolean(),
+  code: z.string().nullable(),
+  reason: z.string().nullable(),
+});
+export type TcReferralChartNoteAvailability = z.infer<typeof TcReferralChartNoteAvailability>;
 
 /** One transition (or, since R6, one edit), as the referral's history shows it. */
 export const TcReferralEvent = z.object({
@@ -369,6 +512,10 @@ export const TcReferralEvent = z.object({
   note: z.string(),
   /** R6: what happened. null on rows written before R6. */
   verb: TcReferralEventVerb.nullable().optional(),
+  /** R6.9: on a `correspondence` row, which way, with whom, how. null otherwise. */
+  correspondence: TcReferralCorrespondenceKind.nullable().optional(),
+  /** R6.10: on a `chart_note_written` row, the milestone and the commlog. null otherwise. */
+  chartNote: TcReferralChartNoteRecord.nullable().optional(),
 });
 export type TcReferralEvent = z.infer<typeof TcReferralEvent>;
 
@@ -461,6 +608,18 @@ export const TcReferral = z.object({
    * recorded. On list reads.
    */
   patientEmail: TcReferralPatientEmailRecord.nullable().optional(),
+  /**
+   * R6.9: the latest correspondence staff logged (whatever the status since).
+   * null when none was logged. On list reads.
+   */
+  lastCorrespondence: TcReferralLastCorrespondence.nullable().optional(),
+  /**
+   * R6.10: the chosen directory entry's specialist name, for the drafted chart
+   * notes. null when none is chosen or the entry names nobody. Detail read only.
+   */
+  specialistName: z.string().nullable().optional(),
+  /** R6.10: can this office's charts take a referral note right now? Detail read only. */
+  chartNotes: TcReferralChartNoteAvailability.optional(),
 });
 export type TcReferral = z.infer<typeof TcReferral>;
 
@@ -715,6 +874,10 @@ const NON_MOVE_VERBS: readonly TcReferralEventVerb[] = [
   "send_failed",
   "send_conflict",
   ...TC_REFERRAL_LINK_EVENT_VERBS,
+  // R6.9: a logged contact; the status stays where it is.
+  ...TC_REFERRAL_CORRESPONDENCE_EVENT_VERBS,
+  // R6.10: a chart note written; the status stays where it is.
+  ...TC_REFERRAL_CHART_NOTE_EVENT_VERBS,
 ];
 
 /** Did this history row move the status? (Pre-R6 rows carry no verb and always did.) */
@@ -782,12 +945,205 @@ export function referralResponses(events: readonly TcReferralEvent[] | undefined
   };
 }
 
+// ── R6.9: correspondence ────────────────────────────────────────────────────
+
+/**
+ * Where staff may log correspondence: everywhere but a draft (nothing has gone
+ * anywhere yet, so there is no one to have corresponded with about it).
+ */
+export const REFERRAL_CORRESPONDENCE_STATUSES: readonly TcReferralStatus[] = TcReferralStatus.options.filter(
+  (s) => s !== "draft",
+);
+
+/** May correspondence be logged on a referral in `status`? Pure; the server asks the same. */
+export function referralCanLogCorrespondence(status: TcReferralStatus): boolean {
+  return REFERRAL_CORRESPONDENCE_STATUSES.includes(status);
+}
+
+/** The latest correspondence row in a history (oldest first), or null. Pure; the server derives the list field with it. */
+export function referralLastCorrespondence(
+  events: readonly TcReferralEvent[] | undefined,
+): TcReferralLastCorrespondence | null {
+  const last = [...(events ?? [])].reverse().find((e) => e.verb === "correspondence" && e.correspondence);
+  if (!last || !last.correspondence) return null;
+  return { ...last.correspondence, note: last.note, actor: last.actor, at: last.at };
+}
+
+const CORRESPONDENCE_CHANNEL_NOUNS: Record<TcReferralCorrespondenceChannel, string> = {
+  phone: "Phone call",
+  email: "Email",
+  fax: "Fax",
+  other: "Contact",
+};
+const CORRESPONDENCE_PARTY_WORDS: Record<TcReferralCorrespondenceParty, string> = {
+  specialist: "specialist's office",
+  patient: "the patient",
+};
+
+/** The history's label: "Phone call from specialist's office", "Email to the patient". Pure. */
+export function referralCorrespondenceLabel(k: TcReferralCorrespondenceKind): string {
+  return `${CORRESPONDENCE_CHANNEL_NOUNS[k.channel]} ${k.direction} ${CORRESPONDENCE_PARTY_WORDS[k.party]}`;
+}
+
+/**
+ * The card's muted line: "Last contact: phone from specialist, Oct 27". null
+ * when none was logged. `timeZone` only for tests; the browser's otherwise.
+ * Pure.
+ */
+export function referralLastContactLine(
+  last: TcReferralLastCorrespondence | null | undefined,
+  timeZone?: string,
+): string | null {
+  if (!last) return null;
+  const d = new Date(last.at);
+  const day = Number.isNaN(d.getTime())
+    ? last.at
+    : d.toLocaleDateString("en-US", { month: "short", day: "numeric", ...(timeZone ? { timeZone } : {}) });
+  return `Last contact: ${last.channel} ${last.direction} ${last.party}, ${day}`;
+}
+
 /** "Tue, Nov 3, 2026" for a 'YYYY-MM-DD'; the raw value if it does not parse. Pure. */
 export function referralDateLabel(ymd: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
   if (!m) return ymd;
   const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
   return d.toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric", year: "numeric" });
+}
+
+// ── R6.10: chart notes ──────────────────────────────────────────────────────
+
+/**
+ * The punctuation Open Dental mangles, and its ASCII stand-in. A MIRROR of
+ * backend/utils/sanitizeForOd.js (the voice writer's sanitizer, which runs on
+ * every commlog at the write boundary); a backend test pins the two equal. It
+ * lives here too so the text shown above "Write to chart" is the text the
+ * writer will store, byte for byte — the server refuses a note this would
+ * still change.
+ */
+const OD_SAFE_REPLACEMENTS: Readonly<Record<string, string>> = {
+  "‘": "'", "’": "'", "‚": "'", "‛": "'", "′": "'",
+  "“": '"', "”": '"', "„": '"', "‟": '"', "″": '"', "«": '"', "»": '"',
+  "–": "-", "—": "--", "―": "--",
+  "…": "...",
+  "•": "-", "·": "-",
+  " ": " ", " ": " ", " ": " ", " ": " ",
+  "​": "",
+};
+const OD_SAFE_PATTERN = new RegExp(`[${Object.keys(OD_SAFE_REPLACEMENTS).join("")}]`, "g");
+
+/** The note as Open Dental will store it (see OD_SAFE_REPLACEMENTS). Idempotent. Pure. */
+export function referralChartNoteOdSafe(text: string): string {
+  return text.replace(OD_SAFE_PATTERN, (ch) => OD_SAFE_REPLACEMENTS[ch] ?? ch);
+}
+
+/**
+ * Which history rows mean a milestone was reached. Pre-R6 rows carry no verb;
+ * for them the status move itself says so (`legacy`).
+ */
+const CHART_MILESTONE_EVENTS: Record<
+  TcReferralChartMilestone,
+  { verbs: readonly TcReferralEventVerb[]; legacy: ((e: TcReferralEvent) => boolean) | null }
+> = {
+  sent: { verbs: ["send", "mark_sent"], legacy: (e) => e.toStatus === "sent" && e.fromStatus !== "sent" },
+  received: { verbs: ["mark_acknowledged"], legacy: (e) => e.toStatus === "acknowledged" && e.fromStatus === "sent" },
+  scheduled: { verbs: ["patient_scheduled"], legacy: null },
+  seen: { verbs: ["mark_patient_seen"], legacy: (e) => e.toStatus === "patient_seen" && e.fromStatus !== "patient_seen" },
+  declined: { verbs: ["decline"], legacy: (e) => e.toStatus === "declined" && e.fromStatus !== "declined" },
+  closed: { verbs: ["close"], legacy: (e) => e.toStatus === "closed" && e.fromStatus !== "closed" },
+};
+
+/** A chart note already written for a milestone: when, by whom, the commlog, the exact text. */
+export type TcReferralChartNoteWritten = { at: string; actor: string; commLogNum: number; note: string };
+
+/** A milestone the referral has reached, and its chart note if one was written. */
+export type TcReferralChartMilestoneState = {
+  milestone: TcReferralChartMilestone;
+  /** When it was reached: the moment the chart note is dated. */
+  at: string;
+  /** The reaching row's own note (the decline reason, the close note). */
+  eventNote: string;
+  written: TcReferralChartNoteWritten | null;
+};
+
+/**
+ * The milestones a referral has reached (latest row for each), in milestone
+ * order, each with the chart note written for it if any. Events are oldest
+ * first. Pure; the server refuses a milestone that is not in this list, or
+ * whose `written` is set, with the same function the client draws from.
+ */
+export function referralChartMilestones(events: readonly TcReferralEvent[] | undefined): TcReferralChartMilestoneState[] {
+  const list = events ?? [];
+  const out: TcReferralChartMilestoneState[] = [];
+  for (const milestone of TC_REFERRAL_CHART_MILESTONES) {
+    const rule = CHART_MILESTONE_EVENTS[milestone];
+    const reached = [...list]
+      .reverse()
+      .find((e) => (e.verb ? rule.verbs.includes(e.verb) : rule.legacy !== null && rule.legacy(e)));
+    if (!reached) continue;
+    const note = list.find((e) => e.verb === "chart_note_written" && e.chartNote?.milestone === milestone);
+    out.push({
+      milestone,
+      at: reached.at,
+      eventNote: reached.note,
+      written:
+        note && note.chartNote ? { at: note.at, actor: note.actor, commLogNum: note.chartNote.commLogNum, note: note.note } : null,
+    });
+  }
+  return out;
+}
+
+/** The facts a drafted chart note is worded from. */
+export type TcReferralChartDraftFacts = Pick<TcReferral, "practiceName" | "specialty" | "reason"> & {
+  specialistName?: string | null;
+  scheduledDate?: string | null;
+};
+
+/** "Dr. Lee at Valley Endodontics", "Valley Endodontics", "an endodontics specialist". */
+function referralSpecialistPhrase(r: TcReferralChartDraftFacts): string {
+  const name = (r.specialistName ?? "").trim();
+  const practice = (r.practiceName ?? "").trim();
+  if (name && practice) return `${name} at ${practice}`;
+  if (name || practice) return name || practice;
+  const specialty = r.specialty.trim().toLowerCase();
+  if (!specialty) return "the specialist";
+  return `${/^[aeiou]/.test(specialty) ? "an" : "a"} ${specialty} specialist`;
+}
+
+/** The clinical reason as a clause ("for possible cracked tooth"), or "" when none. */
+function referralReasonClause(r: TcReferralChartDraftFacts): string {
+  const reason = r.reason.trim().replace(/[.\s]+$/, "");
+  return reason ? ` for ${reason.charAt(0).toLowerCase()}${reason.slice(1)}` : "";
+}
+
+/** A row's own note as a closing clause (": not needed yet."), or "." when none. */
+function referralNoteClause(note: string): string {
+  const n = note.trim().replace(/[.\s]+$/, "");
+  return n ? `: ${n}.` : ".";
+}
+
+/**
+ * The drafted chart note for one milestone — what staff start from and may
+ * edit. Already OD-safe, so an unedited draft is exactly what would be
+ * written. Pure.
+ */
+export function referralChartNoteDraft(
+  milestone: TcReferralChartMilestone,
+  facts: TcReferralChartDraftFacts,
+  eventNote = "",
+): string {
+  const who = referralSpecialistPhrase(facts);
+  const Who = who.charAt(0).toUpperCase() + who.slice(1);
+  const reason = referralReasonClause(facts);
+  const date = facts.scheduledDate ? referralDateLabel(facts.scheduledDate) : null;
+  const text = {
+    sent: `Referral sent to ${who}${reason}.`,
+    received: `${Who} confirmed receipt of the referral${reason}.`,
+    scheduled: `Patient scheduled with ${who}${date ? ` on ${date}` : " (no date given)"}.`,
+    seen: `Patient seen by ${who}${reason}.`,
+    declined: `Referral to ${who} declined by the doctor${referralNoteClause(eventNote)}`,
+    closed: `Referral to ${who} closed${referralNoteClause(eventNote)}`,
+  }[milestone];
+  return referralChartNoteOdSafe(text);
 }
 
 /**

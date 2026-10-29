@@ -133,7 +133,7 @@ test('send for an office with no sender throws FEATURE_DISABLED and never calls 
 test('send re-reads the kill switch first: a row written since the last refresh stops THIS send', async () => {
   configure();
   assert.equal(sms.enabledFor('roland'), true);
-  registry.getPlatformSetting = async (key) => ({ key, value: false, updated_at: new Date(), updated_by: 'beau@carein.ai' });
+  registry.getPlatformSetting = async (key) => ({ key, value: false, updated_at: new Date(), updated_by: 'drew.example@carein.ai' });
   const calls = fakeTwilio({ body: { sid: 'SMx', status: 'queued' } });
   await assert.rejects(() => sms.send(MESSAGE, ROLAND), (e) => e.code === 'FEATURE_DISABLED' && /switched off/.test(e.message));
   assert.equal(calls.length, 0);

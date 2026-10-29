@@ -23,6 +23,8 @@ import { EmailBlocks } from "./emailBlocks";
 // the hygiene slip stores this object and TC carries it, so the schema lives
 // with the screening rather than being restated here.
 import { OrthoScreeningSchema } from "../hyg/orthoScreening";
+// Existing treatment answers (hygiene Slice 2b) — the same one-vocabulary rule.
+import { EXISTING_TX_HANDOFF_MAX, ExistingTxHandoffItemSchema } from "../hyg/existingTx";
 
 // ── Shared primitives ────────────────────────────────────────────────────────
 
@@ -381,6 +383,35 @@ export const TcHygieneIntake = z.object({
    * surfaces that do not render structure yet.
    */
   orthoScreening: OrthoScreeningSchema.nullable().default(null),
+  /**
+   * What the hygienist recorded about the patient's EXISTING Open Dental plan
+   * at this visit (hygiene Slice 2b): each item's snapshot, both answers, the
+   * timeframe and the note. NULLABLE and ADDITIVE, exactly like orthoScreening:
+   * every intake before this, and every visit with no plan loaded, is `null`
+   * and renders as it always did.
+   */
+  existingTx: z.array(ExistingTxHandoffItemSchema).max(EXISTING_TX_HANDOFF_MAX).nullable().default(null),
+  /**
+   * What the front desk takes payment for (checkout v2): the slip's labels, as
+   * a checkout snapshot carries them (shared/tc/checkout.ts TcCollectAtCheckout
+   * — restated here because that module imports nothing of this one). NULLABLE
+   * and ADDITIVE, exactly like existingTx.
+   */
+  collectAtCheckout: z.array(z.string().min(1).max(200)).max(6).nullable().default(null),
+  /**
+   * The records the handoff's treatment needs and where each stands (checkout
+   * v2) — the list its staged preview showed. Same shape as a checkout
+   * snapshot's `records`; NULLABLE and ADDITIVE.
+   */
+  records: z
+    .array(
+      z
+        .object({ record: z.string().min(1).max(120), status: z.enum(["needed", "on_file", "taken_today"]) })
+        .strict(),
+    )
+    .max(60)
+    .nullable()
+    .default(null),
 });
 export type TcHygieneIntake = z.infer<typeof TcHygieneIntake>;
 

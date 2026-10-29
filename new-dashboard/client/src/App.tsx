@@ -24,6 +24,7 @@ import Scheduling from "./pages/Scheduling";
 import Analytics from "./pages/Analytics";
 import Admin from "./pages/Admin";
 import AdminUsers from "./pages/AdminUsers";
+import AdminStaff from "./pages/AdminStaff";
 import Platform from "./pages/Platform";
 import Callbacks from "./pages/Callbacks";
 import RcmToday from "./pages/rcm/RcmToday";
@@ -46,7 +47,7 @@ import TcHygieneSubmissions from "./pages/tc/TcHygieneSubmissions";
 import TcHygieneInbox from "./pages/tc/TcHygieneInbox";
 import TcOpportunities from "./pages/tc/TcOpportunities";
 import TcCheckout from "./pages/tc/TcCheckout";
-import TcReferralSignoff from "./pages/tc/TcReferralSignoff";
+import TcReferralSignoffRedirect from "./pages/tc/TcReferralSignoffRedirect";
 import TcReferralsHub from "./pages/tc/TcReferralsHub";
 import TcPreauth from "./pages/tc/TcPreauth";
 import TcTemplates from "./pages/tc/TcTemplates";
@@ -131,6 +132,9 @@ export function Router() {
         <Route path="/analytics" component={Analytics} />
         <Route path="/admin" component={Admin} />
         <Route path="/admin/users" component={AdminUsers} />
+        {/* Practice staff (hygienists). Under /admin, so it inherits admin.all
+            from ROUTE_PERMISSIONS like the Users page beside it. */}
+        <Route path="/admin/staff" component={AdminStaff} />
         {/* Platform console. Deliberately absent from ROUTE_PERMISSIONS: the
             platform tier is not a permission action, and leaving it unlisted
             means the courtesy redirect above lets a non-super_admin ARRIVE, so
@@ -229,7 +233,8 @@ export function Router() {
         <Route path="/tc/opportunities" component={TcOpportunities} />
         <Route path="/tc/checkout" component={TcCheckout} />
         <Route path="/tc/referrals" component={TcReferralsHub} />
-        <Route path="/tc/referrals/signoff" component={TcReferralSignoff} />
+        {/* The old sign-off page's path: now the hub's sign-off view (alerts, bookmarks). */}
+        <Route path="/tc/referrals/signoff" component={TcReferralSignoffRedirect} />
         <Route path="/tc/hygiene" component={TcHygieneIntake} />
         <Route path="/tc/hygiene/submissions" component={TcHygieneSubmissions} />
         <Route path="/tc/hygiene/inbox" component={TcHygieneInbox} />

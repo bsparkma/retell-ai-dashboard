@@ -341,6 +341,12 @@ router.post(
         // Item 33. Null for every intake that is not an ortho screening —
         // including the treatment handoff and TC's own intake form.
         orthoScreening: input.orthoScreening ?? null,
+        // Hygiene Slice 2b. Null for every intake that carried none, which is
+        // every intake before it and TC's own intake form.
+        existingTx: input.existingTx ?? null,
+        // Checkout v2. Null for every intake that carried nothing to collect.
+        collectAtCheckout: input.collectAtCheckout ?? null,
+        records: input.records ?? null,
       },
     });
 

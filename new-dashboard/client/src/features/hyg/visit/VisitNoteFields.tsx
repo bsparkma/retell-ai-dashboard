@@ -35,13 +35,22 @@ import {
   emptyNoteField,
   hasPerioChartLine,
   NOTE_CONTROLS,
+  DRAFT_VISIT_TYPES,
   VISIT_TYPE_LABELS,
   VISIT_TYPES,
   type NoteControlId,
   type NoteField,
   type VisitType,
 } from "@shared/hyg/noteTemplates";
-import { YesNoSchema, type HygSlip, type YesNo } from "@shared/hyg/contract";
+import { useEffect, useRef, useState } from "react";
+import {
+  MEDICAL_HISTORY_MAX,
+  medicalHistoryLine,
+  YesNoSchema,
+  type HygSlip,
+  type MedicalHistory,
+  type YesNo,
+} from "@shared/hyg/contract";
 import { cn } from "@/lib/utils";
 
 const TAP = "min-h-11 rounded-lg border px-3 text-sm font-medium transition-colors";
@@ -128,7 +137,7 @@ function GradeRow({
             testId={`hyg-note-${id}-${option.replace(/\s+/g, "-").toLowerCase()}`}
           />
         ))}
-        {options.length === 0 ? (
+        {options.length === 0 && id === "drs" ? (
           // Only reachable for the doctor row before an office has answered.
           <span className="text-xs italic text-muted-foreground">
             No doctors are configured for this office.
@@ -136,14 +145,91 @@ function GradeRow({
         ) : null}
         <input
           type="text"
-          // The half of the line their notes actually carry.
-          placeholder="where / detail"
+          // The half of the line their notes actually carry. A TYPED row
+          // (anesthetic, inflammation) has no chips, so this is the whole answer.
+          placeholder={options.length === 0 && id !== "drs" ? "type it" : "where / detail"}
           defaultValue={value.detail}
           onBlur={(e) => onChange({ ...value, detail: e.target.value })}
           data-testid={`hyg-note-${id}-detail`}
           className="min-h-11 min-w-[10rem] flex-1 rounded-lg border border-border bg-background px-3 text-sm"
         />
       </div>
+    </div>
+  );
+}
+
+/**
+ * The medical-history update (checkout v2): "No changes", or what changed.
+ *
+ * ONE ANSWER. Tapping "No changes" empties the box, and typing in the box
+ * un-picks "No changes" — both visibly, and the line under them says exactly
+ * what the note will print. Unanswered prints nothing on the note; the Send
+ * confirm reminds her, and nothing anywhere refuses on it.
+ *
+ * The box keeps its own text so a save's read-back arriving mid-sentence cannot
+ * rewind what she is typing; the slip still receives every keystroke (the page
+ * debounces the save).
+ */
+function MedicalHistoryField({
+  value,
+  onChange,
+}: {
+  value: MedicalHistory | null;
+  onChange: (next: MedicalHistory | null) => void;
+}) {
+  const [text, setText] = useState(value?.status === "changes" ? value.text : "");
+  const noChanges = value?.status === "no_changes";
+  // A "No changes" that arrived from anywhere — her tap, or a reload — shows
+  // an empty box, never a stale sentence beside the chip that contradicts it.
+  useEffect(() => {
+    if (noChanges) setText("");
+  }, [noChanges]);
+  // A different stored sentence (a reload, a reset) replaces the box's — but
+  // never while she is in it, where the box is the newer of the two.
+  const box = useRef<HTMLTextAreaElement>(null);
+  const stored = value?.status === "changes" ? value.text : null;
+  useEffect(() => {
+    if (stored !== null && document.activeElement !== box.current) setText(stored);
+  }, [stored]);
+
+  const typed = (next: string) => {
+    const capped = next.slice(0, MEDICAL_HISTORY_MAX);
+    setText(capped);
+    onChange(capped.trim() ? { status: "changes", text: capped } : null);
+  };
+  const printed = medicalHistoryLine(value);
+
+  return (
+    <div className="space-y-1.5" data-testid="hyg-medical-history">
+      <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        Medical history update
+      </div>
+      <div className="flex flex-wrap items-start gap-1.5">
+        <Chip
+          label="No changes"
+          active={noChanges}
+          onClick={() => {
+            setText("");
+            onChange(noChanges ? null : { status: "no_changes" });
+          }}
+          testId="hyg-medical-history-none"
+        />
+        <textarea
+          ref={box}
+          value={text}
+          maxLength={MEDICAL_HISTORY_MAX}
+          onChange={(e) => typed(e.target.value)}
+          placeholder="Or what changed — new medications, conditions, allergies…"
+          aria-label="Medical history changes"
+          data-testid="hyg-medical-history-text"
+          className="min-h-11 min-w-[14rem] flex-1 rounded-lg border border-border bg-background p-2 text-sm"
+        />
+      </div>
+      <p className="text-xs text-muted-foreground" data-testid="hyg-medical-history-prints">
+        {printed
+          ? `The note says: “${printed}”`
+          : "Not recorded yet — the note prints no medical-history line. Send reminds you; it never stops you."}
+      </p>
     </div>
   );
 }
@@ -194,7 +280,9 @@ export function VisitNoteFields({
           {VISIT_TYPES.map((type) => (
             <Chip
               key={type}
-              label={VISIT_TYPE_LABELS[type]}
+              // A draft template says so on its chip: its wording is not yet the
+              // practice's own (feedback round 1).
+              label={DRAFT_VISIT_TYPES.has(type) ? `${VISIT_TYPE_LABELS[type]} (draft)` : VISIT_TYPE_LABELS[type]}
               active={visitType === type}
               onClick={() => pickType(type)}
               testId={`hyg-note-type-${type}`}
@@ -213,6 +301,13 @@ export function VisitNoteFields({
           </p>
         ) : null}
       </div>
+
+      {/* Checkout v2: directly after the visit type, whichever type it is —
+          the note prints it right after the type's opening line. */}
+      <MedicalHistoryField
+        value={slip.medicalHistory}
+        onChange={(next) => set("medicalHistory", next)}
+      />
 
       {visitType === null ? null : (
         <>

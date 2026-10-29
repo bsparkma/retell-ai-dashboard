@@ -21,7 +21,7 @@ test.afterEach(() => {
 function stubRow(value) {
   registry.getPlatformSetting = async (key) => {
     assert.equal(key, 'tc_sms_enabled');
-    return value === undefined ? null : { key, value, updated_at: new Date('2026-10-08T12:00:00Z'), updated_by: 'beau@carein.ai' };
+    return value === undefined ? null : { key, value, updated_at: new Date('2026-10-08T12:00:00Z'), updated_by: 'drew.example@carein.ai' };
   };
 }
 
@@ -60,7 +60,7 @@ test('a stored true with no env turns it on', async () => {
   stubRow(true);
   await tcSms.refreshFromDb();
   assert.equal(tcSms.smsEnabled(), true);
-  assert.equal(tcSms.state().updatedBy, 'beau@carein.ai');
+  assert.equal(tcSms.state().updatedBy, 'drew.example@carein.ai');
 });
 
 test('a non-boolean row is ignored (falls through), never read as truthy', async () => {

@@ -23,11 +23,13 @@ export const UPPER_PERMANENT: number[] = Array.from({ length: 16 }, (_, i) => i 
 /** Lower permanent arch, #32–#17, in on-screen left-to-right display order. */
 export const LOWER_PERMANENT: number[] = Array.from({ length: 16 }, (_, i) => 32 - i)
 
-/** Upper primary arch, A–J, in on-screen left-to-right display order. */
-export const UPPER_PRIMARY: string[] = "ABCDEFGHIJ".split("")
-
-/** Lower primary arch, T–K, in on-screen left-to-right display order. */
-export const LOWER_PRIMARY: string[] = "TSRQPONMLK".split("")
+/**
+ * The primary arches, A–J and T–K, in on-screen left-to-right display order.
+ * Defined in `shared/hyg/teeth.ts`, because their ORDER is the stored encoding
+ * of a primary tooth and the server prints teeth too. Re-exported here so every
+ * existing import keeps working; there is no second copy.
+ */
+export { LOWER_PRIMARY, UPPER_PRIMARY } from "@shared/hyg/teeth"
 
 export type Quadrant = "UR" | "UL" | "LL" | "LR"
 

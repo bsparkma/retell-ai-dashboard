@@ -103,6 +103,9 @@ const CATEGORY_MAP = Object.freeze({
   Cosmetic: 'cosmetic',
   Perio: 'quadrant',
   Restorative: 'single_tooth',
+  // Also the category of a handoff with NO new items (feedback round 1):
+  // deriveCategory([]) is 'Other', and existing Open Dental treatment is tooth
+  // work, so it files where a restorative case files. Pinned by a test.
   Other: 'single_tooth',
 });
 
@@ -149,13 +152,55 @@ const RADIOGRAPH_MAP = Object.freeze({
  * @returns {{ ok: true, body: Record<string, unknown> }
  *          | { ok: false, code: string, error: string }}
  */
-function buildIntake({ visit, appointment, handoffCategory, date }) {
+/**
+ * The existing-treatment items a body carries (hygiene Slice 2b), or undefined.
+ *
+ * `existingTx` is existingTxStore.loadForSend's answer — the stored
+ * dispositions with their own proc_snapshot, built server-side. A visit whose
+ * plan was never loaded and where nothing was answered carries NOTHING, so its
+ * body is exactly the one it always was. Each item is parsed through the shared
+ * handoff schema: an item TC would refuse is dropped here rather than costing
+ * the whole handoff.
+ * @param {{ items?: unknown[] } | undefined} existingTx
+ * @returns {object[]|undefined}
+ */
+function existingTxForTc(existingTx, { quiet = false } = {}) {
+  const items = existingTx && Array.isArray(existingTx.items) ? existingTx.items : [];
+  const valid = items
+    .map((i) => contract.ExistingTxHandoffItemSchema.safeParse(i))
+    .filter((r) => r.success)
+    .map((r) => r.data);
+  const parsed = valid.slice(0, contract.EXISTING_TX_HANDOFF_MAX);
+  // `quiet`: the preview and the out-of-date check run this on every visit
+  // read; only a SEND is worth a log line.
+  if (parsed.length !== items.length && !quiet) {
+    // Counts only — never a code, a tooth or a PatNum.
+    console.warn(
+      `[hyghandoff] existing treatment: ${items.length} item(s), ${items.length - valid.length} not ` +
+        `parseable, ${valid.length - parsed.length} over the cap — ${parsed.length} sent`
+    );
+  }
+  return parsed.length > 0 ? parsed : undefined;
+}
+
+function buildIntake({ visit, appointment, handoffCategory, date, existingTx }) {
   const items = Array.isArray(visit.items) ? visit.items : [];
-  if (items.length === 0) {
+  // Feedback round 1: refuse only when there is NEITHER new treatment NOR an
+  // existing-treatment answer TC has to act on. Checked again here, at send,
+  // because the answers may have changed since the handoff was staged.
+  // Checkout v2 fix: a collect-at-checkout list does NOT make a case. It rides
+  // the checkout alert (buildCheckoutIntake); here it only rides along on a
+  // case that has treatment or a TC-actionable answer of its own.
+  const carried = existingTxForTc(existingTx);
+  const collect = collectForTc(visit.slip);
+  const records = recordsForTc(items, visit.slip);
+  if (items.length === 0 && contract.countTcActionable(carried || []) === 0) {
     return {
       ok: false,
       code: 'NOTHING_TO_STAGE',
-      error: 'There is no treatment on this visit to hand off',
+      error:
+        'There is nothing on this visit to hand off: no treatment identified today and no ' +
+        'existing treatment for the treatment coordinator to act on',
     };
   }
 
@@ -188,6 +233,12 @@ function buildIntake({ visit, appointment, handoffCategory, date }) {
 
   const slip = visit.slip || {};
   const priorities = new Set(items.map((i) => i.priority));
+  // With no new treatment, the existing items set the urgency: one the
+  // hygienist marked "getting worse -> urgent" is urgent; otherwise preventative
+  // (existing treatment is restorative work, never cosmetic by default).
+  if (items.length === 0) {
+    priorities.add((carried || []).some((i) => i.clinical === 'worse_urgent') ? 'urgent' : 'preventative');
+  }
   const urgency = priorities.has('urgent')
     ? URGENCY_BY_PRIORITY.urgent
     : priorities.has('preventative')
@@ -209,8 +260,10 @@ function buildIntake({ visit, appointment, handoffCategory, date }) {
       ? 'prophy'
       : 'none';
 
+  // An EXPLICITLY empty treatment list when nothing new was found: '' rather
+  // than a made-up line, and the existing items ride in `existingTx`.
   const treatmentLines = items.map((item) => {
-    const teeth = item.teeth === 'mouth' ? 'Whole mouth' : `#${(item.teeth || []).join(', #')}`;
+    const teeth = item.teeth === 'mouth' ? 'Whole mouth' : contract.teethText(item.teeth || []);
     return `${teeth} ${item.code} (${item.priority})`;
   });
 
@@ -244,8 +297,55 @@ function buildIntake({ visit, appointment, handoffCategory, date }) {
       flagUrgent: priorities.has('urgent'),
       kind: 'hygiene',
       sourceKey: sourceKeyFor(visit, 'handoff'),
+      // Slice 2b. Absent when there is nothing to carry.
+      ...(carried ? { existingTx: carried } : {}),
+      // Checkout v2. Absent when there is nothing to collect, or no record is
+      // needed — the same records the handoff's preview lists.
+      ...(collect ? { collectAtCheckout: collect } : {}),
+      ...(records ? { records } : {}),
     },
   };
+}
+
+/**
+ * The collect-at-checkout list a body carries (checkout v2), or undefined.
+ *
+ * LABELS, as the slip showed them — TC copies a snapshot and never reads the
+ * slip back. Parsed through the slip's own schema first: a stored value this
+ * build cannot read carries nothing rather than something half-understood.
+ * @param {Record<string, any>|undefined} slip
+ * @returns {string[]|undefined}
+ */
+function collectForTc(slip) {
+  const parsed = contract.CollectAtCheckoutSchema.safeParse(slip ? slip.collectAtCheckout : undefined);
+  if (!parsed.success) return undefined;
+  const labels = contract.collectAtCheckoutLabels(parsed.data);
+  return labels.length > 0 ? labels : undefined;
+}
+
+/**
+ * The records the visit's treatment needs and where each stands (checkout v2),
+ * or undefined when it needs none. The same derivation the slip's records list
+ * and the Router print: RECORDS_MATRIX over the items, the slip's recorded
+ * status, and "needed" for a record nobody marked.
+ * @param {Record<string, any>[]} items
+ * @param {Record<string, any>|undefined} slip
+ * @returns {{ record: string, status: string }[]|undefined}
+ */
+function recordsForTc(items, slip) {
+  const statuses = (slip && slip.recordsStatus) || {};
+  const records = contract
+    .recordsNeededFor(items)
+    .slice(0, 60)
+    .map((record) => {
+      const status = statuses[record];
+      return {
+        record: capped(record, 120),
+        status: status === 'on_file' || status === 'taken_today' ? status : 'needed',
+      };
+    })
+    .filter((r) => r.record.length > 0);
+  return records.length > 0 ? records : undefined;
 }
 
 /**
@@ -410,7 +510,7 @@ function capped(value, max) {
  * @returns {{ ok: true, body: Record<string, unknown> }
  *          | { ok: false, code: string, error: string }}
  */
-function buildCheckoutIntake({ visit, snapshot, date, final }) {
+function buildCheckoutIntake({ visit, snapshot, date, final, existingTx }) {
   const snap = snapshot || {};
   const patientName = capped(snap.patientName, 200);
   if (!patientName) {
@@ -446,6 +546,9 @@ function buildCheckoutIntake({ visit, snapshot, date, final }) {
   const noteWritten = staged.some((w) => w && w.kind === 'note' && w.state === 'Written');
 
   const seen = capped(snap.providerName, 200);
+  const carried = existingTxForTc(existingTx);
+  const collect = collectForTc(slip);
+  const records = recordsForTc(items, slip);
   return {
     ok: true,
     body: {
@@ -471,6 +574,12 @@ function buildCheckoutIntake({ visit, snapshot, date, final }) {
         notesPending: !noteWritten,
         frontDeskNote: capped(slip.frontDeskNote, 4000),
         financialNote: capped(slip.financialNote, 4000),
+        // Slice 2b. Absent when there is nothing to carry.
+        ...(carried ? { existingTx: carried } : {}),
+        // Checkout v2, both absent when empty — so a visit with neither sends
+        // exactly the snapshot it always did.
+        ...(collect ? { collectAtCheckout: collect } : {}),
+        ...(records ? { records } : {}),
       },
     },
   };
@@ -593,6 +702,9 @@ module.exports = {
   INTEREST_MAP,
   buildIntake,
   buildCheckoutIntake,
+  existingTxForTc,
+  collectForTc,
+  recordsForTc,
   sourceKeyFor,
   submitHygieneIntake,
   submitCheckoutHandoff,

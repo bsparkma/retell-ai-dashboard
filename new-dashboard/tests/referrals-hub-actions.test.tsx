@@ -8,8 +8,12 @@
  *    policy, and that every offer is exactly what the SHARED transition table
  *    (referralNextStatus) says — the client decides which buttons to draw,
  *    never where a move leads;
- *  - the doctor's moves (approve / decline / send back) are never drawn on the
- *    hub — approving can email it — and the hub names where to act instead;
+ *  - the doctor's moves (approve / decline / send back) — RE-PINNED by the
+ *    sign-off-in-hub slice (Beau's ruling; R6.1's "never drawn on the hub" is
+ *    reversed for sign-off holders only): offered exactly to a
+ *    tc.referral_signoff holder, exactly on a referral awaiting sign-off, as
+ *    the shared table allows; everyone else gets "Waiting for the doctor's
+ *    sign-off" and none of them. Send and the marks are unchanged;
  *  - the panel: Submit / Withdraw / Cancel go through the existing referralVerb
  *    routes and the panel shows only the server's answer.
  *
@@ -50,7 +54,7 @@ vi.mock("@/features/tc/referrals/referralsApi", () => ref);
 import { HubDetail, nextMark } from "@/pages/tc/TcReferralsHub";
 import {
   HUB_NOT_TC_FULL_COPY,
-  HUB_SIGNOFF_HERE_COPY,
+  HUB_SIGNOFF_VERBS,
   HUB_SIGNOFF_WAITING_COPY,
   HUB_VERBS,
   hubActionLabel,
@@ -138,10 +142,28 @@ describe("hubActionPlan — what the hub offers, from the shared table", () => {
     }
   });
 
-  it("never draws a doctor's move or a send, whoever is looking", () => {
+  it("the TC side's moves never include a doctor's move or a send, whoever is looking", () => {
     for (const v of [TC, ADMIN, NOT_TC, DOCTOR]) {
       for (const s of StatusEnum.options) {
         for (const verb of verbsFor(s, v)) expect(["approve", "decline", "return", "send"]).not.toContain(verb);
+      }
+    }
+  });
+
+  it("NEW INVARIANT: approve / decline / send back only for a tc.referral_signoff holder, only on pending_signoff, as the table allows", () => {
+    for (const policy of [true, false, null]) {
+      for (const s of StatusEnum.options) {
+        for (const v of [TC, ADMIN, NOT_TC, DOCTOR]) {
+          const offered = hubActionPlan(s, v, policy).signoff;
+          if (!v.signoff || s !== "pending_signoff") {
+            expect(offered, `${s} as ${JSON.stringify(v)}`).toEqual([]);
+            continue;
+          }
+          expect(offered).toEqual(["approve", "decline", "return"]);
+          for (const verb of HUB_SIGNOFF_VERBS) {
+            expect(referralNextStatus(s, verb, { signoffRequired: policy ?? true }), verb).not.toBeNull();
+          }
+        }
       }
     }
   });
@@ -157,29 +179,36 @@ describe("hubActionPlan — what the hub offers, from the shared table", () => {
     expect(hubActionLabel(at(null))).toBe("Submit");
   });
 
-  it("awaiting sign-off: names where the doctor's moves are, and links only for someone who may make them", () => {
+  it("awaiting sign-off: a signer gets the moves here; anyone else is told it waits for the doctor", () => {
     const tc = hubActionPlan("pending_signoff", TC, true);
     expect(tc.notes).toEqual([HUB_SIGNOFF_WAITING_COPY]);
-    expect(tc.signoffLink).toBe(false);
+    expect(tc.signoff).toEqual([]);
     const admin = hubActionPlan("pending_signoff", ADMIN, true);
-    expect(admin.notes).toEqual([HUB_SIGNOFF_HERE_COPY]);
-    expect(admin.signoffLink).toBe(true);
+    expect(admin.notes).toEqual([]);
+    expect(admin.signoff).toEqual(["approve", "decline", "return"]);
     expect(admin.actions.map((a) => a.verb)).toEqual(["withdraw", "cancel"]);
     // Nothing about sign-off on any other status.
     for (const s of StatusEnum.options.filter((x) => x !== "pending_signoff")) {
+      expect(hubActionPlan(s, TC, true).notes).toEqual([]);
       expect(hubActionPlan(s, ADMIN, true).notes).toEqual([]);
     }
   });
 
   it("without tc.full: no moves, and a named reason wherever one would exist", () => {
-    expect(hubActionPlan("draft", NOT_TC, true)).toEqual({ actions: [], notes: [HUB_NOT_TC_FULL_COPY], signoffLink: false });
+    expect(hubActionPlan("draft", NOT_TC, true)).toEqual({ actions: [], signoff: [], notes: [HUB_NOT_TC_FULL_COPY] });
+    // A doctor on a pending one: their own moves, and no lecture about the TC's.
     expect(hubActionPlan("pending_signoff", DOCTOR, true)).toEqual({
       actions: [],
-      notes: [HUB_NOT_TC_FULL_COPY, HUB_SIGNOFF_HERE_COPY],
-      signoffLink: true,
+      signoff: ["approve", "decline", "return"],
+      notes: [],
+    });
+    expect(hubActionPlan("pending_signoff", NOT_TC, true)).toEqual({
+      actions: [],
+      signoff: [],
+      notes: [HUB_NOT_TC_FULL_COPY, HUB_SIGNOFF_WAITING_COPY],
     });
     // A finished referral has nothing to refuse, so says nothing.
-    expect(hubActionPlan("closed", NOT_TC, true)).toEqual({ actions: [], notes: [], signoffLink: false });
+    expect(hubActionPlan("closed", NOT_TC, true)).toEqual({ actions: [], signoff: [], notes: [] });
   });
 
   it("nextMark still agrees with the table", () => {
@@ -270,7 +299,7 @@ describe("the detail panel's moves", () => {
   it("awaiting sign-off: withdraw goes back to a draft", async () => {
     const d = referral({ status: "pending_signoff" });
     const { panel } = await openDetail(d);
-    expect(within(panel).queryByTestId("tc-hub-signoff-link")).toBeNull();
+    expect(within(panel).queryByTestId("tc-hub-signoff-actions")).toBeNull();
     ref.referralVerb.mockResolvedValue({ ...d, status: "draft" });
     fireEvent.click(within(panel).getByTestId("tc-hub-withdraw"));
     await waitFor(() => expect(ref.referralVerb).toHaveBeenCalledWith("roland", RID, "withdraw"));
@@ -278,11 +307,17 @@ describe("the detail panel's moves", () => {
     expect(within(panel).getByTestId("tc-hub-submit")).toBeTruthy();
   });
 
-  it("an admin sees where to sign off, never an Approve button on the hub", async () => {
+  it("RE-PINNED: an admin (a signer) gets Approve, Decline and Send back on the hub; a TC gets none", async () => {
     const { panel } = await openDetail(referral({ status: "pending_signoff" }), { viewer: ADMIN });
-    expect(within(panel).getByTestId("tc-hub-move-notes").textContent).toContain(HUB_SIGNOFF_HERE_COPY);
-    expect(within(panel).getByTestId("tc-hub-signoff-link").getAttribute("href")).toBe("/tc/referrals/signoff");
-    expect(within(panel).queryByRole("button", { name: /Approve|Decline|Send back/ })).toBeNull();
+    expect(within(panel).getByRole("button", { name: /^Approve$/ })).toBeTruthy();
+    expect(within(panel).getByRole("button", { name: /Decline/ })).toBeTruthy();
+    expect(within(panel).getByRole("button", { name: /Send back with a question/ })).toBeTruthy();
+    expect(within(panel).queryByTestId("tc-hub-move-notes")).toBeNull();
+    expectNothingSent(); // drawn, not pressed
+    cleanup();
+    const tc = await openDetail(referral({ status: "pending_signoff" }), { viewer: TC });
+    expect(within(tc.panel).queryByRole("button", { name: /Approve|Decline|Send back/ })).toBeNull();
+    expect(within(tc.panel).getByTestId("tc-hub-move-notes").textContent).toBe(HUB_SIGNOFF_WAITING_COPY);
   });
 
   it("cancel asks first; only 'Yes, cancel it' moves it", async () => {

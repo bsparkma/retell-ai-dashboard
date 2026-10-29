@@ -7,8 +7,8 @@
  *  - ReferralsPanel: chosen files upload BEFORE the submit; a file that did
  *    not land keeps the referral a draft and says which and why.
  *  - Viewing a file goes through the audited route (openReferralAttachment)
- *    and opens it in a new tab; the sign-off page reads through the doctor's
- *    route.
+ *    and opens it in a new tab. (The doctor's read at sign-off moved with the
+ *    sign-off page into the hub: tests/referrals-signoff-in-hub.test.tsx.)
  *
  * With TC_SHOTS=1 it also dumps the form with files chosen (tccheckout-12).
  * NO NETWORK, NO BACKEND, NO PHI (test patient 12827).
@@ -57,7 +57,6 @@ vi.mock("@/features/hyg/api", async (orig) => ({
 
 import { AttachmentZone } from "@/features/tc/referrals/AttachmentZone";
 import { ReferralsPanel } from "@/features/tc/referrals/ReferralsPanel";
-import { SignoffInner } from "@/pages/tc/TcReferralSignoff";
 import { VisitReferral } from "@/features/hyg/visit/VisitReferral";
 
 const CASE_ID = "6f9619ff-8b86-4d01-b42d-00cf4fc964ff";
@@ -218,26 +217,6 @@ describe("files on the case's referral form", () => {
     fireEvent.click(await screen.findByRole("button", { name: "View pa-3.png" }));
     await waitFor(() => expect(open).toHaveBeenCalledWith("blob:fake-url", "_blank", "noopener"));
     expect(ref.openReferralAttachment).toHaveBeenCalledWith("roland", referral().referralId, attachment().attachmentId);
-    open.mockRestore();
-  });
-});
-
-describe("the doctor sees the X-ray at sign-off", () => {
-  it("lists the files through the sign-off route", async () => {
-    const pending = referral({ status: "pending_signoff" });
-    ref.listSignoffQueue.mockResolvedValue([pending]);
-    ref.getSignoffReferral.mockResolvedValue({ ...pending, events: [] });
-    ref.listReferralAttachments.mockResolvedValue([attachment()]);
-    ref.openReferralAttachment.mockResolvedValue("blob:fake-url");
-    const open = vi.spyOn(window, "open").mockReturnValue(null);
-    render(<SignoffInner office="roland" />);
-    fireEvent.click(await screen.findByTestId("tc-signoff-row"));
-    const detail = await screen.findByTestId("tc-signoff-detail");
-    fireEvent.click(await within(detail).findByRole("button", { name: "View pa-3.png" }));
-    expect(ref.listReferralAttachments).toHaveBeenCalledWith("roland", pending.referralId, true);
-    await waitFor(() =>
-      expect(ref.openReferralAttachment).toHaveBeenCalledWith("roland", pending.referralId, attachment().attachmentId, true),
-    );
     open.mockRestore();
   });
 });

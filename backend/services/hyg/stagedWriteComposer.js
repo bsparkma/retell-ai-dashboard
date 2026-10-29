@@ -86,12 +86,17 @@
  * every write from the payload stored here.
  */
 
+const crypto = require('node:crypto');
+
 const contract = require('../../hyg/contract.gen.cjs');
 // THE PLATFORM'S OWN SANITIZER, not a second one. The voice module has run
 // every commlog note through this for months (routes/unifiedCalls.js,
 // services/openDentalSync.js); this module was the one Open Dental note path
 // that did not, and the first real send came back "Invalid JSON".
 const { sanitizeForOd } = require('../../utils/sanitizeForOd');
+// The handoff's own filter for what it carries, so its preview lists exactly
+// the existing items the send will. Pure, and it requires nothing of this file.
+const tcHandoff = require('./tcHandoffClient');
 
 /**
  * The typed name block that stands in for a signature, and is not one.
@@ -138,7 +143,9 @@ function line(value) {
 function teethLabel(item) {
   if (item.teeth === 'mouth') return 'Whole mouth';
   if (!Array.isArray(item.teeth) || item.teeth.length === 0) return 'No teeth recorded';
-  return item.teeth.map((t) => '#' + t).join(', ');
+  // Shared with the client's tooth picker: '#30', and a primary tooth as its
+  // letter ('B'), never the stored 102. See new-dashboard/shared/hyg/teeth.ts.
+  return contract.teethText(item.teeth);
 }
 
 /**
@@ -289,6 +296,165 @@ function recordsLines(items, recordsStatus) {
   ];
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Existing treatment (hygiene Slice 2b)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `ctx.existingTx` is `{ status, items }` from existingTxStore.loadForSend —
+// the stored dispositions with their own proc_snapshot, plus the plan the
+// server last read. Absent (a caller that predates 2b, or a pure test) means
+// exactly what `not_loaded` with no items means: nothing is printed and the
+// payload is byte-for-byte what it was before this slice.
+
+/** The note's words for each clinical answer. */
+const EXISTING_CLINICAL_PHRASES = Object.freeze({
+  no_change: 'no change',
+  worse_urgent: 'getting worse, moved to urgent',
+  re_evaluate: 'needs re-evaluation',
+  no_longer_needed: 'no longer needed',
+});
+
+/** The note's words for each patient answer. */
+const EXISTING_PATIENT_PHRASES = Object.freeze({
+  not_discussed: 'not discussed with the patient',
+  ready_to_schedule: 'patient ready to schedule',
+  wants_to_wait: 'patient wants to wait',
+  see_plan_again: 'patient wants to see the plan again',
+  cost_questions: 'patient has cost questions',
+  declined: 'patient declined',
+});
+
+/** "#30 MO D2392 Resin-based composite…" — the tooth first, as the rest of the slip reads. */
+function existingLabel(item) {
+  const where = item.tooth ? `${contract.odToothText(item.tooth)}${item.surface ? ' ' + item.surface : ''}` : item.surface;
+  return [where, item.code, item.description].filter(Boolean).join(' ') || 'Procedure';
+}
+
+/** "(3 months)" / "(next recall)", or ''. */
+function waitPhrase(item) {
+  if (item.patient !== 'wants_to_wait' || !item.waitTimeframe) return '';
+  const label = contract.EXISTING_TX_WAIT_LABELS[item.waitTimeframe] || item.waitTimeframe;
+  return ` (${String(label).toLowerCase()})`;
+}
+
+/**
+ * Was anything said about this item? The chart note records only what was.
+ * @param {{ patient: string, clinical: string|null }} item
+ */
+function existingDiscussed(item) {
+  return item.patient !== 'not_discussed' || item.clinical !== null;
+}
+
+/**
+ * One chart-note line: "#30 D2740 Crown — getting worse, moved to urgent;
+ * patient wants to wait (3 months)." Then the hygienist's note, if any.
+ */
+function existingNoteLine(item) {
+  const said = [];
+  if (item.clinical) said.push(EXISTING_CLINICAL_PHRASES[item.clinical] || item.clinical);
+  said.push((EXISTING_PATIENT_PHRASES[item.patient] || item.patient) + waitPhrase(item));
+  const note = item.note ? ` Note: ${item.note}` : '';
+  return `${existingLabel(item)} — ${said.join('; ')}.${note}`;
+}
+
+/**
+ * The note's section: "Existing treatment reviewed (N):" and one line per item
+ * somebody said something about. NOT DISCUSSED IS OMITTED — a chart note is a
+ * record of what happened, and nothing happened to those. No section at N = 0.
+ * @param {{ status: string, items: object[] } | undefined} existingTx
+ * @returns {string[]}
+ */
+function existingNoteLines(existingTx) {
+  const items = existingTx && Array.isArray(existingTx.items) ? existingTx.items : [];
+  const said = items.filter(existingDiscussed);
+  if (said.length === 0) return [];
+  return [`Existing treatment reviewed (${said.length}):`, ...said.map((i) => '  ' + existingNoteLine(i))];
+}
+
+/**
+ * The Router's section: EVERY item, "Not discussed" included, with both answers,
+ * the timeframe, the note and "Already scheduled".
+ *
+ *   never loaded, nothing answered  → no section at all
+ *   failed, nothing answered        → "Existing treatment could not be loaded…"
+ *   loaded, nothing planned         → "none planned in Open Dental" — a READ said so
+ *
+ * It never prints an empty section: an empty section reads as "none", and only
+ * a successful read may say that.
+ * @param {{ status: string, items: object[] } | undefined} existingTx
+ * @returns {string[]}
+ */
+function existingRouterLines(existingTx) {
+  const status = existingTx ? existingTx.status : 'not_loaded';
+  const items = existingTx && Array.isArray(existingTx.items) ? existingTx.items : [];
+  if (items.length === 0) {
+    if (status === 'failed') return ['Existing treatment could not be loaded from Open Dental.'];
+    if (status === 'loaded') return ['Existing treatment: none planned in Open Dental.'];
+    return [];
+  }
+  const lines = [`Existing treatment (${items.length}):`];
+  if (status === 'failed') {
+    lines.push('  The full plan could not be loaded from Open Dental. These are the items answered at this visit.');
+  } else if (status === 'not_loaded') {
+    lines.push('  The full plan was not recorded. These are the items answered at this visit.');
+  }
+  for (const item of items) {
+    const when = item.dateTp ? ` · planned ${item.dateTp}` : '';
+    const booked = item.scheduled ? ' · Already scheduled' : '';
+    lines.push(`  ${existingLabel(item)}${when}${booked}`);
+    lines.push(
+      '    Clinical: ' +
+        (item.clinical
+          ? // The screen's arrow is not in the OD/WinAnsi-safe set: sanitizeForOd
+            // passes it through and the PDF would print it as '?'. Said in ASCII.
+            String(contract.EXISTING_TX_CLINICAL_LABELS[item.clinical] || item.clinical).replace(/→/g, '->')
+          : 'Not recorded')
+    );
+    lines.push(
+      '    Patient: ' +
+        (contract.EXISTING_TX_PATIENT_LABELS[item.patient] || item.patient) +
+        (item.patient === 'wants_to_wait' && item.waitTimeframe
+          ? ` (${contract.EXISTING_TX_WAIT_LABELS[item.waitTimeframe] || item.waitTimeframe})`
+          : '')
+    );
+    if (item.note) lines.push('    Note: ' + item.note);
+  }
+  return lines;
+}
+
+/**
+ * The digest of the existing-treatment lines a `note` or `router` PRINTS, or
+ * null when it prints none.
+ *
+ * Stored on the staged payload, and re-derived by the send from the stored
+ * dispositions before anything is written. A note staged before the answers
+ * changed would otherwise send the old answers under a preview she approved, so
+ * the send refuses it instead (PREVIEW_CHANGED) — the same promise every other
+ * staged word keeps.
+ * @param {'note'|'router'} kind
+ * @param {{ status: string, items: object[] } | undefined} existingTx
+ * @returns {string|null}
+ */
+function existingTxDigest(kind, existingTx) {
+  const lines = kind === 'note' ? existingNoteLines(existingTx) : existingRouterLines(existingTx);
+  if (lines.length === 0) return null;
+  return crypto.createHash('sha256').update(lines.map(line).join('\n')).digest('hex');
+}
+
+/**
+ * The digest of the medical-history line a note PRINTS, or null when it prints
+ * none (checkout v2). The note's ONLY slip-field currency check: every other
+ * slip field still keeps the words it was staged with until it is staged again
+ * — the general fix is a separate item, deliberately not this one.
+ * @param {Record<string, any>|undefined} slip
+ * @returns {string|null}
+ */
+function medicalHistoryDigest(slip) {
+  const printed = contract.medicalHistoryLine(slip ? slip.medicalHistory : null);
+  if (!printed) return null;
+  return crypto.createHash('sha256').update(line(printed)).digest('hex');
+}
+
 /**
  * Compose one staged write.
  *
@@ -300,7 +466,7 @@ function recordsLines(items, recordsStatus) {
  *   `unavailable` — this kind is not built yet. `empty` — there is genuinely
  *   nothing to send, which is a refusal rather than an empty envelope.
  */
-function composeRaw(kind, { visit, items, actor, signature, draft }) {
+function composeRaw(kind, { visit, items, actor, signature, draft, existingTx }) {
   const slip = visit.slip || {};
   const dateLabel = visit.visitDate || 'today';
 
@@ -341,7 +507,10 @@ function composeRaw(kind, { visit, items, actor, signature, draft }) {
       lines.push(`Treatment identified today (${items.length}):`);
       for (const item of items) lines.push('  ' + itemLine(item));
     }
+    // SLICE 2b: every existing item, discussed or not — or the honest sentence.
+    lines.push(...existingRouterLines(existingTx));
     lines.push(...recordsLines(items, slip.recordsStatus || {}));
+    const routerDigest = existingTxDigest('router', existingTx);
     return {
       title: 'Routing slip',
       summary:
@@ -352,7 +521,15 @@ function composeRaw(kind, { visit, items, actor, signature, draft }) {
       preview: lines,
       // Slice 3 renders this to a PDF and files it in the patient's images.
       // Stored whole so the send needs nothing the preview did not show.
-      payload: { kind: 'router', aptNum: visit.aptNum, patNum: visit.patNum, lines },
+      payload: {
+        kind: 'router',
+        aptNum: visit.aptNum,
+        patNum: visit.patNum,
+        lines,
+        // Only when the slip prints an existing-treatment section, so a visit
+        // without one stages exactly the payload it always did.
+        ...(routerDigest ? { existingTxDigest: routerDigest } : {}),
+      },
     };
   }
 
@@ -360,6 +537,13 @@ function composeRaw(kind, { visit, items, actor, signature, draft }) {
     // THE TEMPLATE, WHEN SHE HAS SAID WHICH ONE. A null visitType composes the
     // generic note this module wrote before templates existed — see the header.
     const lines = slip.visitType ? noteTemplateLines(visit) : [...slipLines(visit)];
+    // CHECKOUT V2: the medical-history answer, RIGHT AFTER the visit type's
+    // opening line (first, on the generic note, which has no opening). Spliced
+    // in here rather than written into the shared templates, so the templates
+    // still match the practice's own auto notes line for line. Unanswered
+    // prints nothing: no line is not the same as "no changes".
+    const medical = contract.medicalHistoryLine(slip.medicalHistory);
+    if (medical) lines.splice(slip.visitType && lines.length > 0 ? 1 : 0, 0, medical);
     if (items.length > 0) {
       // A blank line first when a template ran, so the treatment block reads as
       // its own section rather than as one more graded row.
@@ -367,6 +551,14 @@ function composeRaw(kind, { visit, items, actor, signature, draft }) {
       lines.push(`Treatment identified today (${items.length}):`);
       for (const item of items) lines.push('  ' + itemLine(item));
     }
+    // SLICE 2b: what was said about the existing plan — and only what was said.
+    const existing = existingNoteLines(existingTx);
+    if (existing.length > 0) {
+      // The same section break the treatment block takes after a template.
+      if (slip.visitType) lines.push('');
+      lines.push(...existing);
+    }
+    const noteDigest = existingTxDigest('note', existingTx);
     // THE TYPED-NAME BLOCK. Her name and licence and the office's supervising
     // doctors, from backend/config/hygStaff.js — never from a component, never
     // from another office, and never with a licence number we do not have.
@@ -397,16 +589,51 @@ function composeRaw(kind, { visit, items, actor, signature, draft }) {
         // a month from now is answerable from the row rather than re-derived.
         visitType: slip.visitType ?? null,
         text: lines.join('\n'),
+        ...(noteDigest ? { existingTxDigest: noteDigest } : {}),
+        // Checkout v2: which medical-history answer these words print, so an
+        // answer changed after staging reads as out of date (existingTxStale.js).
+        ...(medical ? { medicalHistoryDigest: medicalHistoryDigest(slip) } : {}),
       },
     };
   }
 
   if (kind === 'tc-handoff') {
-    if (items.length === 0) {
+    /*
+     * REFUSE ONLY WHEN THERE IS NEITHER (feedback round 1).
+     *
+     * A handoff used to need at least one "Treatment identified today" item.
+     * But a visit can find nothing new and still leave TC real work: the
+     * patient is ready to book existing treatment, wants to see the plan again,
+     * or has cost questions about it. That visit hands off with an EXPLICITLY
+     * EMPTY treatment list and the existing-treatment answers, which the send
+     * reads as they stand (sendVisit.sendHandoff). Only a visit with no new
+     * treatment AND no TC-actionable answer has nothing to hand off.
+     */
+    /*
+     * CHECKOUT V2 FIX: SOMETHING TO PAY FOR IS NOT A CASE. A collect-at-checkout
+     * list is the front desk's business, and it reaches them on the CHECKOUT
+     * ALERT (tcHandoffClient.buildCheckoutIntake), which every Send carries. A
+     * visit with only that has nothing for a treatment coordinator to work, so
+     * it is refused here like any other empty handoff — with words that say
+     * where the list goes instead. With treatment or a TC-actionable answer,
+     * the case carries the list too (below).
+     */
+    // WHAT TC WILL RECEIVE, not what is stored: the existing items that pass the
+    // handoff schema, capped — tcHandoffClient.existingTxForTc, the send's own.
+    const carried = tcHandoff.existingTxForTc(existingTx, { quiet: true }) || [];
+    const actionable = contract.countTcActionable(carried);
+    const collect = contract.collectAtCheckoutLabels(slip.collectAtCheckout);
+    if (items.length === 0 && actionable === 0) {
       return {
         empty:
-          'There is no treatment on this visit to hand off. An empty case in a treatment ' +
-          "coordinator's queue is worse than no case.",
+          collect.length > 0
+            ? 'There is nothing on this visit for the treatment coordinator: no treatment ' +
+              'identified today, and no existing treatment the patient is ready to schedule, wants ' +
+              'to see again, or has cost questions about. What to collect at checkout goes to the ' +
+              'front desk on the checkout alert, not in a TC case.'
+            : 'There is nothing on this visit to hand off: no treatment identified today, and no ' +
+              'existing treatment the patient is ready to schedule, wants to see again, or has cost ' +
+              "questions about. An empty case in a treatment coordinator's queue is worse than no case.",
       };
     }
     // deriveCategory has already been given the answer, item by item. Asking a
@@ -415,7 +642,7 @@ function composeRaw(kind, { visit, items, actor, signature, draft }) {
     const category = contract.deriveCategory(items);
     const lines = [
       `Category: ${category}`,
-      `Treatment (${items.length}):`,
+      items.length > 0 ? `Treatment (${items.length}):` : 'Treatment identified today: none',
       ...items.map((item) => '  ' + itemLine(item)),
     ];
     const motivations = [
@@ -427,10 +654,26 @@ function composeRaw(kind, { visit, items, actor, signature, draft }) {
           motivations.map((m) => contract.MOTIVATION_LABELS[m] || m).join(', ')
       );
     }
+    /*
+     * CHECKOUT V2 — THE PREVIEW IS WHAT TC RECEIVES. It used to print a fixed
+     * line in place of the existing answers ("as they stand when it is sent"),
+     * because nothing told her if they changed. They are printed now, the
+     * Router's way (every carried item, both answers), and the staged handoff
+     * goes OUT OF DATE the moment any of this would print differently
+     * (existingTxStale.js) — so the words she confirms are the words TC gets.
+     */
+    lines.push(...existingRouterLines({ status: existingTx ? existingTx.status : 'not_loaded', items: carried }));
     lines.push(...recordsLines(items, slip.recordsStatus || {}));
+    if (collect.length > 0) {
+      lines.push('Collect at checkout:');
+      for (const label of collect) lines.push('  ' + label);
+    }
     return {
       title: 'Hygiene handoff',
-      summary: `${items.length} ${items.length === 1 ? 'item' : 'items'} to the treatment coordinator (${category})`,
+      summary:
+        items.length > 0
+          ? `${items.length} ${items.length === 1 ? 'item' : 'items'} to the treatment coordinator (${category})`
+          : 'Existing treatment to the treatment coordinator — nothing new today',
       preview: lines,
       payload: {
         kind: 'tc-handoff',
@@ -506,4 +749,10 @@ module.exports = {
   itemLine,
   slipLines,
   answerLabel,
+  // Slice 2b.
+  existingNoteLines,
+  existingRouterLines,
+  existingNoteLine,
+  existingTxDigest,
+  medicalHistoryDigest,
 };

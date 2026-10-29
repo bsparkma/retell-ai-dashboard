@@ -53,6 +53,9 @@ import {
 // re-exported: backend/hyg/contract.entry.ts exports orthoScreening.ts beside
 // this file, and exporting a name twice is an esbuild error.
 import { OrthoScreeningSchema } from "./orthoScreening";
+// Slice 2a/2b's existing treatment. Imported one direction only, NOT re-exported,
+// for the same reason: the entry exports existingTx.ts beside this file.
+import { ExistingTxDispositionSchema, ExistingTxSaveResponseSchema } from "./existingTx";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Offices
@@ -678,6 +681,82 @@ export const HygDayIdentitiesResponseSchema = z.object({
 });
 export type HygDayIdentitiesResponse = z.infer<typeof HygDayIdentitiesResponseSchema>;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/hyg/day/progress — the day cards' pill
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One step of a visit, as a day card marks it.
+ *
+ * `written` is ONLY a staged write in `Written` — read back from Open Dental (or
+ * a TC case id returned). Never inferred. `not_applicable` is perio with no
+ * chart on the visit, or TC with no treatment to hand off — the card hides it
+ * rather than drawing a step nobody owes.
+ *
+ * Derived server-side in backend/services/hyg/visitProgress.js.
+ */
+export const HygStepStateSchema = z.enum([
+  "none",
+  "drafting",
+  "ready",
+  "sending",
+  "written",
+  "failed",
+  "not_applicable",
+]);
+export type HygStepState = z.infer<typeof HygStepStateSchema>;
+
+/**
+ * The one-word summary on the card's time row.
+ *
+ * `not_started` means there is no visit row for this appointment in CareIN —
+ * it is a CLAIM the server makes. A card whose progress did not load is a
+ * different fact and never borrows these words.
+ */
+export const HygVisitOverallSchema = z.enum([
+  "not_started",
+  "in_progress",
+  "ready_to_send",
+  "sent",
+  "needs_attention",
+]);
+export type HygVisitOverall = z.infer<typeof HygVisitOverallSchema>;
+
+const HygStepSchema = z.object({ state: HygStepStateSchema });
+
+export const HygVisitProgressSchema = z.object({
+  aptNum: z.number().int().positive(),
+  overall: HygVisitOverallSchema,
+  /** Null exactly when `overall` is `not_started`: there is no visit to mark. */
+  steps: z
+    .object({
+      note: HygStepSchema,
+      slip: HygStepSchema,
+      perio: HygStepSchema,
+      tc: HygStepSchema.extend({
+        /** Front desk was alerted at checkout; the handoff has not landed yet. */
+        checkoutAlerted: z.boolean(),
+        /** The visit Send's final checkout snapshot reached the front desk. */
+        checkoutFinal: z.boolean(),
+      }),
+    })
+    .nullable(),
+});
+export type HygVisitProgress = z.infer<typeof HygVisitProgressSchema>;
+
+/**
+ * Progress for a set of the day's AptNums, in one office.
+ *
+ * NO PHI: AptNums and states. The server reads only CareIN's own hyg_* tables
+ * for it and makes no Open Dental request.
+ */
+export const HygDayProgressResponseSchema = z.object({
+  success: z.literal(true),
+  office: OfficeIdSchema,
+  progress: z.array(HygVisitProgressSchema),
+});
+export type HygDayProgressResponse = z.infer<typeof HygDayProgressResponseSchema>;
+
 /**
  * Every refusal shape /api/hyg can return.
  *
@@ -701,6 +780,7 @@ export type HygError = z.infer<typeof HygErrorSchema>;
 export const HYG_ERROR_CODES = [
   "INVALID_OFFICE",
   "INVALID_DATE",
+  "INVALID_APT_NUMS",
   "OFFICE_NOT_READY",
   "OD_READ_FAILED",
   "MODULE_NOT_ENTITLED",
@@ -764,20 +844,110 @@ export const PERIO_STAGE_LABELS: Record<PerioStage, string> = {
 export const PerioGradeSchema = z.enum(["a", "b", "c"]);
 export type PerioGrade = z.infer<typeof PerioGradeSchema>;
 
-/** What was done in the chair today. Chip ids, so no screen invents its own. */
-export const DONE_TODAY_OPTIONS = [
+/**
+ * What was done in the chair today. Chip ids, so no screen invents its own.
+ *
+ * RETIRED IS HIDDEN, NOT DELETED (feedback round 1). `polish` is no longer
+ * offered as a choice, but a slip saved before carries `"polish"` in its
+ * `doneToday`, and that slip must still render the chip as picked, print it on
+ * the Router and the note, and re-save it unchanged — the same rule the slip
+ * schema follows for old JSON. So the option stays, marked `retired`, and the
+ * form shows a retired chip ONLY on a slip that already has it.
+ */
+export const DONE_TODAY_OPTIONS: readonly { id: string; label: string; retired?: true }[] = [
   { id: "prophy", label: "Prophy" },
   { id: "srp-ur", label: "SRP UR" },
   { id: "srp-ul", label: "SRP UL" },
   { id: "srp-lr", label: "SRP LR" },
   { id: "srp-ll", label: "SRP LL" },
+  { id: "add-pmt", label: "ADD PMT" },
+  { id: "laser-ur", label: "Laser UR" },
+  { id: "laser-ul", label: "Laser UL" },
+  { id: "laser-ll", label: "Laser LL" },
+  { id: "laser-lr", label: "Laser LR" },
   { id: "fluoride", label: "Fluoride" },
   { id: "sealants", label: "Sealants" },
   { id: "irrigation", label: "Irrigation" },
-  { id: "polish", label: "Polish" },
-] as const;
+  { id: "ofi", label: "OFI" },
+  { id: "polish", label: "Polish", retired: true },
+];
+
+/** The chips the form offers on THIS slip: every live option, plus a retired one it already has. */
+export function doneTodayChoices(picked: readonly string[]): readonly { id: string; label: string; retired?: true }[] {
+  return DONE_TODAY_OPTIONS.filter((o) => !o.retired || picked.includes(o.id));
+}
 
 export const XRAY_OPTIONS = ["FMX", "PANO", "BW-4", "BW-2", "PA"] as const;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MEDICAL HISTORY + COLLECT AT CHECKOUT (checkout v2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The medical-history update, as the hygienist answered it.
+ *
+ * ONE ANSWER, NOT TWO FIELDS: "no changes" and "these changes" exclude each
+ * other, so they are one value with two shapes rather than a boolean beside a
+ * text box that could both be set. `null` on the slip means nobody answered —
+ * which prints NOTHING on the note (a reminder at Send, never a gate).
+ */
+export const MEDICAL_HISTORY_MAX = 1000;
+export const MedicalHistorySchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("no_changes") }).strict(),
+  z.object({ status: z.literal("changes"), text: z.string().min(1).max(MEDICAL_HISTORY_MAX) }).strict(),
+]);
+export type MedicalHistory = z.infer<typeof MedicalHistorySchema>;
+
+/**
+ * The note's line for the answer, or null when there is none to print.
+ * Whitespace-only changes text is no answer — it prints nothing.
+ */
+export function medicalHistoryLine(answer: MedicalHistory | null | undefined): string | null {
+  if (!answer) return null;
+  if (answer.status === "no_changes") return "Medical history: reviewed, no changes";
+  const text = answer.text.trim();
+  return text ? `Medical history update: ${text}` : null;
+}
+
+/**
+ * What the patient must pay for at the desk on the way out. A fixed set the
+ * front desk recognises, plus free text for anything else.
+ */
+export const COLLECT_AT_CHECKOUT_OPTIONS = [
+  { id: "sealant", label: "Sealant" },
+  { id: "fl2", label: "Fl2" },
+  { id: "whitening_gel", label: "Whitening gel" },
+  { id: "mouthwash", label: "Mouthwash" },
+  { id: "fl2_toothpaste", label: "Fl2 toothpaste" },
+] as const;
+export const CollectAtCheckoutIdSchema = z.enum(["sealant", "fl2", "whitening_gel", "mouthwash", "fl2_toothpaste"]);
+export type CollectAtCheckoutId = z.infer<typeof CollectAtCheckoutIdSchema>;
+export const COLLECT_OTHER_MAX = 200;
+export const CollectAtCheckoutSchema = z
+  .object({
+    items: z.array(CollectAtCheckoutIdSchema).max(COLLECT_AT_CHECKOUT_OPTIONS.length),
+    other: z.string().max(COLLECT_OTHER_MAX),
+  })
+  .strict();
+export type CollectAtCheckout = z.infer<typeof CollectAtCheckoutSchema>;
+
+export function emptyCollectAtCheckout(): CollectAtCheckout {
+  return { items: [], other: "" };
+}
+
+/**
+ * The list the front desk reads: the picked chips in the option order (not
+ * tap order, so the same answer always reads the same), then "Other" trimmed.
+ * Empty when nothing is to be collected.
+ */
+export function collectAtCheckoutLabels(c: CollectAtCheckout | null | undefined): string[] {
+  if (!c) return [];
+  const picked = new Set<string>(c.items);
+  const out: string[] = COLLECT_AT_CHECKOUT_OPTIONS.filter((o) => picked.has(o.id)).map((o) => o.label);
+  const other = c.other.trim();
+  if (other) out.push(other);
+  return out;
+}
 
 /**
  * The next hygiene visit the front desk should book.
@@ -899,6 +1069,15 @@ export const HygSlipSchema = z
     // TC was sent is the sheet this visit shows — a client cannot edit it after
     // the fact by sending a whole slip.
     orthoScreening: OrthoScreeningSchema.nullable().default(null),
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CHECKOUT V2 — defaulted for the same load-bearing reason as above
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** The medical-history update. `null` = not answered; the note prints no line. */
+    medicalHistory: MedicalHistorySchema.nullable().default(null),
+    /** What to take payment for at the desk. Rides the checkout alert and the TC handoff. */
+    collectAtCheckout: CollectAtCheckoutSchema.default({ items: [], other: "" }),
   })
   .strict();
 export type HygSlip = z.infer<typeof HygSlipSchema>;
@@ -933,6 +1112,8 @@ export function emptySlip(): HygSlip {
     rtc: "",
     perioChartUpdated: null,
     orthoScreening: null,
+    medicalHistory: null,
+    collectAtCheckout: emptyCollectAtCheckout(),
   };
 }
 
@@ -1043,8 +1224,51 @@ export const StagedWriteSchema = z.object({
   sentBy: z.string().nullable(),
   sentAt: z.string().nullable(),
   updatedAt: z.string(),
+  /**
+   * The stored words no longer say what was answered about the existing
+   * treatment: an answer was saved after this was staged. COMPUTED BY THE
+   * SERVER on every visit response (backend/services/hyg/existingTxStale.js),
+   * with the same digest the Send refuses on — never inferred by the client.
+   * Optional so a response from before the field still parses; absent reads as
+   * "not known to be out of date", which is what such a server could say.
+   */
+  existingTxStale: z.boolean().optional(),
+  /**
+   * WHY it is out of date (checkout v2). The flag above predates the other
+   * reasons and keeps its name so no reader has to change: it is now true for
+   * ANY of them, and this says which —
+   *   existing_tx      an existing-treatment answer changed (note, slip, handoff)
+   *   medical_history  the medical-history answer changed (note only)
+   *   handoff          what TC would receive changed: the items, the records,
+   *                    the existing answers or the collect-at-checkout list
+   * Absent whenever the flag is false, and from a server that predates it.
+   */
+  staleReason: z.enum(["existing_tx", "medical_history", "handoff"]).optional(),
 });
 export type StagedWrite = z.infer<typeof StagedWriteSchema>;
+export type StaleReason = NonNullable<StagedWrite["staleReason"]>;
+
+/**
+ * PUT …/existing-tx/:procNum, as this page reads it: the stored row, plus the
+ * visit's staged writes read back AFTER the save — so a note staged before the
+ * answer shows "Out of date" the moment the save succeeds.
+ */
+export const ExistingTxSaveViewSchema = ExistingTxSaveResponseSchema.extend({
+  stagedWrites: z.array(StagedWriteSchema),
+});
+export type ExistingTxSaveView = z.infer<typeof ExistingTxSaveViewSchema>;
+
+/** PUT …/existing-tx — the bulk answer: every stored row, and the staged writes after it. */
+export const ExistingTxBatchResponseSchema = z.object({
+  success: z.literal(true),
+  office: OfficeIdSchema,
+  aptNum: z.number().int().positive(),
+  items: z.array(
+    z.object({ procNum: z.number().int().positive(), disposition: ExistingTxDispositionSchema }),
+  ),
+  stagedWrites: z.array(StagedWriteSchema),
+});
+export type ExistingTxBatchResponse = z.infer<typeof ExistingTxBatchResponseSchema>;
 
 /**
  * The ortho screening's TC send, once it landed (item 33).
@@ -1353,5 +1577,9 @@ export const HYG_VISIT_ERROR_CODES = [
   "REFERRAL_LOCKED",
   "REFERRAL_STORAGE_UNAVAILABLE",
   "REFERRAL_TRANSITION_NOT_ALLOWED",
+  // Slice 2a: existing treatment dispositions.
+  "INVALID_PROC_NUM",
+  "PROC_NOT_IN_PLAN",
+  "EXISTING_TX_FROZEN",
 ] as const;
 export type HygVisitErrorCode = (typeof HYG_VISIT_ERROR_CODES)[number];

@@ -9,6 +9,13 @@
  */
 
 import type { AgentConfig } from "@/pages/AgentBuilder";
+import {
+  HygStaffListSchema,
+  HygStaffSchema,
+  type HygStaff,
+  type HygStaffInput,
+  type HygStaffList,
+} from "@shared/hyg/staff";
 
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:5000/api";
 const DASHBOARD_TOKEN = (import.meta.env.VITE_DASHBOARD_API_TOKEN ?? "").trim();
@@ -2017,6 +2024,45 @@ export const api = {
       body: JSON.stringify(patch),
     });
     return data.user;
+  },
+
+  // --- Practice staff (hygienists), /api/platform/hyg-staff -----------------
+  // The Users page's gate (admin.all), not the console's. The office is always
+  // the page's OFFICE CONTEXT, sent as ?office=; nothing typed names one. Every
+  // answer is parsed, so a write is shown as saved only once the server has
+  // sent the row back as read.
+
+  async listHygStaff(office: string): Promise<HygStaffList> {
+    const raw = await request<unknown>("/platform/hyg-staff", { params: { office } });
+    return HygStaffListSchema.parse(raw);
+  },
+
+  async createHygStaff(office: string, input: HygStaffInput): Promise<HygStaff> {
+    const raw = await request<{ staff: unknown }>("/platform/hyg-staff", {
+      method: "POST",
+      params: { office },
+      body: JSON.stringify(input),
+    });
+    return HygStaffSchema.parse(raw.staff);
+  },
+
+  async updateHygStaff(office: string, id: string, input: HygStaffInput): Promise<HygStaff> {
+    const raw = await request<{ staff: unknown }>(`/platform/hyg-staff/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      params: { office },
+      body: JSON.stringify(input),
+    });
+    return HygStaffSchema.parse(raw.staff);
+  },
+
+  /** Deactivate or reactivate. There is no delete. */
+  async setHygStaffActive(office: string, id: string, active: boolean): Promise<HygStaff> {
+    const verb = active ? "reactivate" : "deactivate";
+    const raw = await request<{ staff: unknown }>(`/platform/hyg-staff/${encodeURIComponent(id)}/${verb}`, {
+      method: "POST",
+      params: { office },
+    });
+    return HygStaffSchema.parse(raw.staff);
   },
 
   // --- platform console (PR C, /api/platform) -------------------------------

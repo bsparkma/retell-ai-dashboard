@@ -36,6 +36,7 @@ import {
   HandoffCategorySchema,
   HygAppointmentSchema,
   HygDayIdentitiesResponseSchema,
+  HygDayProgressResponseSchema,
   HygDayResponseSchema,
   HygCheckoutAlertResponseSchema,
   HygOrthoSendResponseSchema,
@@ -43,6 +44,7 @@ import {
   HygVisitSchema,
   OfficeIdSchema,
   type HygDayIdentitiesResponse,
+  type HygDayProgressResponse,
   type HygDayResponse,
   type HygCheckoutAlertResponse,
   type HygOrthoSendResponse,
@@ -65,6 +67,18 @@ import {
   type HygPerioSendResponse,
   type PerioSendRequest,
 } from "@shared/hyg/perioSend";
+import {
+  ExistingTxResponseSchema,
+  type ExistingTxBatchEntry,
+  type ExistingTxDispositionInput,
+  type ExistingTxResponse,
+} from "@shared/hyg/existingTx";
+import {
+  ExistingTxBatchResponseSchema,
+  ExistingTxSaveViewSchema,
+  type ExistingTxBatchResponse,
+  type ExistingTxSaveView,
+} from "@shared/hyg/contract";
 
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:5000/api";
 
@@ -310,6 +324,38 @@ export async function fetchDayIdentities(
       if (!parsed.success) {
         throw new HygApiError(
           "CareIN returned patient names this page could not read",
+          0,
+          "CONTRACT_MISMATCH",
+          { issues: parsed.error.issues.slice(0, 5) },
+        );
+      }
+      return parsed.data;
+    },
+    signal,
+  );
+}
+
+/**
+ * Which visits on the day are done — the day cards' pill.
+ *
+ * Sends the day's own AptNums; the server answers with states only (no PatNum,
+ * no name) from CareIN's own tables and makes no Open Dental request. A failure
+ * here is the CARD's problem, never the day's: the caller draws "Progress
+ * unavailable", and the schedule stays exactly where it is.
+ */
+export async function fetchDayProgress(
+  office: OfficeId,
+  aptNums: readonly number[],
+  signal?: AbortSignal,
+): Promise<HygDayProgressResponse> {
+  return get(
+    "/day/progress",
+    { office, apt: aptNums.join(",") },
+    (raw) => {
+      const parsed = HygDayProgressResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new HygApiError(
+          "CareIN returned visit progress this page could not read",
           0,
           "CONTRACT_MISMATCH",
           { issues: parsed.error.issues.slice(0, 5) },
@@ -859,6 +905,97 @@ export async function retryStagedWrite(
     `/visit/${aptNum}/staged-writes/${kind}/retry`,
     { office },
     parseVisit,
+  );
+}
+
+/**
+ * Slice 2a: the patient's treatment-planned procedures, with this visit's
+ * answers. The SERVER reads Open Dental for the office and PatNum on the stored
+ * visit — nothing here names a patient. `refresh` is the Retry button: it skips
+ * the server's short cache.
+ */
+export async function fetchExistingTx(
+  office: OfficeId,
+  aptNum: number,
+  { refresh = false }: { refresh?: boolean } = {},
+  signal?: AbortSignal,
+): Promise<ExistingTxResponse> {
+  return get(
+    `/visit/${aptNum}/existing-tx`,
+    refresh ? { office, refresh: "1" } : { office },
+    (raw) => {
+      const parsed = ExistingTxResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new HygApiError(
+          "CareIN returned existing treatment this page could not read",
+          0,
+          "CONTRACT_MISMATCH",
+          { issues: parsed.error.issues.slice(0, 5) },
+        );
+      }
+      return parsed.data;
+    },
+    signal,
+  );
+}
+
+/**
+ * Slice 2a: store one procedure's answers. The response is the stored row, and
+ * the visit's staged writes read back after it — so a note staged before this
+ * answer says "Out of date" from the server's own comparison.
+ */
+export async function saveExistingTxDisposition(
+  office: OfficeId,
+  aptNum: number,
+  procNum: number,
+  input: ExistingTxDispositionInput,
+): Promise<ExistingTxSaveView> {
+  return mutate(
+    "PUT",
+    `/visit/${aptNum}/existing-tx/${procNum}`,
+    { office },
+    (raw) => {
+      const parsed = ExistingTxSaveViewSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new HygApiError(
+          "CareIN saved something this page could not read back",
+          0,
+          "CONTRACT_MISMATCH",
+          { issues: parsed.error.issues.slice(0, 5) },
+        );
+      }
+      return parsed.data;
+    },
+    input,
+  );
+}
+
+/**
+ * The "Select" bulk answer: many procedures' WHOLE dispositions, stored all or
+ * nothing by the server, with the staged writes read back after.
+ */
+export async function saveExistingTxBatch(
+  office: OfficeId,
+  aptNum: number,
+  items: ExistingTxBatchEntry[],
+): Promise<ExistingTxBatchResponse> {
+  return mutate(
+    "PUT",
+    `/visit/${aptNum}/existing-tx`,
+    { office },
+    (raw) => {
+      const parsed = ExistingTxBatchResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new HygApiError(
+          "CareIN saved something this page could not read back",
+          0,
+          "CONTRACT_MISMATCH",
+          { issues: parsed.error.issues.slice(0, 5) },
+        );
+      }
+      return parsed.data;
+    },
+    { items },
   );
 }
 

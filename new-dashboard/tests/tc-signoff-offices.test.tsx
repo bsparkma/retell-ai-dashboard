@@ -3,6 +3,10 @@
  * the sign-off page fans out across offices and honours ?office= like
  * Checkout does.
  *
+ * Sign-off-in-hub: the page is gone; these pins now hold for the Referrals
+ * hub's sign-off view (what a doctor gets at /tc/referrals), and the alert
+ * links into it.
+ *
  * Before: the nav badge counted every office in scope, but on "All offices"
  * the page asked to pick one; and the alert's ?office= was ignored.
  *
@@ -34,9 +38,15 @@ vi.mock("wouter", async (importOriginal) => {
   return {
     ...real,
     useSearch: () => state.search,
-    useLocation: () => ["/tc/referrals/signoff", (to: string) => state.navigated.push(to)],
+    useLocation: () => ["/tc/referrals", (to: string) => state.navigated.push(to)],
   };
 });
+
+// A doctor: tc.referral_signoff and nothing else.
+vi.mock("@/contexts/AuthContext", async (orig) => ({
+  ...(await orig<typeof import("@/contexts/AuthContext")>()),
+  useAuth: () => ({ status: "authenticated", user: { isSuperAdmin: false, permissions: ["tc.referral_signoff"], role: "doctor" } }),
+}));
 
 vi.mock("@/features/tc/officeScope", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/features/tc/officeScope")>();
@@ -55,7 +65,7 @@ vi.mock("@/features/tc/referrals/referralsApi", async (importOriginal) => {
   return { ...real, ...ref };
 });
 
-import TcReferralSignoff from "@/pages/tc/TcReferralSignoff";
+import TcReferralsHub from "@/pages/tc/TcReferralsHub";
 import { useSignoffWatch } from "@/features/tc/referrals/useSignoffWatch";
 import type { TcReferral } from "@shared/tc/referrals";
 
@@ -115,10 +125,10 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-describe("F5: the sign-off page fans out across offices", () => {
+describe("F5: the hub's sign-off view fans out across offices", () => {
   it("on All offices it lists every office's referrals, badged, oldest first — no 'pick an office'", async () => {
-    render(<TcReferralSignoff />);
-    const rows = await screen.findAllByTestId("tc-signoff-row");
+    render(<TcReferralsHub />);
+    const rows = await screen.findAllByTestId("tc-hub-signoff-row");
     expect(ref.listSignoffQueue).toHaveBeenCalledWith("roland");
     expect(ref.listSignoffQueue).toHaveBeenCalledWith("valley");
     expect(rows.map((r) => within(r).getByText(/Stedi/).textContent)).toEqual(["Stedi TestValley", "Test 2, Stedi"]);
@@ -126,12 +136,14 @@ describe("F5: the sign-off page fans out across offices", () => {
   });
 
   it("a referral is opened and approved in the office it was listed from", async () => {
-    render(<TcReferralSignoff />);
-    const rows = await screen.findAllByTestId("tc-signoff-row");
+    render(<TcReferralsHub />);
+    const rows = await screen.findAllByTestId("tc-hub-signoff-row");
     fireEvent.click(rows[0] as HTMLElement); // Valley's
-    await screen.findByTestId("tc-signoff-detail");
+    await screen.findByTestId("tc-hub-detail");
     expect(ref.getSignoffReferral).toHaveBeenCalledWith("valley", VALLEY_ID);
-    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
+    fireEvent.click(await screen.findByTestId("tc-hub-approve"));
+    // A doctor cannot read the auto-send policy, so Approve asks first.
+    fireEvent.click(screen.getByTestId("tc-hub-approve-confirmed"));
     await waitFor(() => expect(ref.approveReferral).toHaveBeenCalledWith("valley", VALLEY_ID));
     expect(ref.approveReferral).not.toHaveBeenCalledWith("roland", expect.anything());
   });
@@ -141,16 +153,16 @@ describe("F5: the sign-off page fans out across offices", () => {
       if (o === "valley") throw new Error("Valley is unreachable");
       return [referral()];
     });
-    render(<TcReferralSignoff />);
-    const rows = await screen.findAllByTestId("tc-signoff-row");
+    render(<TcReferralsHub />);
+    const rows = await screen.findAllByTestId("tc-hub-signoff-row");
     expect(rows).toHaveLength(1);
     expect(await screen.findByText(/Showing partial data/)).toBeTruthy();
   });
 
   it("one office in scope: one fetch, no badges", async () => {
     state.scope = { offices: ["roland"], loading: false, showOfficeBadges: false };
-    render(<TcReferralSignoff />);
-    const rows = await screen.findAllByTestId("tc-signoff-row");
+    render(<TcReferralsHub />);
+    const rows = await screen.findAllByTestId("tc-hub-signoff-row");
     expect(ref.listSignoffQueue).toHaveBeenCalledTimes(1);
     expect(within(rows[0] as HTMLElement).queryByTestId("office-badge")).toBeNull();
   });
@@ -159,21 +171,21 @@ describe("F5: the sign-off page fans out across offices", () => {
 describe("F5: ?office= is honoured, like Checkout", () => {
   it("?office=valley&referral=<id> opens that referral in Valley", async () => {
     state.search = `office=valley&referral=${VALLEY_ID}`;
-    render(<TcReferralSignoff />);
-    await screen.findByTestId("tc-signoff-detail");
+    render(<TcReferralsHub />);
+    await screen.findByTestId("tc-hub-detail");
     expect(ref.getSignoffReferral).toHaveBeenCalledWith("valley", VALLEY_ID);
   });
 
   it("an office outside the scope is ignored — nothing is opened", async () => {
     state.scope = { offices: ["roland"], loading: false, showOfficeBadges: false };
     state.search = `office=valley&referral=${VALLEY_ID}`;
-    render(<TcReferralSignoff />);
-    await screen.findAllByTestId("tc-signoff-row");
+    render(<TcReferralsHub />);
+    await screen.findAllByTestId("tc-hub-signoff-row");
     expect(ref.getSignoffReferral).not.toHaveBeenCalled();
-    expect(screen.queryByTestId("tc-signoff-detail")).toBeNull();
+    expect(screen.queryByTestId("tc-hub-detail")).toBeNull();
   });
 
-  it("the sign-off alert links to the referral it announces", async () => {
+  it("the sign-off alert links to the referral it announces, in the hub's sign-off view", async () => {
     const summary = (newest: { referralId: string; patientName: string; at: string } | null) => ({
       success: true as const,
       office: "valley" as const,
@@ -193,6 +205,6 @@ describe("F5: ?office= is honoured, like Checkout", () => {
     await waitFor(() => expect(toastMock).toHaveBeenCalledTimes(1));
     const opts = toastMock.mock.calls[0]?.[1] as { action: { onClick: () => void } };
     opts.action.onClick();
-    expect(state.navigated).toEqual([`/tc/referrals/signoff?office=valley&referral=${VALLEY_ID}`]);
+    expect(state.navigated).toEqual([`/tc/referrals?view=signoff&office=valley&referral=${VALLEY_ID}`]);
   });
 });

@@ -42,6 +42,7 @@ import {
   CreditCard,
   LibraryBig,
   Users,
+  IdCard,
   Loader2,
   AlertTriangle,
   Receipt,
@@ -51,7 +52,6 @@ import {
   EyeOff,
   MessageSquare,
   DoorOpen,
-  Stamp,
   Forward,
 } from "lucide-react";
 import { api, isRateLimited } from "@/lib/api";
@@ -128,6 +128,8 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
         // Tenant user management. Sits under /admin so it inherits admin.all
         // from ROUTE_PERMISSIONS' prefix match — one place decides.
         { path: "/admin/users", label: "Users", icon: Users },
+        // The hygienists whose names and licences print on a note. Same gate.
+        { path: "/admin/staff", label: "Practice staff", icon: IdCard },
       ],
     },
   ],
@@ -201,14 +203,12 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
         // Item 50. Shown only while checkout is switched on for an office in
         // scope (see `checkout.enabled` below), with a waiting-count badge.
         { path: "/tc/checkout", label: "Checkout", icon: DoorOpen },
-        // Item 53. Gated on tc.referral_signoff (doctor + admin) through
-        // ROUTE_PERMISSIONS, and shown only while referrals is on for an office
-        // in scope (see `signoff.enabled` below), with a waiting-count badge.
-        // For a `doctor` it is the whole TC nav.
-        { path: "/tc/referrals/signoff", label: "Awaiting sign-off", icon: Stamp },
-        // Item 56: the Referrals hub. tc.full through ROUTE_PERMISSIONS ("/tc"),
-        // so a `doctor` never sees it; shown only while referrals is on for an
-        // office in scope (see `referralsOn` below).
+        // Item 56: the Referrals hub. tc.full OR tc.referral_signoff through
+        // ROUTE_PERMISSIONS — sign-off lives in the hub now, so for a `doctor`
+        // this is the whole TC nav and opens on the sign-off view. Shown only
+        // while referrals is on for an office in scope (`referralsOn` for
+        // tc.full, `signoff.enabled` for a signer), carrying the sign-off
+        // waiting-count badge for a signer (item 53).
         { path: "/tc/referrals", label: "Referrals", icon: Forward },
         { path: "/tc/preauth", label: "Pre-Auth", icon: ShieldCheck },
       ],
@@ -471,9 +471,10 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const checkout = useCheckoutWatch(watchScopeFor("tc.full"));
 
   /**
-   * Item 53: the "Awaiting sign-off" badge and alert, on its OWN action: a
-   * doctor holds tc.referral_signoff and not tc.full, so the tc.full scope
-   * would leave them with nothing. F4: on any route, like Checkout.
+   * Item 53: the sign-off waiting-count badge (on the Referrals item) and the
+   * alert, on their OWN action: a doctor holds tc.referral_signoff and not
+   * tc.full, so the tc.full scope would leave them with nothing. F4: on any
+   * route, like Checkout.
    */
   const signoffInScope = watchScopeFor("tc.referral_signoff");
   const signoff = useSignoffWatch(signoffInScope, can(permissionsForTexts, "tc.full"));
@@ -522,9 +523,8 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
       )
       // Checkout ships dark per office: no office on ⇒ no nav item.
       .map((g) => ({ ...g, items: g.items.filter((i) => i.path !== "/tc/checkout" || checkout.enabled) }))
-      // Referrals ships dark per office too: no office on ⇒ no sign-off item.
-      .map((g) => ({ ...g, items: g.items.filter((i) => i.path !== "/tc/referrals/signoff" || signoff.enabled) }))
-      .map((g) => ({ ...g, items: g.items.filter((i) => i.path !== "/tc/referrals" || referralsOn) }))
+      // Referrals ships dark per office too: no office on ⇒ no Referrals item.
+      .map((g) => ({ ...g, items: g.items.filter((i) => i.path !== "/tc/referrals" || referralsOn || signoff.enabled) }))
       .filter((g) => g.items.length > 0),
     ...(isSuperAdmin ? [PLATFORM_GROUP] : []),
   ];
@@ -750,7 +750,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                           {checkout.waiting > 99 ? "99+" : checkout.waiting}
                         </span>
                       )}
-                      {path === "/tc/referrals/signoff" && signoff.waiting > 0 && (
+                      {path === "/tc/referrals" && signoff.waiting > 0 && (
                         <span
                           className="rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none"
                           style={{ backgroundColor: "oklch(0.62 0.15 186)", color: "oklch(0.15 0.02 250)" }}

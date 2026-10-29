@@ -228,7 +228,9 @@ describe("4: HubCard shows the responses without opening the drawer", () => {
     render(
       <HubCard
         referral={referral({
-          status: "acknowledged",
+          // Past "acknowledged" (on an acknowledged card the age line already
+          // says so, and "Received" is not repeated — sign-off-in-hub fold-in).
+          status: "patient_seen",
           received: { at: "2026-10-21T15:00:00.000Z", via: "link" },
           scheduledDate: "2026-11-03",
           patientEmail: { status: "skipped", note: "Patient not emailed: the patient has no email on file in Open Dental.", at: "x" },

@@ -5,7 +5,10 @@
  */
 import {
   REFERRAL_LINK_ACTORS,
+  TC_REFERRAL_CHART_MILESTONE_LABELS,
   TC_REFERRAL_STATUS_LABELS,
+  referralCorrespondenceLabel,
+  type TcReferralChartNoteRecord,
   type TcReferralEvent,
   type TcReferralEventVerb,
 } from "@shared/tc/referrals";
@@ -33,7 +36,18 @@ export const REFERRAL_EVENT_LABELS: Record<TcReferralEventVerb, string> = {
   patient_email_sent: "Patient emailed",
   patient_email_skipped: "Patient not emailed",
   patient_email_failed: "Patient email not sent",
+  // R6.9: the line names which way, with whom and how (referralCorrespondenceLabel);
+  // this is only the fallback for a row missing those.
+  correspondence: "Correspondence",
+  // R6.10: the line names the milestone and the commlog (referralChartNoteLabel);
+  // this is only the fallback for a row missing those.
+  chart_note_written: "Chart note written to Open Dental",
 };
+
+/** R6.10: "Chart note written: Referral sent (Open Dental note 51234)". Pure. */
+export function referralChartNoteLabel(c: TcReferralChartNoteRecord): string {
+  return `Chart note written: ${TC_REFERRAL_CHART_MILESTONE_LABELS[c.milestone]} (Open Dental note ${c.commLogNum})`;
+}
 
 /** R5b: the same move, when the specialist's link made it rather than a person. */
 export const REFERRAL_ACKNOWLEDGED_BY_LINK_LABEL = "Specialist confirmed receipt (from the email link)";
@@ -43,6 +57,9 @@ export function referralEventLabel(e: TcReferralEvent): string {
   if (e.verb === "mark_acknowledged" && e.actor === REFERRAL_LINK_ACTORS.specialist) {
     return REFERRAL_ACKNOWLEDGED_BY_LINK_LABEL;
   }
+  // R6.9: "Phone call from specialist's office".
+  if (e.verb === "correspondence" && e.correspondence) return referralCorrespondenceLabel(e.correspondence);
+  if (e.verb === "chart_note_written" && e.chartNote) return referralChartNoteLabel(e.chartNote);
   if (e.verb) return REFERRAL_EVENT_LABELS[e.verb];
   return TC_REFERRAL_STATUS_LABELS[e.toStatus];
 }

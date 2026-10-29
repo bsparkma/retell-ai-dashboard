@@ -127,7 +127,7 @@ test('@carein.ai user with NO app_user row but careindent tid → mapped to care
   const mw = tenantContext();
   const req = {
     path: '/calls',
-    user: { email: 'Beau@carein.ai', tenantId: CAREIN_FALLBACK.entraTenantId },
+    user: { email: 'Drew.Example@carein.ai', tenantId: CAREIN_FALLBACK.entraTenantId },
   };
   const res = makeRes();
   const next = makeNext();

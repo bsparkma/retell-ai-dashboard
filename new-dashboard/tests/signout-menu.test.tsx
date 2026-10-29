@@ -23,8 +23,8 @@ vi.mock("@/lib/auth", async (importOriginal) => {
   return {
     ...real,
     fetchCurrentUser: vi.fn(async () => ({
-      name: "Beau Sparkman",
-      email: "beau@carein.ai",
+      name: "Drew Example",
+      email: "drew.example@carein.ai",
       tenantId: "tenant-1",
       tenant: { slug: "carein", displayName: "CareIN Dental", modules: ["voice", "tc"] },
     })),
@@ -88,7 +88,7 @@ describe("/home header account menu", () => {
 
     fireEvent.click(screen.getByTestId("home-user-chip"));
     await waitFor(() => {
-      expect(screen.getByTestId("home-user-email").textContent).toBe("beau@carein.ai");
+      expect(screen.getByTestId("home-user-email").textContent).toBe("drew.example@carein.ai");
     });
 
     fireEvent.click(screen.getByTestId("home-signout"));
@@ -111,7 +111,7 @@ describe("sidebar footer account menu", () => {
 
     fireEvent.click(screen.getByTestId("sidebar-user-chip"));
     await waitFor(() => {
-      expect(screen.getByTestId("sidebar-user-email").textContent).toBe("beau@carein.ai");
+      expect(screen.getByTestId("sidebar-user-email").textContent).toBe("drew.example@carein.ai");
     });
 
     fireEvent.click(screen.getByTestId("sidebar-signout"));

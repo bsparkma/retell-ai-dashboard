@@ -41,8 +41,8 @@ vi.mock("@/lib/auth", async (importOriginal) => {
   return {
     ...real,
     fetchCurrentUser: vi.fn(async () => ({
-      name: "Beau Sparkman",
-      email: "beau@carein.ai",
+      name: "Drew Example",
+      email: "drew.example@carein.ai",
       tenantId: "tenant-1",
       tenant: { slug: "carein", displayName: "CareIN Dental", modules: authState.modules },
       // Roles PR B: an admin, so the role-scoped nav/redirects behave as they

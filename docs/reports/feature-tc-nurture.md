@@ -240,7 +240,7 @@ whole current enum is pinned by the newest migration's test.
    so a later copy edit can't bring UCS-2 back. Email copy keeps its em dashes. The test checks template
    copy only. A patient's first name with an accent outside the set (rare) would still make that one text
    UCS-2; that comes from the case record and is not something the copy can control.
-2. **lc3's sign-off** ("Dr. Beau Sparkman") goes out from both offices, as approved.
+2. **lc3's sign-off** (the practice owner's name, as approved) goes out from both offices.
 3. **No settings screen** for the dial in this slice (per item 45's precedent). Set it via the API.
 4. **Single replica.** The generator's re-entrancy guard is in-process, same as the opportunities sync. The
    per-enrollment claim means a doubled pass would still write no duplicate draft.

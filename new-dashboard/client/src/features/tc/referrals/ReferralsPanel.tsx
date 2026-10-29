@@ -16,6 +16,7 @@
  * the sidebar reads the same as before).
  */
 import { useCallback, useEffect, useState } from "react";
+import { teethText } from "@shared/hyg/teeth";
 import { toast } from "sonner";
 import { Loader2, Paperclip, Plus, Send } from "lucide-react";
 
@@ -57,6 +58,7 @@ import {
   TcReferralInput,
   TcReferralUrgency,
   referralChipTop,
+  referralLastContactLine,
   referralResponseBadges,
   referralReturnedLine,
   type TcReferral,
@@ -143,10 +145,10 @@ export function ReferralStatusBadge({ status }: { status: TcReferralStatus }) {
   );
 }
 
-/** "#3, #14" / "Whole mouth" / "" */
+/** "#3, #14" / "B, I" (primary) / "Whole mouth" / "" */
 export function teethLabel(t: TcReferralTeeth): string {
   if (t === "mouth") return "Whole mouth";
-  return t.length ? `#${t.join(", #")}` : "";
+  return t.length ? teethText(t) : "";
 }
 
 // ── Attachments (item 55) ───────────────────────────────────────────────────
@@ -666,6 +668,12 @@ export function ReferralsPanel({ office, source, compact = false }: ReferralsPan
           {referralResponseBadges(r).patientEmail && (
             <p className="text-xs text-muted-foreground" data-testid="referral-response-patient-email">
               {referralResponseBadges(r).patientEmail}
+            </p>
+          )}
+          {/* R6.9: the latest contact staff logged, muted. */}
+          {referralLastContactLine(r.lastCorrespondence) && (
+            <p className="text-xs text-muted-foreground" title={r.lastCorrespondence?.note} data-testid="referral-last-contact">
+              {referralLastContactLine(r.lastCorrespondence)}
             </p>
           )}
           <p className="text-sm text-foreground">{r.reason}</p>

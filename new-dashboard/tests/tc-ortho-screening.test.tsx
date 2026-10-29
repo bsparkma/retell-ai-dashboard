@@ -70,7 +70,7 @@ function intake(orthoScreening: OrthoScreening | null): TcHygieneIntake {
   return {
     submittedBy: "hygienist@carein.ai",
     submittedByName: "Hyg User",
-    hygienistName: "Raegan",
+    hygienistName: "Avery",
     submittedAt: "2026-09-08T14:42:00.000Z",
     operatory: "Hygiene 1",
     visitDate: "2026-09-08",
@@ -177,7 +177,7 @@ describe("8: the TC case detail", () => {
     expect(within(section).getByTestId("tc-ortho-note").textContent).toMatch(
       /Parent asked about cost before school starts\./,
     );
-    expect(section.textContent).toMatch(/From hygiene · Raegan/);
+    expect(section.textContent).toMatch(/From hygiene · Avery/);
     // The working tabs are untouched.
     expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(TABS);
   });

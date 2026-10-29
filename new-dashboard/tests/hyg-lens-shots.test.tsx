@@ -16,7 +16,7 @@
  *
  * 01 is the one that matters. It has to show BOTH that the lens is hiding
  * something (and says how much) and that the hygiene appointment parked in Dr
- * Farmer's chair is still on screen — the case the lazy filter loses.
+ * Dr Quinn's chair is still on screen — the case the lazy filter loses.
  *
  * NO NETWORK, NO BACKEND, NO PHI. Every name is synthetic.
  *
@@ -86,7 +86,7 @@ function appt(over: Partial<HygAppointment> = {}): HygAppointment {
     opIsHygiene: true,
     provNum: 1,
     provHyg: 7,
-    providerName: "Raegan",
+    providerName: "Avery",
     apptTypeLabel: "Prophy Adult",
     confirmedStatus: "Confirmed",
     aptStatus: "Scheduled",
@@ -103,7 +103,7 @@ const HYGIENE: HygAppointment[] = [
     patNum: 12828,
     patientName: "Papaya, Jo",
     start: "2026-09-08 09:00:00",
-    providerName: "Raegan",
+    providerName: "Avery",
     apptTypeLabel: "Perio maintenance",
     flags: flags({ xraysDue: true }),
   }),
@@ -114,7 +114,7 @@ const HYGIENE: HygAppointment[] = [
     patientName: "Mango, Lee",
     start: "2026-09-08 10:30:00",
     opNum: 5,
-    opName: "Dr Farmer",
+    opName: "Dr Quinn",
     isHygiene: true,
     opIsHygiene: false,
     providerName: "Casey",
@@ -138,10 +138,10 @@ const DOCTORS: HygAppointment[] = [
     patientName: "Guava, Alex",
     start: "2026-09-08 11:00:00",
     opNum: 5,
-    opName: "Dr Farmer",
+    opName: "Dr Quinn",
     isHygiene: false,
     opIsHygiene: false,
-    providerName: "Dr Farmer",
+    providerName: "Dr Quinn",
     apptTypeLabel: "Crown seat",
   }),
   appt({
@@ -166,7 +166,7 @@ function day(over: Partial<HygDayResponse> = {}): HygDayResponse {
     date: "2026-09-08",
     operatories: [
       { opNum: 2, name: "Hygiene 1", abbrev: "HY1", isHygiene: true, itemOrder: 1 },
-      { opNum: 5, name: "Dr Farmer", abbrev: "DR1", isHygiene: false, itemOrder: 2 },
+      { opNum: 5, name: "Dr Quinn", abbrev: "DR1", isHygiene: false, itemOrder: 2 },
       { opNum: 6, name: "Dr Reed", abbrev: "DR2", isHygiene: false, itemOrder: 3 },
     ],
     appointments: HYGIENE,
