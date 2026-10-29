@@ -45,10 +45,55 @@ write was added, no schema changed, and the payload shape is the same.
   `onDemandTranscription.test.js`, each failing as a whole file in the parallel run, and
   all three pass on their own. That matches the known Node 22 runner flake.
 
-## Already-written notes
+## Reconciliation against prod: PENDING, do not merge until filled in
 
-This fix does not touch notes already in a chart. Note 360339 is still dated 10/23. It
-has to be corrected in Open Dental by hand. This PR does not edit commlogs.
+A PM check found that the diagnosis has to account for **two** notes on roland fixture
+12827, not one:
+
+- 360339 ("Patient scheduled with …"), shown in OD under **10/23**.
+- A "Referral sent to …" note, shown under **10/24**. Every sent-related event the PM
+  listed is 10/23 afternoon Central, and no single timezone could put that on 10/24.
+
+How the code could explain it: the `sent` milestone takes the **latest** `send`/`mark_sent`
+event on **its own** referral (`shared/tc/referrals.ts` `CHART_MILESTONE_EVENTS`). The
+second note names a different specialist and reason, which suggests it belongs to a
+different referral, or a later send, whose event fell on 10/24 Central.
+
+**Predictions** (falsifiable, to the second):
+
+| Note | Predicted CommDateTime | Predicted source event |
+| --- | --- | --- |
+| 360339 | `2026-10-23 14:50:14` | `patient_scheduled` on its referral |
+| the sent note | its own referral's latest send/mark_sent, Central | a `send`/`mark_sent` dated 10/24 Central, on a different referral (or a later send) |
+
+Probes, committed in plain text and **not yet run**:
+
+- `backend/scripts/probe-referral-commlog-dates.js` makes one `GET /commlogs` on the
+  fixture and prints CommlogNum, CommDateTime, DateTStamp and the first 70 characters.
+- `backend/scripts/probe-referral-commlog-dates.sql` runs one SELECT inside a `READ ONLY`
+  transaction over the fixture's referral history, with `at_central`.
+
+**Result:** _to be filled in from the two outputs. If either note does not match its own
+event, the diagnosis is wrong and work stops here._
+
+## Behaviour after the fix
+
+Every future referral chart note is dated at the moment it is written (`transitions.clock()`),
+as the office's wall clock. This route is the only thing that writes referral chart
+notes, and `tcReferralChartNotes.test.js` fails the build if anything else requires the
+writer. The milestone date no longer reaches `CommDateTime` by any path.
+
+## Already-written notes (fixture patient only)
+
+Both mis-dated notes are on the roland fixture **12827**. No real patient is affected,
+because the feature reached prod in train #289 on 10/29 and these were the smoke-test
+writes. Correcting them is optional (it only tidies the fixture chart) and has to be done
+by hand in Open Dental. No script in this PR changes or removes Open Dental data.
+
+| CommlogNum | Shown under | Should read |
+| --- | --- | --- |
+| 360339 | 10/23 | 10/29 (written 1:09:18 PM CT) |
+| _from the probe_ | 10/24 | 10/29 |
 
 ## Separate, not fixed here: voice notes are dated in UTC
 
