@@ -24,7 +24,9 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 import {
+  checkoutCollectKey,
   checkoutItemKey,
+  checkoutPresentKey,
   emptyCheckoutWorkup,
   type TcCheckoutHandoff,
   type TcCheckoutProcedure,
@@ -240,8 +242,8 @@ describe("the checkout workup view", () => {
             "0": { by: "tc@carein.ai", at, key: checkoutItemKey(CROWN) },
             "1": { by: "tc@carein.ai", at, key: checkoutItemKey({ ...PRIMARY, teeth: [103] }) },
           },
-          present: { ready_to_schedule: { by: "tc@carein.ai", at } },
-          collected: { by: "tc@carein.ai", at },
+          present: { ready_to_schedule: { by: "tc@carein.ai", at, key: checkoutPresentKey(handoff().snapshot.existingTx, "ready_to_schedule") } },
+          collected: { by: "tc@carein.ai", at, key: checkoutCollectKey(handoff().snapshot.collectAtCheckout) },
           referrals: null,
         },
       }),
@@ -254,6 +256,36 @@ describe("the checkout workup view", () => {
     expect(screen.getByTestId("workup-section-collect").dataset.done).toBe("true");
     expect(screen.getByTestId("workup-section-workup").dataset.done).toBe("false");
     expect(screen.getByTestId("workup-progress").textContent).toBe("1 of 4 sections done");
+  });
+
+  it("review r1: while one save is in flight EVERY box waits, so answers cannot land out of order", async () => {
+    let release: (h: TcCheckoutHandoff) => void = () => {};
+    api.setCheckoutWorkup.mockImplementationOnce(() => new Promise<TcCheckoutHandoff>((r) => { release = r; }));
+    view(handoff());
+    fireEvent.click(screen.getByTestId("workup-tick-0"));
+    await waitFor(() => expect((screen.getByTestId("workup-collected") as HTMLButtonElement).disabled).toBe(true));
+    for (const id of ["workup-tick-1", "workup-referrals", "workup-present-cost_questions"]) {
+      expect((screen.getByTestId(id) as HTMLButtonElement).disabled).toBe(true);
+    }
+    release(handoff());
+    await waitFor(() => expect((screen.getByTestId("workup-collected") as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it("review r1: a Ready-to-present or Collected tick made against a since-changed list reads as not done", () => {
+    const at = "2026-10-29T15:00:00.000Z";
+    view(
+      handoff({
+        workup: {
+          workedUp: {},
+          present: { ready_to_schedule: { by: "tc@carein.ai", at, key: "[1]" } },
+          collected: { by: "tc@carein.ai", at, key: JSON.stringify(["Fl2"]) },
+          referrals: null,
+        },
+      }),
+    );
+    expect(screen.getByTestId("workup-present-ready_to_schedule").getAttribute("data-state")).toBe("unchecked");
+    expect(screen.getByTestId("workup-collected").getAttribute("data-state")).toBe("unchecked");
+    expect(screen.getByTestId("workup-progress").textContent).toBe("0 of 4 sections done");
   });
 
   it("an answered checkout is read-only: every box disabled, the answer shown instead of the buttons", () => {
@@ -318,8 +350,11 @@ describe.skipIf(process.env.TC_SHOTS !== "1")("checkout workup screenshot dumps"
       handoff({
         workup: {
           workedUp: { "0": { by: "tc@carein.ai", at, key: checkoutItemKey(CROWN) } },
-          present: { ready_to_schedule: { by: "tc@carein.ai", at }, cost_questions: { by: "tc@carein.ai", at } },
-          collected: { by: "tc@carein.ai", at },
+          present: {
+            ready_to_schedule: { by: "tc@carein.ai", at, key: checkoutPresentKey(handoff().snapshot.existingTx, "ready_to_schedule") },
+            cost_questions: { by: "tc@carein.ai", at, key: checkoutPresentKey(handoff().snapshot.existingTx, "cost_questions") },
+          },
+          collected: { by: "tc@carein.ai", at, key: checkoutCollectKey(handoff().snapshot.collectAtCheckout) },
           referrals: null,
         },
       }),

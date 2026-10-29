@@ -15087,9 +15087,11 @@ __export(contract_entry_exports, {
   attachmentProblem: () => attachmentProblem,
   caseFromRows: () => caseFromRows,
   caseToRows: () => caseToRows,
+  checkoutCollectKey: () => checkoutCollectKey,
   checkoutItemKey: () => checkoutItemKey,
   checkoutPhaseName: () => checkoutPhaseName,
   checkoutPhaseNames: () => checkoutPhaseNames,
+  checkoutPresentKey: () => checkoutPresentKey,
   checkoutPriorityOf: () => checkoutPriorityOf,
   checkoutWorkupProgress: () => checkoutWorkupProgress,
   checkoutWorkupProgressLabel: () => checkoutWorkupProgressLabel,
@@ -17517,12 +17519,21 @@ var TC_CHECKOUT_OUTCOME_LABELS = {
   nothing_needed: "Nothing needed"
 };
 var TcCheckoutWorkupMark = import_zod7.z.object({ by: import_zod7.z.string(), at: import_zod7.z.string() }).strict();
+var TcCheckoutKeyedMark = TcCheckoutWorkupMark.extend({ key: import_zod7.z.string() });
 var TcCheckoutWorkup = import_zod7.z.object({
-  workedUp: import_zod7.z.record(import_zod7.z.string().regex(/^\d{1,3}$/), TcCheckoutWorkupMark.extend({ key: import_zod7.z.string() })).default({}),
-  present: import_zod7.z.record(import_zod7.z.string(), TcCheckoutWorkupMark).default({}),
-  collected: TcCheckoutWorkupMark.nullable().default(null),
+  workedUp: import_zod7.z.record(import_zod7.z.string().regex(/^\d{1,3}$/), TcCheckoutKeyedMark).default({}),
+  present: import_zod7.z.record(import_zod7.z.string(), TcCheckoutKeyedMark).default({}),
+  collected: TcCheckoutKeyedMark.nullable().default(null),
   referrals: TcCheckoutWorkupMark.nullable().default(null)
 }).strict();
+function checkoutPresentKey(existingTx, group) {
+  return JSON.stringify(
+    (existingTx ?? []).filter((i) => i.patient === group).map((i) => i.procNum).sort((a, b) => a - b)
+  );
+}
+function checkoutCollectKey(collect) {
+  return JSON.stringify(collect ?? []);
+}
 function emptyCheckoutWorkup() {
   return { workedUp: {}, present: {}, collected: null, referrals: null };
 }
@@ -17553,9 +17564,13 @@ function checkoutWorkupProgress(h) {
     {
       section: "present",
       applies: groups.length > 0,
-      done: groups.length > 0 && groups.every((g) => Boolean(w.present[g]))
+      done: groups.length > 0 && groups.every((g) => w.present[g]?.key === checkoutPresentKey(h.snapshot.existingTx, g))
     },
-    { section: "collect", applies: collect.length > 0, done: collect.length > 0 && w.collected !== null },
+    {
+      section: "collect",
+      applies: collect.length > 0,
+      done: collect.length > 0 && w.collected?.key === checkoutCollectKey(collect)
+    },
     { section: "referrals", applies: true, done: w.referrals !== null }
   ];
   const applying = sections.filter((s) => s.applies);
@@ -18841,9 +18856,11 @@ function odToothText(tooth) {
   attachmentProblem,
   caseFromRows,
   caseToRows,
+  checkoutCollectKey,
   checkoutItemKey,
   checkoutPhaseName,
   checkoutPhaseNames,
+  checkoutPresentKey,
   checkoutPriorityOf,
   checkoutWorkupProgress,
   checkoutWorkupProgressLabel,

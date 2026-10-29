@@ -284,8 +284,10 @@ class FakeTenantDb {
       return { rows: m[4] ? matched.map((r) => ({ ...r })) : [], rowCount: matched.length };
     }
 
-    // SELECT (single table; JOIN queries need a per-test override).
-    if ((m = text.match(/^SELECT (.+?) FROM (\w+)(?: WHERE (.+?))?(?: ORDER BY ([^)]+?))?(?: LIMIT (\d+))?$/i))) {
+    // SELECT (single table; JOIN queries need a per-test override). A trailing
+    // FOR UPDATE is accepted and is a no-op here: one process, one store, no
+    // second transaction to wait on. What it locks is a real-Postgres property.
+    if ((m = text.match(/^SELECT (.+?) FROM (\w+)(?: WHERE (.+?))?(?: ORDER BY ([^)]+?))?(?: LIMIT (\d+))?(?: FOR UPDATE)?$/i))) {
       if (/ JOIN /i.test(text)) {
         throw new Error(`FakeTenantDb: JOIN queries need an onQuery override: ${text}`);
       }

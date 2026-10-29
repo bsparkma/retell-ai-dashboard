@@ -916,9 +916,9 @@ router.delete(
  * Apply one tick to a checklist, or say why it does not apply to this
  * snapshot. Pure. `null` mark = untick.
  *
- * `was` is whether the box counted as ticked before (a STALE work-up tick does
- * not); `changed` is whether storing `workup` changes anything — re-ticking a
- * ticked box keeps the first person's mark, and unticking a stale tick clears it.
+ * `was` is whether the box counted as ticked before (a STALE tick does not);
+ * `changed` is whether storing `workup` changes anything — re-ticking a ticked
+ * box keeps the first person's mark, and unticking a stale tick clears it.
  *
  * @returns {{ workup: object, was: boolean, changed: boolean } | { refusal: [number, string, string] }}
  */
@@ -929,50 +929,79 @@ function applyWorkupTick(workup, snapshot, body, mark) {
     collected: workup.collected,
     referrals: workup.referrals,
   };
+  const box = workupBox(snapshot, body);
+  if (box.refusal) return box;
+  if (!box.keyed) {
+    const was = next.referrals !== null;
+    if (was !== Boolean(mark)) next.referrals = mark;
+    return { workup: next, was, changed: was !== Boolean(mark) };
+  }
+  const prior = box.get(next);
+  const was = Boolean(prior) && prior.key === box.key;
+  if (mark && !was) box.set(next, { ...mark, key: box.key });
+  if (!mark) box.set(next, null);
+  return { workup: next, was, changed: mark ? !was : Boolean(prior) };
+}
+
+/**
+ * One box of the checklist for this snapshot: where its mark lives and the key
+ * a CURRENT mark carries (what it was ticked against), or the named refusal
+ * when the snapshot has no such box. Referrals is the one unkeyed box.
+ */
+function workupBox(snapshot, body) {
   const procs = snapshot && Array.isArray(snapshot.procedures) ? snapshot.procedures : [];
+  const existing = snapshot && Array.isArray(snapshot.existingTx) ? snapshot.existingTx : [];
+  const collect = snapshot && Array.isArray(snapshot.collectAtCheckout) ? snapshot.collectAtCheckout : [];
   if (body.section === 'workup') {
     const p = procs[body.index];
     if (!p) return { refusal: [404, 'That item is not on this checkout', 'ITEM_NOT_FOUND'] };
-    const key = contract.checkoutItemKey(p);
-    const prior = next.workedUp[String(body.index)];
-    const was = Boolean(prior) && prior.key === key;
-    if (mark && !was) next.workedUp[String(body.index)] = { ...mark, key };
-    if (!mark) delete next.workedUp[String(body.index)];
-    return { workup: next, was, changed: mark ? !was : Boolean(prior) };
+    const k = String(body.index);
+    return {
+      keyed: true,
+      key: contract.checkoutItemKey(p),
+      get: (w) => w.workedUp[k],
+      set: (w, m) => (m ? (w.workedUp[k] = m) : delete w.workedUp[k]),
+    };
   }
   if (body.section === 'present') {
-    const groups = new Set((snapshot && Array.isArray(snapshot.existingTx) ? snapshot.existingTx : []).map((i) => i.patient));
-    if (!groups.has(body.group)) {
+    // Only a group the snapshot actually has can become an object key.
+    if (!existing.some((i) => i.patient === body.group)) {
       return { refusal: [404, 'That group of existing treatment is not on this checkout', 'GROUP_NOT_FOUND'] };
     }
-    const was = Boolean(next.present[body.group]);
-    if (mark && !was) next.present[body.group] = mark;
-    if (!mark) delete next.present[body.group];
-    return { workup: next, was, changed: was !== Boolean(mark) };
+    return {
+      keyed: true,
+      key: contract.checkoutPresentKey(existing, body.group),
+      get: (w) => w.present[body.group],
+      set: (w, m) => (m ? (w.present[body.group] = m) : delete w.present[body.group]),
+    };
   }
   if (body.section === 'collect') {
-    const collect = snapshot && Array.isArray(snapshot.collectAtCheckout) ? snapshot.collectAtCheckout : [];
     if (collect.length === 0) return { refusal: [404, 'There is nothing to collect on this checkout', 'NOTHING_TO_COLLECT'] };
-    const was = next.collected !== null;
-    if (was !== Boolean(mark)) next.collected = mark;
-    return { workup: next, was, changed: was !== Boolean(mark) };
+    return {
+      keyed: true,
+      key: contract.checkoutCollectKey(collect),
+      get: (w) => w.collected,
+      set: (w, m) => (w.collected = m),
+    };
   }
-  const was = next.referrals !== null;
-  if (was !== Boolean(mark)) next.referrals = mark;
-  return { workup: next, was, changed: was !== Boolean(mark) };
+  return { keyed: false };
 }
 
-/** Whether the read-back checklist holds the tick the request asked for. */
+/**
+ * Whether the read-back checklist holds the tick the request asked for: a
+ * CURRENT mark for done, no mark for not-done.
+ *
+ * Conservative by design (review round 1): if another desk user flips the same
+ * box between this commit and this read, it answers WORKUP_NOT_PERSISTED and
+ * the client reloads. It can never call a tick saved that the row does not hold.
+ */
 function workupHolds(handoff, body) {
   const w = handoff.workup;
-  if (body.section === 'workup') {
-    const p = handoff.snapshot.procedures[body.index];
-    const m = w.workedUp[String(body.index)];
-    return body.done ? Boolean(m) && Boolean(p) && m.key === contract.checkoutItemKey(p) : !m;
-  }
-  if (body.section === 'present') return Boolean(w.present[body.group]) === body.done;
-  if (body.section === 'collect') return (w.collected !== null) === body.done;
-  return (w.referrals !== null) === body.done;
+  const box = workupBox(handoff.snapshot, body);
+  if (box.refusal) return false;
+  if (!box.keyed) return (w.referrals !== null) === body.done;
+  const m = box.get(w);
+  return body.done ? Boolean(m) && m.key === box.key : !m;
 }
 
 router.post(

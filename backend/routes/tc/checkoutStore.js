@@ -131,23 +131,24 @@ function workupOf(row) {
 }
 
 /**
- * Lock one handoff's row for the rest of the transaction (an UPDATE takes the
- * row lock), so two ticks on the same checkout serialize instead of one
- * read-modify-write erasing the other. False when there is no such row in
- * this office.
+ * Lock one handoff's row for the rest of the transaction (SELECT … FOR
+ * UPDATE), so two ticks on the same checkout serialize instead of one
+ * read-modify-write erasing the other. A lock, not a write: a refused or no-op
+ * tick leaves the row exactly as it was (review round 1). False when there is
+ * no such row in this office.
  */
 async function lockHandoff(q, office, handoffId) {
   const res = await q.query(
-    'UPDATE tc_checkout_handoffs SET updated_at = now() WHERE office_id = $1 AND handoff_id = $2 RETURNING handoff_id',
+    'SELECT handoff_id FROM tc_checkout_handoffs WHERE office_id = $1 AND handoff_id = $2 FOR UPDATE',
     [office, handoffId]
   );
-  return res.rowCount === 1;
+  return res.rows.length === 1;
 }
 
-/** Replace the workup checklist (call with the row locked). */
+/** Replace the workup checklist (call with the row locked). A real change, so updated_at moves. */
 async function writeWorkup(q, office, handoffId, workup) {
   const res = await q.query(
-    'UPDATE tc_checkout_handoffs SET workup = $3::jsonb WHERE office_id = $1 AND handoff_id = $2 RETURNING handoff_id',
+    'UPDATE tc_checkout_handoffs SET workup = $3::jsonb, updated_at = now() WHERE office_id = $1 AND handoff_id = $2 RETURNING handoff_id',
     [office, handoffId, JSON.stringify(workup)]
   );
   return res.rowCount === 1;

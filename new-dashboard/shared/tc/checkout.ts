@@ -261,25 +261,48 @@ export type TcCheckoutWorkupMark = z.infer<typeof TcCheckoutWorkupMark>;
  * handoff (tc_checkout_handoffs.workup, NULLABLE jsonb). A record from before
  * CO-1 has none and reads as this object with nothing ticked.
  *
- *   workedUp    per staged procedure, keyed by its index. Carries the item's
- *               checkoutItemKey at the time of the tick: a later visit Send
- *               that revises the item makes the tick STALE, and a stale tick
- *               counts as not done (the attestation rule, C2b).
+ *   workedUp    per staged procedure, keyed by its index.
  *   present     per existing-treatment group ("Ready to present").
  *   collected   the collect list as a whole.
  *   referrals   the referrals step as a whole ("handled": started, or none needed).
  *
+ * STALE TICKS. The first three each carry a `key` naming WHAT was ticked — the
+ * item's checkoutItemKey, the group's procedures, the collect list. A later
+ * visit Send that changes that thing makes the tick STALE, and a stale tick
+ * counts as not done (the attestation rule, C2b). Referrals has nothing in the
+ * snapshot to go stale against.
+ *
  * It is a desk checklist, NOT a sync: nothing here reads or writes Open Dental.
  */
+const TcCheckoutKeyedMark = TcCheckoutWorkupMark.extend({ key: z.string() });
+
 export const TcCheckoutWorkup = z
   .object({
-    workedUp: z.record(z.string().regex(/^\d{1,3}$/), TcCheckoutWorkupMark.extend({ key: z.string() })).default({}),
-    present: z.record(z.string(), TcCheckoutWorkupMark).default({}),
-    collected: TcCheckoutWorkupMark.nullable().default(null),
+    workedUp: z.record(z.string().regex(/^\d{1,3}$/), TcCheckoutKeyedMark).default({}),
+    present: z.record(z.string(), TcCheckoutKeyedMark).default({}),
+    collected: TcCheckoutKeyedMark.nullable().default(null),
     referrals: TcCheckoutWorkupMark.nullable().default(null),
   })
   .strict();
 export type TcCheckoutWorkup = z.infer<typeof TcCheckoutWorkup>;
+
+/** What a "Ready to present" tick was made against: the group's procedures. Pure. */
+export function checkoutPresentKey(
+  existingTx: readonly { procNum: number; patient: string }[] | undefined,
+  group: string,
+): string {
+  return JSON.stringify(
+    (existingTx ?? [])
+      .filter((i) => i.patient === group)
+      .map((i) => i.procNum)
+      .sort((a, b) => a - b),
+  );
+}
+
+/** What a "Collected" tick was made against: the collect list. Pure. */
+export function checkoutCollectKey(collect: readonly string[] | undefined): string {
+  return JSON.stringify(collect ?? []);
+}
 
 /** The checklist with nothing ticked — what every pre-CO-1 record reads as. */
 export function emptyCheckoutWorkup(): TcCheckoutWorkup {
@@ -341,9 +364,13 @@ export function checkoutWorkupProgress(h: WorkupProgressInput): {
     {
       section: "present" as const,
       applies: groups.length > 0,
-      done: groups.length > 0 && groups.every((g) => Boolean(w.present[g])),
+      done: groups.length > 0 && groups.every((g) => w.present[g]?.key === checkoutPresentKey(h.snapshot.existingTx, g)),
     },
-    { section: "collect" as const, applies: collect.length > 0, done: collect.length > 0 && w.collected !== null },
+    {
+      section: "collect" as const,
+      applies: collect.length > 0,
+      done: collect.length > 0 && w.collected?.key === checkoutCollectKey(collect),
+    },
     { section: "referrals" as const, applies: true, done: w.referrals !== null },
   ];
   const applying = sections.filter((s) => s.applies);

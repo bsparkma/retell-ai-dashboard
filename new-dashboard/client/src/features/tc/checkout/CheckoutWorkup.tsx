@@ -40,7 +40,9 @@ import {
   TC_CHECKOUT_STATUS_LABELS,
   TC_CHECKOUT_WAITING,
   TC_CHECKOUT_WORKUP_SECTION_LABELS,
+  checkoutCollectKey,
   checkoutItemKey,
+  checkoutPresentKey,
   checkoutWorkupProgress,
   checkoutWorkupProgressLabel,
   type TcCheckoutHandoff,
@@ -161,6 +163,11 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
     return { applies: found?.applies ?? false, done: found?.done ?? false };
   };
 
+  // ONE save at a time (review round 1): every box waits while any tick is in
+  // flight, so two answers can never land out of order and the older
+  // read-back overwrite the newer one on screen.
+  const locked = !editable || saving.size > 0;
+
   const tick = async (key: string, body: TcCheckoutWorkupRequest) => {
     setSaving((prev) => new Set(prev).add(key));
     try {
@@ -278,7 +285,7 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
                           label={`Worked up: ${workupLine(p)}`}
                           hideLabel
                           checked={current}
-                          disabled={!editable || saving.has(key)}
+                          disabled={locked}
                           onChange={(done) => void tick(key, { section: "workup", index: i, done })}
                         />
                         {stale && (
@@ -336,8 +343,8 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
               <Tick
                 id={`workup-present-${group}`}
                 label={`Ready to present: ${EXISTING_TX_PATIENT_LABELS[group]}`}
-                checked={Boolean(handoff.workup.present[group])}
-                disabled={!editable || saving.has(`present:${group}`)}
+                checked={handoff.workup.present[group]?.key === checkoutPresentKey(snap.existingTx, group)}
+                disabled={locked}
                 onChange={(done) => void tick(`present:${group}`, { section: "present", group, done })}
               />
             )}
@@ -355,8 +362,8 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
             <Tick
               id="workup-collected"
               label="Collected"
-              checked={handoff.workup.collected !== null}
-              disabled={!editable || saving.has("collect")}
+              checked={handoff.workup.collected?.key === checkoutCollectKey(collect)}
+              disabled={locked}
               onChange={(done) => void tick("collect", { section: "collect", done })}
             />
           ) : undefined
@@ -387,7 +394,7 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
             id="workup-referrals"
             label="Referrals handled"
             checked={handoff.workup.referrals !== null}
-            disabled={!editable || saving.has("referrals")}
+            disabled={locked}
             onChange={(done) => void tick("referrals", { section: "referrals", done })}
           />
         }

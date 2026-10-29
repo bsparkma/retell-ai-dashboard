@@ -304,3 +304,69 @@ test('the payload stays additive: a pre-CO-1 snapshot and handoff parse, and dx 
   void collectAtCheckout;
   assert.equal(contract.TcCheckoutSnapshot.safeParse(older).success, true);
 });
+
+// ── review round 1 ──────────────────────────────────────────────────────────
+
+test('review r1: the row LOCK comes first, before the read and the write, all in one transaction', async (t) => {
+  // FakeTenantDb is one process with no second transaction, so it cannot show
+  // two ticks serializing; what it CAN pin is that the read-modify-write is
+  // preceded by SELECT ... FOR UPDATE on the same row. Remove the lock and
+  // this fails. (Serialization itself is a Postgres property under READ COMMITTED.)
+  switchCheckout(t);
+  const { baseUrl, db } = await boot(t);
+  const id = seed(db).handoff_id;
+  const from = db.log.length;
+  assert.equal((await tick(baseUrl, id, { section: 'referrals', done: true })).status, 200);
+  const sqls = db.log.slice(from).map((l) => l.sql);
+  const lock = sqls.findIndex((s) => /^SELECT handoff_id FROM tc_checkout_handoffs WHERE office_id = \$1 AND handoff_id = \$2 FOR UPDATE$/.test(s));
+  const read = sqls.findIndex((s, i) => i > lock && /^SELECT .* FROM tc_checkout_handoffs WHERE office_id = \$1 AND handoff_id = \$2$/.test(s));
+  const write = sqls.findIndex((s) => /^UPDATE tc_checkout_handoffs SET workup = \$3::jsonb/.test(s));
+  assert.ok(lock >= 0, 'locked');
+  assert.ok(lock < read && read < write, `lock ${lock} < read ${read} < write ${write}`);
+  const begin = sqls.lastIndexOf('BEGIN', lock);
+  const commit = sqls.indexOf('COMMIT', write);
+  assert.ok(begin >= 0 && begin < lock && commit > write, 'lock, read and write share one transaction');
+});
+
+test('review r1: a refused or no-op tick leaves the row exactly as it was (updated_at untouched)', async (t) => {
+  switchCheckout(t);
+  const { baseUrl, db } = await boot(t);
+  const answered = seed(db, { status: 'scheduled', outcome_by: 'tc@carein.ai', outcome_at: NOW });
+  const before = answered.updated_at;
+  assert.equal((await tick(baseUrl, answered.handoff_id, { section: 'referrals', done: true })).status, 409);
+  // The record's state is checked before the box: answered is answered.
+  assert.equal((await tick(baseUrl, answered.handoff_id, { section: 'workup', index: 9, done: true })).status, 409);
+  assert.equal(answered.updated_at, before);
+  const missing = seed(db);
+  assert.equal((await tick(baseUrl, missing.handoff_id, { section: 'workup', index: 9, done: true })).status, 404);
+  assert.equal(missing.updated_at.getTime(), NOW.getTime() - 60000, 'a refused tick writes nothing');
+
+  const open = seed(db);
+  assert.equal((await tick(baseUrl, open.handoff_id, { section: 'referrals', done: false })).body.unchanged, true);
+  assert.equal(open.updated_at.getTime(), NOW.getTime() - 60000, 'an untick of an unticked box writes nothing');
+  assert.equal(open.workup, undefined);
+});
+
+test('review r1: Ready to present and Collected go STALE too when the visit Send changes what was ticked', async (t) => {
+  switchCheckout(t);
+  const { baseUrl, db } = await boot(t);
+  const row = seed(db);
+  assert.equal((await tick(baseUrl, row.handoff_id, { section: 'present', group: 'ready_to_schedule', done: true })).status, 200);
+  assert.equal((await tick(baseUrl, row.handoff_id, { section: 'collect', done: true })).status, 200);
+  let fresh = (await api(baseUrl, 'GET', `/api/tc/checkout/${row.handoff_id}?office=roland`)).body.handoff;
+  assert.deepEqual(contract.checkoutWorkupProgress(fresh).sections.slice(1, 3).map((s) => s.done), [true, true]);
+
+  // A revised Send: another ready-to-schedule item, and one more thing to collect.
+  row.payload = {
+    ...SNAPSHOT,
+    existingTx: [EXISTING, { ...EXISTING, procNum: 900003 }],
+    collectAtCheckout: ['Fl2', 'Mouthwash'],
+  };
+  fresh = (await api(baseUrl, 'GET', `/api/tc/checkout/${row.handoff_id}?office=roland`)).body.handoff;
+  assert.deepEqual(contract.checkoutWorkupProgress(fresh).sections.slice(1, 3).map((s) => s.done), [false, false]);
+
+  // Ticking again records a CURRENT mark (and is a change, so it is audited).
+  const again = await tick(baseUrl, row.handoff_id, { section: 'collect', done: true });
+  assert.equal(again.body.unchanged, false);
+  assert.equal(contract.checkoutWorkupProgress(again.body.handoff).sections[2].done, true);
+});
