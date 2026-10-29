@@ -309,7 +309,8 @@ export const TC_CHECKOUT_WORKUP_SECTION_LABELS: Record<TcCheckoutWorkupSection, 
 /** The handoff's own fields a progress count needs. */
 type WorkupProgressInput = {
   snapshot: Pick<TcCheckoutSnapshot, "procedures" | "existingTx" | "collectAtCheckout">;
-  workup: TcCheckoutWorkup;
+  /** Absent reads as nothing ticked — the same rule the server's reader applies. */
+  workup?: TcCheckoutWorkup;
 };
 
 /**
@@ -327,22 +328,23 @@ export function checkoutWorkupProgress(h: WorkupProgressInput): {
   done: number;
   total: number;
 } {
+  const w = h.workup ?? emptyCheckoutWorkup();
   const procs = h.snapshot.procedures;
-  const groups = [...new Set((h.snapshot.existingTx ?? []).map((i) => i.patient))];
+  const groups = Array.from(new Set((h.snapshot.existingTx ?? []).map((i) => i.patient)));
   const collect = h.snapshot.collectAtCheckout ?? [];
   const sections = [
     {
       section: "workup" as const,
       applies: procs.length > 0,
-      done: procs.length > 0 && procs.every((p, i) => h.workup.workedUp[String(i)]?.key === checkoutItemKey(p)),
+      done: procs.length > 0 && procs.every((p, i) => w.workedUp[String(i)]?.key === checkoutItemKey(p)),
     },
     {
       section: "present" as const,
       applies: groups.length > 0,
-      done: groups.length > 0 && groups.every((g) => Boolean(h.workup.present[g])),
+      done: groups.length > 0 && groups.every((g) => Boolean(w.present[g])),
     },
-    { section: "collect" as const, applies: collect.length > 0, done: collect.length > 0 && h.workup.collected !== null },
-    { section: "referrals" as const, applies: true, done: h.workup.referrals !== null },
+    { section: "collect" as const, applies: collect.length > 0, done: collect.length > 0 && w.collected !== null },
+    { section: "referrals" as const, applies: true, done: w.referrals !== null },
   ];
   const applying = sections.filter((s) => s.applies);
   return { sections, done: applying.filter((s) => s.done).length, total: applying.length };

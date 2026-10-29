@@ -17,7 +17,7 @@
  * Renders nothing while checkout is switched off for the office, or for a
  * case no checkout landed on.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { CheckCircle2, ClipboardList, Loader2, Undo2 } from "lucide-react";
 
@@ -50,6 +50,7 @@ import {
   EXISTING_TX_WAIT_LABELS,
   groupExistingTxForTc,
   type ExistingTxHandoffItem,
+  type ExistingTxPatient,
 } from "@shared/hyg/existingTx";
 
 import { getCaseHygieneTreatment, markItemEntered, undoItemEntered } from "./checkoutApi";
@@ -90,8 +91,17 @@ function teethLine(p: TcCheckoutProcedure): string {
  * is a red Urgent pill — a CareIN priority, not Open Dental's. Read straight off
  * the handoff's stored snapshot, like the table above it: nothing here reads
  * Open Dental or the hygiene visit again.
+ *
+ * `groupAction` (CO-1) puts something beside a group's heading — the workup
+ * view's "Ready to present" box. Absent, the block renders exactly as before.
  */
-export function ExistingTreatmentFromHygiene({ items }: { items: readonly ExistingTxHandoffItem[] }) {
+export function ExistingTreatmentFromHygiene({
+  items,
+  groupAction,
+}: {
+  items: readonly ExistingTxHandoffItem[];
+  groupAction?: (group: ExistingTxPatient) => ReactNode;
+}) {
   const groups = groupExistingTxForTc(items);
   return (
     <div className="space-y-2" data-testid="tc-existing-tx">
@@ -100,8 +110,11 @@ export function ExistingTreatmentFromHygiene({ items }: { items: readonly Existi
       </p>
       {groups.map((g) => (
         <div key={g.patient} className="space-y-1" data-testid={`tc-existing-tx-group-${g.patient}`}>
-          <p className="text-xs font-medium text-foreground">
-            {EXISTING_TX_PATIENT_LABELS[g.patient]} ({g.items.length})
+          <p className="flex flex-wrap items-center justify-between gap-2 text-xs font-medium text-foreground">
+            <span>
+              {EXISTING_TX_PATIENT_LABELS[g.patient]} ({g.items.length})
+            </span>
+            {groupAction ? groupAction(g.patient) : null}
           </p>
           <ul className="space-y-1">
             {g.items.map((i) => {

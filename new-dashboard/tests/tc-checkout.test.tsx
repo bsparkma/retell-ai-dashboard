@@ -178,10 +178,12 @@ describe("the Checkout inbox", () => {
     expect(screen.queryByText(/could not be loaded/i)).toBeNull();
   });
 
-  it("a row opens the sidebar, which renders the snapshot", async () => {
+  it("Quick look opens the sidebar, which renders the snapshot", async () => {
     state.rows = [handoff()];
     renderInbox();
-    fireEvent.click(await screen.findByTestId("checkout-row"));
+    // RULING (CO-1): a row now opens the full-screen workup view; the sidebar
+    // is the row's "Quick look" (and the toast's link), unchanged inside.
+    fireEvent.click(await screen.findByTestId("checkout-row-quicklook"));
     const sheet = await screen.findByTestId("checkout-sidebar");
     await within(sheet).findByTestId("checkout-procedures");
     expect(within(sheet).getByTestId("checkout-procedures").textContent).toMatch(/#3 Crown/);
@@ -194,6 +196,25 @@ describe("the Checkout inbox", () => {
     expect(within(sheet).getByTestId("checkout-referral").textContent).toMatch(/None/);
   });
 
+  it("CO-1: a row opens the linkable workup view (/tc/checkout/:id?office=), not the sidebar", async () => {
+    state.rows = [handoff()];
+    const memory = memoryLocation({ path: "/tc/checkout", record: true });
+    render(
+      <WouterRouter hook={memory.hook} searchHook={memory.searchHook}>
+        <CheckoutInbox offices={["roland"]} showOfficeBadges={false} />
+      </WouterRouter>,
+    );
+    fireEvent.click(await screen.findByTestId("checkout-row"));
+    await waitFor(() => expect(memory.history.at(-1)).toBe(`/tc/checkout/${handoff().handoffId}?office=roland`));
+    expect(screen.queryByTestId("checkout-sidebar")).toBeNull();
+  });
+
+  it("CO-1: each waiting card says how far its workup has got", async () => {
+    state.rows = [handoff()];
+    renderInbox();
+    expect((await screen.findByTestId("checkout-row-progress")).textContent).toMatch(/^0 of \d+ sections? done$/);
+  });
+
   it("the toast's link (?handoff=) opens the SAME sidebar", async () => {
     state.rows = [handoff()];
     renderInbox(`/tc/checkout?office=roland&handoff=${handoff().handoffId}`);
@@ -204,7 +225,9 @@ describe("the Checkout inbox", () => {
   it("Scheduled sends the outcome WITH the appointment note; the row leaves Waiting", async () => {
     state.rows = [handoff()];
     renderInbox();
-    fireEvent.click(await screen.findByTestId("checkout-row"));
+    // RULING (CO-1): a row now opens the full-screen workup view; the sidebar
+    // is the row's "Quick look" (and the toast's link), unchanged inside.
+    fireEvent.click(await screen.findByTestId("checkout-row-quicklook"));
     const sheet = await screen.findByTestId("checkout-sidebar");
     fireEvent.change(await within(sheet).findByTestId("checkout-appointment-note"), {
       target: { value: "Tue 9am" },
@@ -222,7 +245,9 @@ describe("the Checkout inbox", () => {
   ])("%s sends exactly that outcome, and no appointment note", async (outcome, label) => {
     state.rows = [handoff()];
     renderInbox();
-    fireEvent.click(await screen.findByTestId("checkout-row"));
+    // RULING (CO-1): a row now opens the full-screen workup view; the sidebar
+    // is the row's "Quick look" (and the toast's link), unchanged inside.
+    fireEvent.click(await screen.findByTestId("checkout-row-quicklook"));
     const sheet = await screen.findByTestId("checkout-sidebar");
     fireEvent.change(await within(sheet).findByTestId("checkout-appointment-note"), {
       target: { value: "ignored" },

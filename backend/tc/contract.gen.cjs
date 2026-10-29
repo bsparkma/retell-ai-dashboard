@@ -17540,22 +17540,23 @@ var TC_CHECKOUT_WORKUP_SECTION_LABELS = {
   referrals: "Referrals"
 };
 function checkoutWorkupProgress(h) {
+  const w = h.workup ?? emptyCheckoutWorkup();
   const procs = h.snapshot.procedures;
-  const groups = [...new Set((h.snapshot.existingTx ?? []).map((i) => i.patient))];
+  const groups = Array.from(new Set((h.snapshot.existingTx ?? []).map((i) => i.patient)));
   const collect = h.snapshot.collectAtCheckout ?? [];
   const sections = [
     {
       section: "workup",
       applies: procs.length > 0,
-      done: procs.length > 0 && procs.every((p, i) => h.workup.workedUp[String(i)]?.key === checkoutItemKey(p))
+      done: procs.length > 0 && procs.every((p, i) => w.workedUp[String(i)]?.key === checkoutItemKey(p))
     },
     {
       section: "present",
       applies: groups.length > 0,
-      done: groups.length > 0 && groups.every((g) => Boolean(h.workup.present[g]))
+      done: groups.length > 0 && groups.every((g) => Boolean(w.present[g]))
     },
-    { section: "collect", applies: collect.length > 0, done: collect.length > 0 && h.workup.collected !== null },
-    { section: "referrals", applies: true, done: h.workup.referrals !== null }
+    { section: "collect", applies: collect.length > 0, done: collect.length > 0 && w.collected !== null },
+    { section: "referrals", applies: true, done: w.referrals !== null }
   ];
   const applying = sections.filter((s) => s.applies);
   return { sections, done: applying.filter((s) => s.done).length, total: applying.length };
