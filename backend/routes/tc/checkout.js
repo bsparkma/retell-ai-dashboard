@@ -16,6 +16,17 @@
  *   GET  /by-case/:caseId      the staff-only "Treatment from hygiene" panel (C2b)
  *   POST   /:id/items/:index/entered   attest "this item is in Open Dental"
  *   DELETE /:id/items/:index/entered   undo that attestation (admin only)
+ *   POST   /:id/workup        tick or untick one box on the workup checklist (CO-1)
+ *
+ * THE WORKUP CHECKLIST (CO-1). The full-screen workup view's boxes — each
+ * staged item "Worked up", each existing-treatment group "Ready to present",
+ * "Collected", "Referrals handled" — are stored on the handoff itself
+ * (tc_checkout_handoffs.workup). The office is the request's (requireOffice)
+ * and the record is the one this office holds under that id; nothing in the
+ * body names either. Editable while the checkout is waiting (open / claimed);
+ * an answered one is a record, and its checklist with it. One audit row per
+ * change, after the commit, and the answer is the checklist READ BACK, never
+ * the request. Like the attestation, it is a desk checklist, not a sync.
  *
  * ═════════════════════════════════════════════════════════════════════════════
  * THE THREE OUTCOMES
@@ -101,7 +112,15 @@ const nurtureHooks = require('../../services/tcNurture/hooks');
 const { localDayKey } = require('../../services/localDayClock');
 const tcCheckout = require('../../config/tcCheckout');
 
-const { z, TcCase, TcCasePhase, caseToRows, TcCheckoutOutcomeRequest, TcCheckoutDismissRequest } = contract;
+const {
+  z,
+  TcCase,
+  TcCasePhase,
+  caseToRows,
+  TcCheckoutOutcomeRequest,
+  TcCheckoutDismissRequest,
+  TcCheckoutWorkupRequest,
+} = contract;
 
 const router = express.Router();
 router.use(requireOffice);
@@ -891,8 +910,137 @@ router.delete(
   })
 );
 
+// ── CO-1: the workup checklist ──────────────────────────────────────────────
+
+/**
+ * Apply one tick to a checklist, or say why it does not apply to this
+ * snapshot. Pure. `null` mark = untick.
+ *
+ * `was` is whether the box counted as ticked before (a STALE work-up tick does
+ * not); `changed` is whether storing `workup` changes anything — re-ticking a
+ * ticked box keeps the first person's mark, and unticking a stale tick clears it.
+ *
+ * @returns {{ workup: object, was: boolean, changed: boolean } | { refusal: [number, string, string] }}
+ */
+function applyWorkupTick(workup, snapshot, body, mark) {
+  const next = {
+    workedUp: { ...workup.workedUp },
+    present: { ...workup.present },
+    collected: workup.collected,
+    referrals: workup.referrals,
+  };
+  const procs = snapshot && Array.isArray(snapshot.procedures) ? snapshot.procedures : [];
+  if (body.section === 'workup') {
+    const p = procs[body.index];
+    if (!p) return { refusal: [404, 'That item is not on this checkout', 'ITEM_NOT_FOUND'] };
+    const key = contract.checkoutItemKey(p);
+    const prior = next.workedUp[String(body.index)];
+    const was = Boolean(prior) && prior.key === key;
+    if (mark && !was) next.workedUp[String(body.index)] = { ...mark, key };
+    if (!mark) delete next.workedUp[String(body.index)];
+    return { workup: next, was, changed: mark ? !was : Boolean(prior) };
+  }
+  if (body.section === 'present') {
+    const groups = new Set((snapshot && Array.isArray(snapshot.existingTx) ? snapshot.existingTx : []).map((i) => i.patient));
+    if (!groups.has(body.group)) {
+      return { refusal: [404, 'That group of existing treatment is not on this checkout', 'GROUP_NOT_FOUND'] };
+    }
+    const was = Boolean(next.present[body.group]);
+    if (mark && !was) next.present[body.group] = mark;
+    if (!mark) delete next.present[body.group];
+    return { workup: next, was, changed: was !== Boolean(mark) };
+  }
+  if (body.section === 'collect') {
+    const collect = snapshot && Array.isArray(snapshot.collectAtCheckout) ? snapshot.collectAtCheckout : [];
+    if (collect.length === 0) return { refusal: [404, 'There is nothing to collect on this checkout', 'NOTHING_TO_COLLECT'] };
+    const was = next.collected !== null;
+    if (was !== Boolean(mark)) next.collected = mark;
+    return { workup: next, was, changed: was !== Boolean(mark) };
+  }
+  const was = next.referrals !== null;
+  if (was !== Boolean(mark)) next.referrals = mark;
+  return { workup: next, was, changed: was !== Boolean(mark) };
+}
+
+/** Whether the read-back checklist holds the tick the request asked for. */
+function workupHolds(handoff, body) {
+  const w = handoff.workup;
+  if (body.section === 'workup') {
+    const p = handoff.snapshot.procedures[body.index];
+    const m = w.workedUp[String(body.index)];
+    return body.done ? Boolean(m) && Boolean(p) && m.key === contract.checkoutItemKey(p) : !m;
+  }
+  if (body.section === 'present') return Boolean(w.present[body.group]) === body.done;
+  if (body.section === 'collect') return (w.collected !== null) === body.done;
+  return (w.referrals !== null) === body.done;
+}
+
+router.post(
+  '/:id/workup',
+  h(async (req, res) => {
+    const id = HandoffId.safeParse(req.params.id);
+    if (!id.success) return res.status(400).json({ success: false, error: 'Invalid handoff id', code: 'INVALID_ID' });
+    const body = parseBody(res, TcCheckoutWorkupRequest, req.body);
+    if (!body) return undefined;
+    const today = await enter(req, res);
+    if (today === null) return undefined;
+    const office = req.tcOffice;
+    const mark = body.done ? { by: actorEmail(req), at: clock().toISOString() } : null;
+
+    const result = await withTenantTx(req, async (client) => {
+      // The lock first: two ticks on one checkout serialize, so neither
+      // read-modify-write can erase the other.
+      if (!(await checkoutStore.lockHandoff(client, office, id.data))) return { refusal: [404, 'Checkout handoff not found', 'NOT_FOUND'] };
+      const row = await checkoutStore.findById(client, office, id.data);
+      if (!row) return { refusal: [404, 'Checkout handoff not found', 'NOT_FOUND'] };
+      if (!checkoutStore.WAITING_STATUSES.includes(row.status || 'open')) return { closed: row };
+      const handoff = checkoutStore.toHandoff(row);
+      const applied = applyWorkupTick(handoff.workup, handoff.snapshot, body, mark);
+      if (applied.refusal) return applied;
+      if (!applied.changed) return { unchanged: true };
+      if (!(await checkoutStore.writeWorkup(client, office, id.data, applied.workup))) {
+        throw new Error('the workup checklist was not stored');
+      }
+      return { priorState: applied.was ? 'done' : 'not_done' };
+    });
+
+    if (result.refusal) {
+      const [status, error, code] = result.refusal;
+      return res.status(status).json({ success: false, error, code });
+    }
+    if (result.closed) {
+      return res.status(409).json({
+        success: false,
+        error: `This checkout's checklist cannot change: it is already ${contract.TC_CHECKOUT_STATUS_LABELS[result.closed.status] || result.closed.status}.`,
+        code: 'CHECKOUT_NOT_ACTIONABLE',
+        handoff: checkoutStore.toHandoff(result.closed),
+      });
+    }
+    if (!result.unchanged) {
+      await auditTc(req, 'UPDATE', 'tc_checkout_handoff', id.data, {
+        office,
+        sourceRef: `checkout_workup:${body.section}`,
+        priorState: result.priorState,
+      });
+    }
+
+    // Report what PERSISTED: the checklist read back after the commit.
+    const row = await tenantDb.withTenantDb(req, (pool) => checkoutStore.findById(pool, office, id.data));
+    const handoff = row ? checkoutStore.toHandoff(row) : null;
+    if (!handoff || !workupHolds(handoff, body)) {
+      return res.status(500).json({
+        success: false,
+        error: 'The checklist could not be read back as saved. Reload before trusting it.',
+        code: 'WORKUP_NOT_PERSISTED',
+      });
+    }
+    return res.json({ success: true, handoff, unchanged: result.unchanged === true });
+  })
+);
+
 module.exports = router;
 module.exports.setClockForTests = setClockForTests;
+module.exports.applyWorkupTick = applyWorkupTick;
 module.exports.officeToday = officeToday;
 // Exported for the tests: TC's own text for a hygiene procedure (feedback round 1
 // pins that a primary tooth prints as its letter here too).

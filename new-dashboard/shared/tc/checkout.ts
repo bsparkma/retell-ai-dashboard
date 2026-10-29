@@ -91,6 +91,15 @@ export const TcCheckoutProcedure = z
     /** The hygienist marked this to schedule at the next visit. */
     scheduleNext: z.boolean(),
     note: z.string().max(500),
+    /**
+     * The routing slip's diagnosis shorthand ("D", "RD", "FX"…), verbatim (CO-1).
+     * OPTIONAL and additive: every snapshot stored before CO-1 has no such key
+     * and parses as it did. Kept as short strings rather than the hygiene
+     * enum, so a code the slip gains later cannot make TC refuse a handoff.
+     */
+    dx: z.array(z.string().regex(/^[A-Za-z]{1,8}$/)).max(20).optional(),
+    /** The hygienist's free-text diagnosis note, when there is one (CO-1). */
+    dxNote: z.string().max(500).optional(),
   })
   .strict();
 export type TcCheckoutProcedure = z.infer<typeof TcCheckoutProcedure>;
@@ -241,6 +250,109 @@ export const TC_CHECKOUT_OUTCOME_LABELS: Record<TcCheckoutOutcome, string> = {
   nothing_needed: "Nothing needed",
 };
 
+// ── CO-1: the workup checklist ──────────────────────────────────────────────
+
+/** Who ticked a box, and when. */
+export const TcCheckoutWorkupMark = z.object({ by: z.string(), at: z.string() }).strict();
+export type TcCheckoutWorkupMark = z.infer<typeof TcCheckoutWorkupMark>;
+
+/**
+ * The front desk's own progress through one checkout (CO-1), stored on the
+ * handoff (tc_checkout_handoffs.workup, NULLABLE jsonb). A record from before
+ * CO-1 has none and reads as this object with nothing ticked.
+ *
+ *   workedUp    per staged procedure, keyed by its index. Carries the item's
+ *               checkoutItemKey at the time of the tick: a later visit Send
+ *               that revises the item makes the tick STALE, and a stale tick
+ *               counts as not done (the attestation rule, C2b).
+ *   present     per existing-treatment group ("Ready to present").
+ *   collected   the collect list as a whole.
+ *   referrals   the referrals step as a whole ("handled": started, or none needed).
+ *
+ * It is a desk checklist, NOT a sync: nothing here reads or writes Open Dental.
+ */
+export const TcCheckoutWorkup = z
+  .object({
+    workedUp: z.record(z.string().regex(/^\d{1,3}$/), TcCheckoutWorkupMark.extend({ key: z.string() })).default({}),
+    present: z.record(z.string(), TcCheckoutWorkupMark).default({}),
+    collected: TcCheckoutWorkupMark.nullable().default(null),
+    referrals: TcCheckoutWorkupMark.nullable().default(null),
+  })
+  .strict();
+export type TcCheckoutWorkup = z.infer<typeof TcCheckoutWorkup>;
+
+/** The checklist with nothing ticked — what every pre-CO-1 record reads as. */
+export function emptyCheckoutWorkup(): TcCheckoutWorkup {
+  return { workedUp: {}, present: {}, collected: null, referrals: null };
+}
+
+/** POST /api/tc/checkout/:id/workup — tick or untick ONE box. */
+export const TcCheckoutWorkupRequest = z.discriminatedUnion("section", [
+  z.object({ section: z.literal("workup"), index: z.number().int().min(0).max(99), done: z.boolean() }).strict(),
+  z.object({ section: z.literal("present"), group: z.string().min(1).max(40), done: z.boolean() }).strict(),
+  z.object({ section: z.literal("collect"), done: z.boolean() }).strict(),
+  z.object({ section: z.literal("referrals"), done: z.boolean() }).strict(),
+]);
+export type TcCheckoutWorkupRequest = z.infer<typeof TcCheckoutWorkupRequest>;
+
+/** The workup view's sections, in desk order. */
+export const TC_CHECKOUT_WORKUP_SECTIONS = ["workup", "present", "collect", "referrals"] as const;
+export type TcCheckoutWorkupSection = (typeof TC_CHECKOUT_WORKUP_SECTIONS)[number];
+
+export const TC_CHECKOUT_WORKUP_SECTION_LABELS: Record<TcCheckoutWorkupSection, string> = {
+  workup: "Work up in OD",
+  present: "Existing treatment to present",
+  collect: "Collect payment",
+  referrals: "Referrals",
+};
+
+/** The handoff's own fields a progress count needs. */
+type WorkupProgressInput = {
+  snapshot: Pick<TcCheckoutSnapshot, "procedures" | "existingTx" | "collectAtCheckout">;
+  workup: TcCheckoutWorkup;
+};
+
+/**
+ * Is each section done, and how many of the sections that APPLY are? Pure.
+ *
+ * A section applies only when the snapshot gives it something to do: work-up
+ * when anything was staged, present when existing treatment came along, collect
+ * when there is something to take payment for. Referrals always applies: the
+ * desk decides whether one is needed, and "none needed" is still an answer.
+ * A section is done when every box in it is ticked (a stale work-up tick does
+ * not count).
+ */
+export function checkoutWorkupProgress(h: WorkupProgressInput): {
+  sections: { section: TcCheckoutWorkupSection; applies: boolean; done: boolean }[];
+  done: number;
+  total: number;
+} {
+  const procs = h.snapshot.procedures;
+  const groups = [...new Set((h.snapshot.existingTx ?? []).map((i) => i.patient))];
+  const collect = h.snapshot.collectAtCheckout ?? [];
+  const sections = [
+    {
+      section: "workup" as const,
+      applies: procs.length > 0,
+      done: procs.length > 0 && procs.every((p, i) => h.workup.workedUp[String(i)]?.key === checkoutItemKey(p)),
+    },
+    {
+      section: "present" as const,
+      applies: groups.length > 0,
+      done: groups.length > 0 && groups.every((g) => Boolean(h.workup.present[g])),
+    },
+    { section: "collect" as const, applies: collect.length > 0, done: collect.length > 0 && h.workup.collected !== null },
+    { section: "referrals" as const, applies: true, done: h.workup.referrals !== null },
+  ];
+  const applying = sections.filter((s) => s.applies);
+  return { sections, done: applying.filter((s) => s.done).length, total: applying.length };
+}
+
+/** "2 of 4 sections done". */
+export function checkoutWorkupProgressLabel(p: { done: number; total: number }): string {
+  return `${p.done} of ${p.total} ${p.total === 1 ? "section" : "sections"} done`;
+}
+
 /** A checkout handoff as TC reads it back. */
 export const TcCheckoutHandoff = z.object({
   handoffId: z.string().uuid(),
@@ -271,6 +383,8 @@ export const TcCheckoutHandoff = z.object({
   expiredAt: z.string().nullable().default(null),
   /** Always `system:checkout_expiry` when set — the system closed it, not a person. */
   expiredBy: z.string().nullable().default(null),
+  /** CO-1. Defaulted so a pre-CO-1 reader and a pre-CO-1 record both parse. */
+  workup: TcCheckoutWorkup.default(emptyCheckoutWorkup),
 });
 export type TcCheckoutHandoff = z.infer<typeof TcCheckoutHandoff>;
 
