@@ -19,9 +19,17 @@
  * is refused before secrets are loaded.
  *
  *   PROBE_OFFICE=roland PROBE_PATNUM=12827 node scripts/probe-referral-commlog-dates.js
+ *
+ * Copied into a container's /tmp (the image's /app is read-only and does not
+ * ship this file yet), set APP_ROOT=/app so the app's own modules are found.
  */
 
-const { isDesignatedTestPatient, describeTestPatients } = require('../config/testPatients');
+const path = require('path');
+
+const APP_ROOT = process.env.APP_ROOT || path.resolve(__dirname, '..');
+const app = (rel) => require(path.join(APP_ROOT, rel));
+
+const { isDesignatedTestPatient, describeTestPatients } = app('config/testPatients');
 
 const PAGE_SIZE = 100;
 
@@ -33,8 +41,8 @@ async function main() {
     return 2;
   }
 
-  await require('../config/secrets').loadSecrets();
-  const od = require('../config/odOffices').getOdOffice(office);
+  await app('config/secrets').loadSecrets();
+  const od = app('config/odOffices').getOdOffice(office);
   const referralType = Number(od.referralCommTypeDefNum);
 
   const res = await od.client.apiGetRaw('/commlogs', { PatNum: patNum }, { timeoutMs: 15000, module: 'tc' });
