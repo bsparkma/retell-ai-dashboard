@@ -14813,10 +14813,10 @@ var require_zod = __commonJS({
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.z = void 0;
-    var z8 = __importStar(require_external());
-    exports2.z = z8;
+    var z9 = __importStar(require_external());
+    exports2.z = z9;
     __exportStar(require_external(), exports2);
-    exports2.default = z8;
+    exports2.default = z9;
   }
 });
 
@@ -14865,6 +14865,7 @@ __export(contract_entry_exports, {
   FlagSourceSchema: () => FlagSourceSchema,
   HYG_DAY_SCOPES: () => HYG_DAY_SCOPES,
   HYG_ERROR_CODES: () => HYG_ERROR_CODES,
+  HYG_STAFF_SIGN_IN_MAX: () => HYG_STAFF_SIGN_IN_MAX,
   HYG_VISIT_ERROR_CODES: () => HYG_VISIT_ERROR_CODES,
   HandoffCategorySchema: () => HandoffCategorySchema,
   HygAppointmentSchema: () => HygAppointmentSchema,
@@ -14885,6 +14886,9 @@ __export(contract_entry_exports, {
   HygPerioSendResponseSchema: () => HygPerioSendResponseSchema,
   HygSendResponseSchema: () => HygSendResponseSchema,
   HygSlipSchema: () => HygSlipSchema,
+  HygStaffInputSchema: () => HygStaffInputSchema,
+  HygStaffListSchema: () => HygStaffListSchema,
+  HygStaffSchema: () => HygStaffSchema,
   HygStepStateSchema: () => HygStepStateSchema,
   HygVisitOverallSchema: () => HygVisitOverallSchema,
   HygVisitProgressSchema: () => HygVisitProgressSchema,
@@ -15029,7 +15033,7 @@ __export(contract_entry_exports, {
   VisitUpsertRequestSchema: () => VisitUpsertRequestSchema,
   XRAY_OPTIONS: () => XRAY_OPTIONS,
   YesNoSchema: () => YesNoSchema,
-  ZodError: () => import_zod7.ZodError,
+  ZodError: () => import_zod8.ZodError,
   bleedSupPlaqCalcBits: () => bleedSupPlaqCalcBits,
   chartingOrder: () => chartingOrder,
   collectAtCheckoutLabels: () => collectAtCheckoutLabels,
@@ -15067,6 +15071,7 @@ __export(contract_entry_exports, {
   isWellFormedArchString: () => isWellFormedArchString,
   medicalHistoryLine: () => medicalHistoryLine,
   normalizePerioChart: () => normalizePerioChart,
+  normalizeSignInId: () => normalizeSignInId,
   odToothText: () => odToothText,
   orthoConcernsText: () => orthoConcernsText,
   orthoScreeningRows: () => orthoScreeningRows,
@@ -15110,7 +15115,7 @@ __export(contract_entry_exports, {
   withPerioMobility: () => withPerioMobility,
   withPerioSite: () => withPerioSite,
   withPerioSkipped: () => withPerioSkipped,
-  z: () => import_zod7.z
+  z: () => import_zod8.z
 });
 module.exports = __toCommonJS(contract_entry_exports);
 
@@ -18312,8 +18317,48 @@ var HygPerioSendResponseSchema = import_zod6.z.object({
   paused: import_zod6.z.string().nullable()
 });
 
+// shared/hyg/staff.ts
+var import_zod7 = __toESM(require_zod(), 1);
+var HYG_STAFF_SIGN_IN_MAX = 10;
+function normalizeSignInId(value) {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+var FullNameSchema = import_zod7.z.string().transform((v) => v.replace(/\s+/g, " ").trim()).pipe(import_zod7.z.string().min(1, "A name is required").max(120, "A name is at most 120 characters"));
+var LicenseSchema = import_zod7.z.union([import_zod7.z.string(), import_zod7.z.null()]).transform((v) => v === null ? null : v.trim() === "" ? null : v.trim()).pipe(import_zod7.z.union([import_zod7.z.string().max(40, "A licence number is at most 40 characters"), import_zod7.z.null()]));
+var SignInIdsSchema = import_zod7.z.array(import_zod7.z.string()).transform((ids) => Array.from(new Set(ids.map(normalizeSignInId).filter((v) => v.length > 0)))).pipe(
+  import_zod7.z.array(import_zod7.z.string().max(254, "A sign-in is at most 254 characters")).min(1, "At least one sign-in email or username is required").max(HYG_STAFF_SIGN_IN_MAX, `At most ${HYG_STAFF_SIGN_IN_MAX} sign-ins per person`)
+);
+var HygStaffInputSchema = import_zod7.z.object({
+  fullName: FullNameSchema,
+  license: LicenseSchema,
+  signInIds: SignInIdsSchema
+}).strict();
+var HygStaffSchema = import_zod7.z.object({
+  id: import_zod7.z.string().uuid(),
+  office: import_zod7.z.enum(["roland", "valley"]),
+  fullName: import_zod7.z.string(),
+  license: import_zod7.z.string().nullable(),
+  signInIds: import_zod7.z.array(import_zod7.z.string()),
+  active: import_zod7.z.boolean(),
+  createdBy: import_zod7.z.string(),
+  createdAt: import_zod7.z.string(),
+  updatedBy: import_zod7.z.string(),
+  updatedAt: import_zod7.z.string()
+});
+var HygStaffListSchema = import_zod7.z.object({
+  success: import_zod7.z.literal(true),
+  office: import_zod7.z.enum(["roland", "valley"]),
+  staff: import_zod7.z.array(HygStaffSchema),
+  /**
+   * True while this office has NO rows: notes still take hygienist names from
+   * the built-in list in backend/config/hygStaff.js. The page says so, and
+   * never shows that list.
+   */
+  usingBuiltInList: import_zod7.z.boolean()
+});
+
 // ../backend/hyg/contract.entry.ts
-var import_zod7 = __toESM(require_zod());
+var import_zod8 = __toESM(require_zod());
 
 // shared/hyg/teeth.ts
 var UPPER_PRIMARY = "ABCDEFGHIJ".split("");
@@ -18388,6 +18433,7 @@ function odToothText(tooth) {
   FlagSourceSchema,
   HYG_DAY_SCOPES,
   HYG_ERROR_CODES,
+  HYG_STAFF_SIGN_IN_MAX,
   HYG_VISIT_ERROR_CODES,
   HandoffCategorySchema,
   HygAppointmentSchema,
@@ -18408,6 +18454,9 @@ function odToothText(tooth) {
   HygPerioSendResponseSchema,
   HygSendResponseSchema,
   HygSlipSchema,
+  HygStaffInputSchema,
+  HygStaffListSchema,
+  HygStaffSchema,
   HygStepStateSchema,
   HygVisitOverallSchema,
   HygVisitProgressSchema,
@@ -18590,6 +18639,7 @@ function odToothText(tooth) {
   isWellFormedArchString,
   medicalHistoryLine,
   normalizePerioChart,
+  normalizeSignInId,
   odToothText,
   orthoConcernsText,
   orthoScreeningRows,

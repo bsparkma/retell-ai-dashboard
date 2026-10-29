@@ -53,7 +53,7 @@ const registry = require('../../platform/registry');
 const tenantDb = require('../../platform/tenantDb');
 const userContext = require('../../platform/userContext');
 const { tenantContext, requireModule } = require('../../middleware/tenantContext');
-const { requireReadWrite } = require('../../config/permissions');
+const { requireReadWrite, requirePermission } = require('../../config/permissions');
 const { requireDashboardAuth } = require('../../middleware/auth');
 // Namespace import so the harness can patch getOdOffice. A destructured import
 // would pin the real function at require time and no test could reach it.
@@ -175,6 +175,8 @@ class FakeHygDb extends FakeAuditDb {
     this.hyg_perio_send = [];
     /** @type {Array<Record<string, any>>} Slice 2a */
     this.hyg_existing_tx_disposition = [];
+    /** @type {Array<Record<string, any>>} Practice staff */
+    this.hyg_staff = [];
     this.seq = 0;
   }
 
@@ -280,6 +282,113 @@ class FakeHygDb extends FakeAuditDb {
     return Date.now() - new Date(at).getTime() < 2 * 60 * 1000;
   }
 
+  /**
+   * hyg_staff, as 1793400000000_hyg_staff.js defines it: its CHECKs, and its
+   * sign-in uniqueness trigger (a collision is a 23505 naming the trigger's
+   * constraint, exactly as Postgres raises it). Every statement staffStore.js
+   * runs, and nothing else — an unknown one throws.
+   */
+  checkStaff(row) {
+    this.checkOffice(row.office);
+    if (!(typeof row.full_name === 'string' && row.full_name.trim() !== '' && row.full_name.length <= 120)) {
+      throw new Error('hyg_staff_full_name_check violated');
+    }
+    if (!(row.license === null || (typeof row.license === 'string' && row.license.trim() !== '' && row.license.length <= 40))) {
+      throw new Error('hyg_staff_license_check violated');
+    }
+    if (!(Array.isArray(row.sign_in_ids) && row.sign_in_ids.length >= 1 && row.sign_in_ids.length <= 10)) {
+      throw new Error('hyg_staff_sign_in_ids_check violated');
+    }
+    const clash = this.hyg_staff.some(
+      (s) => s.office === row.office && s.id !== row.id && s.sign_in_ids.some((x) => row.sign_in_ids.includes(x))
+    );
+    if (clash) {
+      const err = new Error('a sign-in id on this row is already used by another staff row');
+      // @ts-expect-error — pg error fields
+      err.code = '23505';
+      // @ts-expect-error — pg error fields
+      err.constraint = 'hyg_staff_sign_in_ids_unique';
+      throw err;
+    }
+  }
+
+  staffOverlap(office, exceptId, ids) {
+    return this.hyg_staff.some(
+      (s) => s.office === office && s.id !== exceptId && s.sign_in_ids.some((x) => ids.includes(x))
+    );
+  }
+
+  queryStaff(text, params) {
+    const COLS = /^\s*SELECT id, office, full_name, license, sign_in_ids, active,\s+created_by, created_at, updated_by, updated_at\s+FROM hyg_staff\s+WHERE office = \$1/i;
+    if (COLS.test(text) && /ORDER BY active DESC, lower\(full_name\), created_at\s*$/i.test(text)) {
+      const [office] = params;
+      const rows = this.hyg_staff
+        .filter((s) => s.office === office)
+        .sort((a, b) =>
+          a.active !== b.active
+            ? (a.active ? -1 : 1)
+            : a.full_name.toLowerCase().localeCompare(b.full_name.toLowerCase()) || a.seq - b.seq
+        )
+        .map((s) => ({ ...s, sign_in_ids: [...s.sign_in_ids] }));
+      return { rows, rowCount: rows.length };
+    }
+    if (COLS.test(text) && /WHERE office = \$1 AND id = \$2\s*$/i.test(text)) {
+      const [office, id] = params;
+      const rows = this.hyg_staff
+        .filter((s) => s.office === office && s.id === id)
+        .map((s) => ({ ...s, sign_in_ids: [...s.sign_in_ids] }));
+      return { rows, rowCount: rows.length };
+    }
+    if (/^\s*SELECT sign_in_ids\s+FROM hyg_staff\s+WHERE office = \$1 AND id IS DISTINCT FROM \$2::uuid AND sign_in_ids \?\| \$3::text\[\]\s*$/i.test(text)) {
+      const [office, exceptId, ids] = params;
+      const rows = this.hyg_staff
+        .filter((s) => s.office === office && s.id !== exceptId && s.sign_in_ids.some((x) => ids.includes(x)))
+        .map((s) => ({ sign_in_ids: [...s.sign_in_ids] }));
+      return { rows, rowCount: rows.length };
+    }
+    if (/^\s*INSERT INTO hyg_staff \(office, full_name, license, sign_in_ids, created_by, updated_by\)\s+SELECT \$1, \$2, \$3, \$4::jsonb, \$5, \$5\s+WHERE NOT EXISTS \(\s*SELECT 1 FROM hyg_staff\s+WHERE office = \$1 AND sign_in_ids \?\| ARRAY\(SELECT jsonb_array_elements_text\(\$4::jsonb\)\)\s*\)\s+RETURNING id\s*$/i.test(text)) {
+      const [office, fullName, license, idsJson, actor] = params;
+      const ids = FakeHygDb.json(idsJson);
+      if (this.staffOverlap(office, null, ids)) return { rows: [], rowCount: 0 };
+      this.seq += 1;
+      const now = new Date();
+      const row = {
+        id: `00000000-0000-4000-8000-${String(this.seq).padStart(12, '0')}`,
+        seq: this.seq,
+        office,
+        full_name: fullName,
+        license,
+        sign_in_ids: ids,
+        active: true,
+        created_by: actor,
+        created_at: now,
+        updated_by: actor,
+        updated_at: now,
+      };
+      this.checkStaff(row);
+      this.hyg_staff.push(row);
+      return { rows: [{ id: row.id }], rowCount: 1 };
+    }
+    if (/^\s*UPDATE hyg_staff\s+SET full_name = \$3, license = \$4, sign_in_ids = \$5::jsonb,\s+updated_by = \$6, updated_at = now\(\)\s+WHERE office = \$1 AND id = \$2\s+AND NOT EXISTS \(\s*SELECT 1 FROM hyg_staff o\s+WHERE o\.office = \$1 AND o\.id <> \$2\s+AND o\.sign_in_ids \?\| ARRAY\(SELECT jsonb_array_elements_text\(\$5::jsonb\)\)\s*\)\s+RETURNING id\s*$/i.test(text)) {
+      const [office, id, fullName, license, idsJson, actor] = params;
+      const ids = FakeHygDb.json(idsJson);
+      const row = this.hyg_staff.find((s) => s.office === office && s.id === id);
+      if (!row || this.staffOverlap(office, id, ids)) return { rows: [], rowCount: 0 };
+      const next = { ...row, full_name: fullName, license, sign_in_ids: ids, updated_by: actor, updated_at: new Date() };
+      this.checkStaff(next);
+      Object.assign(row, next);
+      return { rows: [{ id }], rowCount: 1 };
+    }
+    if (/^\s*UPDATE hyg_staff\s+SET active = \$3, updated_by = \$4, updated_at = now\(\)\s+WHERE office = \$1 AND id = \$2\s+RETURNING id\s*$/i.test(text)) {
+      const [office, id, active, actor] = params;
+      const row = this.hyg_staff.find((s) => s.office === office && s.id === id);
+      if (!row) return { rows: [], rowCount: 0 };
+      Object.assign(row, { active, updated_by: actor, updated_at: new Date() });
+      return { rows: [{ id }], rowCount: 1 };
+    }
+    throw new Error('[hygTestUtils] unexpected hyg_staff SQL: ' + text.slice(0, 120));
+  }
+
   checkOffice(office) {
     if (!FakeHygDb.OFFICES.includes(office)) {
       throw new Error(`hyg office_check violated: '${office}'`);
@@ -351,6 +460,9 @@ class FakeHygDb extends FakeAuditDb {
       this.failOnce = null;
       throw new Error('[hygTestUtils] simulated crash on: ' + text.trim().slice(0, 60));
     }
+
+    // ── Practice staff (services/hyg/staffStore.js) ────────────────────────
+    if (/\bhyg_staff\b/.test(text)) return this.queryStaff(text, params);
 
     // ── the day-card progress read (services/hyg/progressStore.js) ──────────
     // Four read-only statements, each keyed by office FIRST. Matched before the
@@ -1665,6 +1777,9 @@ async function bootHygApp({
     requireReadWrite('hyg.read', 'hyg.write'),
     require('./index')
   );
+  // The Practice staff page, mounted as server.js mounts it: the Users page's
+  // admin.all gate, no module guard.
+  app.use('/api/platform/hyg-staff', requirePermission('admin.all'), require('../hygStaff'));
 
   return new Promise((resolve) => {
     const server = app.listen(0, () => {

@@ -61,7 +61,12 @@
  * FEEDBACK ROUND 1: the practice is sending the full names and licence numbers
  * for everyone. Until a number arrives, an entry carries `license: null` and
  * prints the full name ALONE — never `RDH #`, never a placeholder, never a
- * number somebody guessed. Adding a hygienist is one entry here.
+ * number somebody guessed.
+ *
+ * PRACTICE STAFF PAGE: this list is now the FALLBACK. The office manager enters
+ * hygienists in the hyg_staff table (services/hyg/staffStore.js), and an
+ * office with any row there prints from it alone. This list is used only for
+ * an office with no rows yet, so nothing changed before anyone entered data.
  *
  * @type {ReadonlyArray<Readonly<{ fullName: string, credential: string, license: string|null, signIn: readonly string[] }>>}
  */
@@ -74,12 +79,16 @@ const HYGIENISTS = Object.freeze([
  * The roster keyed by every normalised sign-in name and email it lists, so a
  * lookup is one Map read. Built once; `signatureBlock` takes another for tests.
  *
- * @param {ReadonlyArray<{ fullName: string, credential: string, license: string|null, signIn: readonly string[] }>} list
+ * An entry with `matchName: false` is matched on its sign-ins ONLY — the
+ * hyg_staff rows, where two people may share a name but never a sign-in.
+ *
+ * @param {ReadonlyArray<{ fullName: string, credential: string, license: string|null, signIn: readonly string[], matchName?: boolean }>} list
  */
 function indexRoster(list) {
   const byKey = new Map();
   for (const h of list) {
-    for (const key of [h.fullName, ...h.signIn]) {
+    const keys = h.matchName === false ? [...h.signIn] : [h.fullName, ...h.signIn];
+    for (const key of keys) {
       const k = normalizeName(key);
       if (k) byKey.set(k, h);
     }
@@ -124,7 +133,35 @@ const SUPERVISING_DOCTORS = Object.freeze({
   ]),
 });
 
-/** `  Raegan  McGee ` and `raegan mcgee` are the same person to the roster. */
+/**
+ * TEST SEAM — a synthetic roster in place of the real one, so no test has to
+ * name real staff (Practice staff page). null restores this file's lists.
+ * Production never calls it; it only ever REPLACES both lists, so a test cannot
+ * end up half real and half synthetic.
+ *
+ * @type {null | { doctors: Readonly<Record<string, ReadonlyArray<{ name: string, credential: string, license: string }>>>,
+ *                 hygienists: ReadonlyArray<{ fullName: string, credential: string, license: string|null, signIn: readonly string[] }> }}
+ */
+let testRoster = null;
+
+/**
+ * @param {null | { doctors: Record<string, Array<{ name: string, credential: string, license: string }>>,
+ *                  hygienists: Array<{ fullName: string, credential: string, license: string|null, signIn: string[] }> }} roster
+ */
+function setRosterForTests(roster) {
+  testRoster = roster
+    ? Object.freeze({
+        doctors: Object.freeze(
+          Object.fromEntries(
+            Object.entries(roster.doctors).map(([k, list]) => [k, Object.freeze(list.map((d) => Object.freeze({ ...d })))])
+          )
+        ),
+        hygienists: Object.freeze(roster.hygienists.map((h) => Object.freeze({ ...h, signIn: Object.freeze([...h.signIn]) }))),
+      })
+    : null;
+}
+
+/** Two spellings of one name are the same person to the roster. */
 function normalizeName(value) {
   return String(value || '')
     .toLowerCase()
@@ -133,7 +170,7 @@ function normalizeName(value) {
 }
 
 /**
- * `Raegan McGee RDH #4251`, or `Raegan McGee` when we have no number. A blank
+ * `Full Name RDH #1234`, or `Full Name` when we have no number. A blank
  * or whitespace licence is "no number", so a half-filled entry prints the name.
  */
 function personLine(person) {
@@ -152,7 +189,8 @@ function personLine(person) {
  * @returns {ReadonlyArray<{ name: string, credential: string, license: string }>}
  */
 function supervisingDoctors(office) {
-  return SUPERVISING_DOCTORS[office] || [];
+  const doctors = testRoster ? testRoster.doctors : SUPERVISING_DOCTORS;
+  return doctors[office] || [];
 }
 
 /**
@@ -195,20 +233,21 @@ function doctorOptions(office) {
  *
  * @param {{ office: string, hygienistName: string|null, hygienistEmail?: string|null,
  *           examiningDoctors?: readonly string[],
- *           roster?: ReadonlyArray<{ fullName: string, credential: string, license: string|null, signIn: readonly string[] }> }} input
+ *           roster?: ReadonlyArray<{ fullName: string, credential: string, license: string|null, signIn: readonly string[], matchName?: boolean }> | null }} input
  *   `hygienistName` is the AUTHOR's name — the parameter keeps its name so
  *   every existing call site reads the same, but a doctor may be the author.
  *   `hygienistEmail` is who signed in, matched against the roster's `signIn`.
  *   `examiningDoctors` is the slip's examining-doctor pick (noteFields.drs).
- *   `roster` defaults to HYGIENISTS and exists for the tests.
+ *   `roster` is this office's hyg_staff roster (staffStore.signatureRoster);
+ *   absent or null — an office with no rows — falls back to HYGIENISTS.
  * @returns {string[]} lines, possibly empty when we know nothing at all
  */
-function signatureBlock({ office, hygienistName, hygienistEmail = null, examiningDoctors = [], roster = HYGIENISTS }) {
+function signatureBlock({ office, hygienistName, hygienistEmail = null, examiningDoctors = [], roster = null }) {
   const lines = [];
   const key = normalizeName(hygienistName);
   const emailKey = normalizeName(hygienistEmail);
   const doctors = supervisingDoctors(office);
-  const hygienists = indexRoster(roster);
+  const hygienists = indexRoster(roster || (testRoster ? testRoster.hygienists : HYGIENISTS));
   // Case-insensitive, and on the same normalisation the roster uses, so
   // "beau  sparkman" from a session is the same person as the config's entry.
   const authorIsDoctor = key ? doctors.find((d) => normalizeName(d.name) === key) : undefined;
@@ -261,4 +300,5 @@ module.exports = {
   SUPERVISING_DOCTORS,
   normalizeName,
   personLine,
+  setRosterForTests,
 };
