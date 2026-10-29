@@ -433,7 +433,7 @@ test('the search term is never written to the audit trail', async () => {
   const { baseUrl, db, close } = await bootTcApp();
   try {
     await withOd({ '/patients': () => [PATIENT] }, async () => {
-      await api(baseUrl, 'GET', '/api/tc/od/patients?q=Sparkman&office=roland');
+      await api(baseUrl, 'GET', '/api/tc/od/patients?q=Sampleton&office=roland');
     });
     const rows = auditRows(db);
     assert.equal(rows.length, 1, 'exactly one audit row per PHI read');
@@ -441,7 +441,7 @@ test('the search term is never written to the audit trail', async () => {
     assert.equal(rows[0].resource_type, 'od_patient_search');
     assert.equal(rows[0].resource_id, null, 'the query is PHI — it must not be recorded');
     assert.ok(
-      !JSON.stringify(rows[0]).includes('Sparkman'),
+      !JSON.stringify(rows[0]).includes('Sampleton'),
       'no part of the audit row may contain the search term'
     );
   } finally {

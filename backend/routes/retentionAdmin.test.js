@@ -26,7 +26,7 @@ const store = require('../services/unifiedCallStore');
 const legacyPurge = require('../services/legacyPurge');
 const audit = require('../platform/audit');
 
-const SESSION_USER = { name: 'Beau Platform', email: 'beau@carein.ai' };
+const SESSION_USER = { name: 'Drew Platform', email: 'drew.example@carein.ai' };
 
 let server;
 let baseUrl;
@@ -180,7 +180,7 @@ test('a confirmed live purge deletes and writes ONE audit row for the action', a
     { action: auditRows[0].action, resourceType: auditRows[0].resourceType, result: auditRows[0].result },
     { action: 'DELETE', resourceType: 'call_store', result: 'SUCCESS' }
   );
-  assert.equal(auditRows[0].userId, 'beau@carein.ai');
+  assert.equal(auditRows[0].userId, 'drew.example@carein.ai');
 });
 
 test('a dry run is audited as a READ, not a DELETE', async () => {

@@ -55,6 +55,9 @@ export * from "../../new-dashboard/shared/hyg/orthoScreening";
 // Existing treatment dispositions (Slice 2a): the CHECK vocabularies, the PUT
 // body the route parses, and the Watch rule the server stamps on each item.
 export * from "../../new-dashboard/shared/hyg/existingTx";
+// The Practice staff page (hygienists the office manager enters): the bodies
+// routes/hygStaff.js parses and the one sign-in normaliser.
+export * from "../../new-dashboard/shared/hyg/staff";
 // The routes compose small request shapes from contract pieces; export the SAME
 // zod instance so those shapes and the contract schemas share one library
 // version. ZodError is what the 400-shaping helper switches on.

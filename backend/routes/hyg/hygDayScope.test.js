@@ -62,7 +62,7 @@ function mixedDay() {
     ],
     '/operatories': [
       operatoryRow({ OperatoryNum: 2, OpName: 'Hygiene 1', IsHygiene: 'true', ItemOrder: 1 }),
-      operatoryRow({ OperatoryNum: 5, OpName: 'Dr Farmer', IsHygiene: 'false', ItemOrder: 2 }),
+      operatoryRow({ OperatoryNum: 5, OpName: 'Dr Quinn', IsHygiene: 'false', ItemOrder: 2 }),
       operatoryRow({ OperatoryNum: 6, OpName: 'Dr Reed', IsHygiene: 'false', ItemOrder: 3 }),
     ],
     '/appointmenttypes': [{ AppointmentTypeNum: 3, AppointmentTypeName: 'Prophy Adult' }],
@@ -110,7 +110,7 @@ test('A HYGIENE APPOINTMENT IN A DOCTOR’S CHAIR IS STILL SERVED', async () => 
     const apt = res.body.appointments.find((a) => a.aptNum === 900002);
     assert.ok(apt, 'the overflow appointment must not vanish');
     // In the DOCTOR's chair, because the appointment says hygiene.
-    assert.equal(apt.opName, 'Dr Farmer');
+    assert.equal(apt.opName, 'Dr Quinn');
     assert.equal(apt.isHygiene, true);
     assert.equal(apt.opIsHygiene, false, 'the two flags disagree, and both survive');
     // And NAMED — by the fill, which is served under the same lens, so the
@@ -253,7 +253,7 @@ test('a day of nothing but doctor appointments is EMPTY, not an error', async ()
     '/appointments': [
       apptRow({ AptNum: 900003, PatNum: 990003, Op: 5, IsHygiene: false }),
     ],
-    '/operatories': [operatoryRow({ OperatoryNum: 5, OpName: 'Dr Farmer', IsHygiene: 'false' })],
+    '/operatories': [operatoryRow({ OperatoryNum: 5, OpName: 'Dr Quinn', IsHygiene: 'false' })],
     '/appointmenttypes': [],
     '/providers': [],
   });

@@ -140,7 +140,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
     visit: visit(),
     recordsNeeded: [],
     handoffCategory: "Restorative" as const,
-    doctorOptions: ["Beau Sparkman"],
+    doctorOptions: ["Drew Example"],
   });
 
   return {
@@ -155,7 +155,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
       visit: server.hasVisit ? visit() : null,
       recordsNeeded: [],
       handoffCategory: "Restorative" as const,
-      doctorOptions: ["Beau Sparkman"],
+      doctorOptions: ["Drew Example"],
     })),
     openVisit: vi.fn(async () => {
       server.opens += 1;

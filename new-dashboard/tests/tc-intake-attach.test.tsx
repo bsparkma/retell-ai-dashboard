@@ -28,8 +28,8 @@ vi.mock("@/contexts/AuthContext", () => ({
   useAuth: () => ({
     status: "authenticated",
     user: {
-      name: "Raegan",
-      email: "raegan@carein.ai",
+      name: "Avery",
+      email: "avery@carein.ai",
       tenantId: "t",
       tenant: null,
       role: "hygiene",

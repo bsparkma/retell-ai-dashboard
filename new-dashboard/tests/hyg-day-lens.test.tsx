@@ -60,7 +60,7 @@ function appt(over: Partial<HygAppointment> = {}): HygAppointment {
     opIsHygiene: true,
     provNum: 1,
     provHyg: 7,
-    providerName: "Raegan",
+    providerName: "Avery",
     apptTypeLabel: "Prophy Adult",
     confirmedStatus: "Confirmed",
     aptStatus: "Scheduled",
@@ -102,7 +102,7 @@ function day(over: Partial<HygDayResponse> = {}): HygDayResponse {
     date: "2026-09-08",
     operatories: [
       { opNum: 2, name: "Hygiene 1", abbrev: "HY1", isHygiene: true, itemOrder: 1 },
-      { opNum: 5, name: "Dr Farmer", abbrev: "DR1", isHygiene: false, itemOrder: 2 },
+      { opNum: 5, name: "Dr Quinn", abbrev: "DR1", isHygiene: false, itemOrder: 2 },
     ],
     appointments: [],
     warnings: [],
@@ -131,7 +131,7 @@ const OVERFLOW = appt({
   patientName: "Test, MangoTest",
   start: "2026-09-08 09:00:00",
   opNum: 5,
-  opName: "Dr Farmer",
+  opName: "Dr Quinn",
   isHygiene: true,
   opIsHygiene: false,
   providerName: "Casey",
@@ -171,10 +171,10 @@ beforeEach(() => {
         patientName: "Doctorpatient, A",
         start: "2026-09-08 10:00:00",
         opNum: 5,
-        opName: "Dr Farmer",
+        opName: "Dr Quinn",
         isHygiene: false,
         opIsHygiene: false,
-        providerName: "Dr Farmer",
+        providerName: "Dr Quinn",
       }),
     ],
     excludedByScope: 0,
@@ -193,7 +193,7 @@ describe("the lens", () => {
     const cards = screen.getAllByTestId("hyg-appointment-card");
     expect(cards).toHaveLength(2);
     expect(screen.getByText("Test, MangoTest")).toBeTruthy();
-    expect(screen.getByText("Dr Farmer")).toBeTruthy();
+    expect(screen.getByText("Dr Quinn")).toBeTruthy();
   });
 
   it("defaults to the hygiene scope, and says how many it is hiding", async () => {
@@ -249,7 +249,7 @@ describe("the lens", () => {
     // Two chairs: the hygiene one, and the doctor's — because a hygiene
     // appointment is sitting in it. A chair with nothing in it gets no column.
     expect(columns.textContent).toContain("Hygiene 1");
-    expect(columns.textContent).toContain("Dr Farmer");
+    expect(columns.textContent).toContain("Dr Quinn");
   });
 });
 
@@ -270,12 +270,12 @@ describe("the hygienist picker", () => {
 
   it("never hides an appointment whose provider Open Dental would not name", async () => {
     fixtures.hygiene = day({
-      appointments: [appt({ providerName: "Raegan" }), appt({ aptNum: 900009, providerName: null, patientName: "Unlabelled, Visit" })],
+      appointments: [appt({ providerName: "Avery" }), appt({ aptNum: 900009, providerName: null, patientName: "Unlabelled, Visit" })],
     });
     renderDay();
     await screen.findByTestId("hyg-day-list");
 
-    fireEvent.change(screen.getByTestId("hyg-provider-picker"), { target: { value: "Raegan" } });
+    fireEvent.change(screen.getByTestId("hyg-provider-picker"), { target: { value: "Avery" } });
     await waitFor(() => expect(screen.getAllByTestId("hyg-appointment-card")).toHaveLength(2));
     // A patient must not disappear because Open Dental did not label their
     // visit — the same silent loss the lens is careful about one level up.
@@ -290,7 +290,7 @@ describe("the hygienist picker", () => {
 
     // The day changes under her — tomorrow, or a refresh after the schedule
     // moved — and Casey is no longer on it.
-    fixtures.hygiene = day({ appointments: [appt({ providerName: "Raegan" })] });
+    fixtures.hygiene = day({ appointments: [appt({ providerName: "Avery" })] });
     fireEvent.click(screen.getByTestId("hyg-day-refresh"));
 
     const filtered = await screen.findByTestId("hyg-day-filtered-empty");

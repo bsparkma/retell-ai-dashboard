@@ -395,7 +395,7 @@ test('GUARD platform-admin: a tenant admin cannot touch a platform admin\'s row'
 
 test('GUARD platform-admin: a SUPER admin can', async () => {
   platformAdmins.add('front@carein.ai');
-  const app = await boot({ role: 'admin', isSuperAdmin: true, actor: 'beau@carein.ai' });
+  const app = await boot({ role: 'admin', isSuperAdmin: true, actor: 'drew.example@carein.ai' });
   try {
     const res = await app.patch('/api/users/front@carein.ai', { status: 'disabled' });
     assert.equal(res.status, 200);

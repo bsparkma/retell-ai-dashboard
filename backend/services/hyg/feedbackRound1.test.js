@@ -30,6 +30,11 @@ const tcContract = require('../../tc/contract.gen.cjs');
 const hygStaff = require('../../config/hygStaff');
 const tcCheckout = require('../../routes/tc/checkout');
 
+// No real staff in tests: the synthetic roster stands in for the shipped lists
+// for this whole file (Practice staff page).
+const { useSyntheticStaff } = require('../../config/hygStaff.fixture');
+useSyntheticStaff();
+
 const ACTOR = 'hygienist@carein.ai';
 
 function item(over = {}) {
@@ -149,7 +154,7 @@ test('A1: the composed note names only the doctor the slip picked — and none w
   const picked = visit({}, {
     visitType: 'adult_prophy_recall',
     visitTypeSource: 'manual',
-    noteFields: { drs: { grades: ['Blain VanNice'], detail: '' } },
+    noteFields: { drs: { grades: ['Morgan Example'], detail: '' } },
   });
   const sig = (v) =>
     hygStaff.signatureBlock({
@@ -158,10 +163,10 @@ test('A1: the composed note names only the doctor the slip picked — and none w
       examiningDoctors: v.slip.noteFields.drs ? v.slip.noteFields.drs.grades : [],
     });
   const text = compose('note', picked, { signature: sig(picked) }).preview.join('\n');
-  assert.ok(text.includes('Dr. Blain VanNice performed periodic exam.'));
-  assert.ok(text.includes('Blain VanNice DDS #7971'));
-  assert.ok(!text.includes('Beau Sparkman'), 'a doctor who did not examine is not named');
-  assert.ok(!text.includes('Joe Farmer'), 'a doctor who did not examine is not named');
+  assert.ok(text.includes('Dr. Morgan Example performed periodic exam.'));
+  assert.ok(text.includes('Morgan Example DDS #9002'));
+  assert.ok(!text.includes('Drew Example'), 'a doctor who did not examine is not named');
+  assert.ok(!text.includes('Quinn Example'), 'a doctor who did not examine is not named');
 
   const none = visit({}, { visitType: 'adult_prophy_recall', visitTypeSource: 'manual', noteFields: {} });
   const plain = compose('note', none, { signature: sig(none) }).preview;

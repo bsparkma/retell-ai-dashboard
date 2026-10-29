@@ -44,7 +44,7 @@ afterEach(() => {
   userContext.clearCache();
 });
 
-const CLAIMS = { name: 'Beau', email: 'admin@carein.ai', tid: 'entra-tid' };
+const CLAIMS = { name: 'Drew', email: 'admin@carein.ai', tid: 'entra-tid' };
 
 function stubSession() {
   sso.verifySession = (token) => (token === 'good-token' ? CLAIMS : null);
@@ -108,7 +108,7 @@ test('/auth/me: authenticated → tenant payload includes enabled modules', asyn
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.authenticated, true);
-    assert.deepEqual(body.user, { name: 'Beau', email: 'admin@carein.ai', tenantId: 'entra-tid' });
+    assert.deepEqual(body.user, { name: 'Drew', email: 'admin@carein.ai', tenantId: 'entra-tid' });
     assert.deepEqual(body.tenant, {
       slug: 'carein',
       displayName: 'CareIN Dental LLC',

@@ -111,7 +111,7 @@ describe("getGreeting", () => {
 
 describe("firstNameOf", () => {
   it("takes the first word and falls back to 'there'", () => {
-    expect(firstNameOf("Beau Sparkman")).toBe("Beau");
+    expect(firstNameOf("Drew Example")).toBe("Drew");
     expect(firstNameOf("  Cher ")).toBe("Cher");
     expect(firstNameOf("")).toBe("there");
     expect(firstNameOf(undefined)).toBe("there");
@@ -299,7 +299,7 @@ describe("buildHuddleText", () => {
     ]);
     const text = buildHuddleText({
       dateLabel: "Monday, August 3, 2026",
-      tcName: "Beau Sparkman",
+      tcName: "Drew Example",
       overdue,
       dueToday,
       stats,
@@ -308,7 +308,7 @@ describe("buildHuddleText", () => {
     });
 
     expect(text).toContain("Morning Huddle — Monday, August 3, 2026");
-    expect(text).toContain("TC: Beau Sparkman");
+    expect(text).toContain("TC: Drew Example");
     expect(text).toContain("OVERDUE (1):");
     expect(text).toContain("Maria Santos ($4,250) — call, due 2026-07-28");
     expect(text).toContain("TODAY'S FOLLOW-UPS (1):");

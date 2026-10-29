@@ -193,7 +193,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
       visit: visit(),
       recordsNeeded: [],
       handoffCategory: "Restorative" as const,
-      doctorOptions: ["Beau Sparkman"],
+      doctorOptions: ["Drew Example"],
     })),
     fetchExistingTx: vi.fn(async () => {
       if (fixtures.fail) {

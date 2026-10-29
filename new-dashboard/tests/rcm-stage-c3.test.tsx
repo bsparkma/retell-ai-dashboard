@@ -446,7 +446,7 @@ vi.mock("@/features/rcm/api", async (importOriginal) => {
           // C-3b item 2: the SERVER resolves this now, so the mock sends what
           // the server sends. A key here would be testing a wire that no longer
           // exists.
-          approvedBy: "Beau Sparkman",
+          approvedBy: "Drew Example",
           queued: [
             {
               claimId: "c-1",
@@ -715,7 +715,7 @@ describe("the claim screen folds its candidate list", () => {
       odMatchStatus: "confirmed",
       odClaimNum: 53862,
       reviewedAt: "2026-03-04T15:00:00.000Z",
-      reviewedBy: "Beau Sparkman",
+      reviewedBy: "Drew Example",
       matchSnapshot: two(),
     });
     renderAt(<ClaimMatch />, "/rcm/claims/c-1");
@@ -724,7 +724,7 @@ describe("the claim screen folds its candidate list", () => {
         "checked_over",
       ),
     );
-    expect(screen.getByTestId("claim-state-line").textContent).toContain("Beau Sparkman");
+    expect(screen.getByTestId("claim-state-line").textContent).toContain("Drew Example");
   });
 });
 
@@ -1054,7 +1054,7 @@ describe("attribution", () => {
     state.auth = {
       status: "authenticated",
       user: {
-        name: "Beau Sparkman",
+        name: "Drew Example",
         email: "admin@carein.ai",
         isSuperAdmin: true,
         permissions: ["rcm.read", "rcm.write", "rcm.queue"],
@@ -1077,7 +1077,7 @@ describe("attribution", () => {
     fireEvent.click(await screen.findByTestId("approve-button"));
 
     const line = await screen.findByTestId("approve-attribution");
-    expect(line.textContent).toContain("Approved by Beau Sparkman");
+    expect(line.textContent).toContain("Approved by Drew Example");
     expect(line.textContent).not.toContain("admin@carein.ai");
   });
 
@@ -1090,7 +1090,7 @@ describe("attribution", () => {
     state.auth = {
       status: "authenticated",
       user: {
-        name: "Beau Sparkman",
+        name: "Drew Example",
         email: "admin@carein.ai",
         isSuperAdmin: true,
         permissions: ["rcm.read", "rcm.write", "rcm.queue"],
@@ -1129,10 +1129,10 @@ describe("attribution", () => {
   });
 
   it("leaves somebody ELSE's address alone rather than inventing a name", () => {
-    const me = { name: "Beau Sparkman", email: "admin@carein.ai" };
+    const me = { name: "Drew Example", email: "admin@carein.ai" };
     expect(personName("billing@carein.ai", me)).toBe("billing@carein.ai");
     // Case is not identity: the crosswalk lowercases, the SSO claim may not.
-    expect(personName("Admin@CareIN.ai", me)).toBe("Beau Sparkman");
+    expect(personName("Admin@CareIN.ai", me)).toBe("Drew Example");
     // A display name that already arrived as one is untouched.
     expect(personName("Billing User", me)).toBe("Billing User");
     // Nobody signed in, nothing to resolve against.

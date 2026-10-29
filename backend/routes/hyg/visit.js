@@ -86,6 +86,7 @@ const { refuseUnlessTestPatient } = require('../../config/hygFixtureGate');
 const perioSend = require('../../services/hyg/perioSend');
 const perioDrift = require('../../services/hyg/perioDrift');
 const hygStaff = require('../../config/hygStaff');
+const staffStore = require('../../services/hyg/staffStore');
 const tcHandoff = require('../../services/hyg/tcHandoffClient');
 const tcCheckout = require('../../config/tcCheckout');
 const { snapshotFromAppointment } = require('../../services/hyg/appointmentSnapshot');
@@ -204,11 +205,17 @@ function visitPayload(visit) {
  * SIGNED IN, which the roster then turns into a licence line when it knows one.
  * A name it does not know prints alone. See backend/config/hygStaff.js.
  *
+ * `roster` is this office's Practice staff rows (staffStore.signatureRoster),
+ * read by the caller inside its tenant connection. null — no rows for this
+ * office yet — falls back to the config list.
+ *
  * @param {import('express').Request} req
  * @param {string} office
+ * @param {Record<string, any>|null|undefined} visit
+ * @param {Awaited<ReturnType<typeof staffStore.signatureRoster>>} roster
  * @returns {string[]}
  */
-function signatureFor(req, office, visit) {
+function signatureFor(req, office, visit, roster) {
   const name = req.user && typeof req.user.name === 'string' ? req.user.name.trim() : '';
   const email = req.user && typeof req.user.email === 'string' ? req.user.email.trim() : '';
   // The examining doctor is the one the SLIP names, from the stored visit —
@@ -229,6 +236,7 @@ function signatureFor(req, office, visit) {
     hygienistName: name || null,
     hygienistEmail: email || null,
     examiningDoctors,
+    roster,
   });
 }
 
@@ -1181,6 +1189,9 @@ router.post(
         body.kind === 'note' || body.kind === 'router' || body.kind === 'tc-handoff'
           ? await existingTxStore.loadForSend(pool, { office, visitId: visit.visitId })
           : undefined;
+      // PRACTICE STAFF: only the note prints a typed-name line, so only the
+      // note reads this office's hyg_staff roster.
+      const roster = body.kind === 'note' ? await staffStore.signatureRoster(pool, office) : null;
       const staged = await visitStore.stageWrite(pool, {
         office,
         visit,
@@ -1190,7 +1201,7 @@ router.post(
         // signed in and which office this is, and visitStore has no business
         // knowing either — it holds rows.
         compose: (kind, ctx) =>
-          composer.compose(kind, { ...ctx, signature: signatureFor(req, office, ctx.visit), existingTx }),
+          composer.compose(kind, { ...ctx, signature: signatureFor(req, office, ctx.visit, roster), existingTx }),
       });
       if (!staged.ok) return staged;
       return { ok: true, visit: await getVisitView(pool, { office, aptNum }) };

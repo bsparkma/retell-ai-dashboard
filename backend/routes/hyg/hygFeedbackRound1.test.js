@@ -19,6 +19,11 @@ const registry = require('../../platform/registry');
 const tcCheckout = require('../../config/tcCheckout');
 const { FakeOd, bootHygApp, api, apptRow, patientRow, operatoryRow } = require('./hygTestUtils');
 
+// No real staff in tests: the synthetic roster stands in for the shipped lists
+// for this whole file (Practice staff page).
+const { useSyntheticStaff } = require('../../config/hygStaff.fixture');
+useSyntheticStaff();
+
 const DATE = '2026-09-08';
 const Q = '?office=roland&date=' + DATE;
 const QO = '?office=roland';
@@ -133,16 +138,16 @@ test('A1: the staged note names only the examining doctor the stored slip picked
       ...open.body.visit.slip,
       visitType: 'adult_prophy_recall',
       visitTypeSource: 'manual',
-      noteFields: { drs: { grades: ['Joe Farmer'], detail: '' } },
+      noteFields: { drs: { grades: ['Quinn Example'], detail: '' } },
     };
     const saved = await api(app.baseUrl, 'PUT', '/api/hyg/visit/900001' + Q, { body: { slip } });
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
     const staged = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/staged-writes' + Q, { body: { kind: 'note' } });
     assert.equal(staged.status, 201, JSON.stringify(staged.body));
     const text = staged.body.visit.stagedWrites.find((w) => w.kind === 'note').preview.join('\n');
-    assert.ok(text.includes('Joe Farmer DDS #7571'));
-    assert.ok(!text.includes('Beau Sparkman DDS'), 'a doctor who did not examine is not named');
-    assert.ok(!text.includes('Blain VanNice DDS'), 'a doctor who did not examine is not named');
+    assert.ok(text.includes('Quinn Example DDS #9003'));
+    assert.ok(!text.includes('Drew Example DDS'), 'a doctor who did not examine is not named');
+    assert.ok(!text.includes('Morgan Example DDS'), 'a doctor who did not examine is not named');
   } finally {
     await app.close();
   }
@@ -158,14 +163,14 @@ test('review fix H1: a doctor picked on an exam template does not follow the sli
         visitType,
         visitTypeSource: visitType ? 'manual' : null,
         // Tapped on Adult Prophy Recall, then the type was switched: the pick survives.
-        noteFields: { drs: { grades: ['Joe Farmer'], detail: '' } },
+        noteFields: { drs: { grades: ['Quinn Example'], detail: '' } },
       };
       const saved = await api(app.baseUrl, 'PUT', '/api/hyg/visit/900001' + Q, { body: { slip } });
       assert.equal(saved.status, 200, JSON.stringify(saved.body));
       const staged = await api(app.baseUrl, 'POST', '/api/hyg/visit/900001/staged-writes' + Q, { body: { kind: 'note' } });
       assert.equal(staged.status, 201, JSON.stringify(staged.body));
       const text = staged.body.visit.stagedWrites.find((w) => w.kind === 'note').preview.join('\n');
-      assert.ok(!text.includes('Joe Farmer'), `${visitType}: a stale examiner was printed`);
+      assert.ok(!text.includes('Quinn Example'), `${visitType}: a stale examiner was printed`);
     }
   } finally {
     await app.close();

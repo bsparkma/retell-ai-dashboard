@@ -34,7 +34,7 @@ function dbWithJoins() {
 
 const INTAKE = {
   patientName: 'Test Patient',
-  diagnosingProvider: 'dr.sparkman@carein.ai',
+  diagnosingProvider: 'dr.example@carein.ai',
   category: 'single_tooth',
   urgency: 'medium',
   perioStatus: 'gingivitis',

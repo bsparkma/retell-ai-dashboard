@@ -54,7 +54,7 @@ const APPOINTMENT: HygAppointment = {
   opIsHygiene: true,
   provNum: 1,
   provHyg: 7,
-  providerName: "Raegan",
+  providerName: "Avery",
   apptTypeLabel: "Prophy Adult",
   confirmedStatus: "Confirmed",
   aptStatus: "Scheduled",
@@ -94,7 +94,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
     visit: visit(),
     recordsNeeded: server.items.length > 0 ? ["Pre-op PA", "Missing teeth note"] : [],
     handoffCategory: "Restorative" as const,
-    doctorOptions: ["Beau Sparkman", "Blain VanNice", "Joe Farmer"],
+    doctorOptions: ["Drew Example", "Morgan Example", "Quinn Example"],
   });
 
   return {
@@ -109,7 +109,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
       visit: visit(),
       recordsNeeded: server.items.length > 0 ? ["Pre-op PA", "Missing teeth note"] : [],
       handoffCategory: "Restorative" as const,
-      doctorOptions: ["Beau Sparkman", "Blain VanNice", "Joe Farmer"],
+      doctorOptions: ["Drew Example", "Morgan Example", "Quinn Example"],
     })),
     openVisit: vi.fn(async () => mutation()),
     addTreatmentItem: vi.fn(async (_o: string, _a: number, input: Record<string, unknown>) => {
