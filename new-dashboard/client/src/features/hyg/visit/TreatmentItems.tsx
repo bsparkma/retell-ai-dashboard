@@ -69,7 +69,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { ToothPicker, toothLabel, type Dentition } from "./ToothPicker";
+import { odToothNumbers, teethText, ToothPicker, toothText, type Dentition } from "./ToothPicker";
+import type { ExistingTxItem } from "@shared/hyg/existingTx";
 
 /**
  * The key an item is grouped under: its tooth set, exactly.
@@ -90,7 +91,7 @@ export function toothGroupLabel(key: string): string {
   if (key === "") return "No teeth recorded";
   return key
     .split(",")
-    .map((t) => `#${toothLabel(Number(t))}`)
+    .map((t) => toothText(Number(t)))
     .join(", ");
 }
 
@@ -101,10 +102,10 @@ export function toothGroupLabel(key: string): string {
  * first-appearance order keeps her own sequence rather than re-sorting her work
  * into tooth-number order she never chose.
  */
-export function groupByTooth(
-  items: readonly TreatmentItem[],
-): { key: string; label: string; items: TreatmentItem[] }[] {
-  const groups: { key: string; label: string; items: TreatmentItem[] }[] = [];
+export function groupByTooth<T extends Pick<TreatmentItem, "teeth">>(
+  items: readonly T[],
+): { key: string; label: string; items: T[] }[] {
+  const groups: { key: string; label: string; items: T[] }[] = [];
   const index = new Map<string, number>();
   for (const item of items) {
     const key = toothGroupKey(item);
@@ -121,7 +122,9 @@ export function groupByTooth(
 
 /** The office's own shorthand, grouped the way the paper slip groups it. */
 const CODE_GROUPS: { label: string; category: TreatmentCategory; codes: string[] }[] = [
-  { label: "Restorative", category: "Restorative", codes: ["Comp", "Amal", "Crown", "PFM", "Onlay", "Build-up", "Veneer"] },
+  // SSC (stainless steel crown) — feedback round 1. A TOOTH item, on primary
+  // and permanent teeth alike, so it is NOT in MOUTH_LEVEL below.
+  { label: "Restorative", category: "Restorative", codes: ["Comp", "Amal", "Crown", "SSC", "PFM", "Onlay", "Build-up", "Veneer"] },
   { label: "Endo", category: "Endo", codes: ["RC", "Retreat", "Pulpotomy", "Pulp cap"] },
   { label: "Surgery", category: "Surgery", codes: ["EX", "AB"] },
   { label: "Perio", category: "Perio", codes: ["SRP", "Perio maint", "Graft ½", "Muco"] },
@@ -189,7 +192,7 @@ function ItemCard({
   onRemove: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const teeth = item.teeth === "mouth" ? "Whole mouth" : item.teeth.map(toothLabel).map((t) => `#${t}`).join(", ");
+  const teeth = item.teeth === "mouth" ? "Whole mouth" : teethText(item.teeth);
 
   return (
     <div
@@ -373,9 +376,15 @@ export function TreatmentItems({
   onPatch,
   onRemove,
   onReviewAndSend,
+  plannedInOd = [],
 }: {
   items: TreatmentItem[];
   busy: boolean;
+  /**
+   * The procedures Open Dental already has planned (the existing-treatment
+   * read). Only for the hint below — it never blocks an add.
+   */
+  plannedInOd?: readonly Pick<ExistingTxItem, "procNum" | "tooth" | "code" | "description">[];
   onAdd: (input: TreatmentItemInput) => void;
   onPatch: (itemId: string, patch: Partial<TreatmentItemInput>) => void;
   onRemove: (itemId: string) => void;
@@ -392,6 +401,29 @@ export function TreatmentItems({
   } | null>(null);
 
   const groups = useMemo(() => groupByTooth(items), [items]);
+
+  /**
+   * ALREADY PLANNED IN OPEN DENTAL, for the teeth picked right now: "#30 already
+   * has planned in Open Dental: Crown (D2740), Build-up (D2950)". A HINT, never a
+   * block — re-proposing something planned is sometimes exactly right, and the
+   * hygienist decides. Whole-mouth items name no tooth, so they hint nothing.
+   */
+  const odHints = useMemo(() => {
+    const out: { tooth: number; text: string }[] = [];
+    for (const tooth of [...selected].sort((a, b) => a - b)) {
+      const planned = plannedInOd.filter((p) => {
+        const teeth = odToothNumbers(p.tooth);
+        return Array.isArray(teeth) && teeth.includes(tooth);
+      });
+      if (planned.length === 0) continue;
+      const names = planned.map((p) => {
+        const name = p.description.split(/ - |, /)[0].trim() || p.code;
+        return p.code && name !== p.code ? `${name} (${p.code})` : name;
+      });
+      out.push({ tooth, text: `${toothText(tooth)} already has planned in Open Dental: ${names.join(", ")}` });
+    }
+    return out;
+  }, [selected, plannedInOd]);
 
   const counts = useMemo(() => {
     const out: Record<number, number> = {};
@@ -479,7 +511,7 @@ export function TreatmentItems({
           {selected.length > 0 ? (
             <>
               <span data-testid="hyg-add-selection">
-                {selected.map((t) => `#${toothLabel(t)}`).join(", ")} — pick the work. It stays
+                {teethText(selected)} — pick the work. It stays
                 selected, so a build-up and a crown are two taps.
               </span>
               {/* The ONLY way the selection goes away by itself is this button
@@ -501,6 +533,15 @@ export function TreatmentItems({
             </span>
           )}
         </div>
+        {odHints.length > 0 ? (
+          <ul className="mb-2 space-y-0.5 text-xs text-amber-800 dark:text-amber-300" data-testid="hyg-od-planned-hint">
+            {odHints.map((h) => (
+              <li key={h.tooth} data-testid={`hyg-od-planned-hint-${h.tooth}`}>
+                {h.text}
+              </li>
+            ))}
+          </ul>
+        ) : null}
         <div className="space-y-2">
           {CODE_GROUPS.map((group) => (
             <div key={group.label} className="flex flex-wrap items-center gap-1.5">

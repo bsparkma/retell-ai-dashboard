@@ -14,6 +14,9 @@ import {
   TcReferralSignoffSummary,
   TcReferralAttachment,
   TcReferralSendOutcome,
+  TcReferralChartMilestone,
+  type TcReferralChartNoteRequest,
+  type TcReferralCorrespondenceRequest,
   type TcReferralCreateRequest,
   type TcReferralDirectoryInput,
   type TcReferralDoctorEdit,
@@ -235,6 +238,52 @@ export async function markReferral(
     ReferralResponse,
     await tcRequest<unknown>(`/tc/referrals/${referralId}/${MARK_PATHS[mark]}`, { office, method: "POST", body }),
   ).referral;
+}
+
+// ── R6.9: the correspondence log ────────────────────────────────────────────
+
+/**
+ * Record a call / email / fax with the specialist's office or the patient that
+ * happened OUTSIDE the app. Never moves the status; sends nothing. Resolves
+ * with the referral read back, history included.
+ */
+export async function logReferralCorrespondence(
+  office: OfficeId,
+  referralId: string,
+  body: TcReferralCorrespondenceRequest,
+): Promise<TcReferral> {
+  return parse(
+    ReferralResponse,
+    await tcRequest<unknown>(`/tc/referrals/${referralId}/correspondence`, { office, method: "POST", body }),
+  ).referral;
+}
+
+// ── R6.10: chart notes ──────────────────────────────────────────────────────
+
+const ChartNoteResponse = z.object({
+  success: z.literal(true),
+  milestone: TcReferralChartMilestone,
+  commLogNum: z.number().int().positive(),
+  referral: TcReferral,
+});
+
+/**
+ * Write ONE milestone's approved note to the patient's Open Dental chart. The
+ * body is the milestone and the exact words — the server takes the patient,
+ * the office, the commlog type and the date from the referral. Resolves only
+ * once the note was read back from Open Dental; anything else throws with the
+ * server's own sentence (and code), and nothing reads as written.
+ */
+export async function writeReferralChartNote(
+  office: OfficeId,
+  referralId: string,
+  body: TcReferralChartNoteRequest,
+): Promise<{ referral: TcReferral; commLogNum: number }> {
+  const out = parse(
+    ChartNoteResponse,
+    await tcRequest<unknown>(`/tc/referrals/${referralId}/chart-notes`, { office, method: "POST", body }),
+  );
+  return { referral: out.referral, commLogNum: out.commLogNum };
 }
 
 // ── R5: email it to the specialist ──────────────────────────────────────────

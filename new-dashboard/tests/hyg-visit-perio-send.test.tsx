@@ -178,7 +178,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
     visit: visit(),
     recordsNeeded: [],
     handoffCategory: "Other" as const,
-    doctorOptions: ["Beau Sparkman"],
+    doctorOptions: ["Drew Example"],
   });
   const replacePerio = (next: StagedWrite | null) => {
     if (!next) return;

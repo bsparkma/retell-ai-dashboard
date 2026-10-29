@@ -79,10 +79,14 @@ const composer = require('../../services/hyg/stagedWriteComposer');
 const sendVisitService = require('../../services/hyg/sendVisit');
 const odPerio = require('../../services/hyg/odPerio');
 const odToothInitials = require('../../services/hyg/odToothInitials');
+const existingTreatment = require('../../services/hyg/existingTreatment');
+const existingTxStore = require('../../services/hyg/existingTxStore');
+const existingTxStale = require('../../services/hyg/existingTxStale');
 const { refuseUnlessTestPatient } = require('../../config/hygFixtureGate');
 const perioSend = require('../../services/hyg/perioSend');
 const perioDrift = require('../../services/hyg/perioDrift');
 const hygStaff = require('../../config/hygStaff');
+const staffStore = require('../../services/hyg/staffStore');
 const tcHandoff = require('../../services/hyg/tcHandoffClient');
 const tcCheckout = require('../../config/tcCheckout');
 const { snapshotFromAppointment } = require('../../services/hyg/appointmentSnapshot');
@@ -201,13 +205,39 @@ function visitPayload(visit) {
  * SIGNED IN, which the roster then turns into a licence line when it knows one.
  * A name it does not know prints alone. See backend/config/hygStaff.js.
  *
+ * `roster` is this office's Practice staff rows (staffStore.signatureRoster),
+ * read by the caller inside its tenant connection. null — no rows for this
+ * office yet — falls back to the config list.
+ *
  * @param {import('express').Request} req
  * @param {string} office
+ * @param {Record<string, any>|null|undefined} visit
+ * @param {Awaited<ReturnType<typeof staffStore.signatureRoster>>} roster
  * @returns {string[]}
  */
-function signatureFor(req, office) {
+function signatureFor(req, office, visit, roster) {
   const name = req.user && typeof req.user.name === 'string' ? req.user.name.trim() : '';
-  return hygStaff.signatureBlock({ office, hygienistName: name || null });
+  const email = req.user && typeof req.user.email === 'string' ? req.user.email.trim() : '';
+  // The examining doctor is the one the SLIP names, from the stored visit —
+  // never a request field. Feedback round 1: only that doctor is printed.
+  //
+  // AND ONLY WHEN THIS VISIT TYPE HAS AN EXAM. Switching the visit type keeps
+  // the slip's other answers, so a doctor tapped on Adult Prophy survives a
+  // switch to Perio Maint or a draft with no exam clause. That pick is not an
+  // examiner of THIS note, and a typed-name line for a doctor the body says
+  // did not examine would be a false line in a chart (review round 1, H1).
+  const slip = (visit && visit.slip) || {};
+  const hasExam =
+    contract.VISIT_TYPES.includes(slip.visitType) && contract.controlsFor(slip.visitType).includes('drs');
+  const drs = hasExam && slip.noteFields ? slip.noteFields.drs : null;
+  const examiningDoctors = drs && Array.isArray(drs.grades) ? drs.grades : [];
+  return hygStaff.signatureBlock({
+    office,
+    hygienistName: name || null,
+    hygienistEmail: email || null,
+    examiningDoctors,
+    roster,
+  });
 }
 
 /**
@@ -346,6 +376,31 @@ async function rememberAppointment(req, office, aptNum, appointment) {
  * would mean a stray request could start a visit with no appointment lookup
  * behind it, and therefore with no Open-Dental-derived PatNum.
  */
+/**
+ * The visit as a RESPONSE carries it: every staged write says whether its
+ * stored words still match the existing-treatment answers (existingTxStale.js).
+ * Every visit this router sends goes through here, so no mutation's answer can
+ * quietly drop the "Out of date" a GET would show.
+ */
+async function getVisitView(pool, { office, aptNum }) {
+  return existingTxStale.annotate(pool, await visitStore.getVisit(pool, { office, aptNum }));
+}
+
+/**
+ * visitPayload, for a RESPONSE: the visit with its out-of-date flags. Every
+ * visit this router answers with goes through here — a slip save or an ortho
+ * send that answered without them would read as "not out of date" and quietly
+ * re-enable a Send the server will refuse. A visit already annotated (it came
+ * from getVisitView) is not read twice.
+ */
+async function viewPayload(req, visit) {
+  const annotated =
+    visit && visit.stagedWrites.some((w) => w.existingTxStale === undefined)
+      ? await tenantDb.withTenantDb(req, (pool) => existingTxStale.annotate(pool, visit))
+      : visit;
+  return visitPayload(annotated);
+}
+
 async function loadForMutation(req, res, office, aptNum) {
   const visit = await tenantDb.withTenantDb(req, (pool) =>
     visitStore.getVisit(pool, { office, aptNum })
@@ -412,7 +467,7 @@ router.get(
     ]);
 
     const visit = await tenantDb.withTenantDb(req, (pool) =>
-      visitStore.getVisit(pool, { office, aptNum })
+      getVisitView(pool, { office, aptNum })
     );
 
     // ITEM 33: remember what Open Dental just said about this appointment, so
@@ -506,7 +561,7 @@ router.post(
       sourceRef: null,
     });
 
-    return res.json({ ...visitPayload(visit), appointment: resolved.appointment });
+    return res.json({ ...await viewPayload(req, visit), appointment: resolved.appointment });
   })
 );
 
@@ -551,7 +606,7 @@ router.put(
       office,
       sourceRef: null,
     });
-    return res.json(visitPayload(visit));
+    return res.json(await viewPayload(req, visit));
   })
 );
 
@@ -585,7 +640,7 @@ router.post(
         input,
         actor: actorEmail(req),
       });
-      return visitStore.getVisit(pool, { office, aptNum });
+      return getVisitView(pool, { office, aptNum });
     });
 
     await audit(req, {
@@ -596,7 +651,7 @@ router.post(
       office,
       sourceRef: null,
     });
-    return res.status(201).json(visitPayload(updated));
+    return res.status(201).json(await viewPayload(req, updated));
   })
 );
 
@@ -628,7 +683,7 @@ router.put(
         actor: actorEmail(req),
       });
       if (!item) return null;
-      return visitStore.getVisit(pool, { office, aptNum });
+      return getVisitView(pool, { office, aptNum });
     });
 
     if (!result) {
@@ -648,7 +703,7 @@ router.put(
       office,
       sourceRef: null,
     });
-    return res.json(visitPayload(result));
+    return res.json(await viewPayload(req, result));
   })
 );
 
@@ -677,7 +732,7 @@ router.delete(
         actor: actorEmail(req),
       });
       if (!removed) return null;
-      return visitStore.getVisit(pool, { office, aptNum });
+      return getVisitView(pool, { office, aptNum });
     });
 
     if (!result) {
@@ -697,7 +752,405 @@ router.delete(
       office,
       sourceRef: null,
     });
-    return res.json(visitPayload(result));
+    return res.json(await viewPayload(req, result));
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Existing treatment (Slice 2a)
+//   GET /api/hyg/visit/:aptNum/existing-tx?office=[&refresh=1]
+//   PUT /api/hyg/visit/:aptNum/existing-tx/:procNum?office=
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// WHOSE PLAN COMES FROM THE STORED VISIT, NEVER FROM THE REQUEST. The office and
+// PatNum are the hyg_visit row's own; there is no parameter that names either,
+// so there is no request that can read another patient's plan. Both routes
+// need a started visit (404 VISIT_NOT_FOUND otherwise) for exactly that reason.
+//
+// NOTHING HERE WRITES TO OPEN DENTAL. The read is GET-only through the office's
+// own client; the answers land in hyg_existing_tx_disposition, CareIN only.
+
+const EXISTING_TX_READ_FAILED = "Couldn't load existing treatment from Open Dental";
+
+/** `:procNum` as a positive integer, or null. Same rule as `:aptNum`. */
+function procNumFrom(req) {
+  const raw = String(req.params.procNum || '').trim();
+  if (!/^\d+$/.test(raw)) return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+/**
+ * The patient's treatment-planned procedures, for the STORED visit's office and
+ * PatNum — cached up to ten minutes (services/hyg/existingTreatment.js).
+ *
+ * Returns `{ ok: true, items, readAt, cached }` or `{ ok: false, status, body }`.
+ * An Open Dental failure is a 502 carrying the sentence the section shows. It is
+ * never an empty list, because an empty list reads as "this patient has no
+ * treatment planned".
+ */
+async function readExistingTxFor(visit, { refresh }) {
+  const resolved = resolveHygOd(visit.office);
+  if (!resolved.ok) return { ok: false, status: resolved.status, body: resolved.body };
+  const odGet = (path, params, opts) =>
+    resolved.od.client.apiGetRaw(path, params, { ...(opts || {}), module: 'hyg' });
+  try {
+    const read = await existingTreatment.loadExistingTreatment(odGet, {
+      office: visit.office,
+      visitId: visit.visitId,
+      patNum: visit.patNum,
+      refresh,
+    });
+    return { ok: true, ...read };
+  } catch (err) {
+    console.error(
+      `[hygexistingtx] office=${visit.office} apt=${visit.aptNum} Open Dental read failed: ` +
+        String((err && err.message) || err).slice(0, 200)
+    );
+    return {
+      ok: false,
+      status: 502,
+      body: { success: false, error: EXISTING_TX_READ_FAILED, code: 'OD_READ_FAILED', office: visit.office },
+    };
+  }
+}
+
+/**
+ * Record the read's outcome on the visit (hygiene Slice 2b). Best effort, like
+ * rememberAppointment: a failure here costs the Router its "every item" list
+ * (it then says the plan was not recorded), never the hygienist her page.
+ */
+async function rememberExistingTxRead(req, visit, read) {
+  if (!read.ok && read.body && read.body.code !== 'OD_READ_FAILED') return;
+  try {
+    await tenantDb.withTenantDb(req, (pool) =>
+      read.ok
+        ? existingTxStore.recordLoaded(pool, {
+            office: visit.office,
+            visitId: visit.visitId,
+            readAt: read.readAt,
+            items: read.items,
+          })
+        : existingTxStore.recordFailed(pool, {
+            office: visit.office,
+            visitId: visit.visitId,
+            at: new Date().toISOString(),
+          })
+    );
+  } catch (err) {
+    console.warn(
+      `[hygexistingtx] could not record the read for ${visit.office} apt ${visit.aptNum}: ` +
+        ((err && err.message) || String(err))
+    );
+  }
+}
+
+router.get(
+  '/:aptNum/existing-tx',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) {
+      return res.status(400).json({
+        success: false,
+        error: 'aptNum must be a positive whole number',
+        code: 'INVALID_APT_NUM',
+        office,
+      });
+    }
+    const visit = await loadForMutation(req, res, office, aptNum);
+    if (!visit) return undefined;
+
+    const startedAt = Date.now();
+    const read = await readExistingTxFor(visit, { refresh: req.query.refresh === '1' });
+    // SLICE 2b: REMEMBER WHAT THE READ SAID, so the Router can list every item
+    // (answered or not) and can tell "never loaded" from "could not be loaded".
+    // Only an Open Dental outcome is recorded — an office that is not ready
+    // never reached Open Dental and says nothing about the plan.
+    await rememberExistingTxRead(req, visit, read);
+    if (!read.ok) {
+      await auditHygDenial(req, 'hyg_existing_tx', aptNum, {
+        office,
+        result: read.status >= 500 ? 'ERROR' : 'UNAUTHORIZED',
+      });
+      return res.status(read.status).json(read.body);
+    }
+
+    const procNums = read.items.map((i) => i.procNum);
+    const stored = await tenantDb.withTenantDb(req, async (pool) => {
+      const [frozen, dispositions, last] = await Promise.all([
+        existingTxStore.isFrozen(pool, { office: visit.office, visitId: visit.visitId }),
+        existingTxStore.listForVisit(pool, { office: visit.office, visitId: visit.visitId }),
+        existingTxStore.lastDiscussed(pool, {
+          office: visit.office,
+          patNum: visit.patNum,
+          visitId: visit.visitId,
+          visitDate: visit.visitDate,
+          procNums,
+        }),
+      ]);
+      return { frozen, dispositions, last };
+    });
+
+    // A patient's treatment plan is in this body — and "nothing planned" is a
+    // statement about a patient too — so it audits before it is sent, fail-
+    // closed, whether or not the read was a cache hit. One row for the visit,
+    // one for the patient, the same pair the visit GET writes.
+    await auditHygRead(req, 'hyg_existing_tx', { office, resourceId: aptNum });
+    await auditHygReads(req, [
+      { resourceType: 'hyg_existing_tx_patient', office, resourceId: visit.patNum },
+    ]);
+
+    const ms = Date.now() - startedAt;
+    // Counts and milliseconds only — never a PatNum, never a code.
+    console.log(
+      `[hygexistingtx] office=${office} apt=${aptNum} items=${read.items.length} ` +
+        `cached=${read.cached} ms=${ms}${ms > 500 ? ' SLOW' : ''}`
+    );
+
+    return res.json({
+      success: true,
+      office,
+      aptNum,
+      frozen: stored.frozen,
+      readAt: read.readAt,
+      items: read.items.map((item) => ({
+        ...item,
+        disposition: stored.dispositions.get(item.procNum) || null,
+        lastDiscussed: stored.last.get(item.procNum) || null,
+      })),
+    });
+  })
+);
+
+router.put(
+  '/:aptNum/existing-tx/:procNum',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) {
+      return res.status(400).json({
+        success: false,
+        error: 'aptNum must be a positive whole number',
+        code: 'INVALID_APT_NUM',
+        office,
+      });
+    }
+    const procNum = procNumFrom(req);
+    if (procNum === null) {
+      return res.status(400).json({
+        success: false,
+        error: 'procNum must be a positive whole number',
+        code: 'INVALID_PROC_NUM',
+        office,
+      });
+    }
+    const body = parseBody(res, contract.ExistingTxDispositionInputSchema, req.body);
+    if (body === null) return undefined;
+    // A blank note is no note, so "cleared" and "never typed" store the same.
+    const note = body.note === null ? null : body.note.trim() || null;
+    const input = { ...body, note };
+
+    const visit = await loadForMutation(req, res, office, aptNum);
+    if (!visit) return undefined;
+
+    const frozenRefusal = {
+      success: false,
+      error: 'This visit has been sent, so its existing-treatment answers can no longer be changed',
+      code: 'EXISTING_TX_FROZEN',
+      office,
+    };
+    // Checked first so a frozen visit costs no Open Dental request. The upsert
+    // below re-checks in the same statement as the write; this is not the guard.
+    const frozen = await tenantDb.withTenantDb(req, (pool) =>
+      existingTxStore.isFrozen(pool, { office: visit.office, visitId: visit.visitId })
+    );
+    if (frozen) return res.status(409).json(frozenRefusal);
+
+    // THE PROCEDURE MUST BE IN THIS VISIT'S OWN READ — the stored office and
+    // PatNum's plan — or there is nothing to answer about. A ProcNum from another
+    // patient, or from the same number in the other office, is a 404 here.
+    const read = await readExistingTxFor(visit, { refresh: false });
+    if (!read.ok) {
+      await auditHygDenial(req, 'hyg_existing_tx', aptNum, {
+        office,
+        result: read.status >= 500 ? 'ERROR' : 'UNAUTHORIZED',
+      });
+      return res.status(read.status).json(read.body);
+    }
+    const item = read.items.find((i) => i.procNum === procNum);
+    if (!item) {
+      await auditHygDenial(req, 'hyg_existing_tx', aptNum, { office, result: 'UNAUTHORIZED' });
+      return res.status(404).json({
+        success: false,
+        error: "That procedure is not on this patient's treatment plan in Open Dental",
+        code: 'PROC_NOT_IN_PLAN',
+        office,
+      });
+    }
+
+    // The snapshot is the SERVER's read of the procedure, never the client's.
+    const snapshot = {
+      code: item.code,
+      description: item.description,
+      tooth: item.tooth,
+      surface: item.surface,
+      date_tp: item.dateTp,
+      priority_name: item.priorityName,
+      // Slice 2b: the Router's "Already scheduled", as the read said it.
+      scheduled: item.scheduled,
+    };
+    const saved = await tenantDb.withTenantDb(req, (pool) =>
+      existingTxStore.saveDisposition(pool, {
+        office: visit.office,
+        visit,
+        procNum,
+        input,
+        snapshot,
+        actor: actorEmail(req),
+      })
+    );
+    if (!saved.ok) return res.status(409).json(frozenRefusal);
+
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'hyg_existing_tx',
+      resourceId: aptNum,
+      result: 'SUCCESS',
+      office,
+      // An identifier Open Dental minted, never a code or a name.
+      sourceRef: `proc_num:${procNum}`,
+    });
+    // The staged writes AFTER the save: a note staged before this answer now
+    // says "Out of date", and says it in this response rather than on the next GET.
+    const after = await tenantDb.withTenantDb(req, (pool) => getVisitView(pool, { office, aptNum }));
+    return res.json({
+      success: true,
+      office,
+      aptNum,
+      procNum,
+      disposition: saved.disposition,
+      stagedWrites: after ? after.stagedWrites : [],
+    });
+  })
+);
+
+/**
+ * PUT /api/hyg/visit/:aptNum/existing-tx — the "Select" bulk answer.
+ *
+ * THE SINGLE PUT'S GUARDS, FOR EVERY ROW, AND ALL OR NOTHING:
+ *   - office and PatNum come off the STORED visit (loadForMutation), never the body;
+ *   - every ProcNum must be in this visit's own Open Dental read, or the WHOLE
+ *     batch is a 404 and nothing is written — one stranger ProcNum is not "most
+ *     of them saved";
+ *   - a frozen visit is a 409, checked first and again inside the one statement
+ *     that writes them all (existingTxStore.saveDispositions);
+ *   - audited exactly as the single PUT is: one UPDATE row per procedure, by the
+ *     identifier Open Dental minted.
+ * At most EXISTING_TX_BATCH_MAX (200) rows; a ProcNum may appear once.
+ */
+router.put(
+  '/:aptNum/existing-tx',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) {
+      return res.status(400).json({
+        success: false,
+        error: 'aptNum must be a positive whole number',
+        code: 'INVALID_APT_NUM',
+        office,
+      });
+    }
+    const body = parseBody(res, contract.ExistingTxBatchRequestSchema, req.body);
+    if (body === null) return undefined;
+
+    const visit = await loadForMutation(req, res, office, aptNum);
+    if (!visit) return undefined;
+
+    const frozenRefusal = {
+      success: false,
+      error: 'This visit has been sent, so its existing-treatment answers can no longer be changed',
+      code: 'EXISTING_TX_FROZEN',
+      office,
+    };
+    const frozen = await tenantDb.withTenantDb(req, (pool) =>
+      existingTxStore.isFrozen(pool, { office: visit.office, visitId: visit.visitId })
+    );
+    if (frozen) return res.status(409).json(frozenRefusal);
+
+    const read = await readExistingTxFor(visit, { refresh: false });
+    if (!read.ok) {
+      await auditHygDenial(req, 'hyg_existing_tx', aptNum, {
+        office,
+        result: read.status >= 500 ? 'ERROR' : 'UNAUTHORIZED',
+      });
+      return res.status(read.status).json(read.body);
+    }
+    const planned = new Map(read.items.map((i) => [i.procNum, i]));
+    if (body.items.some((entry) => !planned.has(entry.procNum))) {
+      await auditHygDenial(req, 'hyg_existing_tx', aptNum, { office, result: 'UNAUTHORIZED' });
+      return res.status(404).json({
+        success: false,
+        error:
+          "One or more of those procedures is not on this patient's treatment plan in Open Dental. " +
+          'Nothing was saved.',
+        code: 'PROC_NOT_IN_PLAN',
+        office,
+      });
+    }
+
+    const entries = body.items.map((entry) => {
+      const item = planned.get(entry.procNum);
+      return {
+        procNum: entry.procNum,
+        input: {
+          clinical: entry.clinical,
+          patient: entry.patient,
+          waitTimeframe: entry.waitTimeframe,
+          // A blank note is no note, exactly as the single PUT stores it.
+          note: entry.note === null ? null : entry.note.trim() || null,
+        },
+        // The SERVER's read of each procedure, never the client's.
+        snapshot: {
+          code: item.code,
+          description: item.description,
+          tooth: item.tooth,
+          surface: item.surface,
+          date_tp: item.dateTp,
+          priority_name: item.priorityName,
+          scheduled: item.scheduled,
+        },
+      };
+    });
+    const saved = await tenantDb.withTenantDb(req, (pool) =>
+      existingTxStore.saveDispositions(pool, {
+        office: visit.office,
+        visit,
+        entries,
+        actor: actorEmail(req),
+      })
+    );
+    if (!saved.ok) return res.status(409).json(frozenRefusal);
+
+    for (const entry of entries) {
+      await audit(req, {
+        action: 'UPDATE',
+        resourceType: 'hyg_existing_tx',
+        resourceId: aptNum,
+        result: 'SUCCESS',
+        office,
+        sourceRef: `proc_num:${entry.procNum}`,
+      });
+    }
+    const after = await tenantDb.withTenantDb(req, (pool) => getVisitView(pool, { office, aptNum }));
+    return res.json({
+      success: true,
+      office,
+      aptNum,
+      items: entries.map((e) => ({ procNum: e.procNum, disposition: saved.dispositions.get(e.procNum) })),
+      stagedWrites: after ? after.stagedWrites : [],
+    });
   })
 );
 
@@ -727,6 +1180,18 @@ router.post(
     if (!visit) return undefined;
 
     const outcome = await tenantDb.withTenantDb(req, async (pool) => {
+      // SLICE 2b: the existing-treatment answers, from the STORED dispositions
+      // and their own snapshots — never from this request. The note and the
+      // slip print them; the handoff reads them at send time, frozen, and asks
+      // only whether any is TC-actionable (feedback round 1: a visit with no new
+      // treatment can still hand off).
+      const existingTx =
+        body.kind === 'note' || body.kind === 'router' || body.kind === 'tc-handoff'
+          ? await existingTxStore.loadForSend(pool, { office, visitId: visit.visitId })
+          : undefined;
+      // PRACTICE STAFF: only the note prints a typed-name line, so only the
+      // note reads this office's hyg_staff roster.
+      const roster = body.kind === 'note' ? await staffStore.signatureRoster(pool, office) : null;
       const staged = await visitStore.stageWrite(pool, {
         office,
         visit,
@@ -736,10 +1201,10 @@ router.post(
         // signed in and which office this is, and visitStore has no business
         // knowing either — it holds rows.
         compose: (kind, ctx) =>
-          composer.compose(kind, { ...ctx, signature: signatureFor(req, office) }),
+          composer.compose(kind, { ...ctx, signature: signatureFor(req, office, ctx.visit, roster), existingTx }),
       });
       if (!staged.ok) return staged;
-      return { ok: true, visit: await visitStore.getVisit(pool, { office, aptNum }) };
+      return { ok: true, visit: await getVisitView(pool, { office, aptNum }) };
     });
 
     if (!outcome.ok) {
@@ -761,7 +1226,7 @@ router.post(
       office,
       sourceRef: null,
     });
-    return res.status(201).json(visitPayload(outcome.visit));
+    return res.status(201).json(await viewPayload(req, outcome.visit));
   })
 );
 
@@ -807,7 +1272,7 @@ router.delete(
         amending: live !== null,
       });
       if (!removed.ok) return removed;
-      return { ok: true, visit: await visitStore.getVisit(pool, { office, aptNum }) };
+      return { ok: true, visit: await getVisitView(pool, { office, aptNum }) };
     });
 
     if (!outcome.ok) {
@@ -827,7 +1292,7 @@ router.delete(
       office,
       sourceRef: null,
     });
-    return res.json(visitPayload(outcome.visit));
+    return res.json(await viewPayload(req, outcome.visit));
   })
 );
 
@@ -889,7 +1354,7 @@ router.get(
     }
 
     const loaded = await tenantDb.withTenantDb(req, async (pool) => {
-      const visit = await visitStore.getVisit(pool, { office, aptNum });
+      const visit = await getVisitView(pool, { office, aptNum });
       if (!visit) return { visit: null, perio: null };
       return { visit, perio: await visitStore.getPerio(pool, { office, visitId: visit.visitId }) };
     });
@@ -999,7 +1464,7 @@ router.get(
     const patNum = resolved.appointment.patNum;
 
     const visit = await tenantDb.withTenantDb(req, (pool) =>
-      visitStore.getVisit(pool, { office, aptNum })
+      getVisitView(pool, { office, aptNum })
     );
     if (visit && visit.patNum !== patNum) {
       // A chart composed for one patient must never be drawn beside another
@@ -1333,7 +1798,7 @@ router.get(
     const office = req.hygOffice;
     const aptNum = aptNumFrom(req);
     if (aptNum === null) return badAptNum(res, office);
-    const visit = await tenantDb.withTenantDb(req, (pool) => visitStore.getVisit(pool, { office, aptNum }));
+    const visit = await tenantDb.withTenantDb(req, (pool) => getVisitView(pool, { office, aptNum }));
     if (!visit) {
       return res.json({ success: true, office, aptNum, stagedWrite: null, send: null, live: null, paused: null });
     }
@@ -1803,7 +2268,7 @@ router.post(
       : null;
 
     const after = await tenantDb.withTenantDb(req, (pool) =>
-      visitStore.getVisit(pool, { office, aptNum })
+      getVisitView(pool, { office, aptNum })
     );
 
     const written = outcome.outcomes.filter((o) => o.state === 'Written').length;
@@ -1818,7 +2283,7 @@ router.post(
     // was asked and reports what happened. A 500 here would say "we do not know
     // what happened", which would be a lie about a body full of outcomes.
     return res.json({
-      ...visitPayload(after),
+      ...await viewPayload(req, after),
       outcomes: outcome.outcomes,
       written,
       failed,
@@ -1898,7 +2363,7 @@ router.post(
         actor: actorEmail(req),
       });
       if (!ok) return null;
-      return visitStore.getVisit(pool, { office, aptNum });
+      return getVisitView(pool, { office, aptNum });
     });
 
     if (!moved) {
@@ -1918,7 +2383,7 @@ router.post(
       office,
       sourceRef: null,
     });
-    return res.json(visitPayload(moved));
+    return res.json(await viewPayload(req, moved));
   })
 );
 
@@ -1980,7 +2445,7 @@ router.post(
 
     // Already sent: say so, create nothing.
     if (ctx.visit.orthoSend) {
-      return res.json({ ...visitPayload(ctx.visit), alreadySent: true });
+      return res.json({ ...await viewPayload(req, ctx.visit), alreadySent: true });
     }
 
     const date = ctx.visit.visitDate || new Date().toISOString().slice(0, 10);
@@ -2001,10 +2466,10 @@ router.post(
       // Lost the race: either the other press already landed (the idempotent
       // answer) or it is still talking to TC (nothing is claimed here).
       const current = await tenantDb.withTenantDb(req, (pool) =>
-        visitStore.getVisit(pool, { office, aptNum })
+        getVisitView(pool, { office, aptNum })
       );
       if (current && current.orthoSend) {
-        return res.json({ ...visitPayload(current), alreadySent: true });
+        return res.json({ ...await viewPayload(req, current), alreadySent: true });
       }
       return res.status(409).json({
         success: false,
@@ -2068,8 +2533,8 @@ router.post(
 
     const visit =
       after ||
-      (await tenantDb.withTenantDb(req, (pool) => visitStore.getVisit(pool, { office, aptNum })));
-    return res.json({ ...visitPayload(visit), alreadySent: false });
+      (await tenantDb.withTenantDb(req, (pool) => getVisitView(pool, { office, aptNum })));
+    return res.json({ ...await viewPayload(req, visit), alreadySent: false });
   })
 );
 
@@ -2102,13 +2567,27 @@ async function deliverCheckout(req, { office, aptNum, final }) {
     delivery: { state: 'not_delivered', code, message: error },
   });
   try {
-    const ctx = await tenantDb.withTenantDb(req, (pool) =>
-      visitStore.getOrthoSendContext(pool, { office, aptNum })
-    );
+    const ctx = await tenantDb.withTenantDb(req, async (pool) => {
+      const found = await visitStore.getOrthoSendContext(pool, { office, aptNum });
+      if (!found) return null;
+      // Slice 2b: the existing-treatment answers as they stand — stored rows
+      // only. The visit Send's final update supersedes an early alert's.
+      const existingTx = await existingTxStore.loadForSend(pool, {
+        office,
+        visitId: found.visit.visitId,
+      });
+      return { ...found, existingTx };
+    });
     if (!ctx) return refuse(404, 'VISIT_NOT_FOUND', 'No visit has been started for this appointment yet');
 
     const date = ctx.visit.visitDate || new Date().toISOString().slice(0, 10);
-    const built = tcHandoff.buildCheckoutIntake({ visit: ctx.visit, snapshot: ctx.snapshot, date, final });
+    const built = tcHandoff.buildCheckoutIntake({
+      visit: ctx.visit,
+      snapshot: ctx.snapshot,
+      date,
+      final,
+      existingTx: ctx.existingTx,
+    });
     if (!built.ok) return refuse(409, built.code, built.error);
 
     const submit = req.app.get('hygCheckoutSubmit') || tcHandoff.submitCheckoutHandoff;
@@ -2233,7 +2712,7 @@ router.post(
     if (!(await tcCheckout.isEnabled(office))) return checkoutDisabled(res, office);
 
     const current = await tenantDb.withTenantDb(req, (pool) =>
-      visitStore.getVisit(pool, { office, aptNum })
+      getVisitView(pool, { office, aptNum })
     );
     if (!current) {
       return res.status(404).json({
@@ -2244,14 +2723,14 @@ router.post(
       });
     }
     // Already alerted: say so, send nothing.
-    if (current.checkoutSend) return res.json({ ...visitPayload(current), alreadySent: true });
+    if (current.checkoutSend) return res.json({ ...await viewPayload(req, current), alreadySent: true });
 
     const claimed = await tenantDb.withTenantDb(req, (pool) =>
       visitStore.claimCheckoutSend(pool, { office, aptNum })
     );
     if (!claimed) {
-      const now = await tenantDb.withTenantDb(req, (pool) => visitStore.getVisit(pool, { office, aptNum }));
-      if (now && now.checkoutSend) return res.json({ ...visitPayload(now), alreadySent: true });
+      const now = await tenantDb.withTenantDb(req, (pool) => getVisitView(pool, { office, aptNum }));
+      if (now && now.checkoutSend) return res.json({ ...await viewPayload(req, now), alreadySent: true });
       return res.status(409).json({
         success: false,
         error: 'Checkout is already being alerted for this visit. Wait a moment and reload.',
@@ -2265,7 +2744,7 @@ router.post(
       await tenantDb.withTenantDb(req, (pool) => visitStore.releaseCheckoutClaim(pool, { office, aptNum }));
       return res.status(result.status).json({ success: false, error: result.error, code: result.code, office });
     }
-    return res.json({ ...visitPayload(result.visit), alreadySent: false });
+    return res.json({ ...await viewPayload(req, result.visit), alreadySent: false });
   })
 );
 
@@ -2295,7 +2774,7 @@ router.post(
     if (!result.ok) {
       return res.status(result.status).json({ success: false, error: result.error, code: result.code, office });
     }
-    return res.json({ ...visitPayload(result.visit), alreadySent: false });
+    return res.json({ ...await viewPayload(req, result.visit), alreadySent: false });
   })
 );
 

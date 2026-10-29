@@ -10,6 +10,7 @@
  */
 import { useEffect, useState } from "react";
 import type { z } from "zod";
+import { odToothText } from "@shared/hyg/teeth";
 import type { LibraryCrownPricing, OfficeId, TcCase, TcCaseItem } from "@shared/tc/contract";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Layers } from "lucide-react";
@@ -87,7 +88,7 @@ export function ValueEngineeringPanel({ office, tcCase }: ValueEngineeringPanelP
           <div key={item.itemId} className="rounded-lg border border-border p-3">
             <div className="flex items-center justify-between gap-2 mb-2">
               <div className="text-sm font-medium text-foreground">
-                {item.tooth && <span className="text-muted-foreground mr-1.5">#{item.tooth}</span>}
+                {item.tooth && <span className="text-muted-foreground mr-1.5">{odToothText(item.tooth)}</span>}
                 {item.procedureName}
               </div>
               <div className="text-sm text-muted-foreground">

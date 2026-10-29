@@ -738,10 +738,15 @@ class OpenDentalSyncService {
    * bug in the caller, not something to paper over here. Omitted, the office's
    * configured default is written.
    *
+   * `options.sentOrReceived` (R6.10) is OD's string enum for the API payload —
+   * a referral milestone's note is neither sent nor received. Omitted, or any
+   * value outside OD's three, the API path writes "Received" exactly as before;
+   * the direct-DB path ignores it.
+   *
    * @param {string|number} patientId
    * @param {Record<string, unknown>} commLogEntry
    * @param {import('../config/odOffices').OdOfficeHandle} od
-   * @param {{ commTypeDefNum?: number|null }} [options]
+   * @param {{ commTypeDefNum?: number|null, sentOrReceived?: 'Neither'|'Sent'|'Received' }} [options]
    */
   async createCommLog(patientId, commLogEntry, od, options = {}) {
     // An office-bound connection is REQUIRED. There is no "default office" for a
@@ -772,7 +777,7 @@ class OpenDentalSyncService {
 
     if (od.client.client) {
       try {
-        const payload = this.buildCommLogApiPayload(patientId, commLogEntry, od, chosenDefNum);
+        const payload = this.buildCommLogApiPayload(patientId, commLogEntry, od, chosenDefNum, options.sentOrReceived);
         const response = await od.client.client.post('/commlogs', payload);
         return {
           success: true,
@@ -800,8 +805,10 @@ class OpenDentalSyncService {
    * @param {import('../config/odOffices').OdOfficeHandle} od
    * @param {number|null} [chosenDefNum] a validated user-picked commlog type;
    *   null/omitted writes this office's configured default.
+   * @param {string} [sentOrReceived] one of OD's "Neither"|"Sent"|"Received";
+   *   anything else (including omitted) is "Received", as it always was.
    */
-  buildCommLogApiPayload(patientId, commLogEntry, od, chosenDefNum = null) {
+  buildCommLogApiPayload(patientId, commLogEntry, od, chosenDefNum = null, sentOrReceived = undefined) {
     const modeEnum = { 0: 'None', 1: 'Email', 2: 'Text', 3: 'Phone', 4: 'In Person', 5: 'Mail' };
     const Mode_ = typeof commLogEntry.Mode_ === 'string'
       ? commLogEntry.Mode_
@@ -812,7 +819,9 @@ class OpenDentalSyncService {
       Note: commLogEntry.Note,
       CommDateTime: od.client.formatODDateTime(commLogEntry.CommDateTime),
       Mode_,
-      SentOrReceived: 'Received', // inbound call summaries are always received
+      // Inbound call summaries are always received; R6.10's referral notes say
+      // "Neither". Only OD's own three values pass.
+      SentOrReceived: ['Neither', 'Sent', 'Received'].includes(sentOrReceived) ? sentOrReceived : 'Received',
       // The type the user picked at the send step, else THIS OFFICE's "CareIN AI
       // Call" DefNum. Either way it is a DefNum from this practice's own database:
       // Roland's 486 is not a CommLogType in Riley's at all (Riley's is 451), and a

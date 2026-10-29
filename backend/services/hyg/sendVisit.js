@@ -66,6 +66,9 @@ const perioSend = require('./perioSend');
 const slipPdf = require('./slipPdf');
 const tcHandoff = require('./tcHandoffClient');
 const visitStore = require('./visitStore');
+const existingTxStore = require('./existingTxStore');
+const composer = require('./stagedWriteComposer');
+const existingTxStale = require('./existingTxStale');
 const { refuseUnlessTestPatient } = require('../../config/hygFixtureGate');
 
 /**
@@ -115,6 +118,12 @@ const PAYLOAD_SCHEMAS = {
        */
       visitType: contract.VisitTypeSchema.nullable().optional(),
       text: contract.z.string().min(1).max(60000),
+      // Slice 2b: the digest of the existing-treatment lines this note prints.
+      // Optional, so every note staged before it still sends.
+      existingTxDigest: contract.z.string().regex(/^[0-9a-f]{64}$/).optional(),
+      // Checkout v2: the digest of the medical-history line it prints. Optional,
+      // so every note staged before it still sends.
+      medicalHistoryDigest: contract.z.string().regex(/^[0-9a-f]{64}$/).optional(),
     })
     .strict(),
   router: contract.z
@@ -123,6 +132,7 @@ const PAYLOAD_SCHEMAS = {
       aptNum: contract.z.number().int().positive(),
       patNum: contract.z.number().int().positive(),
       lines: contract.z.array(contract.z.string()).min(1),
+      existingTxDigest: contract.z.string().regex(/^[0-9a-f]{64}$/).optional(),
     })
     .strict(),
   'tc-handoff': contract.z
@@ -131,7 +141,11 @@ const PAYLOAD_SCHEMAS = {
       aptNum: contract.z.number().int().positive(),
       patNum: contract.z.number().int().positive(),
       category: contract.HandoffCategorySchema,
-      items: contract.z.array(contract.z.record(contract.z.string(), contract.z.unknown())).min(1),
+      // Feedback round 1: EMPTY IS VALID — a handoff for existing treatment the
+      // patient wants to act on carries no new items. "Nothing at all to hand
+      // off" is refused by tcHandoff.buildIntake at send, against the answers
+      // as they stand then, not by this shape check.
+      items: contract.z.array(contract.z.record(contract.z.string(), contract.z.unknown())),
     })
     .strict(),
 };
@@ -306,13 +320,77 @@ async function sendSlip(row, payload, ctx) {
   return { ok: true, writtenRef: `Document ${uploaded.docNum} in ${category.name}` };
 }
 
-/** The treatment → TC's own hygiene-intake contract. */
+/**
+ * Is every confirmed note and slip still printing the existing-treatment
+ * answers that are stored now? (hygiene Slice 2b)
+ *
+ * The staged payload carries a digest of the lines it prints. A disposition
+ * edited after the note was staged would otherwise go to the chart as the OLD
+ * answer under a preview she approved, so the WHOLE batch is refused, with
+ * nothing written — the same rule as PREVIEW_CHANGED, because it is the same
+ * failure. A row with no digest is checked too: staged before any answer, it
+ * must still print none.
+ *
+ * CHECKOUT V2: the same check, for two more reasons — the note's medical-history
+ * line, and the TC handoff's whole preview (what TC receives). ONE function
+ * decides, existingTxStale.staleReason, which is also what the tray's "Out of
+ * date" reads: the screen can never call current what this refuses.
+ *
+ * @returns {Promise<{ ok: true } | { ok: false, code: string, error: string }>}
+ */
+async function checkStagedCurrent(pool, { office, visit, rows }) {
+  const carriers = rows.filter((r) => existingTxStale.CARRIER_KINDS.includes(r.kind));
+  if (carriers.length === 0) return { ok: true };
+  const existingTx = await existingTxStore.loadForSend(pool, { office, visitId: visit.visitId });
+  for (const row of carriers) {
+    const payload = row.payload || {};
+    const reason = existingTxStale.staleReason(
+      {
+        kind: row.kind,
+        existingTxDigest: typeof payload.existingTxDigest === 'string' ? payload.existingTxDigest : null,
+        medicalHistoryDigest: typeof payload.medicalHistoryDigest === 'string' ? payload.medicalHistoryDigest : null,
+        preview: Array.isArray(row.preview) ? row.preview : [],
+      },
+      { visit, existingTx }
+    );
+    if (reason) {
+      const what = row.kind === 'note' ? 'note' : row.kind === 'router' ? 'slip' : 'TC handoff';
+      return {
+        ok: false,
+        code: 'PREVIEW_CHANGED',
+        error: `${STALE_WORDS[reason]} after the ${what} was staged. Nothing was sent. ` +
+          'Stage it again so it says what is on the visit now.',
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/** The refusal's first words, per reason. */
+const STALE_WORDS = Object.freeze({
+  existing_tx: 'The existing-treatment answers changed',
+  medical_history: 'The medical-history answer changed',
+  handoff: 'What the treatment coordinator would receive changed',
+});
+
+/**
+ * The treatment → TC's own hygiene-intake contract.
+ *
+ * The existing-treatment answers are read HERE, server-side, after this row has
+ * been marked Sending — which freezes them (existingTxStore.FREEZING_KINDS), so
+ * what TC receives is what the visit will keep saying.
+ */
 async function sendHandoff(ctx) {
+  const existingTx = await existingTxStore.loadForSend(ctx.pool, {
+    office: ctx.office,
+    visitId: ctx.visit.visitId,
+  });
   const built = tcHandoff.buildIntake({
     visit: ctx.visit,
     appointment: ctx.appointment,
     handoffCategory: contract.deriveCategory(ctx.visit.items),
     date: ctx.visit.visitDate || ctx.date,
+    existingTx,
   });
   if (!built.ok) return built;
 
@@ -365,6 +443,10 @@ async function sendVisit({
   if (checked.rows.length === 0) {
     return { ok: false, status: 422, code: 'NOTHING_TO_SEND', error: 'Nothing is staged to send' };
   }
+  const current = await checkStagedCurrent(pool, { office, visit, rows: checked.rows });
+  if (!current.ok) {
+    return { ok: false, status: 409, code: current.code, error: current.error };
+  }
 
   /*
    * THE PERIO CONFIRM, BEFORE ANY UNIT WRITES ANYTHING.
@@ -414,6 +496,7 @@ async function sendVisit({
 
   const ctx = {
     req,
+    pool,
     office,
     officeName,
     date,
@@ -448,7 +531,15 @@ async function sendVisit({
 
     let result;
     try {
-      result = await sendOne(row, ctx);
+      // SLICE 2b: RE-CHECKED NOW THAT THIS ROW IS CLAIMED. Claiming it froze the
+      // answers, so an edit that landed between the check above and the claim
+      // is caught here — before any Open Dental write. The row fails with
+      // nothing written; Retry puts it back on the list (which unlocks the
+      // answers), and the next Send asks for it to be staged again.
+      const stillCurrent = existingTxStale.CARRIER_KINDS.includes(row.kind)
+        ? await checkStagedCurrent(pool, { office, visit, rows: [row] })
+        : { ok: true };
+      result = stillCurrent.ok ? await sendOne(row, ctx) : { ...stillCurrent, ok: false };
     } catch (err) {
       // A throw is a failure like any other: the row must not be left Sending.
       result = {

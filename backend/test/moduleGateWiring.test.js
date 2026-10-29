@@ -188,6 +188,23 @@ test('server.js: /api/platform carries the platform gate and NO module guard', (
   );
 });
 
+test('server.js: /api/platform/hyg-staff carries the Users page gate, no module guard, ABOVE /api/platform', () => {
+  const line = mountLine('/api/platform/hyg-staff');
+  // The office manager edits hygienists' names and licences: the Users page's
+  // gate (admin.all), never a hygienist's, and not the super-admin console's.
+  assert.ok(
+    /requirePermission\('admin\.all'\)/.test(line),
+    `/api/platform/hyg-staff must be behind requirePermission('admin.all'): ${line}`
+  );
+  assert.ok(!/requireModule|voiceModule/.test(line), `no module guard: ${line}`);
+  // Mounted below /api/platform it would never be reached by an admin — the
+  // super-admin gate would answer first.
+  assert.ok(
+    serverSrc.indexOf(line) < serverSrc.indexOf(mountLine('/api/platform')),
+    '/api/platform/hyg-staff must be mounted above /api/platform'
+  );
+});
+
 test("server.js: /api/mango guard exempts the tenant-exempt dev seeder", () => {
   const line = mountLine('/api/mango');
   assert.ok(

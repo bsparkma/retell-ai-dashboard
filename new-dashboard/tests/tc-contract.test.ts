@@ -350,10 +350,10 @@ describe("row mapping round-trip (contract → rows → contract)", () => {
     const imported = legacyCaseToTc(SYNTHETIC_LEGACY_CASE, newId);
     expect(imported.diagnosingProvider).toBeNull(); // legacy had only free-text doctorName
 
-    const entered = { ...imported, diagnosingProvider: "beau" }; // same identity convention as tc_legacy_user_map
+    const entered = { ...imported, diagnosingProvider: "drew" }; // same identity convention as tc_legacy_user_map
     const rows = caseToRows(entered, newId);
-    expect(rows.caseRow.diagnosing_provider).toBe("beau");
-    expect(caseFromRows(rows).diagnosingProvider).toBe("beau");
+    expect(rows.caseRow.diagnosing_provider).toBe("drew");
+    expect(caseFromRows(rows).diagnosingProvider).toBe("drew");
   });
 
   it("stamps office_id on every child row (multi-office rule)", () => {

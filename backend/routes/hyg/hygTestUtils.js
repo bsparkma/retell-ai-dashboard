@@ -53,13 +53,14 @@ const registry = require('../../platform/registry');
 const tenantDb = require('../../platform/tenantDb');
 const userContext = require('../../platform/userContext');
 const { tenantContext, requireModule } = require('../../middleware/tenantContext');
-const { requireReadWrite } = require('../../config/permissions');
+const { requireReadWrite, requirePermission } = require('../../config/permissions');
 const { requireDashboardAuth } = require('../../middleware/auth');
 // Namespace import so the harness can patch getOdOffice. A destructured import
 // would pin the real function at require time and no test could reach it.
 const odOffices = require('../../config/odOffices');
 const odConfigCache = require('../../services/odConfigCache');
 const odPatientCache = require('../../services/odPatientCache');
+const existingTreatment = require('../../services/hyg/existingTreatment');
 
 const REGISTRY_KEYS = [
   'getUserByEmail',
@@ -172,7 +173,80 @@ class FakeHygDb extends FakeAuditDb {
     this.hyg_staged_write = [];
     /** @type {Array<Record<string, any>>} item 12 */
     this.hyg_perio_send = [];
+    /** @type {Array<Record<string, any>>} Slice 2a */
+    this.hyg_existing_tx_disposition = [];
+    /** @type {Array<Record<string, any>>} Practice staff */
+    this.hyg_staff = [];
     this.seq = 0;
+  }
+
+  static EXISTING_TX_CLINICAL = ['no_change', 'worse_urgent', 're_evaluate', 'no_longer_needed'];
+  static EXISTING_TX_PATIENT = [
+    'not_discussed', 'ready_to_schedule', 'wants_to_wait', 'see_plan_again', 'cost_questions', 'declined',
+  ];
+  static EXISTING_TX_WAIT = ['1_month', '3_months', '6_months', 'next_recall'];
+
+  /** Slice 2a: any router/note write of this visit in a freezing state. */
+  existingTxFrozen(office, visitId, kinds, states) {
+    return this.hyg_staged_write.some(
+      (w) => w.office === office && w.visit_id === visitId && kinds.includes(w.kind) && states.includes(w.state)
+    );
+  }
+
+  /**
+   * The migration's CHECKs and composite FK for hyg_existing_tx_disposition,
+   * refused here as Postgres would refuse them.
+   */
+  checkExistingTx(row) {
+    this.checkOffice(row.office);
+    if (!this.hyg_visit.some((v) => v.visit_id === row.visit_id && v.office === row.office)) {
+      throw new Error('hyg_existing_tx_disposition_visit_fk violated');
+    }
+    if (!(row.pat_num > 0)) throw new Error('hyg_existing_tx_disposition_pat_num_check violated');
+    if (!(row.proc_num > 0)) throw new Error('hyg_existing_tx_disposition_proc_num_check violated');
+    if (row.clinical !== null && !FakeHygDb.EXISTING_TX_CLINICAL.includes(row.clinical)) {
+      throw new Error('hyg_existing_tx_disposition_clinical_check violated: ' + row.clinical);
+    }
+    if (!FakeHygDb.EXISTING_TX_PATIENT.includes(row.patient)) {
+      throw new Error('hyg_existing_tx_disposition_patient_check violated: ' + row.patient);
+    }
+    if (row.wait_timeframe !== null && !FakeHygDb.EXISTING_TX_WAIT.includes(row.wait_timeframe)) {
+      throw new Error('hyg_existing_tx_disposition_wait_timeframe_check violated');
+    }
+    if (row.patient !== 'wants_to_wait' && row.wait_timeframe !== null) {
+      throw new Error('hyg_existing_tx_disposition_wait_only_when_waiting_check violated');
+    }
+    if (row.note !== null && row.note.length > 500) {
+      throw new Error('hyg_existing_tx_disposition_note_check violated');
+    }
+    if (!row.proc_snapshot || typeof row.proc_snapshot !== 'object' || Array.isArray(row.proc_snapshot)) {
+      throw new Error('hyg_existing_tx_disposition_proc_snapshot_check violated');
+    }
+  }
+
+  /** hyg_visit_existing_tx_read_check, as Postgres would refuse it. */
+  checkExistingTxRead(value) {
+    if (value === null) return null;
+    if (typeof value !== 'object' || Array.isArray(value) || !['loaded', 'failed'].includes(value.status)) {
+      throw new Error('hyg_visit_existing_tx_read_check violated: ' + JSON.stringify(value).slice(0, 60));
+    }
+    return value;
+  }
+
+  /** A stored disposition as the driver returns it: bigint as a string. */
+  existingTxOut(r) {
+    return {
+      proc_num: String(r.proc_num),
+      clinical: r.clinical,
+      patient: r.patient,
+      wait_timeframe: r.wait_timeframe,
+      note: r.note,
+      proc_snapshot: r.proc_snapshot,
+      created_by: r.created_by,
+      created_at: r.created_at,
+      updated_by: r.updated_by,
+      updated_at: r.updated_at,
+    };
   }
 
   /** Deterministic ids — a test that asserts on one should not need a regex. */
@@ -206,6 +280,113 @@ class FakeHygDb extends FakeAuditDb {
     const at = row.checkout_send_claimed_at;
     if (at === null || at === undefined) return false;
     return Date.now() - new Date(at).getTime() < 2 * 60 * 1000;
+  }
+
+  /**
+   * hyg_staff, as 1793400000000_hyg_staff.js defines it: its CHECKs, and its
+   * sign-in uniqueness trigger (a collision is a 23505 naming the trigger's
+   * constraint, exactly as Postgres raises it). Every statement staffStore.js
+   * runs, and nothing else — an unknown one throws.
+   */
+  checkStaff(row) {
+    this.checkOffice(row.office);
+    if (!(typeof row.full_name === 'string' && row.full_name.trim() !== '' && row.full_name.length <= 120)) {
+      throw new Error('hyg_staff_full_name_check violated');
+    }
+    if (!(row.license === null || (typeof row.license === 'string' && row.license.trim() !== '' && row.license.length <= 40))) {
+      throw new Error('hyg_staff_license_check violated');
+    }
+    if (!(Array.isArray(row.sign_in_ids) && row.sign_in_ids.length >= 1 && row.sign_in_ids.length <= 10)) {
+      throw new Error('hyg_staff_sign_in_ids_check violated');
+    }
+    const clash = this.hyg_staff.some(
+      (s) => s.office === row.office && s.id !== row.id && s.sign_in_ids.some((x) => row.sign_in_ids.includes(x))
+    );
+    if (clash) {
+      const err = new Error('a sign-in id on this row is already used by another staff row');
+      // @ts-expect-error — pg error fields
+      err.code = '23505';
+      // @ts-expect-error — pg error fields
+      err.constraint = 'hyg_staff_sign_in_ids_unique';
+      throw err;
+    }
+  }
+
+  staffOverlap(office, exceptId, ids) {
+    return this.hyg_staff.some(
+      (s) => s.office === office && s.id !== exceptId && s.sign_in_ids.some((x) => ids.includes(x))
+    );
+  }
+
+  queryStaff(text, params) {
+    const COLS = /^\s*SELECT id, office, full_name, license, sign_in_ids, active,\s+created_by, created_at, updated_by, updated_at\s+FROM hyg_staff\s+WHERE office = \$1/i;
+    if (COLS.test(text) && /ORDER BY active DESC, lower\(full_name\), created_at\s*$/i.test(text)) {
+      const [office] = params;
+      const rows = this.hyg_staff
+        .filter((s) => s.office === office)
+        .sort((a, b) =>
+          a.active !== b.active
+            ? (a.active ? -1 : 1)
+            : a.full_name.toLowerCase().localeCompare(b.full_name.toLowerCase()) || a.seq - b.seq
+        )
+        .map((s) => ({ ...s, sign_in_ids: [...s.sign_in_ids] }));
+      return { rows, rowCount: rows.length };
+    }
+    if (COLS.test(text) && /WHERE office = \$1 AND id = \$2\s*$/i.test(text)) {
+      const [office, id] = params;
+      const rows = this.hyg_staff
+        .filter((s) => s.office === office && s.id === id)
+        .map((s) => ({ ...s, sign_in_ids: [...s.sign_in_ids] }));
+      return { rows, rowCount: rows.length };
+    }
+    if (/^\s*SELECT sign_in_ids\s+FROM hyg_staff\s+WHERE office = \$1 AND id IS DISTINCT FROM \$2::uuid AND sign_in_ids \?\| \$3::text\[\]\s*$/i.test(text)) {
+      const [office, exceptId, ids] = params;
+      const rows = this.hyg_staff
+        .filter((s) => s.office === office && s.id !== exceptId && s.sign_in_ids.some((x) => ids.includes(x)))
+        .map((s) => ({ sign_in_ids: [...s.sign_in_ids] }));
+      return { rows, rowCount: rows.length };
+    }
+    if (/^\s*INSERT INTO hyg_staff \(office, full_name, license, sign_in_ids, created_by, updated_by\)\s+SELECT \$1, \$2, \$3, \$4::jsonb, \$5, \$5\s+WHERE NOT EXISTS \(\s*SELECT 1 FROM hyg_staff\s+WHERE office = \$1 AND sign_in_ids \?\| ARRAY\(SELECT jsonb_array_elements_text\(\$4::jsonb\)\)\s*\)\s+RETURNING id\s*$/i.test(text)) {
+      const [office, fullName, license, idsJson, actor] = params;
+      const ids = FakeHygDb.json(idsJson);
+      if (this.staffOverlap(office, null, ids)) return { rows: [], rowCount: 0 };
+      this.seq += 1;
+      const now = new Date();
+      const row = {
+        id: `00000000-0000-4000-8000-${String(this.seq).padStart(12, '0')}`,
+        seq: this.seq,
+        office,
+        full_name: fullName,
+        license,
+        sign_in_ids: ids,
+        active: true,
+        created_by: actor,
+        created_at: now,
+        updated_by: actor,
+        updated_at: now,
+      };
+      this.checkStaff(row);
+      this.hyg_staff.push(row);
+      return { rows: [{ id: row.id }], rowCount: 1 };
+    }
+    if (/^\s*UPDATE hyg_staff\s+SET full_name = \$3, license = \$4, sign_in_ids = \$5::jsonb,\s+updated_by = \$6, updated_at = now\(\)\s+WHERE office = \$1 AND id = \$2\s+AND NOT EXISTS \(\s*SELECT 1 FROM hyg_staff o\s+WHERE o\.office = \$1 AND o\.id <> \$2\s+AND o\.sign_in_ids \?\| ARRAY\(SELECT jsonb_array_elements_text\(\$5::jsonb\)\)\s*\)\s+RETURNING id\s*$/i.test(text)) {
+      const [office, id, fullName, license, idsJson, actor] = params;
+      const ids = FakeHygDb.json(idsJson);
+      const row = this.hyg_staff.find((s) => s.office === office && s.id === id);
+      if (!row || this.staffOverlap(office, id, ids)) return { rows: [], rowCount: 0 };
+      const next = { ...row, full_name: fullName, license, sign_in_ids: ids, updated_by: actor, updated_at: new Date() };
+      this.checkStaff(next);
+      Object.assign(row, next);
+      return { rows: [{ id }], rowCount: 1 };
+    }
+    if (/^\s*UPDATE hyg_staff\s+SET active = \$3, updated_by = \$4, updated_at = now\(\)\s+WHERE office = \$1 AND id = \$2\s+RETURNING id\s*$/i.test(text)) {
+      const [office, id, active, actor] = params;
+      const row = this.hyg_staff.find((s) => s.office === office && s.id === id);
+      if (!row) return { rows: [], rowCount: 0 };
+      Object.assign(row, { active, updated_by: actor, updated_at: new Date() });
+      return { rows: [{ id }], rowCount: 1 };
+    }
+    throw new Error('[hygTestUtils] unexpected hyg_staff SQL: ' + text.slice(0, 120));
   }
 
   checkOffice(office) {
@@ -278,6 +459,226 @@ class FakeHygDb extends FakeAuditDb {
     if (typeof this.failOnce === 'function' && this.failOnce(text, params)) {
       this.failOnce = null;
       throw new Error('[hygTestUtils] simulated crash on: ' + text.trim().slice(0, 60));
+    }
+
+    // ── Practice staff (services/hyg/staffStore.js) ────────────────────────
+    if (/\bhyg_staff\b/.test(text)) return this.queryStaff(text, params);
+
+    // ── the day-card progress read (services/hyg/progressStore.js) ──────────
+    // Four read-only statements, each keyed by office FIRST. Matched before the
+    // hyg_perio_send catch-all below, which throws on SQL it was not taught.
+    if (/^\s*SELECT visit_id, apt_num, checkout_sent_at, checkout_final_at\s+FROM hyg_visit\s+WHERE office = \$1 AND apt_num = ANY\(\$2::bigint\[\]\)/i.test(text)) {
+      const [office, aptNums] = params;
+      const wanted = new Set(aptNums.map(Number));
+      const rows = this.hyg_visit
+        .filter((r) => r.office === office && wanted.has(Number(r.apt_num)))
+        .map((r) => ({
+          visit_id: r.visit_id,
+          // The driver's shape: bigint as a string.
+          apt_num: String(r.apt_num),
+          checkout_sent_at: r.checkout_sent_at ?? null,
+          checkout_final_at: r.checkout_final_at ?? null,
+        }));
+      return { rows, rowCount: rows.length };
+    }
+    if (/^\s*SELECT visit_id, kind, state, \(error_message IS NOT NULL\) AS has_error\s+FROM hyg_staged_write\s+WHERE office = \$1 AND visit_id = ANY\(\$2::uuid\[\]\)/i.test(text)) {
+      const [office, visitIds] = params;
+      const rows = this.hyg_staged_write
+        .filter((r) => r.office === office && visitIds.includes(r.visit_id))
+        .map((r) => ({
+          visit_id: r.visit_id,
+          kind: r.kind,
+          state: r.state,
+          has_error: r.error_message !== null && r.error_message !== undefined,
+        }));
+      return { rows, rowCount: rows.length };
+    }
+    if (/^\s*SELECT DISTINCT ON \(visit_id\) visit_id, state\s+FROM hyg_perio_send\s+WHERE office = \$1 AND visit_id = ANY\(\$2::uuid\[\]\) AND state <> 'deleted'\s+ORDER BY visit_id, created_at DESC, send_id DESC/i.test(text)) {
+      const [office, visitIds] = params;
+      /** @type {Map<string, Record<string, any>>} */
+      const latest = new Map();
+      for (const r of this.hyg_perio_send) {
+        if (r.office !== office || !visitIds.includes(r.visit_id) || r.state === 'deleted') continue;
+        const cur = latest.get(r.visit_id);
+        if (!cur || new Date(r.created_at).getTime() > new Date(cur.created_at).getTime()) {
+          latest.set(r.visit_id, r);
+        }
+      }
+      const rows = [...latest.values()].map((r) => ({ visit_id: r.visit_id, state: r.state }));
+      return { rows, rowCount: rows.length };
+    }
+    if (/^\s*SELECT visit_id, COUNT\(\*\)::int AS item_count\s+FROM hyg_treatment_item\s+WHERE office = \$1 AND visit_id = ANY\(\$2::uuid\[\]\)\s+GROUP BY visit_id/i.test(text)) {
+      const [office, visitIds] = params;
+      /** @type {Map<string, number>} */
+      const counts = new Map();
+      for (const r of this.hyg_treatment_item) {
+        if (r.office !== office || !visitIds.includes(r.visit_id)) continue;
+        counts.set(r.visit_id, (counts.get(r.visit_id) || 0) + 1);
+      }
+      const rows = [...counts].map(([visit_id, item_count]) => ({ visit_id, item_count }));
+      return { rows, rowCount: rows.length };
+    }
+    // Feedback round 1: the day card's count of TC-actionable answers.
+    if (/^\s*SELECT visit_id, COUNT\(\*\)::int AS actionable_count\s+FROM hyg_existing_tx_disposition\s+WHERE office = \$1 AND visit_id = ANY\(\$2::uuid\[\]\) AND patient = ANY\(\$3::text\[\]\)\s+GROUP BY visit_id/i.test(text)) {
+      const [office, visitIds, patients] = params;
+      /** @type {Map<string, number>} */
+      const counts = new Map();
+      for (const r of this.hyg_existing_tx_disposition) {
+        if (r.office !== office || !visitIds.includes(r.visit_id) || !patients.includes(r.patient)) continue;
+        counts.set(r.visit_id, (counts.get(r.visit_id) || 0) + 1);
+      }
+      const rows = [...counts].map(([visit_id, actionable_count]) => ({ visit_id, actionable_count }));
+      return { rows, rowCount: rows.length };
+    }
+
+    // ── Slice 2b: the visit's recorded existing-treatment read ─────────────
+    if (/^\s*WITH writes AS \(\s*SELECT state FROM hyg_staged_write\s+WHERE office = \$1 AND visit_id = \$2 AND kind = ANY\(\$5::text\[\]\)\s+FOR SHARE\s*\)\s*UPDATE hyg_visit SET existing_tx_read = \$3::jsonb\s+WHERE office = \$1 AND visit_id = \$2\s+AND \(existing_tx_read IS NULL OR existing_tx_read->>'readAt' IS DISTINCT FROM \$4::text\)\s+AND \(SELECT count\(\*\) FROM writes WHERE state = ANY\(\$6::text\[\]\)\) = 0/i.test(text)) {
+      const [office, visitId, value, readAt, kinds, states] = params;
+      const row = this.hyg_visit.find((v) => v.office === office && v.visit_id === visitId);
+      if (!row || this.existingTxFrozen(office, visitId, kinds, states)) return { rows: [], rowCount: 0 };
+      const cur = row.existing_tx_read ?? null;
+      if (cur && cur.readAt === readAt) return { rows: [], rowCount: 0 };
+      row.existing_tx_read = this.checkExistingTxRead(FakeHygDb.json(value));
+      return { rows: [], rowCount: 1 };
+    }
+    if (/^\s*WITH writes AS \(\s*SELECT state FROM hyg_staged_write\s+WHERE office = \$1 AND visit_id = \$2 AND kind = ANY\(\$4::text\[\]\)\s+FOR SHARE\s*\)\s*UPDATE hyg_visit SET existing_tx_read = \$3::jsonb\s+WHERE office = \$1 AND visit_id = \$2 AND existing_tx_read IS NULL\s+AND \(SELECT count\(\*\) FROM writes WHERE state = ANY\(\$5::text\[\]\)\) = 0/i.test(text)) {
+      const [office, visitId, value, kinds, states] = params;
+      const row = this.hyg_visit.find((v) => v.office === office && v.visit_id === visitId);
+      if (!row || (row.existing_tx_read ?? null) !== null || this.existingTxFrozen(office, visitId, kinds, states)) {
+        return { rows: [], rowCount: 0 };
+      }
+      row.existing_tx_read = this.checkExistingTxRead(FakeHygDb.json(value));
+      return { rows: [], rowCount: 1 };
+    }
+    if (/^\s*SELECT existing_tx_read FROM hyg_visit WHERE office = \$1 AND visit_id = \$2\s*$/i.test(text)) {
+      const [office, visitId] = params;
+      const rows = this.hyg_visit
+        .filter((v) => v.office === office && v.visit_id === visitId)
+        .map((v) => ({ existing_tx_read: v.existing_tx_read ?? null }));
+      return { rows, rowCount: rows.length };
+    }
+
+    // ── existing treatment dispositions (Slice 2a, existingTxStore.js) ──────
+    // Every statement keyed by office FIRST, like the store's. Matched before
+    // the catch-alls below, which throw on SQL they were not taught.
+    if (/^\s*SELECT 1 FROM hyg_staged_write\s+WHERE office = \$1 AND visit_id = \$2\s+AND kind = ANY\(\$3::text\[\]\) AND state = ANY\(\$4::text\[\]\)\s+LIMIT 1/i.test(text)) {
+      const [office, visitId, kinds, states] = params;
+      const hit = this.existingTxFrozen(office, visitId, kinds, states);
+      return { rows: hit ? [{ '?column?': 1 }] : [], rowCount: hit ? 1 : 0 };
+    }
+    if (/^\s*SELECT\s+proc_num, clinical, patient[\s\S]*FROM hyg_existing_tx_disposition\s+WHERE office = \$1 AND visit_id = \$2\s*$/i.test(text)) {
+      const [office, visitId] = params;
+      const rows = this.hyg_existing_tx_disposition
+        .filter((r) => r.office === office && r.visit_id === visitId)
+        .map((r) => this.existingTxOut(r));
+      return { rows, rowCount: rows.length };
+    }
+    if (/^\s*SELECT DISTINCT ON \(d\.proc_num\)[\s\S]*FROM hyg_existing_tx_disposition d\s+JOIN hyg_visit v ON v\.visit_id = d\.visit_id AND v\.office = d\.office\s+WHERE d\.office = \$1 AND d\.pat_num = \$2 AND d\.proc_num = ANY\(\$3::bigint\[\]\)\s+AND d\.visit_id <> \$4 AND d\.patient <> 'not_discussed'\s+AND v\.visit_date < \$5::date\s+ORDER BY d\.proc_num, v\.visit_date DESC, d\.updated_at DESC/i.test(text)) {
+      const [office, patNum, procNums, visitId, visitDate] = params;
+      const wanted = new Set(procNums.map(Number));
+      /** @type {Map<number, Record<string, any>>} */
+      const best = new Map();
+      for (const d of this.hyg_existing_tx_disposition) {
+        if (d.office !== office || Number(d.pat_num) !== Number(patNum)) continue;
+        if (!wanted.has(Number(d.proc_num)) || d.visit_id === visitId || d.patient === 'not_discussed') continue;
+        const v = this.hyg_visit.find((x) => x.visit_id === d.visit_id && x.office === d.office);
+        const vDate = v && v.visit_date ? String(v.visit_date).slice(0, 10) : null;
+        if (!vDate || !(vDate < String(visitDate))) continue;
+        const cur = best.get(Number(d.proc_num));
+        const newer =
+          !cur ||
+          vDate > cur.vDate ||
+          (vDate === cur.vDate && new Date(d.updated_at).getTime() > new Date(cur.d.updated_at).getTime());
+        if (newer) best.set(Number(d.proc_num), { d, vDate });
+      }
+      const rows = [...best.values()].map(({ d, vDate }) => ({
+        proc_num: String(d.proc_num),
+        patient: d.patient,
+        wait_timeframe: d.wait_timeframe,
+        clinical: d.clinical,
+        visit_date: vDate,
+      }));
+      return { rows, rowCount: rows.length };
+    }
+    // The freeze guard: a FOR SHARE CTE over the visit's router/note rows, then
+    // a count of the frozen ones. The fake has no concurrency, so the lock is
+    // pinned by the real-Postgres rehearsal; this pins the statement's shape.
+    if (/^\s*WITH writes AS \(\s*SELECT state FROM hyg_staged_write\s+WHERE office = \$1::text AND visit_id = \$2::uuid AND kind = ANY\(\$11::text\[\]\)\s+FOR SHARE\s*\)\s*INSERT INTO hyg_existing_tx_disposition[\s\S]*WHERE \(SELECT count\(\*\) FROM writes WHERE state = ANY\(\$12::text\[\]\)\) = 0\s+ON CONFLICT \(office, visit_id, proc_num\) DO UPDATE/i.test(text)) {
+      const [office, visitId, patNum, procNum, clinical, patient, wait, note, snapshot, actor, kinds, states] =
+        params;
+      if (this.existingTxFrozen(office, visitId, kinds, states)) return { rows: [], rowCount: 0 };
+      const row = {
+        office,
+        visit_id: visitId,
+        pat_num: Number(patNum),
+        proc_num: Number(procNum),
+        clinical,
+        patient,
+        wait_timeframe: wait,
+        note,
+        proc_snapshot: FakeHygDb.json(snapshot),
+        updated_by: actor,
+      };
+      this.checkExistingTx(row);
+      const existing = this.hyg_existing_tx_disposition.find(
+        (r) => r.office === office && r.visit_id === visitId && r.proc_num === row.proc_num
+      );
+      if (existing) {
+        // ON CONFLICT DO UPDATE: pat_num and created_* are the original row's.
+        Object.assign(existing, {
+          clinical, patient, wait_timeframe: wait, note,
+          proc_snapshot: row.proc_snapshot, updated_by: actor, updated_at: new Date(),
+        });
+        return { rows: [this.existingTxOut(existing)], rowCount: 1 };
+      }
+      const now = new Date();
+      const created = {
+        id: this.nextId('etx'), ...row, created_by: actor, created_at: now, updated_at: now,
+      };
+      this.hyg_existing_tx_disposition.push(created);
+      return { rows: [this.existingTxOut(created)], rowCount: 1 };
+    }
+    // The bulk answer (existingTxStore.saveDispositions): the same guard and
+    // upsert over a jsonb_to_recordset. ONE statement, so every CHECK runs before
+    // any row lands — a refusal on one row writes none, as Postgres would.
+    if (/^\s*WITH writes AS \(\s*SELECT state FROM hyg_staged_write\s+WHERE office = \$1::text AND visit_id = \$2::uuid AND kind = ANY\(\$6::text\[\]\)\s+FOR SHARE\s*\)\s*INSERT INTO hyg_existing_tx_disposition[\s\S]*FROM jsonb_to_recordset\(\$4::jsonb\)[\s\S]*WHERE \(SELECT count\(\*\) FROM writes WHERE state = ANY\(\$7::text\[\]\)\) = 0\s+ON CONFLICT \(office, visit_id, proc_num\) DO UPDATE/i.test(text)) {
+      const [office, visitId, patNum, recordset, actor, kinds, states] = params;
+      this.batchUpserts = (this.batchUpserts || 0) + 1;
+      if (this.existingTxFrozen(office, visitId, kinds, states)) return { rows: [], rowCount: 0 };
+      const incoming = FakeHygDb.json(recordset).map((x) => ({
+        office,
+        visit_id: visitId,
+        pat_num: Number(patNum),
+        proc_num: Number(x.proc_num),
+        clinical: x.clinical ?? null,
+        patient: x.patient,
+        wait_timeframe: x.wait_timeframe ?? null,
+        note: x.note ?? null,
+        proc_snapshot: x.proc_snapshot,
+        updated_by: actor,
+      }));
+      for (const row of incoming) this.checkExistingTx(row);
+      const out = [];
+      for (const row of incoming) {
+        const existing = this.hyg_existing_tx_disposition.find(
+          (r) => r.office === office && r.visit_id === visitId && r.proc_num === row.proc_num
+        );
+        if (existing) {
+          Object.assign(existing, {
+            clinical: row.clinical, patient: row.patient, wait_timeframe: row.wait_timeframe,
+            note: row.note, proc_snapshot: row.proc_snapshot, updated_by: actor, updated_at: new Date(),
+          });
+          out.push(this.existingTxOut(existing));
+        } else {
+          const now = new Date();
+          const created = {
+            id: this.nextId('etx'), ...row, created_by: actor, created_at: now, updated_at: now,
+          };
+          this.hyg_existing_tx_disposition.push(created);
+          out.push(this.existingTxOut(created));
+        }
+      }
+      return { rows: out, rowCount: out.length };
     }
 
     // ── hyg_perio_send (item 12) ────────────────────────────────────────────
@@ -911,6 +1312,24 @@ class FakeHygDb extends FakeAuditDb {
       return { rows: [], rowCount: 1 };
     }
 
+    // existingTxStale.staleKinds: the carriers' stored digests only.
+    if (/^\s*SELECT kind, state, payload->>'existingTxDigest' AS existing_tx_digest,\s+payload->>'medicalHistoryDigest' AS medical_history_digest\s+FROM hyg_staged_write\s+WHERE visit_id = \$1 AND office = \$2 AND kind = ANY\(\$3::text\[\]\) AND state = ANY\(\$4::text\[\]\)/i.test(text)) {
+      const [visitId, office, kinds, states] = params;
+      const rows = this.hyg_staged_write
+        .filter((r) => r.visit_id === visitId && r.office === office && kinds.includes(r.kind) && states.includes(r.state))
+        .map((r) => {
+          const payload = FakeHygDb.json(r.payload) || {};
+          const digest = payload.existingTxDigest;
+          const medical = payload.medicalHistoryDigest;
+          return {
+            kind: r.kind,
+            state: r.state,
+            existing_tx_digest: typeof digest === 'string' ? digest : null,
+            medical_history_digest: typeof medical === 'string' ? medical : null,
+          };
+        });
+      return { rows, rowCount: rows.length };
+    }
     if (/^\s*SELECT state FROM hyg_staged_write/i.test(text)) {
       const [visitId, office, kind] = params;
       const rows = this.hyg_staged_write
@@ -1224,6 +1643,10 @@ async function bootHygApp({
   odUnavailableFor = [],
   tcSubmit = null,
   checkoutSubmit = null,
+  // Slice 2a: a SEPARATE fake client per office, keyed by office, for tests
+  // where the same OD identifier must mean different things in each database.
+  // An office not named here gets `od`.
+  odByOffice = null,
 } = {}) {
   const originals = {
     registry: Object.fromEntries(REGISTRY_KEYS.map((k) => [k, registry[k]])),
@@ -1263,6 +1686,7 @@ async function bootHygApp({
    */
   odPatientCache.resetOdPatientCache();
   odConfigCache.resetOdConfigCache();
+  existingTreatment.resetExistingTreatmentCache();
 
   process.env.OPENDENTAL_CUSTOMER_KEY = 'test-customer-key-roland';
   process.env.OPENDENTAL_CUSTOMER_KEY_VALLEY = 'test-customer-key-valley';
@@ -1290,7 +1714,7 @@ async function bootHygApp({
       officeKey: key,
       officeName: key === 'valley' ? 'Riley Family Dental' : 'Roland Family Dental',
       commTypeDefNum: key === 'valley' ? 451 : 486,
-      client: od,
+      client: odByOffice && odByOffice[key] ? odByOffice[key] : od,
     });
   };
 
@@ -1353,6 +1777,9 @@ async function bootHygApp({
     requireReadWrite('hyg.read', 'hyg.write'),
     require('./index')
   );
+  // The Practice staff page, mounted as server.js mounts it: the Users page's
+  // admin.all gate, no module guard.
+  app.use('/api/platform/hyg-staff', requirePermission('admin.all'), require('../hygStaff'));
 
   return new Promise((resolve) => {
     const server = app.listen(0, () => {

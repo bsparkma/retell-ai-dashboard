@@ -7,12 +7,12 @@
  *    it); Save & submit submits; draft / pending actions call their verbs.
  *  - ReferralsPanel in the checkout sidebar (compact): the chip goes live,
  *    and reads "None" with no Start button while referrals is off.
- *  - The sign-off page: queue → detail with history → Approve (ready-to-send
- *    copy) / Decline (needs a reason).
+ *  - (The sign-off page's queue / Approve / Decline pins moved with the page
+ *    into the hub: tests/referrals-signoff-in-hub.test.tsx.)
  *  - useSignoffWatch: the arrival alert obeys the `referral_signoff`
  *    preference; an unreadable preference (a doctor) falls back to a banner.
  *
- * With TC_SHOTS=1 it also dumps the sign-off page and the case panel
+ * With TC_SHOTS=1 it also dumps the hub's sign-off view and the case panel
  * (tccheckout-09 / -10). NO NETWORK, NO BACKEND, NO PHI (test patient 12827).
  */
 import * as React from "react";
@@ -61,7 +61,7 @@ vi.mock("@/features/tc/components/TcShell", async (orig) => ({
 }));
 
 import { ReferralsPanel } from "@/features/tc/referrals/ReferralsPanel";
-import { SignoffInner } from "@/pages/tc/TcReferralSignoff";
+import { HubSignoffView } from "@/pages/tc/TcReferralsHub";
 import { useSignoffWatch } from "@/features/tc/referrals/useSignoffWatch";
 
 const CASE_ID = "6f9619ff-8b86-4d01-b42d-00cf4fc964ff";
@@ -217,54 +217,6 @@ describe("ReferralsPanel in the checkout sidebar (compact)", () => {
   });
 });
 
-describe("the sign-off page", () => {
-  it("queue → detail with history → Approve, with the honest ready-to-send line", async () => {
-    const pending = referral({ status: "pending_signoff" });
-    ref.listSignoffQueue.mockResolvedValueOnce([pending]).mockResolvedValue([]);
-    ref.getSignoffReferral.mockResolvedValue({
-      ...pending,
-      events: [
-        { eventId: "3b1c2d3e-4f50-4a61-8b72-938495a6b7c8", fromStatus: null, toStatus: "draft", actor: "tc@carein.ai", at: "2026-10-16T15:00:00.000Z", note: "" },
-        { eventId: "4b1c2d3e-4f50-4a61-8b72-938495a6b7c8", fromStatus: "draft", toStatus: "pending_signoff", actor: "tc@carein.ai", at: "2026-10-16T15:01:00.000Z", note: "" },
-      ],
-    });
-    ref.approveReferral.mockResolvedValue(referral({ status: "approved" }));
-    render(<SignoffInner office="roland" />);
-    fireEvent.click(await screen.findByTestId("tc-signoff-row"));
-    const detail = await screen.findByTestId("tc-signoff-detail");
-    expect(within(detail).getByText("Sensitive to biting")).toBeTruthy();
-    expect(within(detail).getByText(/Pending Dr. sign-off · tc@carein\.ai/)).toBeTruthy();
-    fireEvent.click(within(detail).getByRole("button", { name: /Approve/ }));
-    await waitFor(() => expect(ref.approveReferral).toHaveBeenCalledWith("roland", pending.referralId));
-    expect((await screen.findByTestId("tc-signoff-done")).textContent).toContain(
-      "Ready to send — sending ships in a later update.",
-    );
-    expect(await screen.findByTestId("tc-signoff-empty")).toBeTruthy();
-  });
-
-  it("Decline needs a reason before it can be pressed", async () => {
-    const pending = referral({ status: "pending_signoff" });
-    ref.listSignoffQueue.mockResolvedValue([pending]);
-    ref.getSignoffReferral.mockResolvedValue({ ...pending, events: [] });
-    ref.declineReferral.mockResolvedValue(referral({ status: "declined" }));
-    render(<SignoffInner office="roland" />);
-    fireEvent.click(await screen.findByTestId("tc-signoff-row"));
-    const detail = await screen.findByTestId("tc-signoff-detail");
-    fireEvent.click(within(detail).getByRole("button", { name: /Decline/ }));
-    const confirm = within(detail).getByRole("button", { name: "Decline referral" }) as HTMLButtonElement;
-    expect(confirm.disabled).toBe(true);
-    fireEvent.change(within(detail).getByLabelText("Why decline?"), { target: { value: "Treat in house first" } });
-    fireEvent.click(confirm);
-    await waitFor(() => expect(ref.declineReferral).toHaveBeenCalledWith("roland", pending.referralId, "Treat in house first"));
-  });
-
-  it("an empty queue says so", async () => {
-    ref.listSignoffQueue.mockResolvedValue([]);
-    render(<SignoffInner office="roland" />);
-    expect((await screen.findByTestId("tc-signoff-empty")).textContent).toContain("Nothing is waiting");
-  });
-});
-
 // ── the sign-off arrival obeys the referral_signoff preference ──────────────
 
 function Probe({ canReadPrefs = true }: { canReadPrefs?: boolean }) {
@@ -354,10 +306,10 @@ describe.skipIf(!SHOOT)("tc referrals R2 screenshot dumps", () => {
     ref.listSignoffQueue.mockResolvedValue([pending, referral({ referralId: "2b1c2d3e-4f50-4a61-8b72-938495a6b7c8", patientName: "Test, MangoTest", odPatientId: 12828, status: "pending_signoff", practiceName: "Valley Oral Surgery", specialty: "Oral surgery", reason: "Impacted #17", teeth: [17], urgency: "routine" })]);
     render(
       <div className="max-w-4xl">
-        <SignoffInner office="roland" />
+        <HubSignoffView offices={["roland"]} showOfficeBadges={false} viewer={{ tcFull: false, signoff: true }} />
       </div>,
     );
-    await screen.findAllByTestId("tc-signoff-row");
+    await screen.findAllByTestId("tc-hub-signoff-row");
     mkdirSync(out, { recursive: true });
     writeFileSync(resolve(out, "tccheckout-09-signoff-queue@1280x700.html"), document.body.innerHTML, "utf8");
   });

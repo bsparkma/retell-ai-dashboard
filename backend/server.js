@@ -314,6 +314,11 @@ async function bootstrap() {
   // module guard: managing who works here is a property of the practice, not
   // of any product they bought. A TC-only tenant still needs a Users page.
   app.use('/api/users', requirePermission('admin.all'), require('./routes/users'));
+  // The Practice staff page (hygienists' names, licences, sign-ins) — the Users
+  // page's gate, not the console's: the office manager edits these. MOUNTED
+  // ABOVE /api/platform on purpose, so this one path answers under admin.all
+  // and every other /api/platform path still meets requireSuperAdmin below.
+  app.use('/api/platform/hyg-staff', requirePermission('admin.all'), require('./routes/hygStaff'));
   // The Platform Console (PR C): the tenant catalog, module entitlements, and
   // the call-store retention policy. NO module guard, deliberately — entitlement
   // answers "did this practice buy the product?", and this is the surface that

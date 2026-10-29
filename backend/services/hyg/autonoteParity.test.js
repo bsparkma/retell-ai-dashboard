@@ -36,6 +36,11 @@ const composer = require('./stagedWriteComposer');
 const contract = require('../../hyg/contract.gen.cjs');
 const hygStaff = require('../../config/hygStaff');
 
+// No real staff in tests: the synthetic roster stands in for the shipped lists
+// for this whole file (Practice staff page).
+const { useSyntheticStaff } = require('../../config/hygStaff.fixture');
+useSyntheticStaff();
+
 const AUTONOTES = JSON.parse(
   fs.readFileSync(
     path.join(__dirname, '..', '..', '..', 'docs', 'hyg-autonotes', 'autonotes.json'),
@@ -79,9 +84,16 @@ function promptsIn(mainText) {
 // Parity with the practice's export
 // ─────────────────────────────────────────────────────────────────────────────
 
+// RULING (feedback round 1): a DRAFT template with no practice source names
+// none (null) — Sealant, today. Every other type, draft or not, must still name
+// an auto note that exists. Only drafts may be source-less.
 test('every visit type names an auto note that actually exists in the export', () => {
   for (const visitType of contract.VISIT_TYPES) {
     const name = contract.VISIT_TYPE_AUTONOTE[visitType];
+    if (name === null) {
+      assert.ok(contract.DRAFT_VISIT_TYPES.has(visitType), `${visitType} has no source and is not a draft`);
+      continue;
+    }
     assert.ok(name, `${visitType} has no AutoNoteName`);
     assert.ok(
       autoNoteNamed(name),
@@ -92,6 +104,17 @@ test('every visit type names an auto note that actually exists in the export', (
 
 test('every control this build renders exists in the export, under that name', () => {
   for (const [id, control] of Object.entries(contract.NOTE_CONTROLS)) {
+    // RULING (feedback round 1): `inflammation` is the SRP/FMD notes'
+    // [Prompt:"Inflammaiton"] — a free-text hole with no AutoNoteControl behind
+    // it. It must be a prompt in the export instead, and typed, not picked.
+    if (id === 'inflammation') {
+      assert.ok(contract.PROMPT_ONLY_CONTROLS.has('inflammation'));
+      assert.ok(
+        AUTONOTES.AutoNotes.some((n) => promptsIn(n.MainText).includes(control.descript.trim())),
+        'the inflammation hole is no longer in any auto note'
+      );
+      continue;
+    }
     assert.ok(
       controlNamed(control.descript),
       `control ${id} claims AutoNoteControl "${control.descript}", which does not exist`
@@ -108,6 +131,13 @@ test('every option list matches the export, apart from two named spellings', () 
     // backend/config/hygStaff.js, never in a file both practices share.
     if (id === 'drs') {
       assert.deepEqual(control.options, [], 'the doctor list must not be hardcoded here');
+      continue;
+    }
+    // RULING (feedback round 1): the TYPED rows have no chips on purpose.
+    // Anesthetic's export list is a sentence builder whose repeated bare
+    // numbers mean nothing as chips; inflammation has no control at all.
+    if (contract.PROMPT_ONLY_CONTROLS.has(id)) {
+      assert.deepEqual(control.options, [], `${id} is typed, so it offers no chips`);
       continue;
     }
     const theirs = controlOptions(controlNamed(control.descript));
@@ -149,6 +179,8 @@ test('every option list matches the export, apart from two named spellings', () 
 
 test('the multi/one-response flag matches the export for every control', () => {
   for (const [id, control] of Object.entries(contract.NOTE_CONTROLS)) {
+    // RULING (feedback round 1): a free-text hole has no ControlType to match.
+    if (id === 'inflammation') continue;
     const theirs = controlNamed(control.descript);
     assert.equal(
       control.multi,
@@ -163,10 +195,17 @@ test("a template's rows cover every graded hole its auto note has", () => {
   // The templates also print holes this form does not GRADE — the free-text
   // ones — so those are named here rather than silently tolerated.
   const FREE_TEXT_PROMPTS = new Set(['Chief Complaint']);
+  // RULING (feedback round 1): an SRP note's "Quad" hole is answered by WHICH
+  // visit type was picked (SRP Quad 1-4), and the note prints that quad.
+  const FIXED_BY_TYPE = { Quad: (t) => t.startsWith('srp_quad_') };
 
   for (const visitType of contract.VISIT_TYPES) {
+    // A draft with no source (Sealant) has no holes to cover.
+    if (contract.VISIT_TYPE_AUTONOTE[visitType] === null) continue;
     const source = autoNoteNamed(contract.VISIT_TYPE_AUTONOTE[visitType]);
-    const theirs = promptsIn(source.MainText).filter((p) => !FREE_TEXT_PROMPTS.has(p));
+    const theirs = promptsIn(source.MainText)
+      .filter((p) => !FREE_TEXT_PROMPTS.has(p))
+      .filter((p) => !(FIXED_BY_TYPE[p] && FIXED_BY_TYPE[p](visitType)));
     const ours = new Set(
       contract
         .controlsFor(visitType)
@@ -209,7 +248,10 @@ function filledFields(visitType) {
   const fields = {};
   for (const id of contract.controlsFor(visitType)) {
     if (id === 'drs') {
-      fields[id] = { grades: ['Sparkman'], detail: '' };
+      // RULING (feedback round 1): one of the office's own doctorOptions, as the
+      // form offers it — the signature block now prints the picked doctor, so
+      // the pick has to be a name the office config knows.
+      fields[id] = { grades: ['Drew Example'], detail: '' };
       continue;
     }
     const control = contract.NOTE_CONTROLS[id];
@@ -268,10 +310,20 @@ function visit(visitType, over = {}) {
   };
 }
 
-const SIGNATURE = hygStaff.signatureBlock({
-  office: 'roland',
-  hygienistName: 'Raegan McGee',
-});
+/**
+ * The typed-name block exactly as routes/hyg/visit.js signatureFor builds it:
+ * the author, then the examining doctor the SLIP picked (feedback round 1).
+ */
+function signatureFor(v) {
+  const drs = v.slip.noteFields && v.slip.noteFields.drs;
+  return hygStaff.signatureBlock({
+    office: 'roland',
+    hygienistName: 'Avery Example',
+    examiningDoctors: drs ? drs.grades : [],
+  });
+}
+
+const SIGNATURE = signatureFor(visit('adult_prophy_recall'));
 
 function noteFor(visitType, over = {}) {
   const v = visit(visitType, over);
@@ -279,7 +331,7 @@ function noteFor(visitType, over = {}) {
     visit: v,
     items: v.items,
     actor: ACTOR,
-    signature: SIGNATURE,
+    signature: signatureFor(v),
   });
 }
 
@@ -297,7 +349,7 @@ test('SNAPSHOT: Adult Prophy Recall renders the practice template, line for line
     '    Radiographs taken: BW-4',
     '',
     'A:   STE: Inflammation/bleeding Mild  HTE: RD, XD #14  Polished, flossed, scaled as needed.  ' +
-      'Dr. Sparkman performed periodic exam.  Findings: Generalised light calculus, BOP UR.',
+      'Dr. Drew Example performed periodic exam.  Findings: Generalised light calculus, BOP UR.',
     '',
     'P:  Return for Recall in 6 months',
     '',
@@ -309,10 +361,9 @@ test('SNAPSHOT: Adult Prophy Recall renders the practice template, line for line
     'Mallampati: Class 1',
     'RTC: 6 mo recall',
     '',
-    'Raegan McGee RDH #4251',
-    'Beau Sparkman DDS #6347',
-    'Blain VanNice DDS #7971',
-    'Joe Farmer DDS #7571',
+    'Avery Example RDH #9101',
+    // RULING (feedback round 1): only the examining doctor the slip picked.
+    'Drew Example DDS #9001',
     'Entered in CareIN by hygienist@carein.ai. Unsigned.',
   ]);
 });
@@ -326,7 +377,7 @@ test('SNAPSHOT: Adult Prophy NP keeps OH and Bone Loss, and says comp exam', () 
     '    Radiographs taken: BW-4',
     '',
     'A:   STE: Inflammation/bleeding Mild  HTE: RD, XD #14  Polished, flossed, scaled as needed.  ' +
-      'Dr. Sparkman performed comp exam.  Findings: Generalised light calculus, BOP UR.',
+      'Dr. Drew Example performed comp exam.  Findings: Generalised light calculus, BOP UR.',
     '',
     'P:  Return for Recall in 6 months',
     '',
@@ -340,10 +391,9 @@ test('SNAPSHOT: Adult Prophy NP keeps OH and Bone Loss, and says comp exam', () 
     'Mallampati: Class 1',
     'RTC: 6 mo recall',
     '',
-    'Raegan McGee RDH #4251',
-    'Beau Sparkman DDS #6347',
-    'Blain VanNice DDS #7971',
-    'Joe Farmer DDS #7571',
+    'Avery Example RDH #9101',
+    // RULING (feedback round 1): only the examining doctor the slip picked.
+    'Drew Example DDS #9001',
     'Entered in CareIN by hygienist@carein.ai. Unsigned.',
   ]);
 });
@@ -358,7 +408,7 @@ test('SNAPSHOT: a child note carries FL2TX and the behaviour scale', () => {
     '',
     'A:   STE: Inflammation/bleeding Mild  HTE: RD, XD #14  ' +
       'Polished, flossed, scaled as needed, FL2TX.  ' +
-      'Dr. Sparkman performed periodic exam.  Findings: Generalised light calculus, BOP UR.',
+      'Dr. Drew Example performed periodic exam.  Findings: Generalised light calculus, BOP UR.',
     '',
     'P:  Return for Recall in 6 months',
     '',
@@ -372,10 +422,9 @@ test('SNAPSHOT: a child note carries FL2TX and the behaviour scale', () => {
     '',
     'RTC: 6 mo recall',
     '',
-    'Raegan McGee RDH #4251',
-    'Beau Sparkman DDS #6347',
-    'Blain VanNice DDS #7971',
-    'Joe Farmer DDS #7571',
+    'Avery Example RDH #9101',
+    // RULING (feedback round 1): only the examining doctor the slip picked.
+    'Drew Example DDS #9001',
     'Entered in CareIN by hygienist@carein.ai. Unsigned.',
   ]);
 });
@@ -406,10 +455,8 @@ test('SNAPSHOT: Perio Maint asks sub and supra separately and has no exam clause
     '',
     'RTC: 6 mo recall',
     '',
-    'Raegan McGee RDH #4251',
-    'Beau Sparkman DDS #6347',
-    'Blain VanNice DDS #7971',
-    'Joe Farmer DDS #7571',
+    'Avery Example RDH #9101',
+    // RULING (feedback round 1): Perio Maint has no exam, so no doctor is named.
     'Entered in CareIN by hygienist@carein.ai. Unsigned.',
   ]);
 });
@@ -421,7 +468,8 @@ test('SNAPSHOT: Child Prophy NP', () => {
     'S:  Patient presents for new pt appointment.  Chief complaint: Cold sensitivity upper right.'
   );
   assert.equal(preview[2], 'O:  Reviewed medical history with patient.');
-  assert.match(preview[5], /FL2TX\.  Dr\. Sparkman performed comp exam\./);
+  // RULING (feedback round 1): the fixture picks a configured doctor name.
+  assert.match(preview[5], /FL2TX\.  Dr\. Drew Example performed comp exam\./);
   assert.ok(preview.includes('Pediatric behavior: 1- uncooperative/combative'));
 });
 
@@ -538,8 +586,10 @@ test('the signature block comes from config, carries the licence, and stays unsi
   const composed = noteFor('adult_prophy_recall');
   const text = composed.preview.join('\n');
 
-  assert.ok(text.includes('Raegan McGee RDH #4251'), 'her licence line');
-  assert.ok(text.includes('Beau Sparkman DDS #6347'), 'the supervising doctors');
+  assert.ok(text.includes('Avery Example RDH #9101'), 'her licence line');
+  // RULING (feedback round 1): the EXAMINING doctor, not the office list.
+  assert.ok(text.includes('Drew Example DDS #9001'), 'the examining doctor');
+  assert.ok(!text.includes('Morgan Example'), 'a doctor who did not examine is not named');
   assert.ok(text.includes('Unsigned'));
   // The compliance rule this module is built on, restated for the new lines.
   assert.doesNotMatch(text, /(?<!un)\bsigned\b/i);
@@ -553,8 +603,8 @@ test('a hygienist the roster does not know gets her NAME and no invented licence
   assert.equal(unknown[0], 'Temp Hygienist');
   assert.ok(!unknown[0].includes('#'), 'a licence number nobody has must not be printed');
   assert.ok(!unknown[0].includes('RDH'), 'a credential nobody claimed must not be printed');
-  // And the doctors still appear: they are the office's, not hers.
-  assert.ok(unknown.includes('Beau Sparkman DDS #6347'));
+  // RULING (feedback round 1): no examining doctor picked here, so none named.
+  assert.deepEqual(unknown, ['Temp Hygienist']);
 });
 
 test('the composed note is still ASCII once a template has run', () => {
@@ -703,4 +753,47 @@ test('a suggestion is never a stored decision on its own', () => {
   const slip = contract.emptySlip();
   assert.equal(slip.visitType, null);
   assert.equal(slip.visitTypeSource, null);
+});
+
+/**
+ * SLICE 2b — EXISTING TREATMENT RIDES ALONG AND CHANGES NOTHING ELSE.
+ *
+ * The template's lines are exactly the ones the snapshot above pins; the
+ * existing-treatment section is appended after them and before the name
+ * block, and only the items somebody said something about appear.
+ */
+test('existing treatment is appended after the template, and the template is untouched', () => {
+  const v = visit('adult_prophy_recall');
+  const without = noteFor('adult_prophy_recall').preview;
+  const withTx = composer.compose('note', {
+    visit: v,
+    items: v.items,
+    actor: ACTOR,
+    signature: SIGNATURE,
+    existingTx: {
+      status: 'loaded',
+      items: [
+        { procNum: 5001, code: 'D2740', description: 'Crown', tooth: '30', surface: '', dateTp: '2026-06-20',
+          priorityName: null, scheduled: false, clinical: 'worse_urgent', patient: 'wants_to_wait',
+          waitTimeframe: '3_months', note: null },
+        { procNum: 5002, code: 'D2391', description: 'Composite', tooth: '14', surface: 'O', dateTp: null,
+          priorityName: null, scheduled: false, clinical: null, patient: 'not_discussed',
+          waitTimeframe: null, note: null },
+      ],
+    },
+  }).preview;
+
+  const nameAt = without.findIndex((l) => l.startsWith('Entered in CareIN by'));
+  const blockStart = without.findIndex((l, i) => i < nameAt && SIGNATURE.includes(l));
+  const bodyEnd = blockStart > 0 ? blockStart - 1 : nameAt;
+  // Everything up to the signature block is byte-for-byte the same.
+  assert.deepEqual(withTx.slice(0, bodyEnd), without.slice(0, bodyEnd));
+  // Then the section, then the same signature and name block.
+  const added = withTx.slice(bodyEnd, bodyEnd + 3);
+  assert.deepEqual(added, [
+    '',
+    'Existing treatment reviewed (1):',
+    '  #30 D2740 Crown -- getting worse, moved to urgent; patient wants to wait (3 months).',
+  ]);
+  assert.deepEqual(withTx.slice(bodyEnd + 3), without.slice(bodyEnd));
 });

@@ -149,7 +149,10 @@ function inSentence(s) {
 /** [3, 14] → "#3, #14"; "mouth" → "Full mouth"; [] → "Not specified". @param {unknown} teeth */
 function teethText(teeth) {
   if (teeth === 'mouth') return 'Full mouth';
-  if (Array.isArray(teeth) && teeth.length) return teeth.map((t) => `#${t}`).join(', ');
+  // A primary tooth prints as its letter, never the stored 100+ number.
+  if (Array.isArray(teeth) && teeth.length) {
+    return teeth.map((t) => (Number.isInteger(t) ? contract.toothText(t) : `#${t}`)).join(', ');
+  }
   return 'Not specified';
 }
 

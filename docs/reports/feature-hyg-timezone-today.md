@@ -175,10 +175,10 @@ credential and licence. Fixed in `hygStaff.signatureBlock`: an author who matche
 **once**, as the doctor line, and omitted from the list below. Best information wins.
 
 ```
-Beau Sparkman              →   Beau Sparkman DDS #6347
-Beau Sparkman DDS #6347        Blain VanNice DDS #7971
-Blain VanNice DDS #7971        Joe Farmer DDS #7571
-Joe Farmer DDS #7571
+Drew Example              →   Drew Example DDS #9001
+Drew Example DDS #9001         Morgan Example DDS #9002
+Morgan Example DDS #9002       Quinn Example DDS #9003
+Quinn Example DDS #9003
 ```
 
 A hygienist author is unchanged — she is not in the doctor list, so nothing is removed and

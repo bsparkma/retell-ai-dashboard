@@ -130,7 +130,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
       // exercised against the backend in hygVisit.test.js.
       recordsNeeded: server.items.length > 0 ? ["Pre-op PA", "Missing teeth note"] : [],
       handoffCategory: "Restorative" as const,
-      doctorOptions: ["Beau Sparkman", "Blain VanNice", "Joe Farmer"],
+      doctorOptions: ["Drew Example", "Morgan Example", "Quinn Example"],
     };
   };
 
@@ -150,7 +150,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
           : null,
         recordsNeeded: server.items.length > 0 ? ["Pre-op PA", "Missing teeth note"] : [],
         handoffCategory: "Restorative" as const,
-        doctorOptions: ["Beau Sparkman", "Blain VanNice", "Joe Farmer"],
+        doctorOptions: ["Drew Example", "Morgan Example", "Quinn Example"],
       };
     }),
     openVisit: vi.fn(async () => {
@@ -402,8 +402,10 @@ describe("the server owns the visit", () => {
     // It used to say "It will go in as Other" — a derived category doing quiet
     // double duty as the only tell that there was nothing to hand off.
     const card = screen.getByTestId("hyg-staged-tc-handoff");
+    // RULING (feedback round 1): the card names BOTH ways it becomes stageable —
+    // treatment today, or an existing item TC has to act on.
     expect(screen.getByTestId("hyg-handoff-no-items").textContent).toMatch(
-      /No treatment items yet/i,
+      /Nothing for TC yet — add treatment above, or answer an existing item/i,
     );
     expect(card.textContent).not.toMatch(/It will go in as/);
     expect(screen.getByTestId("hyg-stage-tc-handoff").hasAttribute("disabled")).toBe(true);

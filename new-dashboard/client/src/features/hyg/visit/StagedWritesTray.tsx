@@ -33,6 +33,7 @@ import { useState } from "react";
 import { Link } from "wouter";
 import {
   AlertTriangle,
+  BellRing,
   CheckCircle2,
   FileText,
   Loader2,
@@ -49,6 +50,7 @@ import {
   type SendConfirmation,
   type StagedWrite,
   type StagedWriteKind,
+  type StaleReason,
 } from "@shared/hyg/contract";
 import {
   Dialog,
@@ -74,6 +76,24 @@ const TAP = "min-h-11 rounded-lg border px-3 text-sm font-medium transition-colo
 function previewLineClass(line: string): string {
   return cn(line.startsWith("  ") && "pl-3", line.trim() === "" && "h-3");
 }
+
+/**
+ * What changed, in the words the "Out of date" line uses — the SERVER's reason
+ * (StagedWrite.staleReason). A server that predates the reason only ever meant
+ * the existing-treatment answers, so that is what an absent one reads as.
+ */
+const STALE_LABELS: Record<StaleReason, string> = {
+  existing_tx: "answers changed",
+  medical_history: "medical history changed",
+  handoff: "what TC will receive changed",
+};
+
+/** The same, as the Send button's reason says it. */
+const STALE_SENTENCES: Record<StaleReason, string> = {
+  existing_tx: "the existing-treatment answers changed",
+  medical_history: "the medical-history answer changed",
+  handoff: "what the treatment coordinator will receive changed",
+};
 
 const KIND_LABELS: Record<StagedWriteKind, string> = {
   router: "Routing slip",
@@ -164,6 +184,8 @@ function ConfirmSend({
   writes,
   patientName,
   perio,
+  existingNotDiscussed,
+  medicalHistoryRecorded,
   busy,
   onCancel,
   onConfirm,
@@ -171,6 +193,9 @@ function ConfirmSend({
   writes: StagedWrite[] | null;
   patientName: string;
   perio: TrayPerio | null;
+  existingNotDiscussed: number;
+  /** Checkout v2: false shows the reminder below. NEVER a gate. */
+  medicalHistoryRecorded: boolean;
   busy: boolean;
   onCancel: () => void;
   onConfirm: () => void;
@@ -195,6 +220,28 @@ function ConfirmSend({
                     what will be written — if any of it changes before you confirm, nothing is
                     sent and you will be asked to read it again.
                   </p>
+                  {/* SLICE 2a: A REMINDER, NEVER A GATE. Send stays enabled. */}
+                  {existingNotDiscussed > 0 ? (
+                    <p
+                      className="rounded-lg border border-dashed border-muted-foreground/40 px-3 py-2 text-xs"
+                      data-testid="hyg-confirm-existing-not-discussed"
+                    >
+                      {existingNotDiscussed} existing{" "}
+                      {existingNotDiscussed === 1 ? "item" : "items"} not discussed. You can still
+                      send.
+                    </p>
+                  ) : null}
+                  {/* CHECKOUT V2: A REMINDER, NEVER A GATE. The note simply prints
+                      no medical-history line; Send stays enabled. */}
+                  {!medicalHistoryRecorded && writes.some((w) => w.kind === "note") ? (
+                    <p
+                      className="rounded-lg border border-dashed border-muted-foreground/40 px-3 py-2 text-xs"
+                      data-testid="hyg-confirm-medical-history"
+                    >
+                      Medical history not recorded. The note will not mention it. You can still
+                      send.
+                    </p>
+                  ) : null}
                   {writes.map((write) => (
                     <div
                       key={write.kind}
@@ -281,12 +328,38 @@ export function StagedWritesTray({
   perioHref,
   perio = null,
   onResumePerio = () => undefined,
+  existingNotDiscussed = 0,
+  existingTcActionable = 0,
+  collectCount = 0,
+  checkoutEnabled = false,
+  medicalHistoryRecorded = true,
 }: {
   staged: StagedWrite[];
   handoffCategory: HandoffCategory;
   patientName: string;
   /** How many treatment items are on the visit. See `handoffUnavailable`. */
   itemCount: number;
+  /**
+   * Feedback round 1: existing items whose answer is work for TC (ready to
+   * schedule, see the plan again, cost questions). Any of them makes the
+   * handoff stageable with no new treatment. See `handoffUnavailable`.
+   */
+  existingTcActionable?: number;
+  /**
+   * Checkout v2: how many things the desk is to collect payment for. On its own
+   * it does NOT make a handoff (checkout v2 fix): the list goes to the desk on
+   * the checkout alert, and the tray shows that card in the handoff's place.
+   */
+  collectCount?: number;
+  /** Whether this office sends checkout alerts at all (the page's `checkoutEnabled`). */
+  checkoutEnabled?: boolean;
+  /** Checkout v2: whether the slip answers the medical-history question. */
+  medicalHistoryRecorded?: boolean;
+  /**
+   * Slice 2a: existing Open Dental items nobody discussed at this visit. The
+   * confirm mentions them; it never refuses on them.
+   */
+  existingNotDiscussed?: number;
   busy: boolean;
   sending: boolean;
   onStage: (kind: StagedWriteKind) => void;
@@ -312,6 +385,13 @@ export function StagedWritesTray({
       w.state === "Staged" &&
       (SENDABLE.includes(w.kind) || (w.kind === "perio" && perio !== null && perio.sendable)),
   );
+  /**
+   * OUT OF DATE: the server says these stored words no longer match the
+   * existing-treatment answers (StagedWrite.existingTxStale — its digest, the
+   * one the Send refuses on). The Send would refuse the whole batch, so it waits
+   * for a re-stage here rather than failing there.
+   */
+  const staleReady = ready.filter((w) => w.existingTxStale === true);
 
   /**
    * A handoff with nothing to hand off cannot be staged, and the card says so
@@ -323,8 +403,19 @@ export function StagedWritesTray({
    * learns the wrong thing twice: that there is a category, and that Stage
    * would do something. The server refuses this with NOTHING_TO_STAGE either
    * way; this is the screen saying the same thing before the round trip.
+   *
+   * Feedback round 1: "nothing" means neither new treatment NOR an existing
+   * answer TC has to act on — the server's own rule.
    */
-  const handoffUnavailable = itemCount === 0;
+  const handoffUnavailable = itemCount === 0 && existingTcActionable === 0;
+  const handoffExistingOnly = itemCount === 0 && existingTcActionable > 0;
+  /*
+   * CHECKOUT V2 FIX: nothing for TC to work, only something to pay for at the
+   * desk. No case is opened for that (ruled 2026-10-28), so the handoff card
+   * gives way to a Checkout alert card saying where the list goes. A handoff
+   * row already on the visit keeps its own card, so its state stays visible.
+   */
+  const handoffCollectOnly = handoffUnavailable && collectCount > 0;
 
   return (
     <section className="space-y-3" data-testid="hyg-staged-tray">
@@ -342,12 +433,44 @@ export function StagedWritesTray({
           const write = byKind.get(kind);
           const Icon = KIND_ICONS[kind];
           const available = AVAILABLE.includes(kind);
+          if (kind === "tc-handoff" && !write && handoffCollectOnly) {
+            return (
+              <div
+                key={kind}
+                className="rounded-xl border border-border bg-card p-3"
+                data-testid="hyg-staged-checkout-alert"
+              >
+                <div className="flex items-center gap-1.5">
+                  <BellRing size={14} className="shrink-0 text-muted-foreground" />
+                  <span className="text-sm font-semibold text-foreground">Checkout alert</span>
+                </div>
+                {checkoutEnabled ? (
+                  <p className="mt-0.5 text-xs text-muted-foreground" data-testid="hyg-checkout-alert-collect">
+                    No treatment for TC today, so no case is opened. The front desk gets what to
+                    collect payment for ({collectCount}) on the checkout alert — with Alert
+                    checkout, and again with Send.
+                  </p>
+                ) : (
+                  <p
+                    className="mt-0.5 text-xs text-amber-700 dark:text-amber-400"
+                    data-testid="hyg-checkout-alert-off"
+                  >
+                    No treatment for TC today, so no case is opened — and checkout alerts are off
+                    for this office, so nothing here tells the front desk what to collect (
+                    {collectCount}).
+                  </p>
+                )}
+              </div>
+            );
+          }
           return (
             <div
               key={kind}
               className={cn(
                 "rounded-xl border p-3",
-                write?.state === "Written"
+                write?.existingTxStale
+                  ? "border-amber-500/60 bg-amber-50 dark:bg-amber-950/30"
+                  : write?.state === "Written"
                   ? "border-emerald-500/40 bg-emerald-500/5"
                   : write?.state === "Failed"
                     ? "border-destructive/40 bg-destructive/5"
@@ -375,7 +498,16 @@ export function StagedWritesTray({
                         className="mt-0.5 text-xs text-muted-foreground"
                         data-testid="hyg-handoff-no-items"
                       >
-                        No treatment items yet — add them above and this becomes stageable.
+                        Nothing for TC yet — add treatment above, or answer an existing item as
+                        ready to schedule, see the plan again, or cost questions.
+                      </p>
+                    ) : handoffExistingOnly ? (
+                      <p
+                        className="mt-0.5 text-xs text-muted-foreground"
+                        data-testid="hyg-handoff-existing-only"
+                      >
+                        No new treatment today — it carries the existing treatment the patient
+                        wants to act on ({existingTcActionable}).
                       </p>
                     ) : (
                       <p className="mt-0.5 text-xs text-muted-foreground">
@@ -522,17 +654,60 @@ export function StagedWritesTray({
                 </p>
               ) : null}
 
-              {write && write.state !== "Written" && write.preview.length > 0 ? (
-                <ul
-                  className="mt-2 space-y-0.5 border-t border-border/60 pt-2 text-xs text-muted-foreground"
-                  data-testid={`hyg-staged-preview-${kind}`}
+              {/* OUT OF DATE — the server's word for it, never a guess here. The
+                  stored preview stays visible so she can see what would have
+                  gone, but struck through and labelled: it is not what the
+                  visit says any more, and it must never read as current. */}
+              {write?.existingTxStale ? (
+                <div
+                  className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/50 bg-background p-2 text-xs text-amber-800 dark:text-amber-300"
+                  data-testid={`hyg-stale-${kind}`}
                 >
-                  {write.preview.map((line, i) => (
-                    <li key={i} className={previewLineClass(line)}>
-                      {line.trim()}
-                    </li>
-                  ))}
-                </ul>
+                  <span className="flex items-start gap-1.5 font-semibold">
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                    {write.state === "Failed"
+                      ? `Out of date — ${STALE_LABELS[write.staleReason ?? "existing_tx"]}. Retry, then stage again`
+                      : `Out of date — ${STALE_LABELS[write.staleReason ?? "existing_tx"]}. Stage again`}
+                  </span>
+                  {write.state === "Staged" ? (
+                    <button
+                      type="button"
+                      onClick={() => onStage(kind)}
+                      disabled={busy || sending}
+                      data-testid={`hyg-restage-${kind}`}
+                      className={cn(TAP, "border-amber-600/50 bg-background text-foreground hover:bg-accent/50")}
+                    >
+                      Stage again
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {write && write.state !== "Written" && write.preview.length > 0 ? (
+                <div className="mt-2 border-t border-border/60 pt-2">
+                  {write.existingTxStale ? (
+                    <p
+                      className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300"
+                      data-testid={`hyg-staged-preview-stale-${kind}`}
+                    >
+                      Out of date — not what will be sent
+                    </p>
+                  ) : null}
+                  <ul
+                    className={cn(
+                      "space-y-0.5 text-xs text-muted-foreground",
+                      write.existingTxStale && "line-through opacity-60",
+                    )}
+                    data-testid={`hyg-staged-preview-${kind}`}
+                    aria-label={write.existingTxStale ? "Out-of-date staged words" : undefined}
+                  >
+                    {write.preview.map((line, i) => (
+                      <li key={i} className={previewLineClass(line)}>
+                        {line.trim()}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               ) : null}
 
               {/* WHERE IT LANDED. "It was sent" and "here it is" are different
@@ -577,13 +752,13 @@ export function StagedWritesTray({
       <div className="rounded-xl border border-dashed border-border p-3">
         <button
           type="button"
-          disabled={busy || sending || ready.length === 0}
+          disabled={busy || sending || ready.length === 0 || staleReady.length > 0}
           onClick={() => setConfirming(ready)}
           data-testid="hyg-send-all"
           className={cn(
             TAP,
             "flex w-full items-center justify-center gap-2",
-            ready.length === 0
+            ready.length === 0 || staleReady.length > 0
               ? "cursor-not-allowed border-border text-muted-foreground"
               : "border-primary bg-primary text-primary-foreground",
           )}
@@ -598,7 +773,9 @@ export function StagedWritesTray({
         <p className="mt-2 text-xs text-muted-foreground" data-testid="hyg-send-all-reason">
           {ready.length === 0
             ? "Stage the slip, the note, the handoff or the perio chart, then send them together."
-            : "You will see exactly what is written before anything is sent."}
+            : staleReady.length > 0
+              ? `Stage the ${staleReady.map((w) => KIND_LABELS[w.kind].toLowerCase()).join(" and ")} again first — ${staleReady.map((w) => STALE_SENTENCES[w.staleReason ?? "existing_tx"]).filter((v, i, all) => all.indexOf(v) === i).join(", and ")} after it was staged.`
+              : "You will see exactly what is written before anything is sent."}
         </p>
         {/* A refusal about the SEND rather than about one write — the stale
             preview case, which stops everything on purpose. */}
@@ -617,6 +794,8 @@ export function StagedWritesTray({
         writes={confirming}
         patientName={patientName}
         perio={perio}
+        existingNotDiscussed={existingNotDiscussed}
+        medicalHistoryRecorded={medicalHistoryRecorded}
         busy={sending}
         onCancel={() => setConfirming(null)}
         onConfirm={() => {

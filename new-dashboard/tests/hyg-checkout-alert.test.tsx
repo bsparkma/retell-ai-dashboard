@@ -98,7 +98,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
     visit: server.visit as HygVisitRow,
     recordsNeeded: [],
     handoffCategory: "Other" as const,
-    doctorOptions: ["Beau Sparkman"],
+    doctorOptions: ["Drew Example"],
   });
   return {
     ...real,
@@ -114,7 +114,7 @@ vi.mock("@/features/hyg/api", async (importOriginal) => {
         visit: server.visit,
         recordsNeeded: [],
         handoffCategory: "Other" as const,
-        doctorOptions: ["Beau Sparkman"],
+        doctorOptions: ["Drew Example"],
         checkoutEnabled: server.enabled,
       };
     }),

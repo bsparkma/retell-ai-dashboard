@@ -43,6 +43,14 @@ import {
   type TcCheckoutProcedure,
 } from "@shared/tc/checkout";
 import type { OfficeId } from "@shared/tc/contract";
+import { odToothText, teethText } from "@shared/hyg/teeth";
+import {
+  EXISTING_TX_CLINICAL_LABELS,
+  EXISTING_TX_PATIENT_LABELS,
+  EXISTING_TX_WAIT_LABELS,
+  groupExistingTxForTc,
+  type ExistingTxHandoffItem,
+} from "@shared/hyg/existingTx";
 
 import { getCaseHygieneTreatment, markItemEntered, undoItemEntered } from "./checkoutApi";
 
@@ -67,10 +75,77 @@ const URGENCY_BY_PRIORITY: Record<TcCheckoutPriority, "high" | "medium" | "low">
   cosmetic: "low",
 };
 
-function teethText(p: TcCheckoutProcedure): string {
+function teethLine(p: TcCheckoutProcedure): string {
   if (p.teeth === "mouth") return "Whole mouth";
-  const teeth = p.teeth.length ? `#${p.teeth.join(", #")}` : "";
+  const teeth = p.teeth.length ? teethText(p.teeth) : "";
   return [teeth, p.surfaces.join("")].filter(Boolean).join(" ") || "—";
+}
+
+/**
+ * "Existing treatment discussed" — the patient's EXISTING Open Dental plan and
+ * what was said about it at the visit (hygiene Slice 2b).
+ *
+ * Grouped by the patient's answer, in the order a treatment coordinator works
+ * them: Ready to schedule first, Not discussed last. "Getting worse → urgent"
+ * is a red Urgent pill — a CareIN priority, not Open Dental's. Read straight off
+ * the handoff's stored snapshot, like the table above it: nothing here reads
+ * Open Dental or the hygiene visit again.
+ */
+export function ExistingTreatmentFromHygiene({ items }: { items: readonly ExistingTxHandoffItem[] }) {
+  const groups = groupExistingTxForTc(items);
+  return (
+    <div className="space-y-2" data-testid="tc-existing-tx">
+      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        Existing treatment discussed ({items.length})
+      </p>
+      {groups.map((g) => (
+        <div key={g.patient} className="space-y-1" data-testid={`tc-existing-tx-group-${g.patient}`}>
+          <p className="text-xs font-medium text-foreground">
+            {EXISTING_TX_PATIENT_LABELS[g.patient]} ({g.items.length})
+          </p>
+          <ul className="space-y-1">
+            {g.items.map((i) => {
+              const where = i.tooth ? `${odToothText(i.tooth)}${i.surface ? ` ${i.surface}` : ""}` : i.surface;
+              return (
+                <li
+                  key={i.procNum}
+                  className="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md border border-border px-2 py-1 text-sm"
+                  data-testid="tc-existing-tx-item"
+                >
+                  <span className="font-medium text-foreground">
+                    {[where, i.code].filter(Boolean).join(" ")}
+                  </span>
+                  {i.description ? <span className="text-muted-foreground">{i.description}</span> : null}
+                  {i.clinical === "worse_urgent" ? (
+                    <span
+                      className="rounded-full bg-red-600 px-2 py-0.5 text-[11px] font-semibold text-white dark:bg-red-500"
+                      data-testid="tc-existing-tx-urgent"
+                    >
+                      Urgent
+                    </span>
+                  ) : null}
+                  {i.clinical && i.clinical !== "worse_urgent" ? (
+                    <span className="text-xs text-muted-foreground">{EXISTING_TX_CLINICAL_LABELS[i.clinical]}</span>
+                  ) : null}
+                  {i.patient === "wants_to_wait" && i.waitTimeframe ? (
+                    <span className="text-xs text-muted-foreground">
+                      Wait: {EXISTING_TX_WAIT_LABELS[i.waitTimeframe]}
+                    </span>
+                  ) : null}
+                  {i.scheduled ? (
+                    <Badge variant="outline" className="text-[10px]">
+                      Already scheduled
+                    </Badge>
+                  ) : null}
+                  {i.note ? <span className="basis-full text-xs text-muted-foreground">Note: {i.note}</span> : null}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function when(iso: string | null): string {
@@ -232,6 +307,9 @@ function VisitBlock({
           <span className="font-medium text-foreground">Front desk note:</span> {h.snapshot.frontDeskNote}
         </p>
       )}
+      {h.snapshot.existingTx && h.snapshot.existingTx.length > 0 ? (
+        <ExistingTreatmentFromHygiene items={h.snapshot.existingTx} />
+      ) : null}
       {visit.items.length === 0 ? (
         <p className="text-sm text-muted-foreground">Nothing was staged at this visit.</p>
       ) : (
@@ -252,7 +330,7 @@ function VisitBlock({
               const key = `${h.handoffId}:${item.index}`;
               return (
                 <TableRow key={key} data-testid="tc-hygiene-item">
-                  <TableCell className="whitespace-nowrap">{teethText(p)}</TableCell>
+                  <TableCell className="whitespace-nowrap">{teethLine(p)}</TableCell>
                   <TableCell className="font-medium">
                     {p.code}
                     {p.scheduleNext && (

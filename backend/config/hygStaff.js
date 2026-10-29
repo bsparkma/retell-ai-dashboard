@@ -49,18 +49,65 @@
  */
 
 /**
- * The hygienists' licence numbers, keyed by a normalised name.
+ * The hygienists, as their note's attribution names them: FULL NAME and RDH
+ * licence, the same style as the doctors' lines.
  *
- * A ROSTER, not an identity system. It answers exactly one question — "does
- * this person have an RDH number we know?" — and a name that is not here is
- * simply a name we do not have a number for. Adding a hygienist is one line.
+ * A ROSTER, not an identity system. Each entry says how she prints
+ * (`fullName`, `credential`, `license`) and how CareIN recognises her when she
+ * is signed in (`signIn`: the sign-in names and emails that are her, compared
+ * normalised). A sign-in that matches nothing prints as the name she signed in
+ * with, and nothing else.
  *
- * @type {Readonly<Record<string, { name: string, credential: string, license: string }>>}
+ * FEEDBACK ROUND 1: the practice is sending the full names and licence numbers
+ * for everyone. Until a number arrives, an entry carries `license: null` and
+ * prints the full name ALONE — never `RDH #`, never a placeholder, never a
+ * number somebody guessed.
+ *
+ * PRACTICE STAFF PAGE: this list is now the FALLBACK. The office manager enters
+ * hygienists in the hyg_staff table (services/hyg/staffStore.js), and an
+ * office with any row there prints from it alone. This list is used only for
+ * an office with no rows yet, so nothing changed before anyone entered data.
+ *
+ * @type {ReadonlyArray<Readonly<{ fullName: string, credential: string, license: string|null, signIn: readonly string[] }>>}
  */
-const HYGIENIST_ROSTER = Object.freeze({
-  'raegan mcgee': { name: 'Raegan McGee', credential: 'RDH', license: '4251' },
-  'laura williams': { name: 'Laura Williams', credential: 'RDH', license: '3667' },
-});
+const HYGIENISTS = Object.freeze([
+  Object.freeze({ fullName: 'Raegan McGee', credential: 'RDH', license: '4251', signIn: Object.freeze(['Raegan McGee']) }),
+  Object.freeze({ fullName: 'Laura Williams', credential: 'RDH', license: '3667', signIn: Object.freeze(['Laura Williams']) }),
+]);
+
+/**
+ * The roster keyed by every normalised sign-in name and email it lists, so a
+ * lookup is one Map read. Built once; `signatureBlock` takes another for tests.
+ *
+ * An entry with `matchName: false` is matched on its sign-ins ONLY — the
+ * hyg_staff rows, where two people may share a name but never a sign-in.
+ *
+ * @param {ReadonlyArray<{ fullName: string, credential: string, license: string|null, signIn: readonly string[], matchName?: boolean }>} list
+ */
+function indexRoster(list) {
+  const byKey = new Map();
+  for (const h of list) {
+    const keys = h.matchName === false ? [...h.signIn] : [h.fullName, ...h.signIn];
+    for (const key of keys) {
+      const k = normalizeName(key);
+      if (k) byKey.set(k, h);
+    }
+  }
+  return byKey;
+}
+
+/**
+ * Kept under its old name for the callers and tests that read it: the roster,
+ * keyed by normalised name, each value in the shape `personLine` prints.
+ */
+const HYGIENIST_ROSTER = Object.freeze(
+  Object.fromEntries(
+    [...indexRoster(HYGIENISTS)].map(([k, h]) => [
+      k,
+      Object.freeze({ name: h.fullName, credential: h.credential, license: h.license }),
+    ])
+  )
+);
 
 /**
  * The supervising doctors whose names appear under a hygiene note, per office.
@@ -86,7 +133,39 @@ const SUPERVISING_DOCTORS = Object.freeze({
   ]),
 });
 
-/** `  Raegan  McGee ` and `raegan mcgee` are the same person to the roster. */
+/**
+ * TEST SEAM — a synthetic roster in place of the real one, so no test has to
+ * name real staff (Practice staff page). null restores this file's lists.
+ * Production never calls it; it only ever REPLACES both lists, so a test cannot
+ * end up half real and half synthetic.
+ *
+ * @type {null | { doctors: Readonly<Record<string, ReadonlyArray<{ name: string, credential: string, license: string }>>>,
+ *                 hygienists: ReadonlyArray<{ fullName: string, credential: string, license: string|null, signIn: readonly string[] }> }}
+ */
+let testRoster = null;
+
+/**
+ * @param {null | { doctors: Record<string, Array<{ name: string, credential: string, license: string }>>,
+ *                  hygienists: Array<{ fullName: string, credential: string, license: string|null, signIn: string[] }> }} roster
+ */
+function setRosterForTests(roster) {
+  // A production process never swaps the people who print on chart notes.
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('hygStaff.setRosterForTests is for tests and refuses to run in production');
+  }
+  testRoster = roster
+    ? Object.freeze({
+        doctors: Object.freeze(
+          Object.fromEntries(
+            Object.entries(roster.doctors).map(([k, list]) => [k, Object.freeze(list.map((d) => Object.freeze({ ...d })))])
+          )
+        ),
+        hygienists: Object.freeze(roster.hygienists.map((h) => Object.freeze({ ...h, signIn: Object.freeze([...h.signIn]) }))),
+      })
+    : null;
+}
+
+/** Two spellings of one name are the same person to the roster. */
 function normalizeName(value) {
   return String(value || '')
     .toLowerCase()
@@ -94,10 +173,14 @@ function normalizeName(value) {
     .trim();
 }
 
-/** `Raegan McGee RDH #4251`, or `Raegan McGee` when we have no number. */
+/**
+ * `Full Name RDH #1234`, or `Full Name` when we have no number. A blank
+ * or whitespace licence is "no number", so a half-filled entry prints the name.
+ */
 function personLine(person) {
-  if (!person.license) return person.name;
-  return `${person.name} ${person.credential} #${person.license}`;
+  const license = typeof person.license === 'string' ? person.license.trim() : '';
+  if (!license) return person.name;
+  return `${person.name} ${person.credential} #${license}`;
 }
 
 /**
@@ -110,7 +193,8 @@ function personLine(person) {
  * @returns {ReadonlyArray<{ name: string, credential: string, license: string }>}
  */
 function supervisingDoctors(office) {
-  return SUPERVISING_DOCTORS[office] || [];
+  const doctors = testRoster ? testRoster.doctors : SUPERVISING_DOCTORS;
+  return doctors[office] || [];
 }
 
 /**
@@ -129,7 +213,8 @@ function doctorOptions(office) {
 /**
  * The typed-name block for one office and one author.
  *
- * The author's line first, then the office's supervising doctors. NOT a
+ * The author's line first, then the EXAMINING doctor the slip names — not the
+ * whole office list (feedback round 1; see the loop below). NOT a
  * signature — the composer appends the "Unsigned." line, and nothing here says
  * otherwise.
  *
@@ -147,33 +232,63 @@ function doctorOptions(office) {
  * the licence — and is left out of the list below. Best information wins, and
  * the list still names everyone else who supervises.
  *
- * A hygienist author is unaffected: she is not in the doctor list, so nothing
- * is removed and every doctor still appears.
+ * A hygienist author is unaffected: she is not a doctor, so the examining
+ * doctor still gets their own line.
  *
- * @param {{ office: string, hygienistName: string|null }} input
+ * @param {{ office: string, hygienistName: string|null, hygienistEmail?: string|null,
+ *           examiningDoctors?: readonly string[],
+ *           roster?: ReadonlyArray<{ fullName: string, credential: string, license: string|null, signIn: readonly string[], matchName?: boolean }> | null }} input
  *   `hygienistName` is the AUTHOR's name — the parameter keeps its name so
  *   every existing call site reads the same, but a doctor may be the author.
+ *   `hygienistEmail` is who signed in, matched against the roster's `signIn`.
+ *   `examiningDoctors` is the slip's examining-doctor pick (noteFields.drs).
+ *   `roster` is this office's hyg_staff roster (staffStore.signatureRoster);
+ *   absent or null — an office with no rows — falls back to HYGIENISTS.
  * @returns {string[]} lines, possibly empty when we know nothing at all
  */
-function signatureBlock({ office, hygienistName }) {
+function signatureBlock({ office, hygienistName, hygienistEmail = null, examiningDoctors = [], roster = null }) {
   const lines = [];
   const key = normalizeName(hygienistName);
+  const emailKey = normalizeName(hygienistEmail);
   const doctors = supervisingDoctors(office);
+  const hygienists = indexRoster(roster || (testRoster ? testRoster.hygienists : HYGIENISTS));
   // Case-insensitive, and on the same normalisation the roster uses, so
   // "beau  sparkman" from a session is the same person as the config's entry.
   const authorIsDoctor = key ? doctors.find((d) => normalizeName(d.name) === key) : undefined;
 
-  if (key) {
+  if (key || emailKey) {
     // In order of how much we know: the doctor entry (name + credential +
-    // licence), then the hygienist roster's, then what she signed in as. The
-    // licence is only ever config's — never invented, never somebody else's.
-    const known = authorIsDoctor || HYGIENIST_ROSTER[key];
-    lines.push(known ? personLine(known) : String(hygienistName).trim());
+    // licence), then the hygienist roster's — by name, then by the email she
+    // signed in with — then what she signed in as. The licence is only ever
+    // config's: never invented, never somebody else's.
+    const hyg = (key && hygienists.get(key)) || (emailKey && hygienists.get(emailKey)) || null;
+    if (authorIsDoctor) lines.push(personLine(authorIsDoctor));
+    else if (hyg) lines.push(personLine({ name: hyg.fullName, credential: hyg.credential, license: hyg.license }));
+    else if (key) lines.push(String(hygienistName).trim());
   }
-  for (const doctor of doctors) {
+
+  /*
+   * THE EXAMINING DOCTOR ONLY (feedback round 1).
+   *
+   * The block used to list every supervising doctor in the office under every
+   * note, whoever examined. A note names who did the work: the doctor picked in
+   * the slip's examining-doctor field (`Dr. ___ performed … exam`), and nobody
+   * else. Nobody picked — or a template with no exam — names no doctor, and the
+   * note is still a complete note.
+   *
+   * A pick is matched against THIS office's doctors, so a licence comes only
+   * from this office's config. A picked name the office does not list prints
+   * as the name alone, the same rule a hygienist the roster does not know gets.
+   */
+  const printed = new Set();
+  for (const picked of Array.isArray(examiningDoctors) ? examiningDoctors : []) {
+    const pk = normalizeName(picked);
+    if (!pk || printed.has(pk)) continue;
+    printed.add(pk);
     // Already printed above, as the author. One person, one line.
-    if (authorIsDoctor && doctor === authorIsDoctor) continue;
-    lines.push(personLine(doctor));
+    if (authorIsDoctor && normalizeName(authorIsDoctor.name) === pk) continue;
+    const doctor = doctors.find((d) => normalizeName(d.name) === pk);
+    lines.push(doctor ? personLine(doctor) : String(picked).trim());
   }
   return lines;
 }
@@ -185,7 +300,9 @@ module.exports = {
   // Exported for the tests and for nothing else — the roster is read through
   // signatureBlock so the "never invent a licence" rule has one home.
   HYGIENIST_ROSTER,
+  HYGIENISTS,
   SUPERVISING_DOCTORS,
   normalizeName,
   personLine,
+  setRosterForTests,
 };

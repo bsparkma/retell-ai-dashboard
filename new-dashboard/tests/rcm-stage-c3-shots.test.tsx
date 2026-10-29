@@ -646,7 +646,7 @@ describe.skipIf(!enabled)("Stage C-3 screenshots", () => {
       odClaimNum: 53712,
       odPatientId: 12827,
       odMatchConfirmedAt: "2026-09-01T20:16:00.000Z",
-      odMatchedBy: "Beau Sparkman",
+      odMatchedBy: "Drew Example",
       matchSnapshot: snapshot(),
       chart: {
         odClaimNum: 53712,

@@ -136,16 +136,16 @@ test('a one-character token is not sent — OD prefix-matches and would return t
 });
 
 test('too many prefix hits are capped, and the cap SAYS so', async () => {
-  // `LName=Spark` returned 18 rows live, the first being "Sparkman". Reading
+  // `LName=Samp` returned 18 rows live, the first being "Sampleton". Reading
   // eighteen patients' whole claim histories to rank one remittance line is
   // neither affordable nor proportionate.
   const many = Array.from({ length: 18 }, (_, i) => ({
     PatNum: 1000 + i,
-    LName: 'Sparkman',
+    LName: 'Sampleton',
     FName: `Person${i}`,
   }));
   const odGet = odGetOf((path) => (path === '/patients' ? { data: many } : { data: [] }));
-  const found = await reads.searchPatientsByName(odGet, 'Sparkman');
+  const found = await reads.searchPatientsByName(odGet, 'Sampleton');
   assert.equal(found.patients.length, reads.MAX_CANDIDATE_PATIENTS);
   assert.equal(found.truncated, true);
   assert.match(found.notes.join(' '), /matched 18 patients by name prefix/);
@@ -156,13 +156,13 @@ test('prefix hits are ranked by how much of the name the chart actually shares',
     path === '/patients' && params.LName
       ? {
           data: [
-            { PatNum: 1, LName: 'Sparkman', FName: 'Stranger' },
-            { PatNum: 2, LName: 'Sparkman', FName: 'Synthetic' },
+            { PatNum: 1, LName: 'Sampleton', FName: 'Stranger' },
+            { PatNum: 2, LName: 'Sampleton', FName: 'Synthetic' },
           ],
         }
       : { data: [] }
   );
-  const found = await reads.searchPatientsByName(odGet, 'Sparkman, Synthetic');
+  const found = await reads.searchPatientsByName(odGet, 'Sampleton, Synthetic');
   assert.equal(found.patients[0].PatNum, 2, 'the closer name should be searched first');
 });
 
@@ -187,14 +187,14 @@ test('an IGNORED name filter is re-filtered client-side, and SAID', async () => 
 });
 
 test('a prefix match is kept — the client-side pass is a no-op when OD behaves', async () => {
-  // `LName=Spark` legitimately returns "Sparkman": the filter is a PREFIX, and
+  // `LName=Samp` legitimately returns "Sampleton": the filter is a PREFIX, and
   // re-filtering must use the same predicate or it would drop real matches.
   const odGet = odGetOf((path, params) =>
     path === '/patients' && params.LName
-      ? { data: [{ PatNum: 8305, LName: 'Sparkman', FName: 'Aiden' }] }
+      ? { data: [{ PatNum: 8305, LName: 'Sampleton', FName: 'Aiden' }] }
       : { data: [] }
   );
-  const found = await reads.searchPatientsByName(odGet, 'Spark');
+  const found = await reads.searchPatientsByName(odGet, 'Samp');
   assert.equal(found.patients.length, 1);
   assert.ok(!found.notes.join(' ').includes('ignored'));
 });
@@ -202,11 +202,11 @@ test('a prefix match is kept — the client-side pass is a no-op when OD behaves
 test('a full page of name matches is reported, not silently under-counted', async () => {
   const page = Array.from({ length: reads.OD_PAGE_SIZE }, (_, i) => ({
     PatNum: 5000 + i,
-    LName: 'Sparkman',
+    LName: 'Sampleton',
     FName: `Person${i}`,
   }));
   const odGet = odGetOf((path) => (path === '/patients' ? { data: page } : { data: [] }));
-  const found = await reads.searchPatientsByName(odGet, 'Sparkman');
+  const found = await reads.searchPatientsByName(odGet, 'Sampleton');
   assert.equal(found.truncated, true);
   assert.match(found.notes.join(' '), /full page of \d+ name matches/);
 });

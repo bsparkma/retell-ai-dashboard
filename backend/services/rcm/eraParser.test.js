@@ -492,7 +492,7 @@ test('corpus: the rendering NPI falls back to NM1*82 when REF*1G is absent', () 
   // D7. Every file in the corpus is this case; the source returned '0000000000'.
   const claim = parse835(fixture('Test_Guardian_Clean.edi')).claims[0];
   assert.equal(claim.providerNPI, '1437445400');
-  assert.equal(claim.renderingProvider, 'BEAU SPARKMAN');
+  assert.equal(claim.renderingProvider, 'DREW EXAMPLE');
 });
 
 test('corpus: a multi-claim check keeps each claim to its own patient and lines', () => {

@@ -11,11 +11,26 @@
  * table allows from the referral's status (features/tc/referrals/hubActions):
  * a draft can be submitted, edited or cancelled; one awaiting sign-off can be
  * withdrawn or cancelled. They go through the same routes the case panel uses.
- * The doctor's moves stay on Awaiting sign-off (approving can email it), so
- * the hub names where to act instead of drawing them.
  *
- * tc.full (a doctor never gets here — their surface is /tc/referrals/signoff)
- * and dark while referrals is off for the office; the server enforces both.
+ * SIGN-OFF IN THE HUB (Beau's ruling; the separate "Awaiting sign-off" page is
+ * gone). On a referral awaiting sign-off, a tc.referral_signoff holder (doctor,
+ * admin) gets Approve, Decline and Send back in the panel — the EXISTING
+ * sign-off routes, through features/tc/referrals/SignoffActions, which asks
+ * before an approval that may email the specialist. Nobody else gets them.
+ *
+ * WHO SEES WHICH VIEW. The page is reachable with tc.full OR
+ * tc.referral_signoff (lib/permissions); nothing on the server was widened.
+ *  - tc.full: the hub as before, for the selected office.
+ *  - tc.referral_signoff (`?view=signoff`, and always for a doctor, who holds
+ *    nothing else): the SIGN-OFF VIEW — the referrals awaiting sign-off from
+ *    every office in scope, oldest first, each badged (pre-IA fix F5), read
+ *    ONLY through the sign-off routes. A doctor never touches a tc.full route
+ *    here, so never gets a staff edit, Send, a mark, New referral or settings.
+ *    `?office=&referral=` opens that referral, only for an office in scope —
+ *    the sign-off alert and the old /tc/referrals/signoff path land there.
+ *  - while /auth/me is in flight: a spinner, never a guess either way.
+ *
+ * Dark while referrals is off for the office; the server enforces it.
  *
  * SENDING (R5). Where the office has referral email switched on, an approved
  * referral can be EMAILED to its specialist: a Send button under its card
@@ -27,11 +42,21 @@
  * seen" — are a person RECORDING that it happened. They email, fax and
  * trigger nothing, and they say so.
  *
+ * CORRESPONDENCE (R6.9). Staff log a call / email / fax with the specialist's
+ * office or the patient from the panel (features/tc/referrals/LogCorrespondence),
+ * on any status but a draft. It is a history line — never a move, never a
+ * send — and the card shows the latest as a muted "Last contact" line.
+ *
+ * CHART NOTES (R6.10). For each milestone the referral has reached, the panel
+ * offers a drafted note (features/tc/referrals/ChartNotes) that staff may
+ * edit; "Write to chart" writes the exact text shown above it to the patient's
+ * Open Dental chart. Only that click writes — nothing here does on its own.
+ *
  * Every state shown is the server's answer: nothing reads as saved, moved,
  * marked or sent before the server confirms it.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "wouter";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useSearch } from "wouter";
 import { toast } from "sonner";
 import { ChevronDown, ChevronRight, Loader2, Mail, Paperclip, Pencil, RefreshCw } from "lucide-react";
 
@@ -43,15 +68,26 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { useAuth } from "@/contexts/AuthContext";
 import { can } from "@/lib/permissions";
 import { TcApiError, tcErrorMessage } from "@/features/tc/api";
-import { TcOfficeGate, TcPageHeader, useTcOffice } from "@/features/tc/components/TcShell";
+import { TcOfficeGate, TcPageHeader, TcPartialDataNotice, useTcOffice } from "@/features/tc/components/TcShell";
+import { OfficeBadge } from "@/features/tc/components/OfficeBadge";
+import {
+  fanOutOfficeRows,
+  hardErrorMessage,
+  officeScopeKey,
+  partialNotice,
+  useTcOfficeScope,
+  type WithOffice,
+} from "@/features/tc/officeScope";
 import {
   editReferralFields,
   getReferral,
   getReferralSettings,
+  getSignoffReferral,
   getReferralsStatus,
   listDirectory,
   listHub,
   listReferralAttachments,
+  listSignoffQueue,
   markReferral,
   openReferralAttachment,
   referralVerb,
@@ -64,8 +100,15 @@ import {
   HUB_MARK_VERBS,
   hubActionLabel,
   hubActionPlan,
+  hubCanAddFilesAfterSend,
+  hubCanLogCorrespondence,
+  hubCanWriteChartNotes,
+  signoffViewHref,
   type HubViewer,
 } from "@/features/tc/referrals/hubActions";
+import { SignoffActions, signoffDoneLine } from "@/features/tc/referrals/SignoffActions";
+import { LogCorrespondence } from "@/features/tc/referrals/LogCorrespondence";
+import { ChartNotes } from "@/features/tc/referrals/ChartNotes";
 import {
   AttachmentList,
   ReferralResponseSignals,
@@ -78,7 +121,7 @@ import { NewHubReferral } from "@/features/tc/referrals/NewHubReferral";
 import { ReferralFieldsForm, type ReferralFieldsChange } from "@/features/tc/referrals/ReferralFieldsForm";
 import { ReferralTimeline } from "@/features/tc/referrals/ReferralTimeline";
 import { listActiveProviders } from "@/features/tc/providers/providersApi";
-import type { OfficeId } from "@shared/tc/contract";
+import { OfficeId as OfficeIdSchema, type OfficeId } from "@shared/tc/contract";
 import type { TcProviderEntry } from "@shared/tc/providers";
 import {
   REFERRAL_FIELD_EDITABLE_STATUSES,
@@ -92,6 +135,7 @@ import {
   TcReferralStatus,
   referralDateLabel,
   referralHubGroup,
+  referralLastContactLine,
   referralNextStatus,
   referralResponseBadges,
   referralReturnedLine,
@@ -133,21 +177,26 @@ export function nextMark(status: TcReferralStatus): ReferralMark | null {
   return HUB_MARK_VERBS.find((m) => referralNextStatus(status, m, { signoffRequired: true }) !== null) ?? null;
 }
 
+/** What a signed-in user holds, as far as the hub cares. Pure. UX only. */
+export function hubViewerOf(user: { isSuperAdmin?: boolean; permissions?: readonly string[] }): HubViewer {
+  const superAdmin = user.isSuperAdmin === true;
+  return {
+    tcFull: superAdmin || can(user.permissions, "tc.full"),
+    signoff: superAdmin || can(user.permissions, "tc.referral_signoff"),
+  };
+}
+
 /**
  * Who is looking, for the detail panel's buttons. UX only — every move is
- * re-checked by the server. This page renders only behind the /tc route's
- * tc.full gate (lib/permissions ROUTE_PERMISSIONS), so until /auth/me has
- * answered, tc.full is what the route already established; sign-off is never
- * assumed.
+ * re-checked by the server. Only HubInner reads this, and the page renders
+ * HubInner only once /auth/me has answered with tc.full (see TcReferralsHub);
+ * before an answer (tests that mount HubInner alone) it keeps R6.1's reading —
+ * tc.full, never sign-off. The page itself decides nothing on a guess.
  */
 export function useHubViewer(): HubViewer {
   const auth = useAuth();
   if (auth.status !== "authenticated") return { tcFull: true, signoff: false };
-  const { isSuperAdmin, permissions } = auth.user;
-  return {
-    tcFull: isSuperAdmin || can(permissions, "tc.full"),
-    signoff: isSuperAdmin || can(permissions, "tc.referral_signoff"),
-  };
+  return hubViewerOf(auth.user);
 }
 
 /** Referrals → the hub's groups, in page order, each newest status change first. Pure. */
@@ -160,7 +209,41 @@ export function groupForHub(referrals: readonly TcReferral[]) {
   }));
 }
 
+/**
+ * The route. Which view is the viewer's decision, from what /auth/me says they
+ * hold — and nothing at all is drawn until it has said (fail closed: no
+ * tc.full route is asked for a doctor, no sign-off button drawn for a TC).
+ */
 export default function TcReferralsHub() {
+  const auth = useAuth();
+  const search = useSearch();
+  const wantsSignoff = new URLSearchParams(search).get("view") === "signoff";
+  if (auth.status !== "authenticated") {
+    return (
+      <div className="flex items-center gap-2 p-6 text-muted-foreground" data-testid="tc-hub-auth-loading">
+        <Loader2 className="w-4 h-4 animate-spin" /> Loading…
+      </div>
+    );
+  }
+  const viewer = hubViewerOf(auth.user);
+  if (viewer.signoff && (wantsSignoff || !viewer.tcFull)) return <HubSignoffRoute viewer={viewer} />;
+  if (!viewer.tcFull) {
+    // Unreachable through the app (the route needs one of the two), said plainly if typed.
+    return (
+      <div className="p-6">
+        <TcPageHeader title="Referrals" />
+        <p className="text-sm text-muted-foreground" data-testid="tc-hub-no-access">
+          {HUB_NO_ACCESS_COPY}
+        </p>
+      </div>
+    );
+  }
+  return <HubOfficeRoute />;
+}
+
+export const HUB_NO_ACCESS_COPY = "Referrals are for the treatment coordinator, office manager, admin and doctor.";
+
+function HubOfficeRoute() {
   const office = useTcOffice();
   if (!office) {
     return (
@@ -170,6 +253,26 @@ export default function TcReferralsHub() {
     );
   }
   return <HubInner key={office} office={office} />;
+}
+
+/** The sign-off view's scope: every office in scope, like Checkout (F5). */
+function HubSignoffRoute({ viewer }: { viewer: HubViewer }) {
+  const scope = useTcOfficeScope();
+  if (scope.offices.length === 0) {
+    return (
+      <div className="p-6">
+        <TcOfficeGate loading={scope.loading} />
+      </div>
+    );
+  }
+  return (
+    <HubSignoffView
+      key={officeScopeKey(scope.offices)}
+      offices={scope.offices}
+      showOfficeBadges={scope.showOfficeBadges}
+      viewer={viewer}
+    />
+  );
 }
 
 export function HubInner({ office, now = () => new Date() }: { office: OfficeId; now?: () => Date }) {
@@ -183,6 +286,8 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
   const [openId, setOpenId] = useState<string | null>(null);
   /** The office's sign-off policy, only to say where Submit leads; null = unread. */
   const [signoffRequired, setSignoffRequired] = useState<boolean | null>(null);
+  /** The office's auto-send-on-approval policy, for Approve's question; null = unread. */
+  const [autosend, setAutosend] = useState<boolean | null>(null);
   const viewer = useHubViewer();
 
   const load = useCallback(() => {
@@ -219,14 +324,17 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
   }, [enabled, load]);
 
   // Only once referrals is on (the route 403s otherwise). A policy that cannot
-  // be read leaves Submit's label generic; the server decides where it goes.
+  // be read leaves Submit's label generic (the server decides where it goes)
+  // and makes Approve ask whether it may email (the server decides that too).
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
     Promise.resolve()
       .then(() => getReferralSettings(office))
       .then((s) => {
-        if (!cancelled) setSignoffRequired(s.signoffRequired.value);
+        if (cancelled) return;
+        setSignoffRequired(s.signoffRequired.value);
+        setAutosend(s.autosendOnApproval.value);
       })
       .catch(() => undefined);
     return () => {
@@ -263,6 +371,14 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
         }
         actions={
           <div className="flex items-center gap-2">
+            {/* A signer also holding tc.full (admin) may switch to the every-office sign-off view. */}
+            {viewer.signoff && (
+              <Button variant="outline" size="sm" asChild>
+                <Link href={signoffViewHref()} data-testid="tc-hub-to-signoff">
+                  Awaiting sign-off
+                </Link>
+              </Button>
+            )}
             {/* R6.2: start one by hand. tc.full, like every hub move; the server re-checks. */}
             {viewer.tcFull && (
               <NewHubReferral
@@ -371,6 +487,7 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
         emailSend={emailSend}
         viewer={viewer}
         signoffRequired={signoffRequired}
+        autosend={autosend}
       />
     </div>
   );
@@ -496,6 +613,7 @@ function FilterSelect({
 export function HubCard({ referral: r, now, onOpen }: { referral: TcReferral; now: Date; onOpen: () => void }) {
   const returned = referralReturnedLine(r.returned);
   const patientEmailLine = referralResponseBadges(r).patientEmail;
+  const lastContact = referralLastContactLine(r.lastCorrespondence);
   return (
     <button
       type="button"
@@ -519,11 +637,17 @@ export function HubCard({ referral: r, now, onOpen }: { referral: TcReferral; no
           <Paperclip className="w-3 h-3" /> {r.attachmentCount ?? 0}
         </span>
         {/* The responses we collect, without opening the card. */}
-        <ReferralResponseSignals referral={r} withPatientEmail={false} />
+        {/* The age line already says "acknowledged": no second "Received" (as the chip and case rows do). */}
+        <ReferralResponseSignals referral={r} hideReceived={r.status === "acknowledged"} withPatientEmail={false} />
       </div>
       {patientEmailLine && (
         <p className="text-xs text-muted-foreground truncate" title={patientEmailLine} data-testid="referral-response-patient-email">
           {patientEmailLine}
+        </p>
+      )}
+      {lastContact && (
+        <p className="text-xs text-muted-foreground truncate" title={r.lastCorrespondence?.note} data-testid="referral-last-contact">
+          {lastContact}
         </p>
       )}
       {returned && (
@@ -539,6 +663,14 @@ export function HubCard({ referral: r, now, onOpen }: { referral: TcReferral; no
 
 type Editing = null | "fields" | "reopen";
 
+/**
+ * Which routes the panel reads and acts through:
+ *  - "hub": the tc.full routes (the hub's own list);
+ *  - "signoff": ONLY the sign-off routes — the sign-off view, for a doctor who
+ *    holds nothing else. No staff move, edit, mark or send is drawn there.
+ */
+export type HubDetailReader = "hub" | "signoff";
+
 export function HubDetail({
   office,
   referralId,
@@ -547,6 +679,9 @@ export function HubDetail({
   emailSend = null,
   viewer = { tcFull: true, signoff: false },
   signoffRequired = null,
+  autosend = null,
+  reader = "hub",
+  onSigned,
 }: {
   office: OfficeId;
   referralId: string | null;
@@ -558,7 +693,16 @@ export function HubDetail({
   viewer?: HubViewer;
   /** R6.1: the office's sign-off policy, for Submit's label; null = unread. */
   signoffRequired?: boolean | null;
+  /** The office's auto-send-on-approval policy, for Approve's question; null = unread (it asks). */
+  autosend?: boolean | null;
+  reader?: HubDetailReader;
+  /** After approve / decline / send back, with the server's read-back. */
+  onSigned?: (next: TcReferral) => void;
 }) {
+  const viaSignoff = reader === "signoff";
+  /** The stored files, through the route this panel reads by (the hub's call is unchanged). */
+  const filesOf = (o: OfficeId, id: string) =>
+    viaSignoff ? listReferralAttachments(o, id, true) : listReferralAttachments(o, id);
   const [r, setR] = useState<TcReferral | null>(null);
   const [files, setFiles] = useState<TcReferralAttachment[]>([]);
   const [entries, setEntries] = useState<TcReferralDirectoryEntry[]>([]);
@@ -581,14 +725,15 @@ export function HubDetail({
     setConfirmCancel(false);
     if (!referralId) return;
     let cancelled = false;
-    getReferral(office, referralId)
+    (viaSignoff ? getSignoffReferral(office, referralId) : getReferral(office, referralId))
       .then((x) => {
         if (!cancelled) setR(x);
       })
       .catch((e: unknown) => {
         if (!cancelled) setLoadError(tcErrorMessage(e));
       });
-    listReferralAttachments(office, referralId)
+    // R4: the X-rays attached. Each view is audited.
+    filesOf(office, referralId)
       .then((x) => {
         if (!cancelled) setFiles(x);
       })
@@ -596,12 +741,12 @@ export function HubDetail({
     return () => {
       cancelled = true;
     };
-  }, [office, referralId]);
+  }, [office, referralId, viaSignoff]);
 
   /** R6.2: re-read the stored files after an upload, so what shows is what landed. */
   function reloadFiles() {
     if (!referralId) return;
-    listReferralAttachments(office, referralId)
+    filesOf(office, referralId)
       .then(setFiles)
       .catch(() => undefined);
   }
@@ -685,14 +830,22 @@ export function HubDetail({
     );
   }
 
-  const plan = r ? hubActionPlan(r.status, viewer, signoffRequired) : null;
+  // Through the sign-off routes nothing on the TC side is offered, whoever is looking.
+  const asViewer: HubViewer = viaSignoff ? { tcFull: false, signoff: viewer.signoff } : viewer;
+  const plan = r ? hubActionPlan(r.status, asViewer, signoffRequired) : null;
   const offered = (verb: string) => plan?.actions.find((a) => a.verb === verb) ?? null;
   const mark = HUB_MARK_VERBS.find((m) => offered(m) !== null) ?? null;
   const submit = offered("submit");
   const withdraw = offered("withdraw");
   const cancel = offered("cancel");
   const reopen = offered("reopen");
-  const editable = r ? viewer.tcFull && REFERRAL_FIELD_EDITABLE_STATUSES.includes(r.status) : false;
+  const editable = r ? asViewer.tcFull && REFERRAL_FIELD_EDITABLE_STATUSES.includes(r.status) : false;
+  // R6.9: through the hub's own (tc.full) routes only.
+  const canLog = r ? !viaSignoff && hubCanLogCorrespondence(r.status, asViewer) : false;
+  // R6.10: through the hub's own (tc.full) routes only.
+  const canChartNote = r ? !viaSignoff && hubCanWriteChartNotes(r.events, asViewer) : false;
+  // R6.9a: files after the referral went out, through the hub's own (tc.full) upload route.
+  const canAddFiles = r ? !viaSignoff && hubCanAddFilesAfterSend(r.status, asViewer) : false;
   const returned = r ? referralReturnedLine(r.returned) : null;
 
   return (
@@ -738,7 +891,9 @@ export function HubDetail({
               {r.doctorNote && (
                 <>
                   <dt className="text-muted-foreground">Doctor's note</dt>
-                  <dd className="whitespace-pre-wrap">{r.doctorNote}</dd>
+                  <dd className="whitespace-pre-wrap" data-testid="tc-hub-detail-doctor-note">
+                    {r.doctorNote}
+                  </dd>
                 </>
               )}
               {r.scheduledDate && (
@@ -751,7 +906,13 @@ export function HubDetail({
 
             <AttachmentList
               attachments={files}
-              onView={(a) => void viewAttachment(() => openReferralAttachment(office, r.referralId, a.attachmentId))}
+              onView={(a) =>
+                void viewAttachment(() =>
+                  viaSignoff
+                    ? openReferralAttachment(office, r.referralId, a.attachmentId, true)
+                    : openReferralAttachment(office, r.referralId, a.attachmentId),
+                )
+              }
             />
 
             {editing ? (
@@ -823,16 +984,33 @@ export function HubDetail({
                     </div>
                   </div>
                 )}
+                {/* The doctor's moves: tc.referral_signoff holders only, through the sign-off routes. */}
+                {plan && plan.signoff.length > 0 && (
+                  <SignoffActions
+                    office={office}
+                    referral={r}
+                    verbs={plan.signoff}
+                    autosend={autosend}
+                    // The doctor's edit (with their note) where the staff edit is not offered.
+                    doctorEdit={!editable}
+                    filesAttached={files.length}
+                    onFilesChanged={reloadFiles}
+                    onEdited={(next) => {
+                      setR(next);
+                      onChanged();
+                    }}
+                    onSigned={(next) => {
+                      setR(next);
+                      onChanged();
+                      onSigned?.(next);
+                    }}
+                  />
+                )}
                 {plan && plan.notes.length > 0 && (
                   <div className="space-y-1 text-xs text-muted-foreground" data-testid="tc-hub-move-notes">
                     {plan.notes.map((n) => (
                       <p key={n}>{n}</p>
                     ))}
-                    {plan.signoffLink && (
-                      <Link href="/tc/referrals/signoff" className="font-medium text-primary underline" data-testid="tc-hub-signoff-link">
-                        Open Awaiting sign-off
-                      </Link>
-                    )}
                   </div>
                 )}
                 {r.status === "approved" && (
@@ -849,7 +1027,7 @@ export function HubDetail({
                     )}
                   </>
                 )}
-                {!editable && r.status !== "approved" && (
+                {!REFERRAL_FIELD_EDITABLE_STATUSES.includes(r.status) && r.status !== "approved" && (
                   <p className="text-xs text-muted-foreground" data-testid="tc-hub-readonly">
                     {["declined", "cancelled", "closed"].includes(r.status)
                       ? "This referral is finished and can no longer be edited."
@@ -867,8 +1045,39 @@ export function HubDetail({
                     }
                   />
                 )}
+                {canAddFiles && (
+                  <AddAttachments
+                    alreadyAttached={files.length}
+                    upload={(f) => uploadReferralAttachment(office, r.referralId, f)}
+                    onDone={reloadFiles}
+                    disabled={busy}
+                  />
+                )}
+                {canLog && (
+                  <LogCorrespondence
+                    office={office}
+                    referral={r}
+                    filesAttached={files.length}
+                    onLogged={(next) => {
+                      setR(next);
+                      onChanged();
+                    }}
+                    onFilesChanged={reloadFiles}
+                  />
+                )}
                 {serverError && <p className="text-sm text-destructive">{serverError}</p>}
               </div>
+            )}
+
+            {canChartNote && (
+              <ChartNotes
+                office={office}
+                referral={r}
+                onWritten={(next) => {
+                  setR(next);
+                  onChanged();
+                }}
+              />
             )}
 
             <div className="space-y-1">
@@ -972,6 +1181,193 @@ function MarkBox({
       <Button size="sm" onClick={onMark} disabled={busy || (required && !text.trim())}>
         {busy && <Loader2 className="w-4 h-4 animate-spin" />} {REFERRAL_MARK_LABELS[mark]}
       </Button>
+    </div>
+  );
+}
+
+// ── The sign-off view ───────────────────────────────────────────────────────
+
+/** True when `v` names an office a referral can live in. */
+function isOfficeId(v: string | null): v is OfficeId {
+  return OfficeIdSchema.safeParse(v).success;
+}
+
+/**
+ * The hub's Awaiting sign-off view, for tc.referral_signoff holders: what the
+ * retired /tc/referrals/signoff page was, opened in the hub's own panel.
+ *
+ * Pre-IA fix F5, kept: it fans out across every office in scope (the nav badge
+ * counts every office), oldest first across the merge, each row badged when
+ * more than one office is shown; one office failing still shows the other's
+ * rows and names what is missing. Every read and write for a referral goes to
+ * the office it was LISTED from. `?office=&referral=` opens that referral —
+ * only for an office in scope; any other office is ignored.
+ *
+ * Reads only the sign-off routes, so a doctor (who holds nothing else) can use
+ * it, and a tc.full route is never asked on their behalf.
+ */
+export function HubSignoffView({
+  offices,
+  showOfficeBadges,
+  viewer,
+}: {
+  offices: OfficeId[];
+  showOfficeBadges: boolean;
+  viewer: HubViewer;
+}) {
+  const search = useSearch();
+  const query = useMemo(() => new URLSearchParams(search), [search]);
+  const [queue, setQueue] = useState<WithOffice<TcReferral>[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [open, setOpen] = useState<{ office: OfficeId; referralId: string } | null>(null);
+  const [done, setDone] = useState<TcReferral | null>(null);
+  /** Approve's question per office: read only where the viewer may (tc.full); null = ask. */
+  const [autosend, setAutosend] = useState<boolean | null>(null);
+  const loadSeq = useRef(0);
+
+  const load = useCallback(() => {
+    const seq = ++loadSeq.current;
+    setError(null);
+    void fanOutOfficeRows(offices, (o) => listSignoffQueue(o)).then((res) => {
+      if (seq !== loadSeq.current) return;
+      // Each office answers oldest first; keep that across the merge.
+      setQueue([...res.rows].sort((a, b) => a.statusChangedAt.localeCompare(b.statusChangedAt)));
+      setError(hardErrorMessage(res));
+      setNotice(partialNotice(res));
+    });
+  }, [offices]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // The sign-off alert and the old /tc/referrals/signoff path link here with
+  // ?office=&referral= — open that referral. Only an office this view shows.
+  useEffect(() => {
+    const referralId = query.get("referral");
+    const from = query.get("office");
+    if (referralId && isOfficeId(from) && offices.includes(from)) {
+      setDone(null);
+      setOpen({ office: from, referralId });
+    }
+  }, [query, offices]);
+
+  // The settings route is tc.full: a doctor cannot read the policy, so Approve asks.
+  const openOffice = open?.office ?? null;
+  useEffect(() => {
+    setAutosend(null);
+    if (!openOffice || !viewer.tcFull) return;
+    let cancelled = false;
+    Promise.resolve()
+      .then(() => getReferralSettings(openOffice))
+      .then((s) => {
+        if (!cancelled) setAutosend(s.autosendOnApproval.value);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [openOffice, viewer.tcFull]);
+
+  return (
+    <div className="p-6 space-y-4">
+      <TcPageHeader
+        title="Referrals · Awaiting sign-off"
+        subtitle={
+          showOfficeBadges
+            ? "Referrals waiting for the doctor's sign-off, from every office, oldest first."
+            : "Referrals waiting for the doctor's sign-off, oldest first."
+        }
+        actions={
+          <div className="flex items-center gap-2">
+            {viewer.tcFull && (
+              <Button variant="outline" size="sm" asChild>
+                <Link href="/tc/referrals" data-testid="tc-hub-to-all">
+                  All referrals
+                </Link>
+              </Button>
+            )}
+            <Button variant="outline" size="sm" onClick={load} aria-label="Refresh">
+              <RefreshCw className="w-4 h-4" />
+            </Button>
+          </div>
+        }
+      />
+
+      {notice && <TcPartialDataNotice message={notice} />}
+
+      {done && (
+        <div
+          className="rounded-lg border border-border bg-card p-3 text-sm flex items-center justify-between gap-2"
+          data-testid="tc-hub-signoff-done"
+        >
+          <span>{signoffDoneLine(done)}</span>
+          <ReferralStatusBadge status={done.status} />
+        </div>
+      )}
+
+      {error ? (
+        <div className="flex flex-col items-center gap-3 py-12 text-center">
+          <p className="text-sm text-muted-foreground">{error}</p>
+          <Button variant="outline" size="sm" onClick={load}>
+            <RefreshCw className="w-4 h-4 mr-1" /> Retry
+          </Button>
+        </div>
+      ) : queue === null ? (
+        <div className="flex items-center gap-2 py-12 justify-center text-muted-foreground">
+          <Loader2 className="w-5 h-5 animate-spin" /> Loading…
+        </div>
+      ) : queue.length === 0 ? (
+        <p className="py-12 text-center text-sm text-muted-foreground" data-testid="tc-hub-signoff-empty">
+          Nothing is waiting for sign-off.
+        </p>
+      ) : (
+        <ul className="space-y-2" data-testid="tc-hub-signoff-queue">
+          {queue.map((r) => (
+            <li key={`${r.officeId}:${r.referralId}`}>
+              <button
+                type="button"
+                onClick={() => {
+                  setDone(null);
+                  setOpen({ office: r.officeId, referralId: r.referralId });
+                }}
+                className="w-full text-left rounded-lg border border-border bg-card p-3 hover:bg-muted/50"
+                data-testid="tc-hub-signoff-row"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-2">
+                    <span className="font-medium text-foreground">{r.patientName}</span>
+                    {showOfficeBadges && <OfficeBadge officeId={r.officeId} />}
+                  </span>
+                  <span className="text-xs text-muted-foreground">{TC_REFERRAL_URGENCY_LABELS[r.urgency]}</span>
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  {[r.practiceName ?? "No specialist chosen", r.specialty, teethLabel(r.teeth)].filter(Boolean).join(" · ")}
+                </p>
+                <p className="text-sm text-foreground line-clamp-1">{r.reason}</p>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {open && (
+        <HubDetail
+          key={`${open.office}:${open.referralId}`}
+          office={open.office}
+          referralId={open.referralId}
+          reader="signoff"
+          viewer={viewer}
+          autosend={autosend}
+          onClose={() => setOpen(null)}
+          onChanged={load}
+          onSigned={(next) => {
+            setDone(next);
+            setOpen(null);
+          }}
+        />
+      )}
     </div>
   );
 }

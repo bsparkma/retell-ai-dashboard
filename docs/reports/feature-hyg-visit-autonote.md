@@ -118,10 +118,10 @@ fourteen controls.
 ## The signature block
 
 `backend/config/hygStaff.js` — a config file, per office, sourced from the practice's own
-two signature auto notes (`LW Signature`, `Raegan McGee `). These are staff, not patients.
+two signature auto notes (one per hygienist). These are staff, not patients.
 
 - **A licence is never invented.** The roster is looked up by normalised name. A hit prints
-  `Raegan McGee RDH #4251`; a miss prints the name ALONE — no blank `RDH #`, no fabricated
+  `Avery Example RDH #9101`; a miss prints the name ALONE — no blank `RDH #`, no fabricated
   number, and never somebody else's.
 - **An office never gets another office's doctors.** An unknown office gets an empty list,
   never a fallback.

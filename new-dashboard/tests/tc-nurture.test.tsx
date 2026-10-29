@@ -62,7 +62,7 @@ function mkCase(
     category: "implant",
     status: "nurture",
     urgency: "medium",
-    doctorName: "Dr. Sparkman",
+    doctorName: "Dr. Example",
     diagnosingProvider: null,
     assignedTc: "Amber",
     caseValueCents: 250_000,

@@ -13,7 +13,7 @@ const { bootTcApp, api, auditRows } = require('./tcTestUtils');
 
 const INTAKE = {
   patientName: 'Hygiene Patient',
-  diagnosingProvider: 'dr.sparkman@carein.ai',
+  diagnosingProvider: 'dr.example@carein.ai',
   category: 'single_tooth',
   urgency: 'medium',
   perioStatus: 'gingivitis',
@@ -34,8 +34,8 @@ test('submit creates the case (hygiene_review) + intake in one transaction', asy
 
     assert.equal(c.status, 'hygiene_review');
     assert.equal(c.officeId, 'valley');
-    assert.equal(c.diagnosingProvider, 'dr.sparkman@carein.ai');
-    assert.equal(c.doctorName, 'dr.sparkman@carein.ai');
+    assert.equal(c.diagnosingProvider, 'dr.example@carein.ai');
+    assert.equal(c.doctorName, 'dr.example@carein.ai');
     assert.equal(c.referralSource, 'hygiene');
     assert.equal(c.assignedTc, '');
     // Intake identity is the SSO session, not client input.

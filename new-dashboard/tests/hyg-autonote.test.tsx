@@ -56,7 +56,7 @@ class ResizeObserverStub {
 }
 (globalThis as Record<string, unknown>).ResizeObserver ??= ResizeObserverStub;
 
-const DOCTORS = ["Beau Sparkman", "Blain VanNice", "Joe Farmer"];
+const DOCTORS = ["Drew Example", "Morgan Example", "Quinn Example"];
 
 const server = vi.hoisted(() => ({
   visit: null as unknown,

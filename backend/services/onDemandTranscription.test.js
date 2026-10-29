@@ -151,12 +151,12 @@ test('an unmatched call is run through the matcher with its freshly extracted na
   const call = seedCall();
   const seen = [];
   openDentalSync.matchAndSetStatus = async (id, input) => { seen.push({ id, input }); return { status: 'matched' }; };
-  callAnalyzer.analyzeCall = async () => ({ summary: 'S', sentiment: 'neutral', caller_name: 'Pat Sparkman' });
+  callAnalyzer.analyzeCall = async () => ({ summary: 'S', sentiment: 'neutral', caller_name: 'Pat Example' });
 
   await onDemand.transcribeCall(call.id, { actor: ACTOR });
 
   assert.equal(seen.length, 1);
-  assert.equal(seen[0].input.caller_name, 'Pat Sparkman', 'the name the summary just found');
+  assert.equal(seen[0].input.caller_name, 'Pat Example', 'the name the summary just found');
 });
 
 test('a call whose patient a HUMAN already chose is never re-matched', async () => {

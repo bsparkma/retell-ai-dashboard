@@ -306,3 +306,14 @@ test('an unreadable GroupNotes surface is a refusal, not an empty list', () => {
     assert.deepEqual(seen, [['/procedurelogs/GroupNotes', { PatNum: 12828 }]]);
   });
 });
+
+test('Slice 2b: a note or slip payload with or WITHOUT the existing-treatment digest still sends', () => {
+  const note = { kind: 'note', aptNum: 1, patNum: 1, isSigned: false, nameBlock: 'x', text: 'y' };
+  const router = { kind: 'router', aptNum: 1, patNum: 1, lines: ['a'] };
+  const digest = 'a'.repeat(64);
+  assert.equal(sendVisit.PAYLOAD_SCHEMAS.note.safeParse(note).success, true, 'staged before 2b');
+  assert.equal(sendVisit.PAYLOAD_SCHEMAS.note.safeParse({ ...note, existingTxDigest: digest }).success, true);
+  assert.equal(sendVisit.PAYLOAD_SCHEMAS.router.safeParse(router).success, true, 'staged before 2b');
+  assert.equal(sendVisit.PAYLOAD_SCHEMAS.router.safeParse({ ...router, existingTxDigest: digest }).success, true);
+  assert.equal(sendVisit.PAYLOAD_SCHEMAS.note.safeParse({ ...note, existingTxDigest: 'not-a-digest' }).success, false);
+});
