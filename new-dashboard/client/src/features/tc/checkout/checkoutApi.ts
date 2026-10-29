@@ -12,6 +12,7 @@ import {
   TcCheckoutCaseTreatment,
   TcCheckoutPanelItem,
   type TcCheckoutOutcome,
+  type TcCheckoutWorkupRequest,
 } from "@shared/tc/checkout";
 import type { OfficeId } from "@shared/tc/contract";
 
@@ -147,4 +148,28 @@ export async function undoItemEntered(
       method: "DELETE",
     }),
   );
+}
+
+// ── CO-1: the workup checklist ──────────────────────────────────────────────
+
+const WorkupResponse = z.object({
+  success: z.literal(true),
+  handoff: TcCheckoutHandoff,
+  unchanged: z.boolean(),
+});
+
+/**
+ * Tick or untick ONE box on the workup checklist. The answer is the checklist
+ * the server READ BACK after storing it; the caller renders that, never the click.
+ */
+export async function setCheckoutWorkup(
+  office: OfficeId,
+  handoffId: string,
+  body: TcCheckoutWorkupRequest,
+): Promise<TcCheckoutHandoff> {
+  const res = parse(
+    WorkupResponse,
+    await tcRequest<unknown>(`/tc/checkout/${handoffId}/workup`, { office, method: "POST", body }),
+  );
+  return res.handoff;
 }

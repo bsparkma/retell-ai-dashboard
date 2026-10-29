@@ -24,7 +24,8 @@
 const express = require('express');
 const { randomUUID } = require('node:crypto');
 
-const { contract, requireOffice, actorEmail, actorName, parseBody, h, auditTc, notFound } = require('./helpers');
+const { contract, requireOffice, actorEmail, actorName, parseBody, h, auditTc, notFound, isoDate } = require('./helpers');
+const { localDayKey } = require('../../services/localDayClock');
 const { withTenantTx } = require('./tx');
 const { requirePermission } = require('../../config/permissions');
 const tenantDb = require('../../platform/tenantDb');
@@ -524,10 +525,30 @@ router.get(
 
 // ── GET /inbox — unclaimed hygiene_review cases, urgent first ───────────────
 
+/**
+ * CO-1 (Beau, 2026-10-29): a hygiene handoff for a patient who has a SAME-DAY
+ * checkout entry is not an Inbox item. Its content — the same visit's staged
+ * treatment — is on the checkout card, where the front desk is already working
+ * the patient. The case itself is untouched: it still exists, still shows on
+ * the Pipeline, and is still the open case a checkout outcome attaches to
+ * (findOpenCase). Only WHERE it surfaces changes. A dismissed or expired
+ * checkout hands it back (checkoutStore.RELEASES_INBOX_STATUSES).
+ *
+ * "Same day" is the intake's visit date; an intake without one (TC's own form
+ * may leave it blank) falls back to the office day it was submitted.
+ */
+function intakeDay(row) {
+  const visit = isoDate(row.visit_date);
+  if (visit) return visit;
+  if (!row.submitted_at) return null;
+  const tz = String(process.env.OFFICE_TIMEZONE || '').trim() || 'America/Chicago';
+  return localDayKey(tz, new Date(row.submitted_at));
+}
+
 router.get(
   '/inbox',
   h(async (req, res) => {
-    const rows = await tenantDb.withTenantDb(req, (pool) =>
+    const joined = await tenantDb.withTenantDb(req, (pool) =>
       pool.query(
         `SELECT ${store.INTAKE_COLS.map((c) => `i.${c}`).join(', ')},
                 c.patient_name, c.patient_age, c.phone, c.category, c.urgency,
@@ -540,6 +561,22 @@ router.get(
         [req.tcOffice]
       )
     );
+
+    // CO-1: drop the intakes a same-day checkout entry holds (see intakeDay).
+    const keyed = joined.rows.map((r) => ({
+      od_patient_id: r.od_patient_id == null ? null : Number(r.od_patient_id),
+      day: intakeDay(r),
+    }));
+    const handoffs = await tenantDb.withTenantDb(req, (pool) =>
+      checkoutStore.listForPatientsOnDays(
+        pool,
+        req.tcOffice,
+        [...new Set(keyed.map((k) => k.od_patient_id).filter((v) => v != null))],
+        [...new Set(keyed.map((k) => k.day).filter((v) => v != null))]
+      )
+    );
+    const claimed = checkoutStore.claimedBySameDayCheckout(keyed, handoffs);
+    const rows = { rows: joined.rows.filter((_, i) => !claimed[i]) };
 
     await auditTc(req, 'READ', 'tc_hygiene_intake', null);
     res.json({

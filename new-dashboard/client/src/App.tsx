@@ -47,6 +47,7 @@ import TcHygieneSubmissions from "./pages/tc/TcHygieneSubmissions";
 import TcHygieneInbox from "./pages/tc/TcHygieneInbox";
 import TcOpportunities from "./pages/tc/TcOpportunities";
 import TcCheckout from "./pages/tc/TcCheckout";
+import TcCheckoutWorkup from "./pages/tc/TcCheckoutWorkup";
 import TcReferralSignoffRedirect from "./pages/tc/TcReferralSignoffRedirect";
 import TcReferralsHub from "./pages/tc/TcReferralsHub";
 import TcPreauth from "./pages/tc/TcPreauth";
@@ -232,6 +233,7 @@ export function Router() {
         <Route path="/tc/followups" component={TcFollowups} />
         <Route path="/tc/opportunities" component={TcOpportunities} />
         <Route path="/tc/checkout" component={TcCheckout} />
+        <Route path="/tc/checkout/:id" component={TcCheckoutWorkup} />
         <Route path="/tc/referrals" component={TcReferralsHub} />
         {/* The old sign-off page's path: now the hub's sign-off view (alerts, bookmarks). */}
         <Route path="/tc/referrals/signoff" component={TcReferralSignoffRedirect} />

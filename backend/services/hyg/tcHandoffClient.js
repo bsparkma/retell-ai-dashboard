@@ -528,16 +528,25 @@ function buildCheckoutIntake({ visit, snapshot, date, final, existingTx }) {
   }
 
   const items = Array.isArray(visit.items) ? visit.items : [];
-  const procedures = items.slice(0, 100).map((item) => ({
-    teeth: item.teeth === 'mouth' ? 'mouth' : Array.isArray(item.teeth) ? item.teeth : [],
-    code: capped(item.code, 60) || 'Other',
-    category: capped(item.category, 40) || 'Other',
-    priority: PRIORITY_ORDER.includes(item.priority) ? item.priority : 'preventative',
-    status: capped(item.status, 40) || 'proposed',
-    surfaces: (Array.isArray(item.surfaces) ? item.surfaces : []).slice(0, 10).map((x) => capped(x, 4)),
-    scheduleNext: item.scheduleNext === true,
-    note: capped(item.note, 500),
-  }));
+  const procedures = items.slice(0, 100).map((item) => {
+    // CO-1: the slip's diagnosis travels too, for the front desk's workup
+    // view. Absent (not empty) when the item has none, so a visit with no dx
+    // sends exactly the snapshot it always did.
+    const dx = (Array.isArray(item.dx) ? item.dx : []).filter((d) => typeof d === 'string' && /^[A-Za-z]{1,8}$/.test(d)).slice(0, 20);
+    const dxNote = capped(item.dxNote, 500);
+    return {
+      teeth: item.teeth === 'mouth' ? 'mouth' : Array.isArray(item.teeth) ? item.teeth : [],
+      code: capped(item.code, 60) || 'Other',
+      category: capped(item.category, 40) || 'Other',
+      priority: PRIORITY_ORDER.includes(item.priority) ? item.priority : 'preventative',
+      status: capped(item.status, 40) || 'proposed',
+      surfaces: (Array.isArray(item.surfaces) ? item.surfaces : []).slice(0, 10).map((x) => capped(x, 4)),
+      scheduleNext: item.scheduleNext === true,
+      note: capped(item.note, 500),
+      ...(dx.length ? { dx } : {}),
+      ...(dxNote ? { dxNote } : {}),
+    };
+  });
   const priority = PRIORITY_ORDER.find((p) => procedures.some((x) => x.priority === p)) ?? null;
 
   const slip = visit.slip || {};
