@@ -1,7 +1,7 @@
 # CO-1: Checkout workup view and same-day hygiene routing
 
 Branch `feature/tc-checkout-workup`, off `origin/develop` (f0e5566). Built to Beau's rulings
-of 2026-10-29. PR: _#TBD_. Not merged.
+of 2026-10-29. PR: **#292** (to develop). Not merged.
 
 ## What changed, in one paragraph
 
@@ -289,4 +289,8 @@ round.
 
 ## CI
 
-_Pending: watched on `refs/pull/N/merge`._
+`build-test` on `refs/pull/292/merge` **passed** (5m 0s,
+[run 40956676621](https://github.com/bsparkma/retell-ai-dashboard/actions/runs/40956676621/job/123738448744))
+at head `3a925ad`. That covers typecheck, vitest, `node --check`, `node --test`, migrations
+against an ephemeral Postgres, and the smoke spine. It needed no fix pushes. This report
+commit is docs-only.
