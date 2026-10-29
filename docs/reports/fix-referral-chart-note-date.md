@@ -73,8 +73,29 @@ Probes, committed in plain text and **not yet run**:
 - `backend/scripts/probe-referral-commlog-dates.sql` runs one SELECT inside a `READ ONLY`
   transaction over the fixture's referral history, with `at_central`.
 
-**Result:** _to be filled in from the two outputs. If either note does not match its own
-event, the diagnosis is wrong and work stops here._
+**Result (run 2026-10-29, supervised and authorized):** both notes match their own
+milestone event **to the second**. The diagnosis holds.
+
+How the probes ran:
+
+- The OD probe is the committed file (`af9c91a`, sha256 `65f9c385…ce213e`). It was rebuilt
+  in the prod container's `/tmp` and its hash checked in the container before it ran.
+  It made one GET, which returned 8 rows, 2 of them of the referral type (491).
+- The SQL is the committed `.sql`, run unchanged against the prod **and** staging tenant
+  DBs, `READ ONLY`.
+
+| CommlogNum | OD `CommDateTime` | OD `DateTStamp` (written) | Source event (`at_central`) | Environment | Referral | Match |
+| --- | --- | --- | --- | --- | --- | --- |
+| 360339 | `2026-10-23 14:50:14` | `2026-10-29 13:09:18` | `patient_scheduled` `2026-10-23 14:50:14`; `chart_note_written` `2026-10-29 13:09:18` | **prod** | `1fb869d1…` | ✓ to the second |
+| 360206 | `2026-10-24 11:41:27` | `2026-10-28 16:27:25` | `send` `2026-10-24 11:41:27`; `chart_note_written` `2026-10-28 16:27:26` | **staging** | `e513c449…` | ✓ to the second |
+
+What this corrects in the original premise: 360206 was **not** written on 10/29 in prod.
+It was written **10/28 from staging**, which talks to the same live Open Dental databases.
+It belongs to a different referral, whose own `send` event is on 10/24. The prod tenant DB
+holds no record of it, and the staging tenant DB holds the `chart_note_written` row
+naming 360206. Both dates come from one cause: the note is dated at the milestone, not
+when it is written. No timezone shift is involved; both CommDateTimes are the event
+times in Central, exactly.
 
 ## Behaviour after the fix
 
@@ -85,15 +106,19 @@ writer. The milestone date no longer reaches `CommDateTime` by any path.
 
 ## Already-written notes (fixture patient only)
 
-Both mis-dated notes are on the roland fixture **12827**. No real patient is affected,
-because the feature reached prod in train #289 on 10/29 and these were the smoke-test
-writes. Correcting them is optional (it only tidies the fixture chart) and has to be done
+Both mis-dated notes are on the roland fixture **12827**. No real patient is affected:
+one is from the prod smoke (10/29), the other from staging testing (10/28). Correcting them is optional (it only tidies the fixture chart) and has to be done
 by hand in Open Dental. No script in this PR changes or removes Open Dental data.
 
 | CommlogNum | Shown under | Should read |
 | --- | --- | --- |
-| 360339 | 10/23 | 10/29 (written 1:09:18 PM CT) |
-| _from the probe_ | 10/24 | 10/29 |
+| 360339 | 10/23 | 10/29 (written 1:09:18 PM CT, prod) |
+| 360206 | 10/24 | 10/28 (written 4:27:25 PM CT, staging) |
+
+One caveat on the claim that no real patient is affected: it covers 12827, the only
+chart probed, and the prod tenant DB, where 360339 is the only chart note written. It
+does not cover staging writes to other charts, since staging is meant to write only to
+fixtures.
 
 ## Separate, not fixed here: voice notes are dated in UTC
 
