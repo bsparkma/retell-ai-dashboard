@@ -105,6 +105,28 @@ function writeAudit(req, { action, resourceId, result, priorState = null }) {
   });
 }
 
+/**
+ * The SUCCESS audit row for a write that has already landed. Fail-closed like
+ * every audit, but a refusal here must not read as "nothing was saved": the row
+ * IS saved, so the answer says that, and what to do.
+ */
+async function auditSaved(req, res, entry) {
+  try {
+    await writeAudit(req, { ...entry, result: 'SUCCESS' });
+    return true;
+  } catch (err) {
+    if (!(err instanceof AuditError)) throw err;
+    console.error('[hygstaff] saved, but the audit write failed:', err.message);
+    fail(
+      res,
+      500,
+      'The change was saved, but its audit entry could not be written. Reload to see it, and tell your administrator.',
+      'SAVED_AUDIT_FAILED'
+    );
+    return false;
+  }
+}
+
 /** Which fields an edit replaced, as the prior_state slug. */
 function editedSlug(prior, next) {
   const fields = [];
@@ -159,7 +181,7 @@ router.post(
       staffStore.create(pool, { office, input, actor: actorEmail(req) })
     );
     if (!outcome.ok) return refuse(req, res, { action: 'CREATE', resourceId: null, outcome });
-    await writeAudit(req, { action: 'CREATE', resourceId: outcome.staff.id, result: 'SUCCESS' });
+    if (!(await auditSaved(req, res, { action: 'CREATE', resourceId: outcome.staff.id }))) return undefined;
     return res.status(201).json({ success: true, staff: outcome.staff });
   })
 );
@@ -176,12 +198,12 @@ router.put(
       staffStore.update(pool, { office, id, input, actor: actorEmail(req) })
     );
     if (!outcome.ok) return refuse(req, res, { action: 'UPDATE', resourceId: id, outcome });
-    await writeAudit(req, {
+    const audited = await auditSaved(req, res, {
       action: 'UPDATE',
       resourceId: id,
-      result: 'SUCCESS',
       priorState: editedSlug(outcome.prior, outcome.staff),
     });
+    if (!audited) return undefined;
     return res.json({ success: true, staff: outcome.staff });
   })
 );
@@ -197,12 +219,12 @@ for (const [verb, active] of [['deactivate', false], ['reactivate', true]]) {
         staffStore.setActive(pool, { office, id, active, actor: actorEmail(req) })
       );
       if (!outcome.ok) return refuse(req, res, { action: 'UPDATE', resourceId: id, outcome });
-      await writeAudit(req, {
+      const audited = await auditSaved(req, res, {
         action: 'UPDATE',
         resourceId: id,
-        result: 'SUCCESS',
         priorState: outcome.prior.active ? 'active' : 'inactive',
       });
+      if (!audited) return undefined;
       return res.json({ success: true, staff: outcome.staff });
     })
   );

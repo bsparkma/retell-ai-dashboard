@@ -149,6 +149,10 @@ let testRoster = null;
  *                  hygienists: Array<{ fullName: string, credential: string, license: string|null, signIn: string[] }> }} roster
  */
 function setRosterForTests(roster) {
+  // A production process never swaps the people who print on chart notes.
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('hygStaff.setRosterForTests is for tests and refuses to run in production');
+  }
   testRoster = roster
     ? Object.freeze({
         doctors: Object.freeze(

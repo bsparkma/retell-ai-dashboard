@@ -383,3 +383,43 @@ test('a roland row never prints on a note for the other office', async () => {
   assert.equal(nameLine, 'V');
   assert.ok(!preview.join('\n').includes('3333'));
 });
+
+// ── review round 1 ──────────────────────────────────────────────────────────
+
+test('a save whose audit row then fails says it WAS saved, not that nothing happened', async () => {
+  const app = await admin();
+  try {
+    app.db.failAudit = true;
+    const res = await api(app.baseUrl, 'POST', BASE + '?office=roland', { body: AVERY });
+    assert.equal(res.status, 500);
+    assert.equal(res.body.code, 'SAVED_AUDIT_FAILED');
+    assert.match(res.body.error, /was saved/);
+    assert.equal(app.db.hyg_staff.length, 1, 'the row did land');
+  } finally {
+    await app.close();
+  }
+});
+
+test('the test seam refuses to run in production', () => {
+  const hygStaff = require('../config/hygStaff');
+  const was = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'production';
+  try {
+    assert.throws(() => hygStaff.setRosterForTests(null), /refuses to run in production/);
+  } finally {
+    if (was === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = was;
+  }
+});
+
+test('a session email with stray case and padding still matches its stored sign-in', async () => {
+  const db = new FakeHygDb();
+  const app = await admin(db);
+  try {
+    await api(app.baseUrl, 'POST', BASE + '?office=roland', { body: AVERY });
+  } finally {
+    await app.close();
+  }
+  const { nameLine } = await noteLines(db, { email: '  AVERY.example@CareIN.ai ', name: 'A' });
+  assert.equal(nameLine, 'Avery Example RDH #9101');
+});
