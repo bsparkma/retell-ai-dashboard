@@ -51,8 +51,15 @@ import {
   type TcCheckoutWorkupSection,
 } from "@shared/tc/checkout";
 import { DX_LABELS, type DxCode } from "@shared/hyg/contract";
-import { EXISTING_TX_PATIENT_LABELS } from "@shared/hyg/existingTx";
+import { EXISTING_TX_PATIENT_LABELS, type ExistingTxPatient } from "@shared/hyg/existingTx";
 import type { OfficeId } from "@shared/tc/contract";
+
+/**
+ * Groups the workup folds to a heading and count (CO-1 polish ruling): "Not
+ * discussed" is the longest and least actionable list, so it starts closed.
+ * The hygiene visit page and the quick-look sidebar do not pass this.
+ */
+const WORKUP_COLLAPSED_GROUPS: readonly ExistingTxPatient[] = ["not_discussed"];
 
 /** "D (Decay), RD (Recurrent decay)" — a code the label table lacks prints as itself. */
 export function dxText(dx: readonly string[] | undefined): string {
@@ -151,9 +158,14 @@ export interface CheckoutWorkupProps {
   /** The server's read-back after any change (tick, claim, outcome). */
   onChange: (next: TcCheckoutHandoff) => void;
   onReload: () => Promise<void>;
+  /**
+   * True while a tick is saving, false once it settles (CO-1 polish). The
+   * patient rail holds a switch to another patient until this goes false.
+   */
+  onBusyChange?: (busy: boolean) => void;
 }
 
-export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onChange, onReload }: CheckoutWorkupProps) {
+export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onChange, onReload, onBusyChange }: CheckoutWorkupProps) {
   const [saving, setSaving] = useState<Set<string>>(() => new Set());
   const snap = handoff.snapshot;
   const editable = TC_CHECKOUT_WAITING.includes(handoff.status);
@@ -174,6 +186,7 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
   const tick = async (key: string, body: TcCheckoutWorkupRequest) => {
     if (inFlight.current) return;
     inFlight.current = true;
+    onBusyChange?.(true);
     setSaving((prev) => new Set(prev).add(key));
     try {
       onChange(await setCheckoutWorkup(office, handoff.handoffId, body));
@@ -182,6 +195,7 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
       await onReload();
     } finally {
       inFlight.current = false;
+      onBusyChange?.(false);
       setSaving((prev) => {
         const next = new Set(prev);
         next.delete(key);
@@ -345,6 +359,7 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
         ) : (
           <ExistingTreatmentFromHygiene
             items={snap.existingTx ?? []}
+            collapsedGroups={WORKUP_COLLAPSED_GROUPS}
             groupAction={(group) => (
               <Tick
                 id={`workup-present-${group}`}
