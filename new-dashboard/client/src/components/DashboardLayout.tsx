@@ -29,8 +29,6 @@ import {
   BellRing,
   Inbox,
   Telescope,
-  ClipboardList,
-  ClipboardCheck,
   ShieldCheck,
   Mail,
   MessagesSquare,
@@ -200,6 +198,10 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
         { path: "/tc/followups", label: "Follow-Ups", icon: BellRing },
         { path: "/tc/texts", label: "Texts", icon: MessageSquare },
         { path: "/tc/opportunities", label: "Opportunities", icon: Telescope },
+        // CO-2: the TC Inbox stays (calls, walk-ins, doctor ops, and hygiene
+        // sends that have no same-day checkout); the Hygiene group it sat in
+        // is gone — the hygiene app replaces the handoff form and Submissions.
+        { path: "/tc/inbox", label: "TC Inbox", icon: Inbox },
         // Item 50. Shown only while checkout is switched on for an office in
         // scope (see `checkout.enabled` below), with a waiting-count badge.
         { path: "/tc/checkout", label: "Checkout", icon: DoorOpen },
@@ -211,14 +213,6 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
         // waiting-count badge for a signer (item 53).
         { path: "/tc/referrals", label: "Referrals", icon: Forward },
         { path: "/tc/preauth", label: "Pre-Auth", icon: ShieldCheck },
-      ],
-    },
-    {
-      title: "Hygiene",
-      items: [
-        { path: "/tc/hygiene/inbox", label: "TC Inbox", icon: Inbox },
-        { path: "/tc/hygiene", label: "Hygiene handoff", icon: ClipboardList },
-        { path: "/tc/hygiene/submissions", label: "Submissions", icon: ClipboardCheck },
       ],
     },
     {
@@ -285,8 +279,8 @@ const RCM_POSTING_HISTORY: NavItem = {
 };
 
 /**
- * Longest-prefix active match so "/tc/hygiene" doesn't light up while the
- * user is on "/tc/hygiene/inbox". "/tc" only matches exactly, except it also
+ * Longest-prefix active match so a shorter path doesn't light up while the
+ * user is on a longer one beneath it. "/tc" only matches exactly, except it also
  * claims case-detail pages (they belong to Pipeline).
  */
 export function activeNavPath(
@@ -486,7 +480,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   };
 
   // Which module's nav to render. The ROUTE wins over the stored selection:
-  // standing on /tc/hygiene/inbox and being shown the Voice sidebar is wrong
+  // standing on /tc/inbox and being shown the Voice sidebar is wrong
   // however you got there, and it became reachable in Roles PR B because a
   // hygienist lands on a TC route with 'voice' still remembered in
   // localStorage — which filtered to an empty sidebar.

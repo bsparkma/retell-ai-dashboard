@@ -93,8 +93,8 @@ export function homeForRole(role: TenantRole | null): string {
 /**
  * Route prefix → the action needed to see it.
  *
- * LONGEST PREFIX WINS, so `/tc/hygiene/inbox` is matched by the `/tc/hygiene`
- * entry rather than by the broader `/tc`. Order in this object is irrelevant;
+ * LONGEST PREFIX WINS, so `/tc/inbox` is matched by its own entry rather than
+ * by the broader `/tc`. Order in this object is irrelevant;
  * `requiredActionFor` sorts by specificity.
  *
  * A route absent from this map needs no permission — that is the honest default
@@ -111,7 +111,13 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionAction | readonly Permi
   "/analytics": "voice.read",
   "/admin": "admin.all",
   "/tc": "tc.full",
-  // The three Hygiene-nav pages are the ONLY /tc routes a hygienist may see.
+  // The TC Inbox: the ONE /tc page a hygienist may see (read-only — Claim and
+  // the case page are tc.full). It moved here from /tc/hygiene/inbox in CO-2
+  // with the same grant, so who can open it did not change.
+  "/tc/inbox": "tc.hygiene",
+  // CO-2: the old Hygiene pages' addresses, now only redirects (App.tsx). Kept
+  // on the same grant so a hygienist's bookmark still resolves to a redirect
+  // instead of bouncing home before it gets there.
   "/tc/hygiene": "tc.hygiene",
   // The Referrals hub: tc.full for the hub itself, OR tc.referral_signoff for
   // its sign-off view — the doctor's whole TC surface (item 53, moved into the

@@ -116,8 +116,7 @@ test('an attached Open Dental patient is stored WITH its office, and surfaces on
     const mine = await api(baseUrl, 'GET', '/api/tc/hygiene-intakes/mine?office=valley');
     assert.equal(mine.body.intakes[0].od_patient_id, 7115);
 
-    const all = await api(baseUrl, 'GET', '/api/tc/hygiene-intakes?office=valley');
-    assert.equal(all.body.intakes[0].od_patient_id, 7115);
+    // RULING (CO-2): the GET / (Submissions) read is gone with its page.
   } finally {
     await close();
   }

@@ -201,13 +201,15 @@ async function navLabels(): Promise<string[]> {
 }
 
 describe("sidebar nav per role", () => {
-  it("HYGIENE sees exactly three items: TC Inbox, Hygiene handoff, Submissions", async () => {
+  // RULING (CO-2): the Hygiene handoff and Submissions tabs are removed; the TC
+  // Inbox (moved to /tc/inbox on the same tc.hygiene grant) is what remains.
+  it("HYGIENE sees exactly one TC item: TC Inbox", async () => {
     authState.role = "hygiene";
     authState.permissions = PERMS.hygiene;
-    renderShell("/tc/hygiene/inbox");
+    renderShell("/tc/inbox");
 
     await waitFor(async () => {
-      expect(await navLabels()).toEqual(["TC Inbox", "Hygiene handoff", "Submissions"]);
+      expect(await navLabels()).toEqual(["TC Inbox"]);
     });
   });
 
