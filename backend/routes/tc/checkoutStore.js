@@ -550,7 +550,8 @@ async function findManualAwaitingHygiene(q, office, odPatientId, day) {
  * The card takes the hygiene SOURCE KEY, so every later revision from the same
  * visit finds it exactly as it would have found its own card, and the visit's
  * snapshot. It keeps its id, its status, its workup ticks, who added it, and
- * `source = 'manual'`. Conditional on not having merged already.
+ * `source = 'manual'`. Conditional on not having merged already, and on the
+ * revision the caller read (a compare-and-swap, like updatePayload).
  *
  * @returns {Promise<boolean>} whether THIS call merged
  */
@@ -560,7 +561,8 @@ async function mergeHygieneOntoManual(q, { office, handoffId, expectRevision, so
         SET source_key = $3, payload = $4::jsonb, is_final = $5, revision = $6, patient_name = $7,
             provider = $8, provider_seen = $9, operatory = $10, updated_by = $11,
             hygiene_merged_at = now(), updated_at = now()
-      WHERE office_id = $1 AND handoff_id = $2 AND source = 'manual' AND hygiene_merged_at IS NULL`,
+      WHERE office_id = $1 AND handoff_id = $2 AND source = 'manual' AND hygiene_merged_at IS NULL
+        AND revision = $12`,
     [
       office,
       handoffId,
@@ -573,6 +575,7 @@ async function mergeHygieneOntoManual(q, { office, handoffId, expectRevision, so
       row.provider_seen,
       row.operatory,
       row.updated_by,
+      expectRevision,
     ]
   );
   return res.rowCount === 1;
