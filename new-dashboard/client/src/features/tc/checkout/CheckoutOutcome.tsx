@@ -9,6 +9,11 @@
  *   Not scheduled   → the case waits on the patient
  *   Nothing needed  → the checkout closes, no case
  * The answer renders from the server's read-back, never from the click.
+ *
+ * CO-4a: Scheduled first asks WHICH Open Dental appointment was booked (the
+ * AppointmentPicker), and the pick and the answer are one request. Once
+ * Scheduled, the card shows the anchored appointment, or "No appointment
+ * linked" with "Link appointment".
  */
 import { useState } from "react";
 import { Link } from "wouter";
@@ -19,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { tcErrorMessage } from "@/features/tc/api";
 import { claimCheckout, recordCheckoutOutcome } from "@/features/tc/checkout/checkoutApi";
+import { AppointmentAnchorLine, AppointmentPicker } from "@/features/tc/checkout/AppointmentPicker";
 import {
   TC_CHECKOUT_STATUS_LABELS,
   TC_CHECKOUT_WAITING,
@@ -47,6 +53,7 @@ export interface CheckoutOutcomeProps {
 export function CheckoutOutcome({ office, handoff, onAdopt, onReload }: CheckoutOutcomeProps) {
   const [busy, setBusy] = useState<TcCheckoutOutcome | "claim" | null>(null);
   const [note, setNote] = useState("");
+  const [picking, setPicking] = useState(false);
 
   const claim = async () => {
     setBusy("claim");
@@ -60,10 +67,11 @@ export function CheckoutOutcome({ office, handoff, onAdopt, onReload }: Checkout
     }
   };
 
-  const answer = async (outcome: TcCheckoutOutcome) => {
+  const answer = async (outcome: TcCheckoutOutcome, aptNum: number | null = null) => {
     setBusy(outcome);
     try {
-      const res = await recordCheckoutOutcome(office, handoff.handoffId, outcome, outcome === "scheduled" ? note : "");
+      const res = await recordCheckoutOutcome(office, handoff.handoffId, outcome, outcome === "scheduled" ? note : "", aptNum);
+      setPicking(false);
       onAdopt(res.handoff);
       const url = res.url;
       toast.success(
@@ -107,7 +115,7 @@ export function CheckoutOutcome({ office, handoff, onAdopt, onReload }: Checkout
         />
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-        <Button className="gap-1.5 min-h-11" disabled={busy !== null} onClick={() => void answer("scheduled")} data-testid="checkout-outcome-scheduled">
+        <Button className="gap-1.5 min-h-11" disabled={busy !== null} onClick={() => setPicking(true)} data-testid="checkout-outcome-scheduled">
           {busy === "scheduled" ? <Loader2 className="w-4 h-4 animate-spin" /> : <CalendarCheck className="w-4 h-4" />}
           Scheduled
         </Button>
@@ -120,6 +128,15 @@ export function CheckoutOutcome({ office, handoff, onAdopt, onReload }: Checkout
           Nothing needed
         </Button>
       </div>
+      <AppointmentPicker
+        open={picking}
+        office={office}
+        handoffId={handoff.handoffId}
+        mode="outcome"
+        busy={busy === "scheduled"}
+        onClose={() => setPicking(false)}
+        onPick={(aptNum) => void answer("scheduled", aptNum)}
+      />
     </section>
   ) : (
     <section className="border-t border-border pt-4 text-sm space-y-1" data-testid="checkout-answered">
@@ -128,6 +145,7 @@ export function CheckoutOutcome({ office, handoff, onAdopt, onReload }: Checkout
         {TC_CHECKOUT_STATUS_LABELS[handoff.status]}
         {handoff.outcomeAt && <span className="font-normal text-muted-foreground">at {checkoutClock(handoff.outcomeAt)} by {handoff.outcomeBy}</span>}
       </p>
+      <AppointmentAnchorLine office={office} handoff={handoff} canLink={handoff.caseId !== null} onLinked={onAdopt} />
       {handoff.appointmentNote && <p className="text-muted-foreground">{handoff.appointmentNote}</p>}
       {handoff.dismissedReason && <p className="text-muted-foreground">Dismissed: {handoff.dismissedReason}</p>}
       {handoff.caseId && (
