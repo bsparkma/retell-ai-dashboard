@@ -1307,8 +1307,7 @@ interface OdPatientBrief {
  * to attach the right person and to tell two same-named patients apart.
  * Phone/email/status come back as empty strings so the shared `OdPatient` shape
  * stays ONE type across the module. Callers must therefore read a blank as "not
- * fetched", never as "not on file", and must not overwrite typed values with it
- * (see hygiene/IntakeForm.tsx).
+ * fetched", never as "not on file", and must not overwrite typed values with it.
  *
  * ⚠️ OD matches name fields by PREFIX — "Smith" also returns "Smithson" — so
  * the caller must show DOB and let a human choose. Never auto-select result[0].

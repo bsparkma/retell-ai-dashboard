@@ -31,8 +31,8 @@ const INTAKE = {
 
 /**
  * FakeTenantDb refuses JOINs without an override (a harness that faked one
- * would pass tests the real database fails). This override implements the two
- * reads the submissions view makes: the joined list, and the DISTINCT chip set.
+ * would pass tests the real database fails). This override implements the one
+ * read it still makes: the joined list (the DISTINCT chip read went with GET / in CO-2).
  */
 function dbWithSubmissionReads() {
   const db = new FakeTenantDb();
@@ -51,16 +51,6 @@ function dbWithSubmissionReads() {
         return { ...i, patient_name: c.patient_name, case_status: c.status };
       }),
     };
-  });
-
-  db.onQuery(/SELECT DISTINCT hygienist_name/i, (_text, params) => {
-    const names = new Set(
-      db
-        .table('tc_hygiene_intakes')
-        .filter((i) => i.office_id === params[0] && i.hygienist_name !== '')
-        .map((i) => i.hygienist_name)
-    );
-    return { rows: [...names].sort().map((hygienist_name) => ({ hygienist_name })) };
   });
 
   return db;
