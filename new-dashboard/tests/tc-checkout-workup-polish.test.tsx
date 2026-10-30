@@ -354,6 +354,6 @@ describe.skipIf(process.env.TC_SHOTS !== "1")("checkout workup polish screenshot
     mount(ID_A);
     await screen.findByText(/No referrals for this patient yet/);
     await waitFor(() => expect(screen.getByTestId("workup-rail-toggle").textContent).toMatch(/Patients \(3\)/));
-    dump("tccheckout-co1p-03-narrow@420x1600");
+    dump("tccheckout-co1p-03-narrow@600x1600");
   });
 });
