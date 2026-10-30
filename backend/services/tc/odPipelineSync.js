@@ -228,7 +228,7 @@ const STATUS_WORDS = { Complete: 'complete', Broken: 'broken', UnschedList: 'on 
  * Apply one decided change to one case, in one transaction.
  * @returns {Promise<{ applied: boolean, audit: object[] }>}
  */
-async function applyChange(pool, { office, runId, item, anchor, decision, read, at }) {
+async function applyChange(pool, { office, runId, item, anchor, decision, read, at, audit }) {
   const action = {
     kind: decision.kind,
     at,
@@ -243,6 +243,17 @@ async function applyChange(pool, { office, runId, item, anchor, decision, read, 
   };
   try {
     return await inTx(pool, async (client) => {
+      // The read is minutes old by now (up to 200 reads at >= 1.2 s): act only if
+      // the case still carries THAT appointment. A re-link or a cleared anchor
+      // since the read is a race the person wins. Locked, so it cannot change
+      // under us.
+      const still = await client.query(
+        `SELECT handoff_id FROM tc_checkout_handoffs
+          WHERE office_id = $1 AND handoff_id = $2 AND status = 'scheduled' AND appt_num = $3
+          FOR UPDATE`,
+        [office, anchor.handoffId, anchor.aptNumRaw]
+      );
+      if (still.rows.length !== 1) throw new Raced();
       if (decision.kind === 'rescheduled') {
         const moved = await client.query(
           `UPDATE tc_checkout_handoffs
@@ -304,22 +315,22 @@ async function applyChange(pool, { office, runId, item, anchor, decision, read, 
           now: new Date(at),
         });
       }
-      return {
-        applied: true,
-        audit: [
-          {
-            action: 'UPDATE',
-            resourceType: `tc_case.od_sync_${decision.kind}`,
-            resourceId: item.caseId,
-            office,
-            sourceRef: `od_sync_run:${runId}`,
-            priorState: 'scheduled',
-          },
-        ],
-      };
+      // The change's own audit row, BEFORE the commit: an audit write that fails
+      // rolls the change back, so no automatic change ever stands untrailed.
+      await audit([
+        withResult({
+          action: 'UPDATE',
+          resourceType: `tc_case.od_sync_${decision.kind}`,
+          resourceId: item.caseId,
+          office,
+          sourceRef: `od_sync_run:${runId}`,
+          priorState: 'scheduled',
+        }),
+      ]);
+      return { applied: true };
     });
   } catch (err) {
-    if (err instanceof Raced) return { applied: false, audit: [] };
+    if (err instanceof Raced) return { applied: false };
     throw err;
   }
 }
@@ -328,16 +339,29 @@ async function applyChange(pool, { office, runId, item, anchor, decision, read, 
  * Record a flag (or clear one) and the check time. Never moves the case.
  * @returns {Promise<{ newlyFlagged: boolean }>}
  */
-async function recordCheck(pool, { office, item, flag, at }) {
+async function recordCheck(pool, { office, item, anchor, flag, at, fingerprint }) {
+  // A flag is about THAT appointment: if the desk re-linked or cleared it since
+  // the read, the read says nothing about the case any more.
+  if (anchor) {
+    const still = await pool.query(
+      `SELECT handoff_id FROM tc_checkout_handoffs
+        WHERE office_id = $1 AND handoff_id = $2 AND status = 'scheduled' AND appt_num = $3`,
+      [office, anchor.handoffId, anchor.aptNumRaw]
+    );
+    if (still.rows.length !== 1) return { newlyFlagged: false, raced: true };
+  }
+  // An undo holds a move only while Open Dental shows the state that was undone.
+  // Once it shows another, the hold has done its job and is released.
+  const keepUndone = item.undone && fingerprint && item.undone.fingerprint !== fingerprint ? null : item.undone;
   const res = await pool.query(
     `UPDATE tc_cases
-        SET od_sync_flag = $3, od_sync_checked_at = $4
+        SET od_sync_flag = $3, od_sync_checked_at = $4, od_sync_undone = $5
       WHERE office_id = $1 AND case_id = $2 AND status = 'scheduled'
       RETURNING case_id`,
-    [office, item.caseId, flag ? JSON.stringify(flag) : null, at]
+    [office, item.caseId, flag ? JSON.stringify(flag) : null, at, keepUndone ? JSON.stringify(keepUndone) : null]
   );
   const was = item.flag && item.flag.reason ? item.flag.reason : null;
-  return { newlyFlagged: res.rows.length === 1 && !!flag && was !== flag.reason };
+  return { newlyFlagged: res.rows.length === 1 && !!flag && was !== flag.reason, raced: res.rows.length !== 1 };
 }
 
 async function insertRun(pool, run) {
@@ -481,39 +505,49 @@ async function syncOffice(opts) {
       return { status: 'failed', runId, errorCode: 'OD_UNAVAILABLE' };
     }
 
-    // ── PHASE 2: decide and apply ─────────────────────────────────────────────
-    const changeAudit = [];
-    for (const r of reads) {
-      const at = clock().toISOString();
-      summary.checked += 1;
-      if (r.multiple) {
-        const flag = { reason: 'multiple', aptNum: null, aptStatus: null, at };
-        const { newlyFlagged } = await recordCheck(pool, { office, item: r.item, flag, at });
-        summary.flagged += 1;
-        if (newlyFlagged) changeAudit.push(flagAudit(office, r.item, runId));
-        continue;
-      }
-      const decision = decide(r.item, r.anchor, r.read);
-      if (decision.kind === 'flag') {
-        const flag = { reason: decision.reason, aptNum: r.anchor.aptNum, aptStatus: decision.aptStatus ?? null, at };
-        const { newlyFlagged } = await recordCheck(pool, { office, item: r.item, flag, at });
-        summary.flagged += 1;
-        if (newlyFlagged) changeAudit.push(flagAudit(office, r.item, runId));
-      } else if (decision.kind === 'none' || decision.kind === 'held') {
-        await recordCheck(pool, { office, item: r.item, flag: null, at });
-        if (decision.kind === 'held') summary.heldByUndo += 1;
-        else summary.unchanged += 1;
-      } else {
-        const out = await applyChange(pool, { office, runId, item: r.item, anchor: r.anchor, decision, read: r.read, at });
-        if (out.applied) {
-          summary[decision.kind] += 1;
-          changeAudit.push(...out.audit);
+    // The switch is re-read before anything is applied: an office switched off
+    // during the reads gets nothing written.
+    if (!(await sw.isEnabled(office))) {
+      console.warn(`[tc/od-sync] office=${office} run=${runId} switched off mid-run; nothing applied`);
+      await finishRun(pool, { runId, office, status: 'failed', summary: null, errorCode: 'SWITCHED_OFF', at: clock().toISOString() });
+      return { status: 'skipped', reason: 'SWITCH_OFF', runId };
+    }
+
+    // ── PHASE 2: decide and apply, each case with its own audit row ──────────
+    try {
+      for (const r of reads) {
+        const at = clock().toISOString();
+        summary.checked += 1;
+        if (r.multiple) {
+          const flag = { reason: 'multiple', aptNum: null, aptStatus: null, at };
+          const { newlyFlagged } = await recordCheck(pool, { office, item: r.item, flag, at });
+          summary.flagged += 1;
+          if (newlyFlagged) await audit([withResult(flagAudit(office, r.item, runId))]);
+          continue;
+        }
+        const decision = decide(r.item, r.anchor, r.read);
+        if (decision.kind === 'flag') {
+          const flag = { reason: decision.reason, aptNum: r.anchor.aptNum, aptStatus: decision.aptStatus ?? null, at };
+          const check = await recordCheck(pool, { office, item: r.item, anchor: r.anchor, flag, at, fingerprint: decision.fingerprint });
+          if (check.raced) summary.raced += 1;
+          else summary.flagged += 1;
+          if (check.newlyFlagged) await audit([withResult(flagAudit(office, r.item, runId))]);
+        } else if (decision.kind === 'none' || decision.kind === 'held') {
+          await recordCheck(pool, { office, item: r.item, anchor: r.anchor, flag: null, at, fingerprint: decision.fingerprint });
+          if (decision.kind === 'held') summary.heldByUndo += 1;
+          else summary.unchanged += 1;
         } else {
-          summary.raced += 1;
+          const out = await applyChange(pool, { office, runId, item: r.item, anchor: r.anchor, decision, read: r.read, at, audit });
+          if (out.applied) summary[decision.kind] += 1;
+          else summary.raced += 1;
         }
       }
+    } catch (err) {
+      // A database or audit failure mid-run: every change that committed carried
+      // its audit row into its own transaction; the run says it failed.
+      await finishRun(pool, { runId, office, status: 'failed', summary, errorCode: 'RUN_ERRORED', at: clock().toISOString() }).catch(() => {});
+      throw err;
     }
-    if (changeAudit.length) await audit(changeAudit.map(withResult));
 
     await finishRun(pool, { runId, office, status: 'ok', summary, errorCode: null, at: clock().toISOString() });
     console.log(
@@ -551,7 +585,7 @@ function flagAudit(office, item, runId) {
  *
  * @returns {Promise<{ ok: true, kind: string, priorState: string } | { ok: false, code: 'NOT_FOUND'|'NOTHING_TO_UNDO'|'UNDO_STALE' }>}
  */
-async function undoChange(pool, { office, caseId, actor, at }) {
+async function undoChange(pool, { office, caseId, actor, at, audit }) {
   try {
     return await inTx(pool, async (client) => {
       const found = await client.query(
@@ -593,6 +627,8 @@ async function undoChange(pool, { office, caseId, actor, at }) {
           detail: null,
           legacy_id: null,
         });
+        // Audited BEFORE the commit: a failed audit write rolls the undo back.
+        if (audit) await audit({ priorState: 'rescheduled' });
         return { ok: true, kind: action.kind, priorState: 'rescheduled' };
       }
 
@@ -610,11 +646,14 @@ async function undoChange(pool, { office, caseId, actor, at }) {
         office_id: office,
         ts: at,
         type: 'status_change',
-        description: `${action.toStatus} → ${action.fromStatus}: undid an Open Dental sync move`,
+        description: `${action.toStatus} → ${action.fromStatus}: undid an Open Dental sync move${
+          action.kind === 'completed' ? ' (a nurture enrollment the move stopped stays stopped)' : ''
+        }`,
         actor,
         detail: null,
         legacy_id: null,
       });
+      if (audit) await audit({ priorState: action.toStatus });
       return { ok: true, kind: action.kind, priorState: action.toStatus };
     });
   } catch (err) {

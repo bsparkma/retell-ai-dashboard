@@ -122,6 +122,10 @@ class TcOpportunitiesScheduler {
    * switch is on (config/tcOdSync.js — default OFF, env `=false` supreme). Each
    * office fails closed on its own; the audit rows go to the one TC tenant's
    * trail, under the sync's system actor. Never throws.
+   *
+   * It rides this scheduler's cron, so TC_OPPS_SYNC_DISABLED=true or an invalid
+   * TC_OPPS_SYNC_SCHEDULE also stops the NIGHTLY pipeline sync (Sync now is
+   * unaffected). That fails safe; it is the price of one nightly OD job.
    * @returns {Promise<{ skipped?: string, offices: object[] }>}
    */
   async runPipelineSync() {

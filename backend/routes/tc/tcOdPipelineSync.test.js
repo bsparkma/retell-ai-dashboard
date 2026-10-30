@@ -433,6 +433,135 @@ test('a person who moves the case while the sweep is reading wins: the sync does
   assert.ok(!audited.find((a) => a.resourceType === 'tc_case.od_sync_completed'));
 });
 
+// ── 3b. Review round 1 ──────────────────────────────────────────────────────
+
+test('REVIEW: a re-link during the sweep wins — the old appointment\'s signal does not move the case', async () => {
+  switchOn('roland');
+  const db = new FakeTenantDb();
+  const { caseId, handoffId } = seedCase(db);
+  // Open Dental says the OLD appointment is Complete; meanwhile the desk links a new one.
+  const odGet = async () => {
+    handoffRow(db, handoffId).appt_num = 6001;
+    return { ok: true, status: 200, data: apt({ AptStatus: 'Complete' }) };
+  };
+  const out = await engine.syncOffice({ office: 'roland', pool: db, trigger: 'nightly', odGet, audit: async () => {} });
+  assert.equal(out.summary.raced, 1);
+  assert.equal(caseRow(db, caseId).status, 'scheduled');
+  assert.equal(caseRow(db, caseId).od_sync_action, null);
+});
+
+test('REVIEW: an audit write that fails rolls the change back, and the run says it failed', async () => {
+  switchOn('roland');
+  const db = new FakeTenantDb();
+  const { caseId } = seedCase(db);
+  await withOd({ roland: { 5001: apt({ AptStatus: 'Complete' }) } }, async () => {
+    const audit = async (entries) => {
+      if (entries.some((e) => e.action === 'UPDATE')) throw new Error('audit store down');
+    };
+    // The fake store has no real transactions: emulate ROLLBACK by snapshotting at BEGIN.
+    const realConnect = db.connect.bind(db);
+    db.connect = async () => {
+      const c = await realConnect();
+      let snap = null;
+      return {
+        release() {},
+        query: async (sql, params) => {
+          const t = String(sql).trim();
+          if (t === 'BEGIN') snap = JSON.stringify([...db.tables]);
+          if (t === 'ROLLBACK' && snap) db.tables = new Map(JSON.parse(snap));
+          return c.query(sql, params);
+        },
+      };
+    };
+    await assert.rejects(engine.syncOffice({ office: 'roland', pool: db, trigger: 'nightly', audit }), /audit store down/);
+  });
+  assert.equal(caseRow(db, caseId).status, 'scheduled', 'no change stands without its audit row');
+  assert.equal(caseRow(db, caseId).od_sync_action, null);
+  assert.equal(db.table('tc_od_sync_runs')[0].status, 'failed');
+  assert.equal(db.table('tc_od_sync_runs')[0].error_code, 'RUN_ERRORED');
+});
+
+test('REVIEW: a 200 that is not the appointment, or a 404 saying the key cannot reach /appointments, fails the office closed', async () => {
+  switchOn('roland');
+  for (const res of [
+    { ok: true, status: 200, data: {} },
+    { ok: true, status: 200, data: [] },
+    { ok: true, status: 200, data: apt({ AptNum: 9999 }) },
+    { ok: false, status: 404, data: null, error: "'appointments' is not a valid resource" },
+  ]) {
+    const db = new FakeTenantDb();
+    const { caseId } = seedCase(db);
+    const out = await engine.syncOffice({ office: 'roland', pool: db, trigger: 'nightly', odGet: async () => res, audit: async () => {} });
+    assert.equal(out.status, 'failed', JSON.stringify(res));
+    assert.equal(caseRow(db, caseId).od_sync_flag, null, 'not read as "gone from Open Dental"');
+  }
+});
+
+test('REVIEW: switched off while the sweep is reading → nothing is applied', async () => {
+  switchOn('roland');
+  const db = new FakeTenantDb();
+  const { caseId } = seedCase(db);
+  const odGet = async () => {
+    process.env.TC_OD_SYNC_ENABLED_ROLAND = 'false';
+    return { ok: true, status: 200, data: apt({ AptStatus: 'Complete' }) };
+  };
+  const out = await engine.syncOffice({ office: 'roland', pool: db, trigger: 'nightly', odGet, audit: async () => {} });
+  assert.equal(out.status, 'skipped');
+  assert.equal(out.reason, 'SWITCH_OFF');
+  assert.equal(caseRow(db, caseId).status, 'scheduled');
+  assert.equal(db.table('tc_od_sync_runs')[0].error_code, 'SWITCHED_OFF');
+});
+
+test('REVIEW: an Undo whose audit write fails does not stand', async () => {
+  switchOn('roland');
+  const db = new FakeTenantDb();
+  const { caseId } = seedCase(db);
+  await withOd({ roland: { 5001: apt({ AptStatus: 'Complete' }) } }, async () => {
+    await runEngine(db);
+  });
+  const before = JSON.stringify(caseRow(db, caseId));
+  const realConnect = db.connect.bind(db);
+  db.connect = async () => {
+    const c = await realConnect();
+    let snap = null;
+    return {
+      release() {},
+      query: async (sql, params) => {
+        const t = String(sql).trim();
+        if (t === 'BEGIN') snap = JSON.stringify([...db.tables]);
+        if (t === 'ROLLBACK' && snap) db.tables = new Map(JSON.parse(snap));
+        return c.query(sql, params);
+      },
+    };
+  };
+  await assert.rejects(
+    engine.undoChange(db, { office: 'roland', caseId, actor: 'tc@carein.ai', at: new Date().toISOString(), audit: async () => { throw new Error('audit store down'); } }),
+    /audit store down/
+  );
+  assert.equal(caseRow(db, caseId).status, 'completed');
+  assert.equal(JSON.stringify(caseRow(db, caseId)), before);
+});
+
+test('REVIEW: the undo hold is released once Open Dental shows another state', async () => {
+  switchOn('roland');
+  const db = new FakeTenantDb();
+  const { caseId } = seedCase(db);
+  await withOd({ roland: { 5001: apt({ AptStatus: 'Complete' }) } }, async () => {
+    await runEngine(db);
+    await engine.undoChange(db, { office: 'roland', caseId, actor: 'tc@carein.ai', at: new Date().toISOString() });
+  });
+  // OD goes back to Scheduled at the same time: a different state, the hold is released.
+  await withOd({ roland: { 5001: apt({}) } }, async () => {
+    await runEngine(db);
+  });
+  assert.equal(caseRow(db, caseId).od_sync_undone, null);
+  // ...so a later Complete is a new signal.
+  await withOd({ roland: { 5001: apt({ AptStatus: 'Complete' }) } }, async () => {
+    const { out } = await runEngine(db);
+    assert.equal(out.summary.completed, 1);
+  });
+});
+
 // ── 4. Undo, and no redo until Open Dental changes ──────────────────────────
 
 test('Undo a move: back to scheduled, audited with the prior state; the engine holds until OD changes', async () => {

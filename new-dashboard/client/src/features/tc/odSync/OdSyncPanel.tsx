@@ -46,6 +46,10 @@ export function OdSyncPanel({
   const [starting, setStarting] = useState(false);
   const [undoing, setUndoing] = useState<string | null>(null);
   const wasRunning = useRef(false);
+  // Bumped after EVERY read, answered or failed (review round 1): the poll
+  // re-arms on it, so one failed read while a run is going cannot stop the
+  // polling and leave "Syncing…" on screen forever.
+  const [tick, setTick] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -57,6 +61,8 @@ export function OdSyncPanel({
       wasRunning.current = next.running;
     } catch (e) {
       setError(tcErrorMessage(e));
+    } finally {
+      setTick((n) => n + 1);
     }
   }, [office, onCasesChanged]);
 
@@ -68,7 +74,7 @@ export function OdSyncPanel({
     if (!status?.running) return;
     const t = setTimeout(() => void load(), POLL_MS);
     return () => clearTimeout(t);
-  }, [status, load]);
+  }, [status, tick, load]);
 
   const syncNow = async () => {
     setStarting(true);
@@ -107,7 +113,8 @@ export function OdSyncPanel({
     );
   }
   if (!status) return null;
-  if (!status.enabled && status.changes.length === 0) return null;
+  // Off, with nothing standing and nothing flagged: nothing to say.
+  if (!status.enabled && status.changes.length === 0 && status.flagged.length === 0) return null;
 
   const last = status.lastRun;
   const coolingDown = status.nextAllowedAt !== null;
@@ -158,6 +165,12 @@ export function OdSyncPanel({
           <span className="text-xs text-muted-foreground">Sync is off for this office</span>
         )}
       </div>
+
+      {error && (
+        <p className="flex items-center gap-2 text-xs text-red-700 dark:text-red-300" data-testid={`od-sync-error-${office}`}>
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" /> Couldn&apos;t refresh the sync status: {error}
+        </p>
+      )}
 
       {status.enabled && status.unanchoredCount > 0 && (
         <p className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300" data-testid={`od-sync-unanchored-${office}`}>

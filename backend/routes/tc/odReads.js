@@ -1394,13 +1394,23 @@ async function getAppointment(odGet, aptNum, opts = {}) {
     { timeoutMs: opts.timeoutMs || OD_CALL_TIMEOUT_MS, ...(opts.minIntervalMs ? { minIntervalMs: opts.minIntervalMs } : {}) }
   );
   if (!res.ok) {
-    if (res.status === 404) return { missing: true };
+    // A 404 is "no such appointment" -- unless Open Dental is saying the KEY
+    // cannot reach /appointments at all, which is our outage, not an answer.
+    if (res.status === 404 && !/not a valid resource|not enabled|permission/i.test(String(res.error || ''))) {
+      return { missing: true };
+    }
     const err = new Error(`OD appointment read failed (${res.status})`);
     err.odStatus = res.status;
     throw err;
   }
   const raw = Array.isArray(res.data) ? res.data[0] : res.data;
-  if (!raw || typeof raw !== 'object' || num(raw.AptNum) !== Number(aptNum)) return { missing: true };
+  // A 200 that is not this appointment (an empty body, a proxy page) is not an
+  // answer either: fail, so the office fails closed rather than flag every case.
+  if (!raw || typeof raw !== 'object' || num(raw.AptNum) !== Number(aptNum)) {
+    const err = new Error('OD appointment read returned an unreadable body');
+    err.odStatus = res.status;
+    throw err;
+  }
   return {
     missing: false,
     appointment: {

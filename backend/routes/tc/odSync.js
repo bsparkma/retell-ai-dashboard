@@ -195,7 +195,17 @@ router.post(
     const office = req.tcOffice;
     const actor = actorEmail(req);
     const at = new Date().toISOString();
-    const out = await tenantDb.withTenantDb(req, (pool) => engine.undoChange(pool, { office, caseId: id.data, actor, at }));
+    // The undo's audit row is written inside its transaction, so a failed audit
+    // write rolls the undo back rather than leaving it untrailed.
+    const out = await tenantDb.withTenantDb(req, (pool) =>
+      engine.undoChange(pool, {
+        office,
+        caseId: id.data,
+        actor,
+        at,
+        audit: ({ priorState }) => auditTc(req, 'UPDATE', 'tc_case.od_sync_undo', id.data, { office, priorState }),
+      })
+    );
     if (!out.ok) {
       if (out.code === 'NOT_FOUND') return notFound(res, 'case');
       if (out.code === 'NOTHING_TO_UNDO') {
@@ -207,7 +217,6 @@ router.post(
         code: 'OD_SYNC_UNDO_STALE',
       });
     }
-    await auditTc(req, 'UPDATE', 'tc_case.od_sync_undo', id.data, { office, priorState: out.priorState });
     const aggregate = await tenantDb.withTenantDb(req, (pool) => store.loadCaseAggregate(pool, office, id.data));
     res.json({ success: true, undone: out.kind, case: aggregate });
   })

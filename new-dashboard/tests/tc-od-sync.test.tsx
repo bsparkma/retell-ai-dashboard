@@ -184,6 +184,31 @@ describe("the Pipeline's Open Dental sync strip", () => {
     expect(screen.queryByTestId("od-sync-now-roland")).toBeNull();
   });
 
+  it("REVIEW: a failed read during a run does not stop the polling, and the failure is said", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    api.getOdSyncStatus
+      .mockResolvedValueOnce(status({ running: true, changes: [], flagged: [] }))
+      .mockRejectedValueOnce(new TcApiError("Network blip", 0, null, null, []))
+      .mockResolvedValue(status());
+    const changed = mountPanel();
+    await screen.findByText("Syncing with Open Dental…");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3100);
+    });
+    expect((await screen.findByTestId("od-sync-error-roland")).textContent).toContain("Network blip");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3100);
+    });
+    await waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
+    expect(api.getOdSyncStatus).toHaveBeenCalledTimes(3);
+  });
+
+  it("REVIEW: with the sync off, open flags are still shown", async () => {
+    api.getOdSyncStatus.mockResolvedValue(status({ enabled: false, changes: [] }));
+    mountPanel();
+    expect((await screen.findByTestId("od-sync-flagged-roland")).textContent).toContain("Open Dental no longer matches");
+  });
+
   it("summary words", () => {
     expect(odSyncSummaryText(summary())).toBe("3 completed, 1 moved, 2 flagged");
     expect(odSyncSummaryText(summary({ completed: 0, unscheduled: 0, flagged: 0, rescheduled: 2 }))).toBe("2 rescheduled");
