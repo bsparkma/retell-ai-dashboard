@@ -158,3 +158,12 @@ No second round was needed.
 - No `SELECT *`.
 - Nothing was deleted; the one moved function keeps its behaviour, and the referrals manual-start tests are unchanged and passing.
 - No real names; TypeScript strict; tsc clean.
+
+## CI
+
+PR #297, `build-test` on `refs/pull/297/merge`, run 40995657080 at head 12bd88b:
+
+- **Attempt 1** failed on `tests/rcm-ui-s3.test.tsx` ("walks the check with the brackets and with j and k"). This branch touches no RCM file. The same test also fails on its own locally, 1 run in 3, so it is the known s3 timing flake.
+- **Attempt 2** re-ran that job with no code change and **passed**: typecheck, vitest, `node --check`, `node --test`, migrations against an ephemeral Postgres (which creates the new partial unique index for real), and the smoke spine.
+
+No fix pushes. Not merged.
