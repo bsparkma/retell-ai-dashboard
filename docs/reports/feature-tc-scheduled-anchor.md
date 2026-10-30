@@ -166,3 +166,16 @@ No second round was needed.
 - Office and PatNum come from the stored record, and the AptNum is re-verified against that office and patient.
 - No `SELECT *`. TC payload changes are additive.
 - No real names. TypeScript strict; tsc clean. Nothing was deleted.
+
+## CI
+
+PR #298. `build-test` on `refs/pull/298/merge` (run 41098522026, head 3df2bdc) **passed on the first attempt**, with no fix pushes. It covered:
+- typecheck;
+- vitest;
+- `node --check`;
+- the sharded `node --test`;
+- migrations against an ephemeral Postgres 16;
+- the RCM, fees and **new checkout-anchor** verifiers (every step `ok` in the log);
+- the smoke spine.
+
+Not merged.
