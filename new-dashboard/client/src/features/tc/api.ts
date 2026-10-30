@@ -613,55 +613,6 @@ export function rescheduleFollowup(
 
 // ── Hygiene intakes ─────────────────────────────────────────────────────────
 
-/** POST /hygiene-intakes body: clinical intake + case-entry fields. */
-export interface TcIntakeSubmit {
-  // Case entry.
-  patientName: string;
-  patientAge?: number | null;
-  phone?: string | null;
-  email?: string | null;
-  odPatientId?: number | null;
-  diagnosingProvider: string; // required — who diagnosed chairside
-  category: z.infer<typeof CaseCategory>;
-  urgency: UrgencyId;
-  caseType?: string;
-  // Clinical intake (contract TcHygieneIntake minus submittedBy/Name/At).
-  operatory?: string;
-  visitDate?: string | null;
-  providerSeen?: string;
-  chiefConcern?: string;
-  perioStatus: z.infer<typeof PerioStatus>;
-  recallType: z.infer<typeof RecallType>;
-  radiographs: z.infer<typeof Radiograph>[];
-  intraoralPhotosTaken: boolean;
-  areasOfConcern?: string;
-  suspectedTreatment?: string;
-  hygienistRecommendation?: string;
-  insuranceNoted?: string;
-  patientInterestLevel: z.infer<typeof PatientInterestLevel>;
-  flagUrgent: boolean;
-  /**
-   * Who actually did the visit (Roles PR B). Optional: the server falls back to
-   * the signed-in user's display name, which is what every pre-PR-B submission
-   * already carried.
-   */
-  hygienistName?: string;
-  /**
-   * Item 49. Which intake this is, and the caller's idempotency key: TC answers
-   * a key it has already seen with the case it already made, so a resend after
-   * a lost response cannot open a second case. TC's own intake form sends a
-   * fresh key per submission (`newIntakeSourceKey`).
-   */
-  kind?: "hygiene" | "ortho";
-  sourceKey?: string;
-  /**
-   * The hygienist's ortho screening (item 33). Sent only by the hygiene visit's
-   * own send, server-assembled; TC's intake form never sets it, and the server
-   * stores null when it is absent.
-   */
-  orthoScreening?: OrthoScreening | null;
-}
-
 export interface TcMyIntake {
   intakeId: string;
   caseId: string;
@@ -751,26 +702,6 @@ interface IntakeRowBase {
   ortho_screening?: OrthoScreening | null;
 }
 
-/**
- * A fresh idempotency key for ONE submission of TC's own intake form (item 49).
- * Kept for the life of the filled-in form, so a retry of the same submission
- * re-sends the same key; replaced after a successful submit.
- */
-export function newIntakeSourceKey(): string {
-  return `tc-form:${crypto.randomUUID()}`;
-}
-
-export function submitHygieneIntake(
-  office: OfficeId,
-  input: TcIntakeSubmit,
-): Promise<TcCase> {
-  return tcRequest<{ case: TcCase }>("/tc/hygiene-intakes", {
-    method: "POST",
-    office,
-    body: input,
-  }).then((r) => r.case);
-}
-
 export function myHygieneIntakes(office: OfficeId): Promise<TcMyIntake[]> {
   return tcRequest<{
     intakes: (IntakeRowBase & {
@@ -801,66 +732,6 @@ export function myHygieneIntakes(office: OfficeId): Promise<TcMyIntake[]> {
       orthoScreening: row.ortho_screening ?? null,
     })),
   );
-}
-
-/** One entry in the intake form's hygienist picker. */
-export interface TcHygienistOption {
-  email: string;
-  /** Derived from the address' local part — app_user has no name column. */
-  label: string;
-}
-
-/**
- * The tenant's active hygiene-role users, for the intake form's picker.
- * A convenience, never a constraint: the form also accepts free text.
- */
-export function hygienistRoster(office: OfficeId): Promise<TcHygienistOption[]> {
-  return tcRequest<{ hygienists: TcHygienistOption[] }>("/tc/hygiene-intakes/hygienists", {
-    office,
-  }).then((r) => r.hygienists);
-}
-
-/**
- * The office's submissions, optionally filtered by hygienist ATTRIBUTION
- * (Roles PR B). `hygienists` is the distinct set present in the unfiltered
- * data — the filter chips are built from it, so selecting one never erases the
- * others.
- */
-export function hygieneSubmissions(
-  office: OfficeId,
-  hygienist?: string,
-): Promise<{ intakes: TcMyIntake[]; hygienists: string[] }> {
-  return tcRequest<{
-    intakes: (IntakeRowBase & {
-      patient_name: string;
-      case_status: CaseStatusId;
-      od_patient_id: number | null;
-    })[];
-    hygienists: string[];
-  }>("/tc/hygiene-intakes", {
-    office,
-    ...(hygienist ? { params: { hygienist } } : {}),
-  }).then((r) => ({
-    intakes: r.intakes.map((row) => ({
-      intakeId: row.intake_id,
-      caseId: row.case_id,
-      officeId: row.office_id,
-      submittedBy: row.submitted_by,
-      submittedByName: row.submitted_by_name,
-      hygienistName: row.hygienist_name || row.submitted_by_name,
-      submittedAt: row.submitted_at,
-      visitDate: row.visit_date,
-      chiefConcern: row.chief_concern,
-      suspectedTreatment: row.suspected_treatment,
-      flagUrgent: row.flag_urgent,
-      patientInterestLevel: row.patient_interest_level,
-      patientName: row.patient_name,
-      caseStatus: row.case_status,
-      odPatientId: row.od_patient_id ?? null,
-      orthoScreening: row.ortho_screening ?? null,
-    })),
-    hygienists: r.hygienists,
-  }));
 }
 
 export function hygieneInbox(office: OfficeId): Promise<TcInboxIntake[]> {

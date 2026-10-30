@@ -1,7 +1,8 @@
 'use strict';
 
 /**
- * Hygienist attribution and the filterable submissions view (Roles PR B).
+ * Hygienist attribution (Roles PR B). The filterable submissions view and the
+ * roster endpoint were removed in CO-2 with the TC app's Hygiene pages.
  *
  * The thing under test is the SEPARATION: `submitted_by` / `submitted_by_name`
  * remain the audit identity stamped from the session, and `hygienist_name` is
@@ -160,53 +161,6 @@ async function seed(baseUrl) {
   await submit(baseUrl, { patientName: 'Patient C', hygienistName: 'Kim' });
 }
 
-test('GET / returns the office list plus the distinct hygienists for the chips', async () => {
-  const db = dbWithSubmissionReads();
-  const { baseUrl, close } = await bootTcApp({
-    role: 'hygiene',
-    user: { email: 'temp@carein.ai', name: 'Temp Hygienist', tenantId: 'x' },
-    db,
-  });
-  try {
-    await seed(baseUrl);
-
-    const res = await api(baseUrl, 'GET', '/api/tc/hygiene-intakes?office=valley');
-    assert.equal(res.status, 200, JSON.stringify(res.body));
-    assert.equal(res.body.intakes.length, 3);
-    assert.deepEqual(res.body.hygienists, ['Dana', 'Kim']);
-  } finally {
-    await close();
-  }
-});
-
-test('?hygienist= returns that person\'s subset — and the chips stay complete', async () => {
-  const db = dbWithSubmissionReads();
-  const { baseUrl, close } = await bootTcApp({
-    role: 'hygiene',
-    user: { email: 'temp@carein.ai', name: 'Temp Hygienist', tenantId: 'x' },
-    db,
-  });
-  try {
-    await seed(baseUrl);
-
-    const dana = await api(baseUrl, 'GET', '/api/tc/hygiene-intakes?office=valley&hygienist=Dana');
-    assert.equal(dana.body.intakes.length, 2);
-    assert.deepEqual(dana.body.intakes.map((i) => i.patient_name).sort(), ['Patient A', 'Patient B']);
-    // The chip set is derived from the UNFILTERED data, so choosing one filter
-    // never erases the others and strands the user.
-    assert.deepEqual(dana.body.hygienists, ['Dana', 'Kim']);
-
-    const kim = await api(baseUrl, 'GET', '/api/tc/hygiene-intakes?office=valley&hygienist=Kim');
-    assert.equal(kim.body.intakes.length, 1);
-
-    const nobody = await api(baseUrl, 'GET', '/api/tc/hygiene-intakes?office=valley&hygienist=Nobody');
-    assert.equal(nobody.body.intakes.length, 0);
-    assert.deepEqual(nobody.body.hygienists, ['Dana', 'Kim'], 'still escapable');
-  } finally {
-    await close();
-  }
-});
-
 test('GET /mine is UNCHANGED — still session-scoped, not attribution-scoped', async () => {
   const db = dbWithSubmissionReads();
   const { baseUrl, close } = await bootTcApp({
@@ -226,84 +180,18 @@ test('GET /mine is UNCHANGED — still session-scoped, not attribution-scoped', 
   }
 });
 
-test('the list is office-scoped — a roland submission is unreachable from valley', async () => {
-  const db = dbWithSubmissionReads();
-  const { baseUrl, close } = await bootTcApp({
-    role: 'hygiene',
-    user: { email: 'temp@carein.ai', name: 'Temp Hygienist', tenantId: 'x' },
-    db,
-  });
-  try {
-    await submit(baseUrl, { patientName: 'Valley Patient', hygienistName: 'Dana' });
-    await api(baseUrl, 'POST', '/api/tc/hygiene-intakes?office=roland', {
-      ...INTAKE,
-      patientName: 'Roland Patient',
-      hygienistName: 'Kim',
-    });
-
-    const valley = await api(baseUrl, 'GET', '/api/tc/hygiene-intakes?office=valley');
-    assert.equal(valley.body.intakes.length, 1);
-    assert.deepEqual(valley.body.hygienists, ['Dana'], 'Kim is a roland name and must not leak');
-  } finally {
-    await close();
-  }
-});
-
-// --- the roster endpoint ----------------------------------------------------
-
-test('GET /hygienists lists the tenant\'s active hygiene users with derived labels', async () => {
-  const registry = require('../../platform/registry');
-  const originalByRole = registry.listTenantUsersByRole;
-  registry.listTenantUsersByRole = async (_tenantId, role) => {
-    assert.equal(role, 'hygiene');
-    return [
-      { email: 'avery@carein.ai', role: 'hygiene', status: 'active' },
-      { email: 'mary.beth@carein.ai', role: 'hygiene', status: 'active' },
-      { email: 'temp@carein.ai', role: 'hygiene', status: 'active' },
-    ];
-  };
-
+// RULING (CO-2): GET / (the Submissions page) and GET /hygienists (the intake
+// form's picker) went with the TC app's Hygiene pages, their only callers. The
+// tests that pinned their behaviour went with them; this pins that they are
+// gone, and that the hygiene app's POST / handoff is not.
+test('CO-2: GET / and GET /hygienists are gone; the POST / handoff still lands', async () => {
   const { baseUrl, close } = await bootTcApp({ role: 'hygiene', db: dbWithSubmissionReads() });
   try {
-    const res = await api(baseUrl, 'GET', '/api/tc/hygiene-intakes/hygienists?office=valley');
-    assert.equal(res.status, 200, JSON.stringify(res.body));
-    assert.deepEqual(res.body.hygienists, [
-      { email: 'avery@carein.ai', label: 'Avery' },
-      { email: 'mary.beth@carein.ai', label: 'Mary Beth' },
-      { email: 'temp@carein.ai', label: 'Temp' },
-    ]);
+    const posted = await submit(baseUrl, { hygienistName: 'Dana' });
+    assert.equal(posted.status, 201, JSON.stringify(posted.body));
+    assert.equal((await api(baseUrl, 'GET', '/api/tc/hygiene-intakes?office=valley')).status, 404);
+    assert.equal((await api(baseUrl, 'GET', '/api/tc/hygiene-intakes/hygienists?office=valley')).status, 404);
   } finally {
-    registry.listTenantUsersByRole = originalByRole;
     await close();
-  }
-});
-
-test('GET /hygienists is reachable by hygiene and refused below it', async () => {
-  const registry = require('../../platform/registry');
-  const originalByRole = registry.listTenantUsersByRole;
-  registry.listTenantUsersByRole = async () => [];
-  try {
-    // A hygienist needs the picker, so tc.hygiene must admit them.
-    const asHygiene = await bootTcApp({ role: 'hygiene', db: dbWithSubmissionReads() });
-    try {
-      assert.equal(
-        (await api(asHygiene.baseUrl, 'GET', '/api/tc/hygiene-intakes/hygienists?office=valley')).status,
-        200
-      );
-    } finally {
-      await asHygiene.close();
-    }
-
-    // A voice-only tenant is refused by the module gate before any of this.
-    const noTc = await bootTcApp({ role: 'admin', modules: ['voice'], db: dbWithSubmissionReads() });
-    try {
-      const res = await api(noTc.baseUrl, 'GET', '/api/tc/hygiene-intakes/hygienists?office=valley');
-      assert.equal(res.status, 403);
-      assert.equal(res.body.error, 'MODULE_NOT_ENTITLED');
-    } finally {
-      await noTc.close();
-    }
-  } finally {
-    registry.listTenantUsersByRole = originalByRole;
   }
 });
