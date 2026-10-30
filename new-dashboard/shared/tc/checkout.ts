@@ -403,6 +403,59 @@ export function emptyCheckoutSnapshot(): TcCheckoutSnapshot {
 }
 
 /**
+ * One of the patient's UPCOMING Open Dental appointments, as the "Scheduled"
+ * picker lists it (CO-4a). Exactly these fields — no notes, no other patient.
+ * `dateTime` is Open Dental's own wall-clock reading for the office,
+ * 'YYYY-MM-DD HH:MM:SS'; it is never converted between timezones.
+ */
+export const TcCheckoutUpcomingAppointment = z.object({
+  aptNum: z.number().int().positive(),
+  dateTime: z.string(),
+  provider: z.string(),
+  appointmentType: z.string(),
+  operatory: z.string(),
+});
+export type TcCheckoutUpcomingAppointment = z.infer<typeof TcCheckoutUpcomingAppointment>;
+
+/**
+ * The appointment a Scheduled checkout is anchored to (CO-4a): what Open
+ * Dental said about it when it was linked, and who linked it. The office is
+ * the checkout's own. What the OD-driven sync (CO-4b) will track.
+ */
+export const TcCheckoutAppointmentAnchor = TcCheckoutUpcomingAppointment.extend({
+  linkedBy: z.string().nullable(),
+  linkedAt: z.string().nullable(),
+});
+export type TcCheckoutAppointmentAnchor = z.infer<typeof TcCheckoutAppointmentAnchor>;
+
+/** GET /api/tc/checkout/:id/appointments — the picker's list, soonest first. */
+export const TcCheckoutAppointmentsResponse = z.object({
+  success: z.literal(true),
+  appointments: z.array(TcCheckoutUpcomingAppointment),
+});
+export type TcCheckoutAppointmentsResponse = z.infer<typeof TcCheckoutAppointmentsResponse>;
+
+/**
+ * POST /api/tc/checkout/:id/appointment — link, change, or (null) clear a
+ * Scheduled checkout's anchor later. The AptNum must be one of that patient's
+ * upcoming appointments in that office, re-read from Open Dental.
+ */
+export const TcCheckoutAppointmentLinkRequest = z.object({ aptNum: z.number().int().positive().nullable() }).strict();
+export type TcCheckoutAppointmentLinkRequest = z.infer<typeof TcCheckoutAppointmentLinkRequest>;
+
+/** "Tue, Nov 4, 9:00 AM" from an OD wall-clock 'YYYY-MM-DD HH:MM[:SS]'. Pure; no timezone math. */
+export function appointmentWhenLabel(dateTime: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(dateTime);
+  if (!m) return dateTime;
+  const [, y, mo, d, hh, mm] = m;
+  const day = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d)));
+  const date = day.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
+  const h = Number(hh);
+  const time = `${h % 12 === 0 ? 12 : h % 12}:${mm} ${h < 12 ? "AM" : "PM"}`;
+  return `${date}, ${time}`;
+}
+
+/**
  * The answer a card had before a later hygiene visit reopened it (CO-5a fix,
  * PM ruling): a hygiene handoff that merges onto an answered card puts it back
  * in Waiting, and what it was answered with is kept here as history.
@@ -415,6 +468,8 @@ export const TcCheckoutReopened = z.object({
   /** The case that outcome made or moved. The case itself is left as it is. */
   caseId: z.string().uuid().nullable(),
   reopenedAt: z.string(),
+  /** CO-4a: the appointment that answer was anchored to, if any. */
+  appointment: TcCheckoutAppointmentAnchor.nullable().default(null),
 });
 export type TcCheckoutReopened = z.infer<typeof TcCheckoutReopened>;
 
@@ -467,6 +522,12 @@ export const TcCheckoutHandoff = z.object({
    * and reopened it: the answer it had, kept as history. Null otherwise.
    */
   reopenedFrom: TcCheckoutReopened.nullable().default(null),
+  /**
+   * CO-4a. The Open Dental appointment a Scheduled checkout is anchored to.
+   * Null on every other status, on every record before CO-4a, and on a
+   * Scheduled checkout marked "Not in Open Dental yet".
+   */
+  appointment: TcCheckoutAppointmentAnchor.nullable().default(null),
 });
 export type TcCheckoutHandoff = z.infer<typeof TcCheckoutHandoff>;
 
@@ -495,6 +556,12 @@ export const TcCheckoutOutcomeRequest = z
     outcome: TcCheckoutOutcome,
     /** Optional, and only meaningful for "Scheduled" ("Tue 9am, Dr. chair"). */
     appointmentNote: z.string().trim().max(500).default(""),
+    /**
+     * CO-4a, Scheduled only. The AptNum picked from the patient's upcoming
+     * appointments, or null / absent for "Not in Open Dental yet". Re-read
+     * from Open Dental before anything is stored.
+     */
+    aptNum: z.number().int().positive().nullable().optional(),
   })
   .strict();
 export type TcCheckoutOutcomeRequest = z.infer<typeof TcCheckoutOutcomeRequest>;
@@ -606,6 +673,8 @@ export const TcCheckoutCaseTreatment = z.object({
     z.object({
       handoff: TcCheckoutHandoff,
       items: z.array(TcCheckoutPanelItem),
+      /** CO-4a: a Scheduled visit whose case is still open may be (re)linked to an appointment. */
+      canLinkAppointment: z.boolean().default(false),
     }),
   ),
 });

@@ -369,6 +369,9 @@ for (const outcome of ['nothing_needed', 'not_scheduled', 'scheduled']) {
         appointmentNote: before.appointmentNote,
         caseId: before.caseId,
         reopenedAt: undefined,
+        // RULING (CO-4a): the history also carries the appointment anchor the
+        // answer had; these answers were given without one.
+        appointment: null,
       }
     );
     assert.ok(h.reopenedFrom.reopenedAt);

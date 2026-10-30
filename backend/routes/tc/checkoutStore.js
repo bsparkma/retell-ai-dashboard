@@ -47,6 +47,12 @@ const COLS = [
   'hygiene_merged_at',
   // CO-5a fix.
   'reopened_from',
+  // CO-4a.
+  'appt_num',
+  'appt_at_local',
+  'appt_snapshot',
+  'appt_linked_by',
+  'appt_linked_at',
 ];
 
 /**
@@ -120,7 +126,60 @@ function toHandoff(row) {
     source: row.source === 'manual' ? 'manual' : 'hygiene',
     hygieneMergedAt: iso(row.hygiene_merged_at),
     reopenedFrom: reopenedOf(row),
+    appointment: anchorOf(row),
   };
+}
+
+/**
+ * The Open Dental appointment this Scheduled checkout is anchored to (CO-4a),
+ * or null: every record before CO-4a, and every "Not in Open Dental yet".
+ */
+function anchorOf(row) {
+  if (row.appt_num == null) return null;
+  const snap = obj(row.appt_snapshot) || {};
+  return {
+    aptNum: num(row.appt_num),
+    dateTime: String(row.appt_at_local || ''),
+    provider: typeof snap.provider === 'string' ? snap.provider : '',
+    appointmentType: typeof snap.appointmentType === 'string' ? snap.appointmentType : '',
+    operatory: typeof snap.operatory === 'string' ? snap.operatory : '',
+    linkedBy: row.appt_linked_by ?? null,
+    linkedAt: iso(row.appt_linked_at),
+  };
+}
+
+/**
+ * Set, replace or clear (appointment null) a Scheduled checkout's anchor.
+ * Conditional on the checkout still being Scheduled — an anchor never lands on
+ * anything else (the DB CHECK says the same). `appointment` is one row of
+ * checkoutAppointments.upcomingForPatient, re-read from Open Dental for this
+ * request; the office is the row's own.
+ *
+ * @returns {Promise<boolean>} whether the row was Scheduled and was written
+ */
+async function setAnchor(q, { office, handoffId, appointment, actor }) {
+  const res = await q.query(
+    `UPDATE tc_checkout_handoffs
+        SET appt_num = $3, appt_at_local = $4, appt_snapshot = $5::jsonb, appt_linked_by = $6,
+            appt_linked_at = $7, updated_at = now()
+      WHERE office_id = $1 AND handoff_id = $2 AND status = 'scheduled'`,
+    appointment
+      ? [
+          office,
+          handoffId,
+          appointment.aptNum,
+          appointment.dateTime,
+          JSON.stringify({
+            provider: appointment.provider,
+            appointmentType: appointment.appointmentType,
+            operatory: appointment.operatory,
+          }),
+          actor,
+          new Date().toISOString(),
+        ]
+      : [office, handoffId, null, null, null, null, null]
+  );
+  return res.rowCount === 1;
 }
 
 /** The answer a reopened card had (CO-5a fix), or null. */
@@ -593,8 +652,9 @@ async function mergeHygieneOntoManual(q, { office, handoffId, expectRevision, so
 /**
  * A hygiene visit arrived after this card was ANSWERED (CO-5a fix, PM ruling):
  * put it back in Waiting. Clears the outcome — who, when, the note and the
- * case link, which the outcome CHECKs tie to an answered status — and any
- * claim, and keeps what it was in `reopened_from` for the card's history. The
+ * case link, which the outcome CHECKs tie to an answered status — any claim,
+ * and the appointment anchor (CO-4a: an anchor lives only on a Scheduled
+ * card) — and keeps what it was in `reopened_from` for the card's history. The
  * case the answer made or moved is left exactly as it is. The checklist ticks
  * stay. Call inside the merge's transaction, with lockPatientDay held;
  * conditional on the status the caller read.
@@ -612,15 +672,19 @@ async function reopenAnswered(q, { office, handoffId, row, at }) {
     appointmentNote: row.appointment_note ?? null,
     caseId: row.case_id ? String(row.case_id) : null,
     reopenedAt: at,
+    // CO-4a: the appointment that answer was anchored to, if any.
+    appointment: anchorOf(row),
   };
   const res = await q.query(
     `UPDATE tc_checkout_handoffs
         SET status = 'open', outcome_by = $4, outcome_at = $5, appointment_note = $6, case_id = $7,
-            claimed_by = $8, claimed_at = $9, reopened_from = $10::jsonb, updated_at = now()
+            claimed_by = $8, claimed_at = $9, reopened_from = $10::jsonb,
+            appt_num = $11, appt_at_local = $12, appt_snapshot = $13, appt_linked_by = $14, appt_linked_at = $15,
+            updated_at = now()
       WHERE office_id = $1 AND handoff_id = $2 AND status = $3`,
     // One NULL per column: Postgres deduces ONE type per parameter, so a single
     // $n shared across text, timestamptz and uuid columns would be refused.
-    [office, handoffId, prior, null, null, null, null, null, null, JSON.stringify(history)]
+    [office, handoffId, prior, null, null, null, null, null, null, JSON.stringify(history), null, null, null, null, null]
   );
   return res.rowCount === 1 ? history : null;
 }
@@ -663,4 +727,6 @@ module.exports = {
   findManualAwaitingHygiene,
   mergeHygieneOntoManual,
   reopenAnswered,
+  anchorOf,
+  setAnchor,
 };

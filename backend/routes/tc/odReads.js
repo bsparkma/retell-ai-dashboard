@@ -1313,6 +1313,61 @@ async function getNextAppointment(odGet, patNum) {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. Upcoming appointments (CO-4a: the "Scheduled" anchor picker)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Every UPCOMING, booked appointment of one patient, soonest first — what the
+ * desk picks from when it marks a checkout Scheduled.
+ *
+ * ONE request: GET /appointments?PatNum&AptStatus=Scheduled&dateStart=<from>.
+ * `Scheduled` is Open Dental's string enum for a booked appointment
+ * (docs/OD_API_CONTRACT.md §1), so the filter alone leaves out Broken,
+ * Complete, Planned, the Unscheduled list and patient-note rows. The same
+ * rules are re-applied to the rows that come back, so an Open Dental that
+ * ignored a filter can never put a broken or past appointment in the picker.
+ * Unlike getNextAppointment there is NO unfiltered fallback: an Open Dental
+ * that refuses the filter is a failed read, said as such.
+ *
+ * `from` is the OFFICE's today ('YYYY-MM-DD'), passed by the caller — never this
+ * process's clock. Returns the raw fields only; labels are the caller's.
+ *
+ * @param {Function} odGet
+ * @param {number} patNum
+ * @param {{ from: string }} opts
+ * @returns {Promise<Array<{ aptNum: number, dateTime: string, provAbbr: string, appointmentTypeNum: number|null, op: number|null, procDescript: string }>>}
+ */
+async function listUpcomingAppointments(odGet, patNum, { from }) {
+  const res = await odGet(
+    '/appointments',
+    { PatNum: patNum, AptStatus: 'Scheduled', dateStart: from },
+    { timeoutMs: OD_CALL_TIMEOUT_MS }
+  );
+  if (!res.ok) {
+    const err = new Error(`Failed to fetch appointments (${res.status})`);
+    err.odStatus = res.status;
+    throw err;
+  }
+  return asArray(res.data)
+    .filter((a) => {
+      if (num(a.PatNum) !== patNum) return false; // never another patient's row
+      if (String(a.AptStatus || '') !== 'Scheduled') return false;
+      const day = odDate(a.AptDateTime);
+      return !!day && day >= from;
+    })
+    .map((a) => ({
+      aptNum: num(a.AptNum),
+      dateTime: String(a.AptDateTime).slice(0, 19),
+      provAbbr: String(a.provAbbr || ''),
+      appointmentTypeNum: a.AppointmentTypeNum == null || num(a.AppointmentTypeNum) === 0 ? null : num(a.AppointmentTypeNum),
+      op: a.Op == null || num(a.Op) === 0 ? null : num(a.Op),
+      procDescript: String(a.ProcDescript || ''),
+    }))
+    .filter((a) => Number.isInteger(a.aptNum) && a.aptNum > 0)
+    .sort((a, b) => a.dateTime.localeCompare(b.dateTime) || a.aptNum - b.aptNum);
+}
+
 module.exports = {
   // reads
   searchPatients,
@@ -1325,6 +1380,7 @@ module.exports = {
   getTpProcedureRows,
   getInsuranceSnapshot,
   getNextAppointment,
+  listUpcomingAppointments,
   // exported for tests / reuse
   asArray,
   isCapabilityMiss,
