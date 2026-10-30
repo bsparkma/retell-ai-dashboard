@@ -249,9 +249,9 @@ async function applyChange(pool, { office, runId, item, anchor, decision, read, 
       // under us.
       const still = await client.query(
         `SELECT handoff_id FROM tc_checkout_handoffs
-          WHERE office_id = $1 AND handoff_id = $2 AND status = 'scheduled' AND appt_num = $3
+          WHERE office_id = $1 AND handoff_id = $2 AND status = 'scheduled' AND appt_num = $3 AND appt_at_local = $4
           FOR UPDATE`,
-        [office, anchor.handoffId, anchor.aptNumRaw]
+        [office, anchor.handoffId, anchor.aptNumRaw, anchor.atLocal]
       );
       if (still.rows.length !== 1) throw new Raced();
       if (decision.kind === 'rescheduled') {
@@ -337,31 +337,48 @@ async function applyChange(pool, { office, runId, item, anchor, decision, read, 
 
 /**
  * Record a flag (or clear one) and the check time. Never moves the case.
- * @returns {Promise<{ newlyFlagged: boolean }>}
+ *
+ * One transaction, locking the checkout first and the case second — the same
+ * order as a move and as the checkout routes. The anchor is re-checked (AptNum
+ * AND time) so a re-link, a cleared anchor or an Undo since the read makes the
+ * read say nothing (`raced`). The undo hold is decided on the LOCKED case row,
+ * never on the sweep's snapshot, and released only after a CLEAN read
+ * (`release`): Open Dental showing the appointment fine, in a different state
+ * from the one undone. A flag never releases it.
+ *
+ * @returns {Promise<{ newlyFlagged: boolean, raced: boolean }>}
  */
-async function recordCheck(pool, { office, item, anchor, flag, at, fingerprint }) {
-  // A flag is about THAT appointment: if the desk re-linked or cleared it since
-  // the read, the read says nothing about the case any more.
-  if (anchor) {
-    const still = await pool.query(
-      `SELECT handoff_id FROM tc_checkout_handoffs
-        WHERE office_id = $1 AND handoff_id = $2 AND status = 'scheduled' AND appt_num = $3`,
-      [office, anchor.handoffId, anchor.aptNumRaw]
+async function recordCheck(pool, { office, item, anchor, flag, at, fingerprint, release = false }) {
+  return inTx(pool, async (client) => {
+    if (anchor) {
+      const still = await client.query(
+        `SELECT handoff_id FROM tc_checkout_handoffs
+          WHERE office_id = $1 AND handoff_id = $2 AND status = 'scheduled' AND appt_num = $3 AND appt_at_local = $4
+          FOR UPDATE`,
+        [office, anchor.handoffId, anchor.aptNumRaw, anchor.atLocal]
+      );
+      if (still.rows.length !== 1) return { newlyFlagged: false, raced: true };
+    }
+    const found = await client.query(
+      `SELECT case_id, od_sync_flag, od_sync_undone FROM tc_cases
+        WHERE office_id = $1 AND case_id = $2 AND status = 'scheduled'
+        FOR UPDATE`,
+      [office, item.caseId]
     );
-    if (still.rows.length !== 1) return { newlyFlagged: false, raced: true };
-  }
-  // An undo holds a move only while Open Dental shows the state that was undone.
-  // Once it shows another, the hold has done its job and is released.
-  const keepUndone = item.undone && fingerprint && item.undone.fingerprint !== fingerprint ? null : item.undone;
-  const res = await pool.query(
-    `UPDATE tc_cases
-        SET od_sync_flag = $3, od_sync_checked_at = $4, od_sync_undone = $5
-      WHERE office_id = $1 AND case_id = $2 AND status = 'scheduled'
-      RETURNING case_id`,
-    [office, item.caseId, flag ? JSON.stringify(flag) : null, at, keepUndone ? JSON.stringify(keepUndone) : null]
-  );
-  const was = item.flag && item.flag.reason ? item.flag.reason : null;
-  return { newlyFlagged: res.rows.length === 1 && !!flag && was !== flag.reason, raced: res.rows.length !== 1 };
+    const row = found.rows[0];
+    if (!row) return { newlyFlagged: false, raced: true };
+    const undone = obj(row.od_sync_undone);
+    const keep = undone && release && fingerprint && undone.fingerprint !== fingerprint ? null : undone;
+    await client.query(
+      `UPDATE tc_cases
+          SET od_sync_flag = $3, od_sync_checked_at = $4, od_sync_undone = $5
+        WHERE office_id = $1 AND case_id = $2`,
+      [office, item.caseId, flag ? JSON.stringify(flag) : null, at, keep ? JSON.stringify(keep) : null]
+    );
+    const prior = obj(row.od_sync_flag);
+    const was = prior && prior.reason ? prior.reason : null;
+    return { newlyFlagged: !!flag && was !== flag.reason, raced: false };
+  });
 }
 
 async function insertRun(pool, run) {
@@ -442,8 +459,25 @@ async function syncOffice(opts) {
 
   const runId = opts.runId || randomUUID();
   const startedAt = clock().toISOString();
+  let inserted = false;
   try {
     await insertRun(pool, { runId, office, trigger, requestedBy: opts.requestedBy || null, startedAt });
+    inserted = true;
+    return await sweep();
+  } catch (err) {
+    // A database or audit failure ANYWHERE after the run row (the scheduled-case
+    // read, the read-phase audit, a change): every change that committed
+    // carried its audit row into its own transaction; the run says it failed
+    // rather than sitting at 'running'.
+    if (inserted) {
+      await finishRun(pool, { runId, office, status: 'failed', summary: null, errorCode: 'RUN_ERRORED', at: clock().toISOString() }).catch(() => {});
+    }
+    throw err;
+  } finally {
+    running.delete(office);
+  }
+
+  async function sweep() {
 
     const { tracked, unanchored } = await loadScheduled(pool, office);
     const cap = tcOdSync.maxPerRun();
@@ -514,7 +548,7 @@ async function syncOffice(opts) {
     }
 
     // ── PHASE 2: decide and apply, each case with its own audit row ──────────
-    try {
+    {
       for (const r of reads) {
         const at = clock().toISOString();
         summary.checked += 1;
@@ -533,8 +567,17 @@ async function syncOffice(opts) {
           else summary.flagged += 1;
           if (check.newlyFlagged) await audit([withResult(flagAudit(office, r.item, runId))]);
         } else if (decision.kind === 'none' || decision.kind === 'held') {
-          await recordCheck(pool, { office, item: r.item, anchor: r.anchor, flag: null, at, fingerprint: decision.fingerprint });
-          if (decision.kind === 'held') summary.heldByUndo += 1;
+          const check = await recordCheck(pool, {
+            office,
+            item: r.item,
+            anchor: r.anchor,
+            flag: null,
+            at,
+            fingerprint: decision.fingerprint,
+            release: decision.kind === 'none',
+          });
+          if (check.raced) summary.raced += 1;
+          else if (decision.kind === 'held') summary.heldByUndo += 1;
           else summary.unchanged += 1;
         } else {
           const out = await applyChange(pool, { office, runId, item: r.item, anchor: r.anchor, decision, read: r.read, at, audit });
@@ -542,11 +585,6 @@ async function syncOffice(opts) {
           else summary.raced += 1;
         }
       }
-    } catch (err) {
-      // A database or audit failure mid-run: every change that committed carried
-      // its audit row into its own transaction; the run says it failed.
-      await finishRun(pool, { runId, office, status: 'failed', summary, errorCode: 'RUN_ERRORED', at: clock().toISOString() }).catch(() => {});
-      throw err;
     }
 
     await finishRun(pool, { runId, office, status: 'ok', summary, errorCode: null, at: clock().toISOString() });
@@ -556,8 +594,6 @@ async function syncOffice(opts) {
         `flagged=${summary.flagged} held=${summary.heldByUndo} unanchored=${summary.unanchored} deferred=${summary.deferred}`
     );
     return { status: 'ok', runId, summary };
-  } finally {
-    running.delete(office);
   }
 }
 
@@ -588,6 +624,20 @@ function flagAudit(office, item, runId) {
 async function undoChange(pool, { office, caseId, actor, at, audit }) {
   try {
     return await inTx(pool, async (client) => {
+      // Lock order, as everywhere else: the checkout, then the case. The first
+      // read only learns WHICH checkout; the locked re-read is what is acted on.
+      const peek = await client.query(
+        `SELECT case_id, od_sync_action FROM tc_cases WHERE office_id = $1 AND case_id = $2`,
+        [office, caseId]
+      );
+      if (!peek.rows[0]) return { ok: false, code: 'NOT_FOUND' };
+      const peeked = obj(peek.rows[0].od_sync_action);
+      if (peeked && peeked.handoffId) {
+        await client.query(
+          `SELECT handoff_id FROM tc_checkout_handoffs WHERE office_id = $1 AND handoff_id = $2 FOR UPDATE`,
+          [office, peeked.handoffId]
+        );
+      }
       const found = await client.query(
         `SELECT case_id, status, od_sync_action FROM tc_cases WHERE office_id = $1 AND case_id = $2 FOR UPDATE`,
         [office, caseId]
@@ -595,6 +645,7 @@ async function undoChange(pool, { office, caseId, actor, at, audit }) {
       const row = found.rows[0];
       if (!row) return { ok: false, code: 'NOT_FOUND' };
       const action = obj(row.od_sync_action);
+      if (action && peeked && action.runId !== peeked.runId) return { ok: false, code: 'UNDO_STALE' };
       if (!action || !action.kind) return { ok: false, code: 'NOTHING_TO_UNDO' };
       if (row.status !== action.toStatus) return { ok: false, code: 'UNDO_STALE' };
       const undone = JSON.stringify({ kind: action.kind, fingerprint: action.fingerprint, at, by: actor });

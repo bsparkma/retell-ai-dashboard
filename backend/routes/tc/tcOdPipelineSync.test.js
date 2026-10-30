@@ -562,6 +562,81 @@ test('REVIEW: the undo hold is released once Open Dental shows another state', a
   });
 });
 
+test('REVIEW 2: an Undo clicked while a sweep is reading keeps its hold (the sweep\'s snapshot is stale)', async () => {
+  switchOn('roland');
+  const db = new FakeTenantDb();
+  const { caseId, handoffId } = seedCase(db);
+  // Run 1: Open Dental moved the appointment; the anchor follows.
+  await withOd({ roland: { 5001: apt({ AptDateTime: '2026-11-06 13:30:00' }) } }, async () => {
+    await runEngine(db);
+  });
+  assert.equal(handoffRow(db, handoffId).appt_at_local, '2026-11-06 13:30:00');
+  // Run 2 snapshots the case, then the person clicks Undo while it reads.
+  const odGet = async () => {
+    const undone = await engine.undoChange(db, { office: 'roland', caseId, actor: 'tc@carein.ai', at: new Date().toISOString() });
+    assert.equal(undone.ok, true);
+    return { ok: true, status: 200, data: apt({ AptDateTime: '2026-11-06 13:30:00' }) };
+  };
+  const out = await engine.syncOffice({ office: 'roland', pool: db, trigger: 'nightly', odGet, audit: async () => {} });
+  assert.equal(out.summary.raced, 1);
+  assert.ok(obj(caseRow(db, caseId).od_sync_undone).fingerprint, 'the hold survives');
+  assert.equal(handoffRow(db, handoffId).appt_at_local, '2026-11-04 09:00:00');
+  // ...and the next run does not redo the reschedule.
+  await withOd({ roland: { 5001: apt({ AptDateTime: '2026-11-06 13:30:00' }) } }, async () => {
+    const { out: next } = await runEngine(db);
+    assert.equal(next.summary.rescheduled, 0);
+    assert.equal(next.summary.heldByUndo, 1);
+  });
+});
+
+test('REVIEW 2: a flag read never releases an undo hold — only a clean read does', async () => {
+  switchOn('roland');
+  const db = new FakeTenantDb();
+  const { caseId } = seedCase(db);
+  await withOd({ roland: { 5001: apt({ AptStatus: 'Complete' }) } }, async () => {
+    await runEngine(db);
+    await engine.undoChange(db, { office: 'roland', caseId, actor: 'tc@carein.ai', at: new Date().toISOString() });
+  });
+  // A glitchy read (an odd status) flags the case, but the hold stays.
+  await withOd({ roland: { 5001: apt({ AptStatus: 'Planned' }) } }, async () => {
+    await runEngine(db);
+  });
+  assert.ok(obj(caseRow(db, caseId).od_sync_undone).fingerprint);
+  await withOd({ roland: { 5001: apt({ AptStatus: 'Complete' }) } }, async () => {
+    const { out } = await runEngine(db);
+    assert.equal(out.summary.completed, 0, 'the undone Complete is not redone');
+    assert.equal(out.summary.heldByUndo, 1);
+  });
+});
+
+test('REVIEW 2: a re-link during the sweep wins on the flag path too', async () => {
+  switchOn('roland');
+  const db = new FakeTenantDb();
+  const { caseId, handoffId } = seedCase(db);
+  const odGet = async () => {
+    handoffRow(db, handoffId).appt_num = 6001;
+    return { ok: false, status: 404, data: null, error: 'Appointment not found' };
+  };
+  const out = await engine.syncOffice({ office: 'roland', pool: db, trigger: 'nightly', odGet, audit: async () => {} });
+  assert.equal(out.summary.raced, 1);
+  assert.equal(caseRow(db, caseId).od_sync_flag, null, 'the old appointment\'s 404 says nothing about the new link');
+});
+
+test('REVIEW 2: a failure before the apply phase (the read audit) still finishes the run as failed', async () => {
+  switchOn('roland');
+  const db = new FakeTenantDb();
+  seedCase(db);
+  await withOd({ roland: { 5001: apt({}) } }, async () => {
+    const audit = async () => {
+      throw new Error('audit store down');
+    };
+    await assert.rejects(engine.syncOffice({ office: 'roland', pool: db, trigger: 'nightly', audit }), /audit store down/);
+  });
+  assert.equal(db.table('tc_od_sync_runs')[0].status, 'failed');
+  assert.equal(db.table('tc_od_sync_runs')[0].error_code, 'RUN_ERRORED');
+  assert.equal(engine.isRunning('roland'), false);
+});
+
 // ── 4. Undo, and no redo until Open Dental changes ──────────────────────────
 
 test('Undo a move: back to scheduled, audited with the prior state; the engine holds until OD changes', async () => {

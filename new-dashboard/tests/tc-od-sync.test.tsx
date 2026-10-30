@@ -201,6 +201,8 @@ describe("the Pipeline's Open Dental sync strip", () => {
     });
     await waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
     expect(api.getOdSyncStatus).toHaveBeenCalledTimes(3);
+    // The later success clears the error.
+    expect(screen.queryByTestId("od-sync-error-roland")).toBeNull();
   });
 
   it("REVIEW: with the sync off, open flags are still shown", async () => {
