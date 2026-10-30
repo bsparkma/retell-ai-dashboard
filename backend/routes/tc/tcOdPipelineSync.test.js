@@ -414,6 +414,25 @@ test('ambiguous signals FLAG and touch nothing else: 404, another status, anothe
   for (const s of [gone, planned, otherPatient, two]) assert.equal(caseRow(db, s.caseId).od_sync_action, null);
 });
 
+test('a person who moves the case while the sweep is reading wins: the sync does not overwrite it', async () => {
+  switchOn('roland');
+  const db = new FakeTenantDb();
+  const { caseId } = seedCase(db);
+  // Open Dental answers "Complete" — and while it does, somebody marks the case lost.
+  const odGet = async () => {
+    caseRow(db, caseId).status = 'lost';
+    return { ok: true, status: 200, data: apt({ AptStatus: 'Complete' }) };
+  };
+  const audited = [];
+  const out = await engine.syncOffice({ office: 'roland', pool: db, trigger: 'nightly', odGet, audit: async (e) => audited.push(...e) });
+  assert.equal(out.summary.raced, 1);
+  assert.equal(out.summary.completed, 0);
+  assert.equal(caseRow(db, caseId).status, 'lost');
+  assert.equal(caseRow(db, caseId).od_sync_action, null, 'no badge for a move that did not happen');
+  assert.equal(db.table('tc_case_events').filter((e) => e.case_id === caseId).length, 0);
+  assert.ok(!audited.find((a) => a.resourceType === 'tc_case.od_sync_completed'));
+});
+
 // ── 4. Undo, and no redo until Open Dental changes ──────────────────────────
 
 test('Undo a move: back to scheduled, audited with the prior state; the engine holds until OD changes', async () => {
