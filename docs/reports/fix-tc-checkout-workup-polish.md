@@ -70,4 +70,4 @@ The narrow shot is 600px wide, not phone width. Headless Chrome won't lay out be
 
 ## CI
 
-Pending; see the PR.
+PR #293. `build-test` on `refs/pull/293/merge` (run 40976903537, head 17537ed) **passed** in about 6.5 minutes with no fix pushes. That run covers typecheck, vitest, `node --check`, `node --test`, migrations against an ephemeral Postgres, and the smoke spine. Not merged.
