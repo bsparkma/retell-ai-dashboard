@@ -273,3 +273,7 @@ All in `docs/screenshots/tc/co4b/`, at 1280×900, light and dark:
 - **Names:** synthetic only (roland 12827/12828, valley 7115).
 - **Code:** TS strict, `tsc` clean.
 - **Scope:** no `.github/` or infra changes, nothing deleted, and no existing test edited.
+
+## CI
+
+PR #299, `build-test` on `refs/pull/299/merge`, run 41145050476 at head `0c0efbb`: **green on the first attempt**, with no fix pushes. As noted above, this run did not include the new real-Postgres verifier.
