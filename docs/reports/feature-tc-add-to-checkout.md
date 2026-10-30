@@ -144,7 +144,7 @@ I ran one round with a fresh-context reviewer, which found **no blocking issues*
 | Finding | Outcome |
 | --- | --- |
 | LOW: `mergeHygieneOntoManual` set `revision = expect + 1` without checking the revision it read | **Fixed**: now a real compare-and-swap (`AND revision = $12`), like `updatePayload` |
-| LOW: a hygiene visit arriving after the desk already **answered** the manual card (e.g. Nothing needed) still merges onto it | **Deliberate**: it is CO-1's rule (any status but dismissed/expired holds the patient), which the ruling names. The answered card keeps its outcome and gains the visit's data; no second work item appears. **Beau, flagging in case you'd rather an answered card let the visit open a fresh one.** |
+| LOW: a hygiene visit arriving after the desk already **answered** the manual card (e.g. Nothing needed) still merges onto it | Flagged to the PM, who ruled that the card **reopens**. See "Fix round: reopen on a late visit" below. |
 | LOW: `hygiene.js` showed a 5-line CO-2 comment as changed | **Fixed**: my edit had turned that block's LF endings (in a mostly-CRLF file) into CRLF; the bytes are restored |
 | INFO: a merged submit answers 200, not 201 | No change: the hygiene client (`tcHandoffClient`) reads `ok`, not 201 |
 | INFO: the fake's advisory lock is a no-op, so the lock itself is untested | Acknowledged: the concurrency test proves the index arbiter and the loser's re-read, not the lock. The real-Postgres migration run in CI proves the index exists |
@@ -167,3 +167,54 @@ PR #297, `build-test` on `refs/pull/297/merge`, run 40995657080 at head 12bd88b:
 - **Attempt 2** re-ran that job with no code change and **passed**: typecheck, vitest, `node --check`, `node --test`, migrations against an ephemeral Postgres (which creates the new partial unique index for real), and the smoke spine.
 
 No fix pushes. Not merged.
+
+## Fix round: reopen on a late visit (PM ruling)
+
+**Ruling:** a hygiene handoff that merges onto an **already-answered** checkout card, with any outcome, reopens it. The card goes back to Waiting with its outcome cleared. The prior outcome is kept in the audit trail and shown as history on the card, the checklist is editable again, and the card carries the badge "Updated — hygiene visit arrived after this was answered". A card still Waiting merges as before, and dismissed or expired cards keep CO-1's behaviour.
+
+**Server side.** `checkoutStore.reopenAnswered` runs in **the same transaction as the merge**, under the patient-day lock, conditional on the status it read. It:
+- sets `status = 'open'`;
+- clears the outcome fields (`outcome_by`, `outcome_at`, `appointment_note`, `case_id`) and any claim, which the outcome CHECKs require for a non-answered status;
+- writes what the card had been into **`reopened_from`**: `{ outcome, outcomeBy, outcomeAt, appointmentNote, caseId, reopenedAt }`.
+
+Things it deliberately does not touch:
+- **The case:** whatever the earlier answer made or moved is left exactly as it is, and its id is kept in the history. When the desk answers again, Scheduled or Not scheduled attaches to the patient's open case as usual.
+- **Checklist ticks:** they are kept, and stale-tick rules apply as before.
+
+The reopen is **its own audit event**, `UPDATE tc_checkout_handoff` with `source_ref checkout_reopened_by_hygiene` and `prior_state` set to the cleared outcome. It is written besides the merge's own `checkout_manual_merge` row.
+
+If a merge lands on an answered card and the reopen fails, the transaction throws, so the merge and the reopen succeed or fail together.
+
+**Migration: yes, one additive column.** `1793700000000_tc_checkout_reopened.js` adds `reopened_from jsonb NULL` with an object-or-NULL CHECK led by IS NULL. It is above 1793600000000, and I re-checked develop's newest at push. Why a column was genuinely required:
+- the outcome columns must be cleared;
+- the strict `workup` and `payload` schemas have no room for the history;
+- the card can't render its history from the append-only audit log.
+
+**Contract:** `TcCheckoutReopened`, plus `reopenedFrom` (nullable, default null) on `TcCheckoutHandoff`. The bundle was regenerated with the pinned esbuild.
+
+**UI:** a new `ReopenedNotice` shows the sky-blue badge and the line "Was answered: Nothing needed by tc@carein.ai at 10:20 AM. Reopened at 10:40 AM." It appears in the workup and the quick-look sheet; the list row gets the badge. The card is back on Waiting with live boxes and the outcome buttons.
+
+**Tests** (each labelled `RULING (CO-5a fix)`; no existing expectation was weakened):
+
+| Test | What it pins |
+| --- | --- |
+| Answered → handoff → Waiting, one test per outcome (`nothing_needed`, `not_scheduled`, `scheduled`) | Same card; Waiting; outcome, note, case link and claim cleared; prior outcome, by, at, note and case in `reopenedFrom`; back on the Waiting list; checklist editable (a new tick saves); its own audit row with `prior_state`; the merge audit row too; `tc_cases` unchanged; it can be answered again and the history survives |
+| Store refusal | `reopenAnswered` writes nothing for `open` / `claimed` / `dismissed` / `expired` |
+| Waiting-card merge unchanged | Added assertions in the existing merge test: still `open`, `reopenedFrom` null, no reopen audit row |
+| Dismissed unchanged | The existing test, unchanged and passing: a dismissed manual card does not take the visit, which makes its own card |
+| Migration | `backend/test/checkoutReopenedMigration.test.js`, 5 tests |
+| UI | Workup notice, badge, history and editable boxes; list-row badge (none on a never-answered card); sheet notice; no notice on a card merged while Waiting |
+
+The Waiting-merge assertions are the one place an existing test changed: they were added, not altered.
+
+**Mutation checks:**
+- Making `reopenAnswered` a no-op turns all 3 reopen tests red.
+- Hiding `ReopenedNotice` in the workup turns the UI test red.
+
+**Real-Postgres care:** each NULL in the reopen UPDATE gets its own parameter. Postgres deduces one type per `$n`, so a single shared NULL across text, timestamptz and uuid columns would be refused; the fake would not have caught that.
+
+**Local results:**
+- Backend: `node --test` gives 4455 passed and 0 failed.
+- Dashboard: `pnpm run check` is clean. `pnpm run test` gives 3053 passed and 1 failed; the failure is `rcm-ui-s3` "k goes the other way", the same untouched j/k timing flake as CI attempt 1 above.
+
+**Screenshot:** `docs/screenshots/tc/co5a/tccheckout-co5a-04-reopened-1280x1500-{light,dark}.png` shows the reopened card with the notice, the history line, all four sections, Waiting and live outcome buttons.
