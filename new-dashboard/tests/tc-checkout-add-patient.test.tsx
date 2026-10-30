@@ -318,6 +318,8 @@ describe("a manual card on the list", () => {
     const manual = rows.find((r) => r.textContent?.includes("Plum, Ash"))!;
     const hyg = rows.find((r) => r.textContent?.includes("Kiwi, Sam"))!;
     expect(within(manual).getByTestId("checkout-row-manual").textContent).toBe("Added by hand");
+    // Not "Nothing staged": that is a statement about a hygiene visit this card never had.
+    expect(manual.textContent).not.toMatch(/Nothing staged/);
     expect(manual.textContent).toMatch(/no hygiene visit data/);
     expect(within(manual).getByTestId("checkout-row-progress").textContent).toBe("0 of 1 section done");
     expect(within(hyg).queryByTestId("checkout-row-manual")).toBeNull();
@@ -338,6 +340,7 @@ describe("the workup view for a manual card", () => {
     expect(screen.getByTestId("workup-manual").textContent).toMatch(/Added by hand/);
     expect(screen.getByTestId("workup-origin").textContent).toMatch(/^Added by hand at .* by tc@carein\.ai/);
     expect(screen.queryByText(/Final notes in/)).toBeNull();
+    expect(screen.queryByText(/Nothing staged/)).toBeNull();
     expect(screen.queryByText(/Hygiene notes still being finished/)).toBeNull();
     for (const o of ["scheduled", "not_scheduled", "nothing_needed"]) expect(screen.getByTestId(`checkout-outcome-${o}`)).toBeTruthy();
     await screen.findByText(/No referrals for this patient yet/);

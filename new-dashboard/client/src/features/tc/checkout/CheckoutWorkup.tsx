@@ -229,7 +229,7 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
           {handoff.patientName}
         </h1>
         {showOfficeBadge && <OfficeBadge officeId={handoff.officeId} />}
-        <PriorityChip priority={snap.priority} prefix="Priority: " />
+        {hygieneData && <PriorityChip priority={snap.priority} prefix="Priority: " />}
         {handoff.source === "manual" && (
           <Badge variant="outline" data-testid="workup-manual">
             <UserPlus className="w-3 h-3" /> Added by hand

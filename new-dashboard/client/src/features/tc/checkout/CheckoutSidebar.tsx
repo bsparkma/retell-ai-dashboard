@@ -167,7 +167,7 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
           {handoff && snap && (
             <>
               <div className="flex flex-wrap items-center gap-2">
-                <PriorityChip priority={snap.priority} prefix="Priority: " />
+                {hygieneData && <PriorityChip priority={snap.priority} prefix="Priority: " />}
                 {handoff.source === "manual" && (
                   <Badge variant="outline" data-testid="checkout-manual">Added by hand</Badge>
                 )}

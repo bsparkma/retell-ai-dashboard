@@ -153,7 +153,7 @@ function Row({
           {row.source === "manual" && (
             <Badge variant="outline" data-testid="checkout-row-manual">Added by hand</Badge>
           )}
-          <PriorityChip priority={row.snapshot.priority} />
+          {hygieneData && <PriorityChip priority={row.snapshot.priority} />}
           {row.snapshot.notesPending && <Badge variant="outline">Notes pending</Badge>}
           {!waiting || row.status === "claimed" ? (
             <Badge variant="outline">
