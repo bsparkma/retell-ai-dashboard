@@ -371,6 +371,65 @@ describe("the workup view for a manual card", () => {
   });
 });
 
+// RULING (CO-5a fix): a visit that arrives after the card was answered reopens it.
+const REOPENED = {
+  outcome: "nothing_needed" as const,
+  outcomeBy: "tc@carein.ai",
+  outcomeAt: "2026-10-30T15:20:00.000Z",
+  appointmentNote: null,
+  caseId: null,
+  reopenedAt: "2026-10-30T15:40:00.000Z",
+};
+function reopenedCard(): TcCheckoutHandoff {
+  return manualCard({ snapshot: VISIT_SNAPSHOT, final: true, hygieneMergedAt: REOPENED.reopenedAt, reopenedFrom: REOPENED });
+}
+
+describe("a reopened card (RULING (CO-5a fix))", () => {
+  it("the workup says it was updated after the answer, shows the prior answer as history, and is editable again", () => {
+    workup(reopenedCard());
+    const notice = screen.getByTestId("checkout-reopened-notice");
+    expect(within(notice).getByTestId("checkout-reopened").textContent).toMatch(/Updated — hygiene visit arrived after this was answered/);
+    expect(screen.getByTestId("checkout-reopened-history").textContent).toMatch(/^Was answered: Nothing needed by tc@carein\.ai at .*\. Reopened at /);
+    expect(screen.getByTestId("workup-status").textContent).toMatch(/Waiting/);
+    // Editable: the boxes are live and the outcome buttons are there again.
+    expect((screen.getByRole("checkbox", { name: "Collected" }) as HTMLButtonElement).disabled).toBe(false);
+    for (const o of ["scheduled", "not_scheduled", "nothing_needed"]) expect(screen.getByTestId(`checkout-outcome-${o}`)).toBeTruthy();
+  });
+
+  it("the list row carries the badge; a card that was never answered does not", async () => {
+    signIn(["tc.full"]);
+    api.listCheckout.mockImplementation(async (_o: OfficeId, view: string) => ({
+      success: true,
+      today: "2026-10-30",
+      view,
+      handoffs: view === "waiting" ? [reopenedCard(), hygieneCard()] : [],
+    }));
+    inbox();
+    const rows = await screen.findAllByTestId("checkout-row");
+    const reopened = rows.find((r) => r.textContent?.includes("Plum, Ash"))!;
+    const plain = rows.find((r) => r.textContent?.includes("Kiwi, Sam"))!;
+    expect(within(reopened).getByTestId("checkout-reopened")).toBeTruthy();
+    expect(within(plain).queryByTestId("checkout-reopened")).toBeNull();
+  });
+
+  it("the quick-look sheet shows the same notice and history", async () => {
+    api.getCheckoutHandoff.mockResolvedValue(reopenedCard());
+    const memory = memoryLocation({ path: "/tc/checkout" });
+    render(
+      <WouterRouter hook={memory.hook} searchHook={memory.searchHook}>
+        <CheckoutSidebar office="roland" handoffId={MANUAL_ID} showOfficeBadge={false} onClose={vi.fn()} />
+      </WouterRouter>,
+    );
+    expect(await screen.findByTestId("checkout-reopened-notice")).toBeTruthy();
+    expect(screen.getByTestId("checkout-reopened-history").textContent).toMatch(/Nothing needed/);
+  });
+
+  it("a Waiting card merged before any answer shows no reopened notice", () => {
+    workup(manualCard({ snapshot: VISIT_SNAPSHOT, final: true, hygieneMergedAt: REOPENED.reopenedAt }));
+    expect(screen.queryByTestId("checkout-reopened-notice")).toBeNull();
+  });
+});
+
 describe("the quick-look sheet for a manual card", () => {
   it("says No hygiene visit data instead of an empty Treatment staged and a blank Next visit", async () => {
     api.getCheckoutHandoff.mockResolvedValue(manualCard());
@@ -419,6 +478,12 @@ describe.skipIf(process.env.TC_SHOTS !== "1")("CO-5a screenshot dumps", () => {
     await within(dialog).findByText("Plum, Ash");
     await act(async () => {});
     dump("tccheckout-co5a-02-add-dialog@1280x900");
+  });
+
+  it("co5a-04 — a reopened card: answered, then the hygiene visit arrived", async () => {
+    workup(reopenedCard());
+    await screen.findByText(/No referrals for this patient yet/);
+    dump("tccheckout-co5a-04-reopened@1280x1500");
   });
 
   it("co5a-03 — the workup for a manual card", async () => {

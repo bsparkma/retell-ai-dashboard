@@ -44,6 +44,7 @@ import { officeScopeKey, useTcOfficeScope } from "@/features/tc/officeScope";
 import { claimCheckout, dismissCheckout } from "@/features/tc/checkout/checkoutApi";
 import { CHECKOUT_TABS, useCheckoutList } from "@/features/tc/checkout/useCheckoutList";
 import { AddCheckoutPatient, useCanAddCheckoutPatient } from "@/features/tc/checkout/AddCheckoutPatient";
+import { ReopenedBadge } from "@/features/tc/checkout/ReopenedNotice";
 import {
   CheckoutSidebar,
   PriorityChip,
@@ -153,6 +154,7 @@ function Row({
           {row.source === "manual" && (
             <Badge variant="outline" data-testid="checkout-row-manual">Added by hand</Badge>
           )}
+          {row.reopenedFrom && <ReopenedBadge />}
           {hygieneData && <PriorityChip priority={row.snapshot.priority} />}
           {row.snapshot.notesPending && <Badge variant="outline">Notes pending</Badge>}
           {!waiting || row.status === "claimed" ? (

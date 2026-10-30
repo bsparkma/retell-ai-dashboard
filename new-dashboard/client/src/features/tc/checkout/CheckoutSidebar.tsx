@@ -29,6 +29,7 @@ import { OfficeBadge } from "@/features/tc/components/OfficeBadge";
 import { tcErrorMessage } from "@/features/tc/api";
 import { getCheckoutHandoff } from "@/features/tc/checkout/checkoutApi";
 import { CheckoutOutcome, checkoutClock } from "@/features/tc/checkout/CheckoutOutcome";
+import { ReopenedNotice } from "@/features/tc/checkout/ReopenedNotice";
 import {
   TC_CHECKOUT_PRIORITY_LABELS,
   TC_CHECKOUT_RECORD_STATUS_LABELS,
@@ -193,6 +194,8 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
                   <Maximize2 className="w-3.5 h-3.5" /> Open full workup
                 </Link>
               </div>
+
+              {handoff.reopenedFrom && <ReopenedNotice reopened={handoff.reopenedFrom} />}
 
               {/* CHECKOUT V2: WHAT TO TAKE PAYMENT FOR, FIRST. The reason this
                   patient must stop at the desk at all, so it leads the sheet. */}

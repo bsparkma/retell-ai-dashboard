@@ -34,6 +34,7 @@ import { setCheckoutWorkup } from "@/features/tc/checkout/checkoutApi";
 import { CheckoutOutcome, checkoutClock } from "@/features/tc/checkout/CheckoutOutcome";
 import { PriorityChip, ProcedureTags, teethLine } from "@/features/tc/checkout/CheckoutSidebar";
 import { ExistingTreatmentFromHygiene } from "@/features/tc/checkout/HygieneTreatmentPanel";
+import { ReopenedNotice } from "@/features/tc/checkout/ReopenedNotice";
 import {
   TC_CHECKOUT_PRIORITY_LABELS,
   TC_CHECKOUT_RECORD_STATUS_LABELS,
@@ -264,6 +265,9 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
         {handoff.operatory ? ` · ${handoff.operatory}` : ""}
         {!editable ? " · this checkout is answered, so its checklist is read-only" : ""}
       </p>
+
+      {/* RULING (CO-5a fix): answered, then the visit arrived — back in Waiting, the answer as history. */}
+      {handoff.reopenedFrom && <ReopenedNotice reopened={handoff.reopenedFrom} />}
 
       {(snap.frontDeskNote || snap.financialNote) && (
         <div className="rounded-lg border border-border bg-muted/40 p-3 text-sm space-y-1" data-testid="workup-hygiene-notes">

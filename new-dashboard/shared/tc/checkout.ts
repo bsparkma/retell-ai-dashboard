@@ -402,6 +402,22 @@ export function emptyCheckoutSnapshot(): TcCheckoutSnapshot {
   };
 }
 
+/**
+ * The answer a card had before a later hygiene visit reopened it (CO-5a fix,
+ * PM ruling): a hygiene handoff that merges onto an answered card puts it back
+ * in Waiting, and what it was answered with is kept here as history.
+ */
+export const TcCheckoutReopened = z.object({
+  outcome: TcCheckoutOutcome,
+  outcomeBy: z.string().nullable(),
+  outcomeAt: z.string().nullable(),
+  appointmentNote: z.string().nullable(),
+  /** The case that outcome made or moved. The case itself is left as it is. */
+  caseId: z.string().uuid().nullable(),
+  reopenedAt: z.string(),
+});
+export type TcCheckoutReopened = z.infer<typeof TcCheckoutReopened>;
+
 /** A checkout handoff as TC reads it back. */
 export const TcCheckoutHandoff = z.object({
   handoffId: z.string().uuid(),
@@ -446,6 +462,11 @@ export const TcCheckoutHandoff = z.object({
    * card that has no hygiene visit data.
    */
   hygieneMergedAt: z.string().nullable().default(null),
+  /**
+   * CO-5a fix. Set when a hygiene visit arrived after this card was ANSWERED
+   * and reopened it: the answer it had, kept as history. Null otherwise.
+   */
+  reopenedFrom: TcCheckoutReopened.nullable().default(null),
 });
 export type TcCheckoutHandoff = z.infer<typeof TcCheckoutHandoff>;
 

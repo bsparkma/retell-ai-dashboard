@@ -45,6 +45,8 @@ const COLS = [
   // CO-5a.
   'source',
   'hygiene_merged_at',
+  // CO-5a fix.
+  'reopened_from',
 ];
 
 /**
@@ -117,7 +119,14 @@ function toHandoff(row) {
     // CO-5a. NULL is every record before it: they all came from hygiene.
     source: row.source === 'manual' ? 'manual' : 'hygiene',
     hygieneMergedAt: iso(row.hygiene_merged_at),
+    reopenedFrom: reopenedOf(row),
   };
+}
+
+/** The answer a reopened card had (CO-5a fix), or null. */
+function reopenedOf(row) {
+  const r = obj(row.reopened_from);
+  return r && typeof r === 'object' && !Array.isArray(r) && r.outcome ? r : null;
 }
 
 /**
@@ -581,6 +590,41 @@ async function mergeHygieneOntoManual(q, { office, handoffId, expectRevision, so
   return res.rowCount === 1;
 }
 
+/**
+ * A hygiene visit arrived after this card was ANSWERED (CO-5a fix, PM ruling):
+ * put it back in Waiting. Clears the outcome — who, when, the note and the
+ * case link, which the outcome CHECKs tie to an answered status — and any
+ * claim, and keeps what it was in `reopened_from` for the card's history. The
+ * case the answer made or moved is left exactly as it is. The checklist ticks
+ * stay. Call inside the merge's transaction, with lockPatientDay held;
+ * conditional on the status the caller read.
+ *
+ * @returns {Promise<object|null>} the history it stored, or null when the row
+ *   was no longer in that status
+ */
+async function reopenAnswered(q, { office, handoffId, row, at }) {
+  const prior = row.status;
+  if (!OUTCOMES.includes(prior)) return null;
+  const history = {
+    outcome: prior,
+    outcomeBy: row.outcome_by ?? null,
+    outcomeAt: iso(row.outcome_at),
+    appointmentNote: row.appointment_note ?? null,
+    caseId: row.case_id ? String(row.case_id) : null,
+    reopenedAt: at,
+  };
+  const res = await q.query(
+    `UPDATE tc_checkout_handoffs
+        SET status = 'open', outcome_by = $4, outcome_at = $5, appointment_note = $6, case_id = $7,
+            claimed_by = $8, claimed_at = $9, reopened_from = $10::jsonb, updated_at = now()
+      WHERE office_id = $1 AND handoff_id = $2 AND status = $3`,
+    // One NULL per column: Postgres deduces ONE type per parameter, so a single
+    // $n shared across text, timestamptz and uuid columns would be refused.
+    [office, handoffId, prior, null, null, null, null, null, null, JSON.stringify(history)]
+  );
+  return res.rowCount === 1 ? history : null;
+}
+
 module.exports = {
   COLS,
   WAITING_STATUSES,
@@ -618,4 +662,5 @@ module.exports = {
   findHoldingForPatientDay,
   findManualAwaitingHygiene,
   mergeHygieneOntoManual,
+  reopenAnswered,
 };

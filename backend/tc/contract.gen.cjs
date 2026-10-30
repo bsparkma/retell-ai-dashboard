@@ -14991,6 +14991,7 @@ __export(contract_entry_exports, {
   TcCheckoutProcedure: () => TcCheckoutProcedure,
   TcCheckoutRecord: () => TcCheckoutRecord,
   TcCheckoutRecordStatus: () => TcCheckoutRecordStatus,
+  TcCheckoutReopened: () => TcCheckoutReopened,
   TcCheckoutSnapshot: () => TcCheckoutSnapshot,
   TcCheckoutSource: () => TcCheckoutSource,
   TcCheckoutStatus: () => TcCheckoutStatus,
@@ -17594,6 +17595,15 @@ function emptyCheckoutSnapshot() {
     financialNote: ""
   };
 }
+var TcCheckoutReopened = import_zod7.z.object({
+  outcome: TcCheckoutOutcome,
+  outcomeBy: import_zod7.z.string().nullable(),
+  outcomeAt: import_zod7.z.string().nullable(),
+  appointmentNote: import_zod7.z.string().nullable(),
+  /** The case that outcome made or moved. The case itself is left as it is. */
+  caseId: import_zod7.z.string().uuid().nullable(),
+  reopenedAt: import_zod7.z.string()
+});
 var TcCheckoutHandoff = import_zod7.z.object({
   handoffId: import_zod7.z.string().uuid(),
   officeId: import_zod7.z.enum(["roland", "valley"]),
@@ -17636,7 +17646,12 @@ var TcCheckoutHandoff = import_zod7.z.object({
    * manual card and merged onto it. Null on a hygiene card, and on a manual
    * card that has no hygiene visit data.
    */
-  hygieneMergedAt: import_zod7.z.string().nullable().default(null)
+  hygieneMergedAt: import_zod7.z.string().nullable().default(null),
+  /**
+   * CO-5a fix. Set when a hygiene visit arrived after this card was ANSWERED
+   * and reopened it: the answer it had, kept as history. Null otherwise.
+   */
+  reopenedFrom: TcCheckoutReopened.nullable().default(null)
 });
 function checkoutHasHygieneData(h) {
   return h.source !== "manual" || h.hygieneMergedAt !== null;
@@ -18791,6 +18806,7 @@ function odToothText(tooth) {
   TcCheckoutProcedure,
   TcCheckoutRecord,
   TcCheckoutRecordStatus,
+  TcCheckoutReopened,
   TcCheckoutSnapshot,
   TcCheckoutSource,
   TcCheckoutStatus,

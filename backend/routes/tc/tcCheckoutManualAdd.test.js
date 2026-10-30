@@ -325,6 +325,85 @@ test('merge: a hygiene handoff for the same patient and day, arriving AFTER, lan
   // The progress count now covers the hygiene sections the visit brought.
   const progress = contract.checkoutWorkupProgress(final.body.handoff);
   assert.equal(progress.total, 3, 'work up, collect, referrals');
+
+  // RULING (CO-5a fix): a card still Waiting merges exactly as before — it is
+  // not "reopened", it was never answered.
+  assert.equal(merged.status, 'open');
+  assert.equal(merged.reopenedFrom, null);
+  assert.equal(auditRows(db).filter((a) => a.source_ref === 'checkout_reopened_by_hygiene').length, 0);
+});
+
+// ── RULING (CO-5a fix): a visit arriving after the card was ANSWERED reopens it ──
+
+for (const outcome of ['nothing_needed', 'not_scheduled', 'scheduled']) {
+  test(`reopen: a manual card answered "${outcome}" goes back to Waiting when the visit arrives; the answer is kept as history and audited`, async (t) => {
+    switchCheckout(t);
+    const { baseUrl, db } = await boot(t, { role: 'tc' });
+    const manual = (await api(baseUrl, 'POST', ADD(), { patNum: 12827 })).body.handoff;
+    const tick = await api(baseUrl, 'POST', `/api/tc/checkout/${manual.handoffId}/workup?office=roland`, { section: 'referrals', done: true });
+    assert.equal(tick.status, 200);
+    const answered = await api(baseUrl, 'POST', `/api/tc/checkout/${manual.handoffId}/outcome?office=roland`, {
+      outcome,
+      appointmentNote: outcome === 'scheduled' ? 'Tue 9am' : '',
+    });
+    assert.equal(answered.status, 200, JSON.stringify(answered.body));
+    const before = answered.body.handoff;
+    const casesBefore = db.table('tc_cases').map((c) => ({ ...c }));
+
+    const sent = await api(baseUrl, 'POST', '/api/tc/hygiene-intakes?office=roland', hygieneSubmit());
+    assert.equal(sent.status, 200, JSON.stringify(sent.body));
+    const h = contract.TcCheckoutHandoff.parse(sent.body.handoff);
+    assert.equal(h.handoffId, manual.handoffId, 'the same card');
+    assert.equal(db.table('tc_checkout_handoffs').length, 1);
+
+    // Back in Waiting, the answer cleared...
+    assert.equal(h.status, 'open');
+    assert.deepEqual([h.outcomeBy, h.outcomeAt, h.appointmentNote, h.caseId, h.claimedBy], [null, null, null, null, null]);
+    // ...and kept, as history on the card.
+    assert.deepEqual(
+      { ...h.reopenedFrom, reopenedAt: undefined },
+      {
+        outcome,
+        outcomeBy: 'tc@carein.ai',
+        outcomeAt: before.outcomeAt,
+        appointmentNote: before.appointmentNote,
+        caseId: before.caseId,
+        reopenedAt: undefined,
+      }
+    );
+    assert.ok(h.reopenedFrom.reopenedAt);
+    assert.equal(contract.checkoutHasHygieneData(h), true);
+    assert.ok(h.workup.referrals, 'the checklist keeps its ticks');
+
+    // It is on the Waiting list again, and its checklist is editable again.
+    const list = await api(baseUrl, 'GET', '/api/tc/checkout?office=roland&view=waiting');
+    assert.deepEqual(list.body.handoffs.map((x) => x.handoffId), [manual.handoffId]);
+    const retick = await api(baseUrl, 'POST', `/api/tc/checkout/${manual.handoffId}/workup?office=roland`, { section: 'collect', done: true });
+    assert.equal(retick.status, 200, JSON.stringify(retick.body));
+
+    // Its own audit event, the cleared answer as the prior state — besides the merge's.
+    const reopenAudits = auditRows(db).filter((a) => a.source_ref === 'checkout_reopened_by_hygiene');
+    assert.deepEqual(reopenAudits.map((a) => [a.action, a.resource_id, a.prior_state]), [['UPDATE', manual.handoffId, outcome]]);
+    assert.equal(auditRows(db).filter((a) => a.source_ref === 'checkout_manual_merge').length, 1);
+
+    // The case the answer made or moved is left exactly as it was.
+    assert.deepEqual(db.table('tc_cases'), casesBefore);
+
+    // And it can be answered again.
+    const again = await api(baseUrl, 'POST', `/api/tc/checkout/${manual.handoffId}/outcome?office=roland`, { outcome: 'nothing_needed' });
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    assert.equal(again.body.handoff.reopenedFrom.outcome, outcome, 'the history survives the next answer');
+  });
+}
+
+test('reopen: the store refuses to reopen a card that is not answered (Waiting, dismissed, expired)', async () => {
+  for (const status of ['open', 'claimed', 'dismissed', 'expired']) {
+    const calls = [];
+    const q = { query: async (...a) => (calls.push(a), { rowCount: 1, rows: [] }) };
+    const r = await checkoutStore.reopenAnswered(q, { office: 'roland', handoffId: randomUUID(), row: { status }, at: NOW.toISOString() });
+    assert.equal(r, null, status);
+    assert.equal(calls.length, 0, `${status}: nothing written`);
+  }
 });
 
 test('merge: a hygiene handoff for ANOTHER patient, another day, or another office does not touch the manual card', async (t) => {
