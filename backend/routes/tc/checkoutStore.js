@@ -42,6 +42,11 @@ const COLS = [
   'expired_by',
   // CO-1.
   'workup',
+  // CO-5a.
+  'source',
+  'hygiene_merged_at',
+  // CO-5a fix.
+  'reopened_from',
 ];
 
 /**
@@ -111,7 +116,17 @@ function toHandoff(row) {
     expiredAt: iso(row.expired_at),
     expiredBy: row.expired_by ?? null,
     workup: workupOf(row),
+    // CO-5a. NULL is every record before it: they all came from hygiene.
+    source: row.source === 'manual' ? 'manual' : 'hygiene',
+    hygieneMergedAt: iso(row.hygiene_merged_at),
+    reopenedFrom: reopenedOf(row),
   };
+}
+
+/** The answer a reopened card had (CO-5a fix), or null. */
+function reopenedOf(row) {
+  const r = obj(row.reopened_from);
+  return r && typeof r === 'object' && !Array.isArray(r) && r.outcome ? r : null;
 }
 
 /**
@@ -444,12 +459,19 @@ async function insertHandoff(q, row) {
     'submitted_by',
     'updated_by',
     'status',
+    'source',
   ];
   const placeholders = cols.map((c, i) => (c === 'payload' ? `$${i + 1}::jsonb` : `$${i + 1}`));
   await q.query(
     `INSERT INTO tc_checkout_handoffs (${cols.join(', ')}) VALUES (${placeholders.join(', ')})`,
     cols.map((c) =>
-      c === 'payload' ? JSON.stringify(row[c]) : c === 'status' ? row.status || 'open' : row[c]
+      c === 'payload'
+        ? JSON.stringify(row[c])
+        : c === 'status'
+          ? row.status || 'open'
+          : c === 'source'
+            ? row.source || 'hygiene'
+            : row[c]
     )
   );
 }
@@ -484,6 +506,125 @@ async function updatePayload(q, { office, handoffId, expectRevision, row }) {
   return res.rowCount === 1;
 }
 
+// ── CO-5a: a card added by hand, and a hygiene handoff that arrives after ───
+
+/** The statuses in which a card still HOLDS its patient for the day (CO-1's rule). */
+const HOLDING_STATUSES = Object.freeze(STATUSES.filter((st) => !RELEASES_INBOX_STATUSES.includes(st)));
+
+/**
+ * Serialize, for the rest of the transaction, everything that creates or
+ * merges a checkout card for ONE patient on ONE day in ONE office: two "Add
+ * patient" clicks, or a click and a hygiene handoff arriving at the same
+ * moment, run one after the other, so the second sees the first's card. A
+ * transaction-scoped advisory lock: released at COMMIT or ROLLBACK, and never
+ * blocks anything about any other patient.
+ */
+async function lockPatientDay(q, office, odPatientId, day) {
+  await q.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`tc_checkout_patient_day:${office}:${odPatientId}:${day}`]);
+}
+
+/**
+ * The newest card that holds this patient on this day in this office — any
+ * source, any status but dismissed / expired — or null. "Add patient" opens it
+ * instead of making a second.
+ */
+async function findHoldingForPatientDay(q, office, odPatientId, day) {
+  const res = await q.query(
+    `SELECT ${COLS.join(', ')} FROM tc_checkout_handoffs
+      WHERE office_id = $1 AND od_patient_id = $2 AND visit_date = $3 AND status = ANY($4)
+      ORDER BY created_at DESC, handoff_id DESC LIMIT 1`,
+    [office, odPatientId, day, [...HOLDING_STATUSES]]
+  );
+  return res.rows[0] || null;
+}
+
+/**
+ * The manual card a hygiene handoff for this patient and day merges onto: one
+ * added by hand, still holding the patient, that no hygiene handoff has merged
+ * onto yet. Null when there is none (the handoff then makes its own card).
+ */
+async function findManualAwaitingHygiene(q, office, odPatientId, day) {
+  const res = await q.query(
+    `SELECT ${COLS.join(', ')} FROM tc_checkout_handoffs
+      WHERE office_id = $1 AND od_patient_id = $2 AND visit_date = $3 AND status = ANY($4)
+        AND source = 'manual' AND hygiene_merged_at IS NULL
+      ORDER BY created_at DESC, handoff_id DESC LIMIT 1`,
+    [office, odPatientId, day, [...HOLDING_STATUSES]]
+  );
+  return res.rows[0] || null;
+}
+
+/**
+ * Merge a hygiene handoff onto a manual card (call with lockPatientDay held).
+ * The card takes the hygiene SOURCE KEY, so every later revision from the same
+ * visit finds it exactly as it would have found its own card, and the visit's
+ * snapshot. It keeps its id, its status, its workup ticks, who added it, and
+ * `source = 'manual'`. Conditional on not having merged already, and on the
+ * revision the caller read (a compare-and-swap, like updatePayload).
+ *
+ * @returns {Promise<boolean>} whether THIS call merged
+ */
+async function mergeHygieneOntoManual(q, { office, handoffId, expectRevision, sourceKey, row }) {
+  const res = await q.query(
+    `UPDATE tc_checkout_handoffs
+        SET source_key = $3, payload = $4::jsonb, is_final = $5, revision = $6, patient_name = $7,
+            provider = $8, provider_seen = $9, operatory = $10, updated_by = $11,
+            hygiene_merged_at = now(), updated_at = now()
+      WHERE office_id = $1 AND handoff_id = $2 AND source = 'manual' AND hygiene_merged_at IS NULL
+        AND revision = $12`,
+    [
+      office,
+      handoffId,
+      sourceKey,
+      JSON.stringify(row.payload),
+      row.is_final,
+      expectRevision + 1,
+      row.patient_name,
+      row.provider,
+      row.provider_seen,
+      row.operatory,
+      row.updated_by,
+      expectRevision,
+    ]
+  );
+  return res.rowCount === 1;
+}
+
+/**
+ * A hygiene visit arrived after this card was ANSWERED (CO-5a fix, PM ruling):
+ * put it back in Waiting. Clears the outcome — who, when, the note and the
+ * case link, which the outcome CHECKs tie to an answered status — and any
+ * claim, and keeps what it was in `reopened_from` for the card's history. The
+ * case the answer made or moved is left exactly as it is. The checklist ticks
+ * stay. Call inside the merge's transaction, with lockPatientDay held;
+ * conditional on the status the caller read.
+ *
+ * @returns {Promise<object|null>} the history it stored, or null when the row
+ *   was no longer in that status
+ */
+async function reopenAnswered(q, { office, handoffId, row, at }) {
+  const prior = row.status;
+  if (!OUTCOMES.includes(prior)) return null;
+  const history = {
+    outcome: prior,
+    outcomeBy: row.outcome_by ?? null,
+    outcomeAt: iso(row.outcome_at),
+    appointmentNote: row.appointment_note ?? null,
+    caseId: row.case_id ? String(row.case_id) : null,
+    reopenedAt: at,
+  };
+  const res = await q.query(
+    `UPDATE tc_checkout_handoffs
+        SET status = 'open', outcome_by = $4, outcome_at = $5, appointment_note = $6, case_id = $7,
+            claimed_by = $8, claimed_at = $9, reopened_from = $10::jsonb, updated_at = now()
+      WHERE office_id = $1 AND handoff_id = $2 AND status = $3`,
+    // One NULL per column: Postgres deduces ONE type per parameter, so a single
+    // $n shared across text, timestamptz and uuid columns would be refused.
+    [office, handoffId, prior, null, null, null, null, null, null, JSON.stringify(history)]
+  );
+  return res.rowCount === 1 ? history : null;
+}
+
 module.exports = {
   COLS,
   WAITING_STATUSES,
@@ -516,4 +657,10 @@ module.exports = {
   findBySourceKey,
   insertHandoff,
   updatePayload,
+  HOLDING_STATUSES,
+  lockPatientDay,
+  findHoldingForPatientDay,
+  findManualAwaitingHygiene,
+  mergeHygieneOntoManual,
+  reopenAnswered,
 };

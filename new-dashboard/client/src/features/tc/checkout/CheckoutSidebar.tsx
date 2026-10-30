@@ -29,10 +29,12 @@ import { OfficeBadge } from "@/features/tc/components/OfficeBadge";
 import { tcErrorMessage } from "@/features/tc/api";
 import { getCheckoutHandoff } from "@/features/tc/checkout/checkoutApi";
 import { CheckoutOutcome, checkoutClock } from "@/features/tc/checkout/CheckoutOutcome";
+import { ReopenedNotice } from "@/features/tc/checkout/ReopenedNotice";
 import {
   TC_CHECKOUT_PRIORITY_LABELS,
   TC_CHECKOUT_RECORD_STATUS_LABELS,
   TC_CHECKOUT_STATUS_LABELS,
+  checkoutHasHygieneData,
   type TcCheckoutHandoff,
   type TcCheckoutPriority,
 } from "@shared/tc/checkout";
@@ -132,6 +134,9 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
   };
 
   const snap = handoff?.snapshot;
+  // CO-5a: a card added by hand with no hygiene visit behind it says so, rather
+  // than showing "nothing staged" and a blank next visit as if hygiene had.
+  const hygieneData = handoff ? checkoutHasHygieneData(handoff) : true;
 
   return (
     <Sheet open={open} onOpenChange={(o) => (o ? undefined : onClose())}>
@@ -143,7 +148,7 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
           </SheetTitle>
           <SheetDescription>
             {handoff
-              ? `Sent by hygiene at ${checkoutClock(handoff.createdAt)}${handoff.providerSeen ? ` · seen by ${handoff.providerSeen}` : ""}${handoff.provider ? ` · ${handoff.provider}` : ""}${handoff.operatory ? ` · ${handoff.operatory}` : ""}`
+              ? `${handoff.source === "manual" ? `Added by hand at ${checkoutClock(handoff.createdAt)} by ${handoff.submittedBy}` : `Sent by hygiene at ${checkoutClock(handoff.createdAt)}`}${handoff.providerSeen ? ` · seen by ${handoff.providerSeen}` : ""}${handoff.provider ? ` · ${handoff.provider}` : ""}${handoff.operatory ? ` · ${handoff.operatory}` : ""}`
               : "Loading the checkout…"}
           </SheetDescription>
         </SheetHeader>
@@ -163,8 +168,11 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
           {handoff && snap && (
             <>
               <div className="flex flex-wrap items-center gap-2">
-                <PriorityChip priority={snap.priority} prefix="Priority: " />
-                {snap.notesPending ? (
+                {hygieneData && <PriorityChip priority={snap.priority} prefix="Priority: " />}
+                {handoff.source === "manual" && (
+                  <Badge variant="outline" data-testid="checkout-manual">Added by hand</Badge>
+                )}
+                {!hygieneData ? null : snap.notesPending ? (
                   <Badge variant="outline" className="border-transparent bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200 gap-1" data-testid="checkout-notes-pending">
                     <Clock className="w-3 h-3" /> Hygiene notes still being finished
                   </Badge>
@@ -186,6 +194,8 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
                   <Maximize2 className="w-3.5 h-3.5" /> Open full workup
                 </Link>
               </div>
+
+              {handoff.reopenedFrom && <ReopenedNotice reopened={handoff.reopenedFrom} />}
 
               {/* CHECKOUT V2: WHAT TO TAKE PAYMENT FOR, FIRST. The reason this
                   patient must stop at the desk at all, so it leads the sheet. */}
@@ -219,29 +229,38 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
                 </section>
               )}
 
-              <section>
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Treatment staged</h3>
-                {snap.procedures.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">Nothing staged at the hygiene visit.</p>
-                ) : (
-                  <ul className="space-y-2" data-testid="checkout-procedures">
-                    {snap.procedures.map((p, i) => (
-                      <li key={i} className="rounded-lg border border-border p-2.5 text-sm">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-medium text-foreground">{teethLine(p.teeth)} {p.code}</span>
-                          {p.surfaces.length > 0 && <span className="text-muted-foreground">{p.surfaces.join("")}</span>}
-                          {p.scheduleNext && <Badge variant="outline">Schedule next visit</Badge>}
-                        </div>
-                        <div className="mt-1 flex flex-wrap items-center gap-2">
-                          <ProcedureTags priority={p.priority} category={p.category} />
-                          <span className="text-xs text-muted-foreground">{p.status}</span>
-                        </div>
-                        {p.note && <p className="text-xs mt-1">{p.note}</p>}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </section>
+              {!hygieneData && (
+                <p className="rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground" data-testid="checkout-no-hygiene-data">
+                  No hygiene visit data: this patient was added at the desk, and no hygiene visit has sent anything for
+                  them today.
+                </p>
+              )}
+
+              {hygieneData && (
+                <section>
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Treatment staged</h3>
+                  {snap.procedures.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">Nothing staged at the hygiene visit.</p>
+                  ) : (
+                    <ul className="space-y-2" data-testid="checkout-procedures">
+                      {snap.procedures.map((p, i) => (
+                        <li key={i} className="rounded-lg border border-border p-2.5 text-sm">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-medium text-foreground">{teethLine(p.teeth)} {p.code}</span>
+                            {p.surfaces.length > 0 && <span className="text-muted-foreground">{p.surfaces.join("")}</span>}
+                            {p.scheduleNext && <Badge variant="outline">Schedule next visit</Badge>}
+                          </div>
+                          <div className="mt-1 flex flex-wrap items-center gap-2">
+                            <ProcedureTags priority={p.priority} category={p.category} />
+                            <span className="text-xs text-muted-foreground">{p.status}</span>
+                          </div>
+                          {p.note && <p className="text-xs mt-1">{p.note}</p>}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+              )}
 
               {/* CHECKOUT V2: the records the staged treatment needs, with where
                   each stands, so a case does not stall on a missing PA later. */}
@@ -268,25 +287,27 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
                 </section>
               ) : null}
 
-              <section>
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Next visit needs</h3>
-                <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm" data-testid="checkout-next-visit">
-                  <dt className="text-muted-foreground">Visit</dt>
-                  <dd>{snap.nextVisit.type ?? "Not set"}</dd>
-                  <dt className="text-muted-foreground">When</dt>
-                  <dd>{snap.nextVisit.intervalMonths ? `${snap.nextVisit.intervalMonths} months` : "Not set"}</dd>
-                  <dt className="text-muted-foreground">Length</dt>
-                  <dd>{snap.nextVisit.lengthMin ? `${snap.nextVisit.lengthMin} min` : "Not set"}</dd>
-                  <dt className="text-muted-foreground">Doctor</dt>
-                  <dd>{snap.nextVisit.withDoctor ? "With the doctor" : "Hygiene only"}</dd>
-                  {snap.nextVisit.rtc && (
-                    <>
-                      <dt className="text-muted-foreground">RTC</dt>
-                      <dd>{snap.nextVisit.rtc}</dd>
-                    </>
-                  )}
-                </dl>
-              </section>
+              {hygieneData && (
+                <section>
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Next visit needs</h3>
+                  <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm" data-testid="checkout-next-visit">
+                    <dt className="text-muted-foreground">Visit</dt>
+                    <dd>{snap.nextVisit.type ?? "Not set"}</dd>
+                    <dt className="text-muted-foreground">When</dt>
+                    <dd>{snap.nextVisit.intervalMonths ? `${snap.nextVisit.intervalMonths} months` : "Not set"}</dd>
+                    <dt className="text-muted-foreground">Length</dt>
+                    <dd>{snap.nextVisit.lengthMin ? `${snap.nextVisit.lengthMin} min` : "Not set"}</dd>
+                    <dt className="text-muted-foreground">Doctor</dt>
+                    <dd>{snap.nextVisit.withDoctor ? "With the doctor" : "Hygiene only"}</dd>
+                    {snap.nextVisit.rtc && (
+                      <>
+                        <dt className="text-muted-foreground">RTC</dt>
+                        <dd>{snap.nextVisit.rtc}</dd>
+                      </>
+                    )}
+                  </dl>
+                </section>
+              )}
 
               {/* Slice 2b: what was said at the visit about the treatment ALREADY
                   planned in Open Dental — every item the hygiene module carried,

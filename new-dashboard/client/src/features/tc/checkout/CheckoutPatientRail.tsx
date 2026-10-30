@@ -19,6 +19,7 @@ import { CHECKOUT_TABS, type CheckoutList } from "@/features/tc/checkout/useChec
 import {
   TC_CHECKOUT_STATUS_LABELS,
   TC_CHECKOUT_WAITING,
+  checkoutHasHygieneData,
   checkoutWorkupProgress,
   checkoutWorkupProgressLabel,
   type TcCheckoutHandoff,
@@ -51,10 +52,11 @@ function RailCard({
       <span className="flex flex-wrap items-center gap-1.5">
         <span className="truncate text-sm font-semibold text-foreground">{row.patientName}</span>
         {showOfficeBadges && <OfficeBadge officeId={row.officeId} />}
-        <PriorityChip priority={row.snapshot.priority} />
+        {checkoutHasHygieneData(row) && <PriorityChip priority={row.snapshot.priority} />}
       </span>
       <span className="mt-0.5 block text-xs text-muted-foreground">
         {checkoutClock(row.createdAt)}
+        {row.source === "manual" ? " · added by hand" : ""}
         {waiting ? ` · ${checkoutWorkupProgressLabel(progress)}` : ` · ${TC_CHECKOUT_STATUS_LABELS[row.status]}`}
       </span>
     </button>

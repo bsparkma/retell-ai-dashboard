@@ -93,8 +93,7 @@ const attachments = require('./referralAttachments');
 const referralSend = require('./referralSend');
 const correspondence = require('./referralCorrespondence');
 const chartNotes = require('./referralChartNotes');
-const odOffices = require('../../config/odOffices');
-const odReads = require('./odReads');
+const odManualPatient = require('./odManualPatient');
 
 const {
   z,
@@ -389,38 +388,14 @@ router.get(
 
 /**
  * R6.2: the patient of a referral started by hand, read from THIS office's
- * Open Dental (read only), before any transaction opens. The PatNum in the
- * body says only WHICH patient; existence and the name come from Open Dental,
- * through the office's own client (never another practice's: PatNum numbering
- * restarts in every database). Returns { patient } or { refusal }.
+ * Open Dental (read only), before any transaction opens. The check itself is
+ * shared with the Checkout page's "Add patient" (CO-5a): routes/tc/odManualPatient.js.
+ * Returns { patient } or { refusal }.
  */
 async function manualPatient(office, patNum) {
-  let od;
-  try {
-    od = odOffices.assertOfficeMatch(office, odOffices.getOdOffice(office));
-  } catch (err) {
-    return { refusal: [503, err.publicMessage || 'Open Dental is not connected for this office', 'OFFICE_NOT_CONNECTED'] };
-  }
-  const odGet = (path, params, opts) => od.client.apiGetRaw(path, params, { ...(opts || {}), module: 'tc' });
-  let found;
-  try {
-    found = await odReads.getPatient(odGet, patNum);
-  } catch {
-    console.error(`[tc/referrals] office=${office} manual start: patient read failed`);
-    return { refusal: [502, 'Could not read that patient from Open Dental. Nothing was saved.', 'OD_READ_FAILED'] };
-  }
-  if (!found.patient || odReads.EXCLUDED_PAT_STATUS.has(found.patient.status)) {
-    return { refusal: [404, "That patient is not in this office's Open Dental", 'PATIENT_NOT_FOUND'] };
-  }
-  return {
-    patient: {
-      odPatientId: found.patient.patNum,
-      patientName: found.patient.displayName,
-      tcCaseId: null,
-      sourceKind: 'manual',
-      sourceRef: '',
-    },
-  };
+  const m = await odManualPatient.manualPatient(office, patNum, 'tc/referrals');
+  if (m.refusal) return m;
+  return { patient: { ...m.patient, tcCaseId: null, sourceKind: 'manual', sourceRef: '' } };
 }
 
 router.post(

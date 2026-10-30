@@ -17,6 +17,7 @@
  *   POST   /:id/items/:index/entered   attest "this item is in Open Dental"
  *   DELETE /:id/items/:index/entered   undo that attestation (admin only)
  *   POST   /:id/workup        tick or untick one box on the workup checklist (CO-1)
+ *   POST   /manual            "Add patient": a card added by hand (CO-5a)
  *
  * THE WORKUP CHECKLIST (CO-1). The full-screen workup view's boxes — each
  * staged item "Worked up", each existing-treatment group "Ready to present",
@@ -90,7 +91,9 @@
  * ═════════════════════════════════════════════════════════════════════════════
  * GUARDRAILS
  * ═════════════════════════════════════════════════════════════════════════════
- *   - ZERO Open Dental reads or writes. Everything renders the snapshot.
+ *   - ZERO Open Dental writes. The one read is POST /manual's re-read of the
+ *     patient the person picked (CO-5a, the referrals hub's check). Everything
+ *     else renders the snapshot.
  *   - Office from `?office=` through requireOffice, in every WHERE. The PatNum
  *     a case is opened for is the HANDOFF's — never a request's.
  *   - Dark: `tc_checkout_enabled` off for the office → 403 CHECKOUT_DISABLED on
@@ -111,6 +114,7 @@ const { findOpenCase } = require('./intakeFromCall');
 const nurtureHooks = require('../../services/tcNurture/hooks');
 const { localDayKey } = require('../../services/localDayClock');
 const tcCheckout = require('../../config/tcCheckout');
+const odManualPatient = require('./odManualPatient');
 
 const {
   z,
@@ -120,6 +124,7 @@ const {
   TcCheckoutOutcomeRequest,
   TcCheckoutDismissRequest,
   TcCheckoutWorkupRequest,
+  TcCheckoutManualAddRequest,
 } = contract;
 
 const router = express.Router();
@@ -393,6 +398,103 @@ router.get(
       newest: newest
         ? { handoffId: newest.handoffId, patientName: newest.patientName, createdAt: newest.createdAt }
         : null,
+    });
+  })
+);
+
+// ── POST /manual — "Add patient" (CO-5a) ────────────────────────────────────
+
+/**
+ * The front desk adds a patient to today's Checkout by hand: someone at the
+ * desk who no hygiene visit sent (a doctor-only visit, a walk-in).
+ *
+ *   - tc.full, like everything under /api/tc/checkout (the mount's gate).
+ *   - The office is the request's (requireOffice). The body names only WHICH
+ *     patient the person picked from the patient search; existence and the
+ *     name are re-read from THIS office's Open Dental (read only), through the
+ *     referrals hub's manual-start check (odManualPatient), before any
+ *     transaction opens. The day is the office's today, never the request's.
+ *   - ONE CARD PER PATIENT PER DAY. A card that already holds this patient
+ *     today in this office — any source, any status but dismissed — is OPENED
+ *     instead (200, created: false). Enforced here, not in the browser: the
+ *     patient-day lock serializes two clicks (and a click against a hygiene
+ *     handoff arriving), and the partial unique index on manual cards is the
+ *     arbiter behind it — a lost race re-reads the winner.
+ *   - The card: source 'manual', status open (Waiting), submitted_by the
+ *     person who added it, the empty snapshot (no hygiene visit data — the
+ *     workup view says so). One CREATE audit row, after the commit; the answer
+ *     is the card READ BACK.
+ */
+router.post(
+  '/manual',
+  h(async (req, res) => {
+    const body = parseBody(res, TcCheckoutManualAddRequest, req.body);
+    if (!body) return undefined;
+    const today = await enter(req, res);
+    if (today === null) return undefined;
+    const office = req.tcOffice;
+    const actor = actorEmail(req);
+
+    const found = await odManualPatient.manualPatient(office, body.patNum, 'tc/checkout');
+    if (found.refusal) {
+      const [status, error, code] = found.refusal;
+      return res.status(status).json({ success: false, error, code });
+    }
+    const { odPatientId, patientName } = found.patient;
+
+    let result;
+    try {
+      result = await withTenantTx(req, async (client) => {
+        await checkoutStore.lockPatientDay(client, office, odPatientId, today);
+        const holding = await checkoutStore.findHoldingForPatientDay(client, office, odPatientId, today);
+        if (holding) return { created: false, handoffId: String(holding.handoff_id) };
+        const handoffId = randomUUID();
+        await checkoutStore.insertHandoff(client, {
+          handoff_id: handoffId,
+          office_id: office,
+          source_key: `manual:${handoffId}`,
+          od_patient_id: odPatientId,
+          patient_name: patientName,
+          provider: '',
+          provider_seen: '',
+          operatory: '',
+          visit_date: today,
+          payload: contract.emptyCheckoutSnapshot(),
+          is_final: false,
+          revision: 1,
+          submitted_by: actor,
+          updated_by: actor,
+          status: 'open',
+          source: 'manual',
+        });
+        return { created: true, handoffId };
+      });
+    } catch (err) {
+      if (!err || err.code !== checkoutStore.PG_UNIQUE_VIOLATION) throw err;
+      // Lost the race to another "Add patient" for the same patient: the
+      // winner's card stands, and this click opens it.
+      const winner = await tenantDb.withTenantDb(req, (pool) =>
+        checkoutStore.findHoldingForPatientDay(pool, office, odPatientId, today)
+      );
+      if (!winner) throw err;
+      result = { created: false, handoffId: String(winner.handoff_id) };
+    }
+
+    if (result.created) {
+      await auditTc(req, 'CREATE', 'tc_checkout_handoff', result.handoffId, { office, sourceRef: 'checkout_manual_add' });
+    }
+    const row = await tenantDb.withTenantDb(req, (pool) => checkoutStore.findById(pool, office, result.handoffId));
+    if (!row) {
+      return res.status(500).json({
+        success: false,
+        error: 'The checkout card could not be read back. Reload the Checkout page before trusting it.',
+        code: 'CHECKOUT_NOT_PERSISTED',
+      });
+    }
+    return res.status(result.created ? 201 : 200).json({
+      success: true,
+      created: result.created,
+      handoff: checkoutStore.toHandoff(row),
     });
   })
 );
@@ -675,6 +777,9 @@ router.post(
             }
             const aggregate = TcCase.parse({
               ...CHECKOUT_CASE_DEFAULTS,
+              // CO-5a: a card added by hand that no hygiene visit merged onto
+              // did not come from hygiene, and its case does not say it did.
+              referralSource: contract.checkoutHasHygieneData(checkoutStore.toHandoff(handoff)) ? 'hygiene' : 'other',
               phases: phase ? [phase] : [],
               caseId,
               officeId: office,

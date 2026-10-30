@@ -142,18 +142,55 @@ async function submitCheckout(req, res) {
     let existing = await checkoutStore.findBySourceKey(pool, office, input.sourceKey);
     if (!existing) {
       try {
-        await checkoutStore.insertHandoff(pool, {
-          ...incoming,
-          handoff_id: randomUUID(),
-          office_id: office,
-          source_key: input.sourceKey,
-          od_patient_id: input.odPatientId,
-          visit_date: input.visitDate,
-          revision: 1,
-          submitted_by: actor,
+        /*
+         * A key TC has never seen. CO-5a: if the front desk already added
+         * this patient BY HAND today, the visit's handoff merges onto that
+         * card (CO-1's same-patient, same-day, same-office rule) instead of
+         * opening a second one. Under the patient-day lock, so a click and a
+         * handoff arriving together cannot each make a card.
+         */
+        const made = await withTenantTx(req, async (client) => {
+          await checkoutStore.lockPatientDay(client, office, input.odPatientId, input.visitDate);
+          const manual = await checkoutStore.findManualAwaitingHygiene(client, office, input.odPatientId, input.visitDate);
+          if (manual) {
+            const merged = await checkoutStore.mergeHygieneOntoManual(client, {
+              office,
+              handoffId: manual.handoff_id,
+              expectRevision: Number(manual.revision),
+              sourceKey: input.sourceKey,
+              row: incoming,
+            });
+            if (!merged) throw new Error('the manual checkout card could not take the hygiene handoff');
+            // PM ruling (CO-5a fix): an ANSWERED card the visit lands on goes
+            // back to Waiting, its answer kept as history; the desk has new
+            // work for this patient. Same transaction as the merge.
+            const reopened = await checkoutStore.reopenAnswered(client, {
+              office,
+              handoffId: manual.handoff_id,
+              row: manual,
+              at: new Date().toISOString(),
+            });
+            if (checkoutStore.OUTCOMES.includes(manual.status) && !reopened) {
+              throw new Error('the answered checkout card could not be reopened');
+            }
+            return reopened ? { action: 'merged', reopenedFrom: manual.status } : { action: 'merged', reopenedFrom: null };
+          }
+          await checkoutStore.insertHandoff(client, {
+            ...incoming,
+            handoff_id: randomUUID(),
+            office_id: office,
+            source_key: input.sourceKey,
+            od_patient_id: input.odPatientId,
+            visit_date: input.visitDate,
+            revision: 1,
+            submitted_by: actor,
+            source: 'hygiene',
+          });
+          return { action: 'created', reopenedFrom: null };
         });
         return {
-          action: 'created',
+          action: made.action,
+          reopenedFrom: made.reopenedFrom,
           row: await checkoutStore.findBySourceKey(pool, office, input.sourceKey),
         };
       } catch (err) {
@@ -218,8 +255,16 @@ async function submitCheckout(req, res) {
       outcome.action === 'created' ? 'CREATE' : 'UPDATE',
       'tc_checkout_handoff',
       String(outcome.row.handoff_id),
-      { office }
+      outcome.action === 'merged' ? { office, sourceRef: 'checkout_manual_merge' } : { office }
     );
+  }
+  if (outcome.reopenedFrom) {
+    // Its own event: the answer the reopen cleared, as the prior state.
+    await auditTc(req, 'UPDATE', 'tc_checkout_handoff', String(outcome.row.handoff_id), {
+      office,
+      sourceRef: 'checkout_reopened_by_hygiene',
+      priorState: outcome.reopenedFrom,
+    });
   }
   return res.status(outcome.action === 'created' ? 201 : 200).json({
     success: true,
