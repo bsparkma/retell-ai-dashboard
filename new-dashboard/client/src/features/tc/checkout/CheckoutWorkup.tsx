@@ -22,7 +22,7 @@
  */
 import { useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { Check, CheckCircle2, ClipboardCopy, Clock, CreditCard, FileText } from "lucide-react";
+import { Check, CheckCircle2, ClipboardCopy, Clock, CreditCard, FileText, UserPlus } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -41,6 +41,7 @@ import {
   TC_CHECKOUT_WAITING,
   TC_CHECKOUT_WORKUP_SECTION_LABELS,
   checkoutCollectKey,
+  checkoutHasHygieneData,
   checkoutItemKey,
   checkoutPresentKey,
   checkoutWorkupProgress,
@@ -216,6 +217,10 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
 
   const groups = Array.from(new Set((snap.existingTx ?? []).map((i) => i.patient)));
   const collect = snap.collectAtCheckout ?? [];
+  // CO-5a: a card added by hand that no hygiene visit merged onto has no
+  // staged treatment, existing treatment or collect list — not empty ones. It
+  // says so once, and the hygiene sections are not drawn (nor counted).
+  const hygieneData = checkoutHasHygieneData(handoff);
 
   return (
     <div className="space-y-4" data-testid="checkout-workup">
@@ -225,7 +230,12 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
         </h1>
         {showOfficeBadge && <OfficeBadge officeId={handoff.officeId} />}
         <PriorityChip priority={snap.priority} prefix="Priority: " />
-        {snap.notesPending ? (
+        {handoff.source === "manual" && (
+          <Badge variant="outline" data-testid="workup-manual">
+            <UserPlus className="w-3 h-3" /> Added by hand
+          </Badge>
+        )}
+        {!hygieneData ? null : snap.notesPending ? (
           <Badge variant="outline" className="border-transparent bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200 gap-1">
             <Clock className="w-3 h-3" /> Hygiene notes still being finished
           </Badge>
@@ -242,8 +252,13 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
           {checkoutWorkupProgressLabel(progress)}
         </span>
       </div>
-      <p className="text-sm text-muted-foreground">
-        Sent by hygiene at {checkoutClock(handoff.createdAt)}
+      <p className="text-sm text-muted-foreground" data-testid="workup-origin">
+        {handoff.source === "manual"
+          ? `Added by hand at ${checkoutClock(handoff.createdAt)} by ${handoff.submittedBy}`
+          : `Sent by hygiene at ${checkoutClock(handoff.createdAt)}`}
+        {handoff.source === "manual" && handoff.hygieneMergedAt
+          ? ` · hygiene visit arrived at ${checkoutClock(handoff.hygieneMergedAt)}`
+          : ""}
         {handoff.providerSeen ? ` · seen by ${handoff.providerSeen}` : ""}
         {handoff.provider ? ` · ${handoff.provider}` : ""}
         {handoff.operatory ? ` · ${handoff.operatory}` : ""}
@@ -261,153 +276,169 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
         </div>
       )}
 
-      {/* 1. WORK UP IN OD */}
-      <SectionCard
-        n={1}
-        section="workup"
-        {...sectionState("workup")}
-        aside={
-          snap.procedures.length > 0 ? (
-            <Button size="sm" variant="outline" className="gap-1.5" onClick={() => void copyAll()} data-testid="workup-copy">
-              <ClipboardCopy className="w-3.5 h-3.5" /> Copy list
-            </Button>
-          ) : undefined
-        }
-      >
-        {snap.procedures.length === 0 ? (
-          <p className="text-sm text-muted-foreground" data-testid="workup-empty-workup">
-            Nothing was diagnosed at today&apos;s visit, so there is nothing to work up in Open Dental.
+      {!hygieneData && (
+        <section className="rounded-xl border border-dashed border-border bg-muted/30 p-4 space-y-1" data-testid="workup-no-hygiene-data">
+          <h2 className="text-base font-semibold text-foreground">No hygiene visit data</h2>
+          <p className="text-sm text-muted-foreground">
+            This patient was added at the desk, and no hygiene visit has sent anything for them today, so there is no
+            staged treatment to work up, no existing treatment from hygiene, and no collect list. If a hygiene visit
+            sends this patient later today, it lands on this card.
           </p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm" data-testid="workup-procedures">
-              <thead>
-                <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="py-2 pr-3 font-semibold">Worked up</th>
-                  <th className="py-2 pr-3 font-semibold">Tooth</th>
-                  <th className="py-2 pr-3 font-semibold">Surf</th>
-                  <th className="py-2 pr-3 font-semibold">Code</th>
-                  <th className="py-2 pr-3 font-semibold">Priority · category</th>
-                  <th className="py-2 pr-3 font-semibold">Dx</th>
-                </tr>
-              </thead>
-              <tbody>
-                {snap.procedures.map((p, i) => {
-                  const mark = handoff.workup.workedUp[String(i)];
-                  const current = Boolean(mark) && mark.key === checkoutItemKey(p);
-                  const stale = Boolean(mark) && !current;
-                  const key = `workup:${i}`;
-                  return (
-                    <tr key={i} className="border-b border-border/60 align-top" data-testid="workup-row">
-                      <td className="py-2 pr-3">
-                        <Tick
-                          id={`workup-tick-${i}`}
-                          label={`Worked up: ${workupLine(p)}`}
-                          hideLabel
-                          checked={current}
-                          disabled={locked}
-                          onChange={(done) => void tick(key, { section: "workup", index: i, done })}
-                        />
-                        {stale && (
-                          <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300" data-testid="workup-stale">
-                            Changed since ticked
-                          </p>
-                        )}
-                      </td>
-                      <td className="py-2 pr-3 font-mono font-semibold text-foreground select-all">{teethLine(p.teeth)}</td>
-                      <td className="py-2 pr-3 font-mono select-all">{p.surfaces.join("") || "—"}</td>
-                      <td className="py-2 pr-3 font-mono font-semibold text-foreground select-all">{p.code}</td>
-                      <td className="py-2 pr-3">
-                        <ProcedureTags priority={p.priority} category={p.category} />
-                        {p.scheduleNext && <Badge variant="outline" className="ml-1.5">Schedule next visit</Badge>}
-                      </td>
-                      <td className="py-2 pr-3" data-testid="workup-dx">
-                        {p.dx && p.dx.length > 0 ? <span>{dxText(p.dx)}</span> : <span className="text-muted-foreground">—</span>}
-                        {p.dxNote ? <p className="text-xs text-muted-foreground">{p.dxNote}</p> : null}
-                        {p.note ? <p className="text-xs">{p.note}</p> : null}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-        {snap.records && snap.records.length > 0 ? (
-          <div className="pt-1" data-testid="workup-records">
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Records for the planned treatment</p>
-            <ul className="flex flex-wrap gap-2 text-sm">
-              {snap.records.map((r) => (
-                <li key={r.record} className="rounded-md border border-border px-2 py-0.5">
-                  {r.record}:{" "}
-                  <span className={r.status === "needed" ? "text-amber-700 dark:text-amber-300 font-medium" : "text-muted-foreground"}>
-                    {r.status === "needed" ? "Still needed" : TC_CHECKOUT_RECORD_STATUS_LABELS[r.status]}
-                  </span>
+        </section>
+      )}
+
+      {hygieneData && (
+        <>
+        {/* 1. WORK UP IN OD */}
+        <SectionCard
+          n={1}
+          section="workup"
+          {...sectionState("workup")}
+          aside={
+            snap.procedures.length > 0 ? (
+              <Button size="sm" variant="outline" className="gap-1.5" onClick={() => void copyAll()} data-testid="workup-copy">
+                <ClipboardCopy className="w-3.5 h-3.5" /> Copy list
+              </Button>
+            ) : undefined
+          }
+        >
+          {snap.procedures.length === 0 ? (
+            <p className="text-sm text-muted-foreground" data-testid="workup-empty-workup">
+              Nothing was diagnosed at today&apos;s visit, so there is nothing to work up in Open Dental.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm" data-testid="workup-procedures">
+                <thead>
+                  <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
+                    <th className="py-2 pr-3 font-semibold">Worked up</th>
+                    <th className="py-2 pr-3 font-semibold">Tooth</th>
+                    <th className="py-2 pr-3 font-semibold">Surf</th>
+                    <th className="py-2 pr-3 font-semibold">Code</th>
+                    <th className="py-2 pr-3 font-semibold">Priority · category</th>
+                    <th className="py-2 pr-3 font-semibold">Dx</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {snap.procedures.map((p, i) => {
+                    const mark = handoff.workup.workedUp[String(i)];
+                    const current = Boolean(mark) && mark.key === checkoutItemKey(p);
+                    const stale = Boolean(mark) && !current;
+                    const key = `workup:${i}`;
+                    return (
+                      <tr key={i} className="border-b border-border/60 align-top" data-testid="workup-row">
+                        <td className="py-2 pr-3">
+                          <Tick
+                            id={`workup-tick-${i}`}
+                            label={`Worked up: ${workupLine(p)}`}
+                            hideLabel
+                            checked={current}
+                            disabled={locked}
+                            onChange={(done) => void tick(key, { section: "workup", index: i, done })}
+                          />
+                          {stale && (
+                            <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300" data-testid="workup-stale">
+                              Changed since ticked
+                            </p>
+                          )}
+                        </td>
+                        <td className="py-2 pr-3 font-mono font-semibold text-foreground select-all">{teethLine(p.teeth)}</td>
+                        <td className="py-2 pr-3 font-mono select-all">{p.surfaces.join("") || "—"}</td>
+                        <td className="py-2 pr-3 font-mono font-semibold text-foreground select-all">{p.code}</td>
+                        <td className="py-2 pr-3">
+                          <ProcedureTags priority={p.priority} category={p.category} />
+                          {p.scheduleNext && <Badge variant="outline" className="ml-1.5">Schedule next visit</Badge>}
+                        </td>
+                        <td className="py-2 pr-3" data-testid="workup-dx">
+                          {p.dx && p.dx.length > 0 ? <span>{dxText(p.dx)}</span> : <span className="text-muted-foreground">—</span>}
+                          {p.dxNote ? <p className="text-xs text-muted-foreground">{p.dxNote}</p> : null}
+                          {p.note ? <p className="text-xs">{p.note}</p> : null}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {snap.records && snap.records.length > 0 ? (
+            <div className="pt-1" data-testid="workup-records">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Records for the planned treatment</p>
+              <ul className="flex flex-wrap gap-2 text-sm">
+                {snap.records.map((r) => (
+                  <li key={r.record} className="rounded-md border border-border px-2 py-0.5">
+                    {r.record}:{" "}
+                    <span className={r.status === "needed" ? "text-amber-700 dark:text-amber-300 font-medium" : "text-muted-foreground"}>
+                      {r.status === "needed" ? "Still needed" : TC_CHECKOUT_RECORD_STATUS_LABELS[r.status]}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </SectionCard>
+
+        {/* 2. EXISTING TREATMENT TO PRESENT */}
+        <SectionCard n={2} section="present" {...sectionState("present")}>
+          {groups.length === 0 ? (
+            <p className="text-sm text-muted-foreground" data-testid="workup-empty-present">
+              No existing treatment came with this visit.
+            </p>
+          ) : (
+            <ExistingTreatmentFromHygiene
+              items={snap.existingTx ?? []}
+              collapsedGroups={WORKUP_COLLAPSED_GROUPS}
+              groupAction={(group) => (
+                <Tick
+                  id={`workup-present-${group}`}
+                  label={`Ready to present: ${EXISTING_TX_PATIENT_LABELS[group]}`}
+                  checked={handoff.workup.present[group]?.key === checkoutPresentKey(snap.existingTx, group)}
+                  disabled={locked}
+                  onChange={(done) => void tick(`present:${group}`, { section: "present", group, done })}
+                />
+              )}
+            />
+          )}
+        </SectionCard>
+
+        {/* 3. COLLECT PAYMENT */}
+        <SectionCard
+          n={3}
+          section="collect"
+          {...sectionState("collect")}
+          aside={
+            collect.length > 0 ? (
+              <Tick
+                id="workup-collected"
+                label="Collected"
+                checked={handoff.workup.collected?.key === checkoutCollectKey(collect)}
+                disabled={locked}
+                onChange={(done) => void tick("collect", { section: "collect", done })}
+              />
+            ) : undefined
+          }
+        >
+          {collect.length === 0 ? (
+            <p className="text-sm text-muted-foreground" data-testid="workup-empty-collect">
+              Nothing to collect at the desk for this visit.
+            </p>
+          ) : (
+            <ul className="space-y-0.5 text-sm font-medium text-foreground" data-testid="workup-collect-items">
+              {collect.map((label, i) => (
+                <li key={i} className="flex items-center gap-2">
+                  <CreditCard className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-300" /> {label}
                 </li>
               ))}
             </ul>
-          </div>
-        ) : null}
-      </SectionCard>
+          )}
+        </SectionCard>
 
-      {/* 2. EXISTING TREATMENT TO PRESENT */}
-      <SectionCard n={2} section="present" {...sectionState("present")}>
-        {groups.length === 0 ? (
-          <p className="text-sm text-muted-foreground" data-testid="workup-empty-present">
-            No existing treatment came with this visit.
-          </p>
-        ) : (
-          <ExistingTreatmentFromHygiene
-            items={snap.existingTx ?? []}
-            collapsedGroups={WORKUP_COLLAPSED_GROUPS}
-            groupAction={(group) => (
-              <Tick
-                id={`workup-present-${group}`}
-                label={`Ready to present: ${EXISTING_TX_PATIENT_LABELS[group]}`}
-                checked={handoff.workup.present[group]?.key === checkoutPresentKey(snap.existingTx, group)}
-                disabled={locked}
-                onChange={(done) => void tick(`present:${group}`, { section: "present", group, done })}
-              />
-            )}
-          />
-        )}
-      </SectionCard>
-
-      {/* 3. COLLECT PAYMENT */}
-      <SectionCard
-        n={3}
-        section="collect"
-        {...sectionState("collect")}
-        aside={
-          collect.length > 0 ? (
-            <Tick
-              id="workup-collected"
-              label="Collected"
-              checked={handoff.workup.collected?.key === checkoutCollectKey(collect)}
-              disabled={locked}
-              onChange={(done) => void tick("collect", { section: "collect", done })}
-            />
-          ) : undefined
-        }
-      >
-        {collect.length === 0 ? (
-          <p className="text-sm text-muted-foreground" data-testid="workup-empty-collect">
-            Nothing to collect at the desk for this visit.
-          </p>
-        ) : (
-          <ul className="space-y-0.5 text-sm font-medium text-foreground" data-testid="workup-collect-items">
-            {collect.map((label, i) => (
-              <li key={i} className="flex items-center gap-2">
-                <CreditCard className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-300" /> {label}
-              </li>
-            ))}
-          </ul>
-        )}
-      </SectionCard>
+        </>
+      )}
 
       {/* 4. REFERRALS — the existing panel, embedded unchanged */}
       <SectionCard
-        n={4}
+        n={hygieneData ? 4 : 1}
         section="referrals"
         {...sectionState("referrals")}
         aside={
@@ -435,25 +466,27 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
       </section>
 
       {/* Kept for the desk's reference: what the next visit needs. */}
-      <section className="rounded-xl border border-dashed border-border p-4 text-sm" data-testid="workup-next-visit">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Next visit needs</h2>
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
-          <dt className="text-muted-foreground">Visit</dt>
-          <dd>{snap.nextVisit.type ?? "Not set"}</dd>
-          <dt className="text-muted-foreground">When</dt>
-          <dd>{snap.nextVisit.intervalMonths ? `${snap.nextVisit.intervalMonths} months` : "Not set"}</dd>
-          <dt className="text-muted-foreground">Length</dt>
-          <dd>{snap.nextVisit.lengthMin ? `${snap.nextVisit.lengthMin} min` : "Not set"}</dd>
-          <dt className="text-muted-foreground">Doctor</dt>
-          <dd>{snap.nextVisit.withDoctor ? "With the doctor" : "Hygiene only"}</dd>
-          {snap.nextVisit.rtc && (
-            <>
-              <dt className="text-muted-foreground">RTC</dt>
-              <dd>{snap.nextVisit.rtc}</dd>
-            </>
-          )}
-        </dl>
-      </section>
+      {hygieneData && (
+        <section className="rounded-xl border border-dashed border-border p-4 text-sm" data-testid="workup-next-visit">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Next visit needs</h2>
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+            <dt className="text-muted-foreground">Visit</dt>
+            <dd>{snap.nextVisit.type ?? "Not set"}</dd>
+            <dt className="text-muted-foreground">When</dt>
+            <dd>{snap.nextVisit.intervalMonths ? `${snap.nextVisit.intervalMonths} months` : "Not set"}</dd>
+            <dt className="text-muted-foreground">Length</dt>
+            <dd>{snap.nextVisit.lengthMin ? `${snap.nextVisit.lengthMin} min` : "Not set"}</dd>
+            <dt className="text-muted-foreground">Doctor</dt>
+            <dd>{snap.nextVisit.withDoctor ? "With the doctor" : "Hygiene only"}</dd>
+            {snap.nextVisit.rtc && (
+              <>
+                <dt className="text-muted-foreground">RTC</dt>
+                <dd>{snap.nextVisit.rtc}</dd>
+              </>
+            )}
+          </dl>
+        </section>
+      )}
     </div>
   );
 }

@@ -14982,6 +14982,7 @@ __export(contract_entry_exports, {
   TcCheckoutCaseTreatment: () => TcCheckoutCaseTreatment,
   TcCheckoutDismissRequest: () => TcCheckoutDismissRequest,
   TcCheckoutHandoff: () => TcCheckoutHandoff,
+  TcCheckoutManualAddRequest: () => TcCheckoutManualAddRequest,
   TcCheckoutNextVisit: () => TcCheckoutNextVisit,
   TcCheckoutOutcome: () => TcCheckoutOutcome,
   TcCheckoutOutcomeRequest: () => TcCheckoutOutcomeRequest,
@@ -14991,6 +14992,7 @@ __export(contract_entry_exports, {
   TcCheckoutRecord: () => TcCheckoutRecord,
   TcCheckoutRecordStatus: () => TcCheckoutRecordStatus,
   TcCheckoutSnapshot: () => TcCheckoutSnapshot,
+  TcCheckoutSource: () => TcCheckoutSource,
   TcCheckoutStatus: () => TcCheckoutStatus,
   TcCheckoutSubmit: () => TcCheckoutSubmit,
   TcCheckoutSubmitResponse: () => TcCheckoutSubmitResponse,
@@ -15088,6 +15090,7 @@ __export(contract_entry_exports, {
   caseFromRows: () => caseFromRows,
   caseToRows: () => caseToRows,
   checkoutCollectKey: () => checkoutCollectKey,
+  checkoutHasHygieneData: () => checkoutHasHygieneData,
   checkoutItemKey: () => checkoutItemKey,
   checkoutPhaseName: () => checkoutPhaseName,
   checkoutPhaseNames: () => checkoutPhaseNames,
@@ -15097,6 +15100,7 @@ __export(contract_entry_exports, {
   checkoutWorkupProgressLabel: () => checkoutWorkupProgressLabel,
   communicationToRow: () => communicationToRow,
   emailBodyText: () => emailBodyText,
+  emptyCheckoutSnapshot: () => emptyCheckoutSnapshot,
   emptyCheckoutWorkup: () => emptyCheckoutWorkup,
   escapeHtml: () => escapeHtml,
   fillBlockTokens: () => fillBlockTokens,
@@ -17579,6 +17583,17 @@ function checkoutWorkupProgress(h) {
 function checkoutWorkupProgressLabel(p) {
   return `${p.done} of ${p.total} ${p.total === 1 ? "section" : "sections"} done`;
 }
+var TcCheckoutSource = import_zod7.z.enum(["hygiene", "manual"]);
+function emptyCheckoutSnapshot() {
+  return {
+    procedures: [],
+    priority: null,
+    nextVisit: { type: null, intervalMonths: null, lengthMin: null, withDoctor: false, rtc: "" },
+    notesPending: false,
+    frontDeskNote: "",
+    financialNote: ""
+  };
+}
 var TcCheckoutHandoff = import_zod7.z.object({
   handoffId: import_zod7.z.string().uuid(),
   officeId: import_zod7.z.enum(["roland", "valley"]),
@@ -17609,8 +17624,24 @@ var TcCheckoutHandoff = import_zod7.z.object({
   /** Always `system:checkout_expiry` when set — the system closed it, not a person. */
   expiredBy: import_zod7.z.string().nullable().default(null),
   /** CO-1. Defaulted so a pre-CO-1 reader and a pre-CO-1 record both parse. */
-  workup: TcCheckoutWorkup.default(emptyCheckoutWorkup)
+  workup: TcCheckoutWorkup.default(emptyCheckoutWorkup),
+  /**
+   * CO-5a. Where the card came from: the hygiene visit, or the front desk's
+   * "Add patient". Every record before CO-5a reads as `hygiene`, which is what
+   * it was. Who added a manual card is `submittedBy`.
+   */
+  source: TcCheckoutSource.default("hygiene"),
+  /**
+   * CO-5a. When a hygiene handoff for the same patient and day arrived after a
+   * manual card and merged onto it. Null on a hygiene card, and on a manual
+   * card that has no hygiene visit data.
+   */
+  hygieneMergedAt: import_zod7.z.string().nullable().default(null)
 });
+function checkoutHasHygieneData(h) {
+  return h.source !== "manual" || h.hygieneMergedAt !== null;
+}
+var TcCheckoutManualAddRequest = import_zod7.z.object({ patNum: import_zod7.z.number().int().positive() }).strict();
 var TcCheckoutOutcomeRequest = import_zod7.z.object({
   outcome: TcCheckoutOutcome,
   /** Optional, and only meaningful for "Scheduled" ("Tue 9am, Dr. chair"). */
@@ -18751,6 +18782,7 @@ function odToothText(tooth) {
   TcCheckoutCaseTreatment,
   TcCheckoutDismissRequest,
   TcCheckoutHandoff,
+  TcCheckoutManualAddRequest,
   TcCheckoutNextVisit,
   TcCheckoutOutcome,
   TcCheckoutOutcomeRequest,
@@ -18760,6 +18792,7 @@ function odToothText(tooth) {
   TcCheckoutRecord,
   TcCheckoutRecordStatus,
   TcCheckoutSnapshot,
+  TcCheckoutSource,
   TcCheckoutStatus,
   TcCheckoutSubmit,
   TcCheckoutSubmitResponse,
@@ -18857,6 +18890,7 @@ function odToothText(tooth) {
   caseFromRows,
   caseToRows,
   checkoutCollectKey,
+  checkoutHasHygieneData,
   checkoutItemKey,
   checkoutPhaseName,
   checkoutPhaseNames,
@@ -18866,6 +18900,7 @@ function odToothText(tooth) {
   checkoutWorkupProgressLabel,
   communicationToRow,
   emailBodyText,
+  emptyCheckoutSnapshot,
   emptyCheckoutWorkup,
   escapeHtml,
   fillBlockTokens,

@@ -42,6 +42,9 @@ const COLS = [
   'expired_by',
   // CO-1.
   'workup',
+  // CO-5a.
+  'source',
+  'hygiene_merged_at',
 ];
 
 /**
@@ -111,6 +114,9 @@ function toHandoff(row) {
     expiredAt: iso(row.expired_at),
     expiredBy: row.expired_by ?? null,
     workup: workupOf(row),
+    // CO-5a. NULL is every record before it: they all came from hygiene.
+    source: row.source === 'manual' ? 'manual' : 'hygiene',
+    hygieneMergedAt: iso(row.hygiene_merged_at),
   };
 }
 
@@ -444,12 +450,19 @@ async function insertHandoff(q, row) {
     'submitted_by',
     'updated_by',
     'status',
+    'source',
   ];
   const placeholders = cols.map((c, i) => (c === 'payload' ? `$${i + 1}::jsonb` : `$${i + 1}`));
   await q.query(
     `INSERT INTO tc_checkout_handoffs (${cols.join(', ')}) VALUES (${placeholders.join(', ')})`,
     cols.map((c) =>
-      c === 'payload' ? JSON.stringify(row[c]) : c === 'status' ? row.status || 'open' : row[c]
+      c === 'payload'
+        ? JSON.stringify(row[c])
+        : c === 'status'
+          ? row.status || 'open'
+          : c === 'source'
+            ? row.source || 'hygiene'
+            : row[c]
     )
   );
 }
@@ -479,6 +492,87 @@ async function updatePayload(q, { office, handoffId, expectRevision, row }) {
       row.operatory,
       row.updated_by,
       expectRevision,
+    ]
+  );
+  return res.rowCount === 1;
+}
+
+// ── CO-5a: a card added by hand, and a hygiene handoff that arrives after ───
+
+/** The statuses in which a card still HOLDS its patient for the day (CO-1's rule). */
+const HOLDING_STATUSES = Object.freeze(STATUSES.filter((st) => !RELEASES_INBOX_STATUSES.includes(st)));
+
+/**
+ * Serialize, for the rest of the transaction, everything that creates or
+ * merges a checkout card for ONE patient on ONE day in ONE office: two "Add
+ * patient" clicks, or a click and a hygiene handoff arriving at the same
+ * moment, run one after the other, so the second sees the first's card. A
+ * transaction-scoped advisory lock: released at COMMIT or ROLLBACK, and never
+ * blocks anything about any other patient.
+ */
+async function lockPatientDay(q, office, odPatientId, day) {
+  await q.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`tc_checkout_patient_day:${office}:${odPatientId}:${day}`]);
+}
+
+/**
+ * The newest card that holds this patient on this day in this office — any
+ * source, any status but dismissed / expired — or null. "Add patient" opens it
+ * instead of making a second.
+ */
+async function findHoldingForPatientDay(q, office, odPatientId, day) {
+  const res = await q.query(
+    `SELECT ${COLS.join(', ')} FROM tc_checkout_handoffs
+      WHERE office_id = $1 AND od_patient_id = $2 AND visit_date = $3 AND status = ANY($4)
+      ORDER BY created_at DESC, handoff_id DESC LIMIT 1`,
+    [office, odPatientId, day, [...HOLDING_STATUSES]]
+  );
+  return res.rows[0] || null;
+}
+
+/**
+ * The manual card a hygiene handoff for this patient and day merges onto: one
+ * added by hand, still holding the patient, that no hygiene handoff has merged
+ * onto yet. Null when there is none (the handoff then makes its own card).
+ */
+async function findManualAwaitingHygiene(q, office, odPatientId, day) {
+  const res = await q.query(
+    `SELECT ${COLS.join(', ')} FROM tc_checkout_handoffs
+      WHERE office_id = $1 AND od_patient_id = $2 AND visit_date = $3 AND status = ANY($4)
+        AND source = 'manual' AND hygiene_merged_at IS NULL
+      ORDER BY created_at DESC, handoff_id DESC LIMIT 1`,
+    [office, odPatientId, day, [...HOLDING_STATUSES]]
+  );
+  return res.rows[0] || null;
+}
+
+/**
+ * Merge a hygiene handoff onto a manual card (call with lockPatientDay held).
+ * The card takes the hygiene SOURCE KEY, so every later revision from the same
+ * visit finds it exactly as it would have found its own card, and the visit's
+ * snapshot. It keeps its id, its status, its workup ticks, who added it, and
+ * `source = 'manual'`. Conditional on not having merged already.
+ *
+ * @returns {Promise<boolean>} whether THIS call merged
+ */
+async function mergeHygieneOntoManual(q, { office, handoffId, expectRevision, sourceKey, row }) {
+  const res = await q.query(
+    `UPDATE tc_checkout_handoffs
+        SET source_key = $3, payload = $4::jsonb, is_final = $5, revision = $6, patient_name = $7,
+            provider = $8, provider_seen = $9, operatory = $10, updated_by = $11,
+            hygiene_merged_at = now(), updated_at = now()
+      WHERE office_id = $1 AND handoff_id = $2 AND source = 'manual' AND hygiene_merged_at IS NULL`,
+    [
+      office,
+      handoffId,
+      sourceKey,
+      JSON.stringify(row.payload),
+      row.is_final,
+      expectRevision + 1,
+      row.patient_name,
+      row.provider,
+      row.provider_seen,
+      row.operatory,
+      row.updated_by,
     ]
   );
   return res.rowCount === 1;
@@ -516,4 +610,9 @@ module.exports = {
   findBySourceKey,
   insertHandoff,
   updatePayload,
+  HOLDING_STATUSES,
+  lockPatientDay,
+  findHoldingForPatientDay,
+  findManualAwaitingHygiene,
+  mergeHygieneOntoManual,
 };

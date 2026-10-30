@@ -382,6 +382,26 @@ export function checkoutWorkupProgressLabel(p: { done: number; total: number }):
   return `${p.done} of ${p.total} ${p.total === 1 ? "section" : "sections"} done`;
 }
 
+/** Where a checkout card came from (CO-5a). */
+export const TcCheckoutSource = z.enum(["hygiene", "manual"]);
+export type TcCheckoutSource = z.infer<typeof TcCheckoutSource>;
+
+/**
+ * The snapshot a card added by hand is stored with: nothing staged, nothing to
+ * collect, no next visit, no notes. Never rendered as hygiene data —
+ * checkoutHasHygieneData says the card has none. Pure.
+ */
+export function emptyCheckoutSnapshot(): TcCheckoutSnapshot {
+  return {
+    procedures: [],
+    priority: null,
+    nextVisit: { type: null, intervalMonths: null, lengthMin: null, withDoctor: false, rtc: "" },
+    notesPending: false,
+    frontDeskNote: "",
+    financialNote: "",
+  };
+}
+
 /** A checkout handoff as TC reads it back. */
 export const TcCheckoutHandoff = z.object({
   handoffId: z.string().uuid(),
@@ -414,8 +434,39 @@ export const TcCheckoutHandoff = z.object({
   expiredBy: z.string().nullable().default(null),
   /** CO-1. Defaulted so a pre-CO-1 reader and a pre-CO-1 record both parse. */
   workup: TcCheckoutWorkup.default(emptyCheckoutWorkup),
+  /**
+   * CO-5a. Where the card came from: the hygiene visit, or the front desk's
+   * "Add patient". Every record before CO-5a reads as `hygiene`, which is what
+   * it was. Who added a manual card is `submittedBy`.
+   */
+  source: TcCheckoutSource.default("hygiene"),
+  /**
+   * CO-5a. When a hygiene handoff for the same patient and day arrived after a
+   * manual card and merged onto it. Null on a hygiene card, and on a manual
+   * card that has no hygiene visit data.
+   */
+  hygieneMergedAt: z.string().nullable().default(null),
 });
 export type TcCheckoutHandoff = z.infer<typeof TcCheckoutHandoff>;
+
+/**
+ * Does this card carry hygiene visit data? A hygiene card always does; a manual
+ * card only once a hygiene handoff merged onto it. When it does not, the workup
+ * view says so instead of rendering the hygiene sections as if they were empty.
+ * Pure.
+ */
+export function checkoutHasHygieneData(h: Pick<TcCheckoutHandoff, "source" | "hygieneMergedAt">): boolean {
+  return h.source !== "manual" || h.hygieneMergedAt !== null;
+}
+
+/**
+ * POST /api/tc/checkout/manual — the front desk's "Add patient" (CO-5a).
+ * The PatNum names which patient the person picked from the patient search;
+ * the office is the request's, and the name is re-read from that office's Open
+ * Dental. Nothing else rides along.
+ */
+export const TcCheckoutManualAddRequest = z.object({ patNum: z.number().int().positive() }).strict();
+export type TcCheckoutManualAddRequest = z.infer<typeof TcCheckoutManualAddRequest>;
 
 /** POST /api/tc/checkout/:id/outcome */
 export const TcCheckoutOutcomeRequest = z

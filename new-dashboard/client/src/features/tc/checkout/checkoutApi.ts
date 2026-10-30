@@ -58,6 +58,26 @@ export async function getCheckoutHandoff(office: OfficeId, handoffId: string): P
   return res.handoff;
 }
 
+const ManualAddResponse = z.object({
+  success: z.literal(true),
+  /** False when the patient already had a card today: the server opened that one. */
+  created: z.boolean(),
+  handoff: TcCheckoutHandoff,
+});
+export type CheckoutManualAddResult = z.infer<typeof ManualAddResponse>;
+
+/**
+ * "Add patient" (CO-5a): put the picked patient on today's Checkout, or open
+ * the card they already have. The body names only the PatNum; the server takes
+ * the office from the request and the name from that office's Open Dental.
+ */
+export async function addCheckoutPatient(office: OfficeId, patNum: number): Promise<CheckoutManualAddResult> {
+  return parse(
+    ManualAddResponse,
+    await tcRequest<unknown>("/tc/checkout/manual", { office, method: "POST", body: { patNum } }),
+  );
+}
+
 export async function claimCheckout(office: OfficeId, handoffId: string): Promise<TcCheckoutHandoff> {
   const res = parse(
     OneResponse,
