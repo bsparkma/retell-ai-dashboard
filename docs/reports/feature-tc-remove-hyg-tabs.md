@@ -144,4 +144,4 @@ No second round was needed.
 
 ## CI
 
-Pending.
+PR #294. `build-test` on `refs/pull/294/merge` (run 40981348372, head 78061b9) **passed** with no fix pushes. That run covers typecheck, vitest, `node --check`, `node --test`, migrations against an ephemeral Postgres, and the smoke spine. Not merged.
