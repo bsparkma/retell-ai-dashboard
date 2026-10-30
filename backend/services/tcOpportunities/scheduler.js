@@ -99,13 +99,82 @@ class TcOpportunitiesScheduler {
   }
 
   /**
-   * One pass: every switched-on, OD-ready office, in turn. Never throws.
-   * @returns {Promise<{ skipped?: string, offices: object[], at: string }>}
+   * One nightly pass: the Opportunities sweep, then (CO-4b) the Open Dental
+   * pipeline sync. The two have their OWN switches and neither gates the
+   * other: an office can have either, both, or neither. Never throws.
+   * @returns {Promise<{ skipped?: string, offices: object[], at: string, pipelineSync?: object }>}
    */
   async runNow() {
     const at = new Date().toISOString();
     if (this.running) return { skipped: 'ALREADY_RUNNING', offices: [], at };
     this.running = true;
+    try {
+      const opps = await this.runOpportunities(at);
+      const pipelineSync = await this.runPipelineSync();
+      return { ...opps, pipelineSync };
+    } finally {
+      this.running = false;
+    }
+  }
+
+  /**
+   * CO-4b: the pipeline sync for every office whose `tc_od_sync_enabled`
+   * switch is on (config/tcOdSync.js — default OFF, env `=false` supreme). Each
+   * office fails closed on its own; the audit rows go to the one TC tenant's
+   * trail, under the sync's system actor. Never throws.
+   * @returns {Promise<{ skipped?: string, offices: object[] }>}
+   */
+  async runPipelineSync() {
+    const sw = this.deps.odSyncSwitch || require('../../config/tcOdSync');
+    const engine = this.deps.pipelineSync || require('../tc/odPipelineSync');
+    try {
+      await sw.refreshFromDb();
+      const { realOffices } = require('../../config/tcOfficeSwitch');
+      const offices = realOffices().filter((o) => sw.enabledFor(o));
+      if (offices.length === 0) {
+        console.log('[tc/od-sync] nightly sync skipped: NO_OFFICE_SWITCHED_ON');
+        return { skipped: 'NO_OFFICE_SWITCHED_ON', offices: [] };
+      }
+      const { tenant, reason } = await this.resolveTenant();
+      if (!tenant) {
+        console.warn(`[tc/od-sync] nightly sync skipped: ${reason}`);
+        return { skipped: reason || 'NO_TC_TENANT', offices: [] };
+      }
+      const pool = await this.tenantDb.getTenantPool(tenant.tenant_id);
+      const { auditForTenant } = this.deps.audit || require('../../platform/audit');
+      const systemReq = { user: { email: engine.SYNC_ACTOR }, originalUrl: '/nightly/tc-od-pipeline-sync' };
+      const results = [];
+      for (const office of offices) {
+        try {
+          const r = await engine.syncOffice({
+            office,
+            pool,
+            trigger: 'nightly',
+            requestedBy: null,
+            sw,
+            audit: async (entries) => {
+              for (const entry of entries) await auditForTenant(systemReq, tenant.tenant_id, entry);
+            },
+          });
+          results.push({ office, ...r });
+        } catch (err) {
+          console.error(`[tc/od-sync] office=${office} nightly run errored: ${(err && err.message) || err}`);
+          results.push({ office, status: 'failed', errorCode: 'RUN_ERRORED' });
+        }
+      }
+      return { offices: results };
+    } catch (err) {
+      console.error(`[tc/od-sync] nightly pass failed: ${(err && err.message) || err}`);
+      return { skipped: 'PASS_FAILED', offices: [] };
+    }
+  }
+
+  /**
+   * The Opportunities sweep: every switched-on, OD-ready office, in turn.
+   * @param {string} at
+   * @returns {Promise<{ skipped?: string, offices: object[], at: string }>}
+   */
+  async runOpportunities(at) {
     try {
       const oo = this.deps.odOffices || odOffices;
       const sw = await this.cfg.switchedOnOffices(this.registry);
@@ -160,8 +229,6 @@ class TcOpportunitiesScheduler {
       this.lastRun = r;
       console.error(`[tcopps] pass failed: ${r.skipped}`);
       return r;
-    } finally {
-      this.running = false;
     }
   }
 

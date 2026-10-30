@@ -47,6 +47,7 @@ import {
   type WithOffice,
 } from "@/features/tc/officeScope";
 import { PipelineBoard } from "@/features/tc/cases/PipelineBoard";
+import { OdSyncPanel } from "@/features/tc/odSync/OdSyncPanel";
 import { CaseListTable } from "@/features/tc/cases/CaseListTable";
 import { NewCaseDialog, CASE_CATEGORY_LABELS } from "@/features/tc/cases/NewCaseDialog";
 import type { CaseCategoryId } from "@/features/tc/cases/NewCaseDialog";
@@ -89,6 +90,9 @@ function PipelineInner({
   const [categoryFilter, setCategoryFilter] = useState<CaseCategoryId | "all">("all");
   const [statusFilter, setStatusFilter] = useState<CaseStatusId | "all">("all");
   const [newCaseOpen, setNewCaseOpen] = useState(false);
+  // CO-4b: bumped when the Open Dental sync (a run, or an Undo) moved cases.
+  const [reloadKey, setReloadKey] = useState(0);
+  const reloadCases = useCallback(() => setReloadKey((n) => n + 1), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -104,7 +108,7 @@ function PipelineInner({
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [offices]);
+  }, [offices, reloadKey]);
 
   /** Fold a returned full TcCase back into its summary row (scalars only). */
   const mergeCase = useCallback((updated: TcCase) => {
@@ -207,6 +211,10 @@ function PipelineInner({
 
       {notice && <div className="mb-4"><TcPartialDataNotice message={notice} /></div>}
 
+      {offices.map((o) => (
+        <OdSyncPanel key={o} office={o} showOfficeName={showOfficeBadges} onCasesChanged={reloadCases} />
+      ))}
+
       <Tabs value={view} onValueChange={(v) => setView(v as "board" | "list")}>
         <div className="flex flex-wrap items-center gap-2 mb-4">
           <TabsList>
@@ -284,6 +292,7 @@ function PipelineInner({
                 onOpen={openCase}
                 onTransition={handleTransition}
                 showOfficeBadges={showOfficeBadges}
+                onOdSyncUndone={reloadCases}
               />
             </TabsContent>
             <TabsContent value="list">
