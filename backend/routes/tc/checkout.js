@@ -18,6 +18,8 @@
  *   DELETE /:id/items/:index/entered   undo that attestation (admin only)
  *   POST   /:id/workup        tick or untick one box on the workup checklist (CO-1)
  *   POST   /manual            "Add patient": a card added by hand (CO-5a)
+ *   GET    /:id/appointments  the patient's upcoming OD appointments (CO-4a)
+ *   POST   /:id/appointment   link / change / clear a Scheduled checkout's anchor (CO-4a)
  *
  * THE WORKUP CHECKLIST (CO-1). The full-screen workup view's boxes — each
  * staged item "Worked up", each existing-treatment group "Ready to present",
@@ -91,9 +93,11 @@
  * ═════════════════════════════════════════════════════════════════════════════
  * GUARDRAILS
  * ═════════════════════════════════════════════════════════════════════════════
- *   - ZERO Open Dental writes. The one read is POST /manual's re-read of the
- *     patient the person picked (CO-5a, the referrals hub's check). Everything
- *     else renders the snapshot.
+ *   - ZERO Open Dental writes. The reads: POST /manual's re-read of the patient
+ *     the person picked (CO-5a, the referrals hub's check), and the patient's
+ *     upcoming appointments for the Scheduled anchor (CO-4a,
+ *     checkoutAppointments.js) — always the STORED record's office and PatNum.
+ *     Everything else renders the snapshot.
  *   - Office from `?office=` through requireOffice, in every WHERE. The PatNum
  *     a case is opened for is the HANDOFF's — never a request's.
  *   - Dark: `tc_checkout_enabled` off for the office → 403 CHECKOUT_DISABLED on
@@ -115,6 +119,8 @@ const nurtureHooks = require('../../services/tcNurture/hooks');
 const { localDayKey } = require('../../services/localDayClock');
 const tcCheckout = require('../../config/tcCheckout');
 const odManualPatient = require('./odManualPatient');
+const checkoutAppointments = require('./checkoutAppointments');
+const odOffices = require('../../config/odOffices');
 
 const {
   z,
@@ -125,6 +131,7 @@ const {
   TcCheckoutDismissRequest,
   TcCheckoutWorkupRequest,
   TcCheckoutManualAddRequest,
+  TcCheckoutAppointmentLinkRequest,
 } = contract;
 
 const router = express.Router();
@@ -573,6 +580,186 @@ router.post(
   })
 );
 
+// ── CO-4a: the "Scheduled" appointment anchor ─────────────────────────────
+
+/**
+ * The refusal for a failed appointment read: what the picker says, so the
+ * desk retries or chooses "Not in Open Dental yet". Never an empty list.
+ */
+function appointmentsUnavailable(res) {
+  return res.status(502).json({
+    success: false,
+    error: "Couldn't load appointments from Open Dental",
+    code: 'OD_APPOINTMENTS_UNAVAILABLE',
+  });
+}
+
+/**
+ * The STORED checkout's patient's upcoming appointments, read from that
+ * record's office's Open Dental, with the PHI read audited. `{ appointments }`
+ * or `{ answered: true }` having sent the refusal.
+ */
+async function readUpcoming(req, res, row, today, sourceRef) {
+  const office = req.tcOffice;
+  const patNum = Number(row.od_patient_id);
+  let appointments;
+  try {
+    appointments = await checkoutAppointments.upcomingForPatient(office, patNum, today);
+  } catch (err) {
+    if (err && err.name === 'OdOfficeError') {
+      res.status(odOffices.httpStatusFor(err)).json({
+        success: false,
+        error: err.publicMessage || 'Open Dental is not available for this office',
+        code: err.code,
+      });
+      return { answered: true };
+    }
+    if (err && err.name === 'AppointmentsUnavailable') {
+      appointmentsUnavailable(res);
+      return { answered: true };
+    }
+    throw err;
+  }
+  await auditTc(req, 'READ', 'od_appointment', String(patNum), { office, sourceRef });
+  return { appointments };
+}
+
+/** The picked AptNum among this patient's upcoming appointments, or the 409. */
+function pickAppointment(res, appointments, aptNum) {
+  const found = appointments.find((a) => a.aptNum === aptNum);
+  if (found) return found;
+  res.status(409).json({
+    success: false,
+    error: "That appointment is not one of this patient's upcoming appointments in Open Dental. Refresh the list and pick again.",
+    code: 'APPOINTMENT_NOT_UPCOMING',
+  });
+  return null;
+}
+
+/**
+ * When a case is past linking an appointment (CO-4a). NOT OPEN_CASE_STATUSES:
+ * that partition counts `scheduled` as terminal, and every case a Scheduled
+ * checkout makes or moves sits AT `scheduled` — the very case whose
+ * appointment the desk links, and that the sync (CO-4b) will follow. A case is
+ * done with its appointment once it is completed or lost.
+ */
+const APPOINTMENT_LINK_CLOSED_CASE = Object.freeze(['completed', 'lost']);
+
+/** May this case still have its checkout's appointment linked? Pure. */
+function caseTakesAppointmentLink(header) {
+  return Boolean(header) && !APPOINTMENT_LINK_CLOSED_CASE.includes(header.status);
+}
+
+/** The audit row for an anchor change: its own event, the prior state a slug. */
+async function auditAnchor(req, handoffId, prior, cleared) {
+  await auditTc(req, 'UPDATE', 'tc_checkout_handoff', handoffId, {
+    office: req.tcOffice,
+    sourceRef: cleared ? 'checkout_appointment_unlink' : 'checkout_appointment_link',
+    priorState: prior ? 'anchored' : 'unanchored',
+  });
+}
+
+// GET /:id/appointments — the picker. While the checkout is waiting (about to
+// be answered Scheduled), or once it IS Scheduled (link one later). The office
+// and the PatNum are the stored record's, never the request's.
+router.get(
+  '/:id/appointments',
+  h(async (req, res) => {
+    const id = HandoffId.safeParse(req.params.id);
+    if (!id.success) return res.status(400).json({ success: false, error: 'Invalid handoff id', code: 'INVALID_ID' });
+    const today = await enter(req, res);
+    if (today === null) return undefined;
+    const row = await tenantDb.withTenantDb(req, (pool) => checkoutStore.findById(pool, req.tcOffice, id.data));
+    if (!row) return res.status(404).json({ success: false, error: 'Checkout handoff not found', code: 'NOT_FOUND' });
+    const status = row.status || 'open';
+    if (!checkoutStore.WAITING_STATUSES.includes(status) && status !== 'scheduled') {
+      return res.status(409).json({
+        success: false,
+        error: 'Appointments can only be linked to a checkout that is waiting or Scheduled.',
+        code: 'CHECKOUT_NOT_ACTIONABLE',
+      });
+    }
+    const read = await readUpcoming(req, res, row, today, `checkout:${id.data}`);
+    if (read.answered) return undefined;
+    return res.json({ success: true, appointments: read.appointments });
+  })
+);
+
+// POST /:id/appointment — link, change, or clear ({ aptNum: null }) the anchor
+// of a Scheduled checkout whose case is still open. Re-read from Open Dental
+// first, outside any transaction; then one conditional write; then the audit.
+router.post(
+  '/:id/appointment',
+  h(async (req, res) => {
+    const id = HandoffId.safeParse(req.params.id);
+    if (!id.success) return res.status(400).json({ success: false, error: 'Invalid handoff id', code: 'INVALID_ID' });
+    const body = parseBody(res, TcCheckoutAppointmentLinkRequest, req.body);
+    if (!body) return undefined;
+    const today = await enter(req, res);
+    if (today === null) return undefined;
+    const office = req.tcOffice;
+
+    const row = await tenantDb.withTenantDb(req, (pool) => checkoutStore.findById(pool, office, id.data));
+    if (!row) return res.status(404).json({ success: false, error: 'Checkout handoff not found', code: 'NOT_FOUND' });
+    if (row.status !== 'scheduled') {
+      return res.status(409).json({
+        success: false,
+        error: 'Only a Scheduled checkout is linked to an appointment.',
+        code: 'CHECKOUT_NOT_SCHEDULED',
+      });
+    }
+    const header = row.case_id
+      ? await tenantDb.withTenantDb(req, (pool) => store.getCaseHeader(pool, office, row.case_id))
+      : null;
+    if (!caseTakesAppointmentLink(header)) {
+      return res.status(409).json({
+        success: false,
+        error: "This checkout's case is closed, so its appointment link can no longer change.",
+        code: 'CASE_NOT_OPEN',
+      });
+    }
+
+    let appointment = null;
+    if (body.aptNum !== null) {
+      const read = await readUpcoming(req, res, row, today, `checkout:${id.data}`);
+      if (read.answered) return undefined;
+      appointment = pickAppointment(res, read.appointments, body.aptNum);
+      if (!appointment) return undefined;
+    }
+    const prior = checkoutStore.anchorOf(row);
+    if ((!prior && !appointment) || (prior && appointment && prior.aptNum === appointment.aptNum)) {
+      return res.json({ success: true, handoff: checkoutStore.toHandoff(row), unchanged: true });
+    }
+
+    const written = await tenantDb.withTenantDb(req, (pool) =>
+      checkoutStore.setAnchor(pool, { office, handoffId: id.data, appointment, actor: actorEmail(req) })
+    );
+    if (!written) {
+      return res.status(409).json({
+        success: false,
+        error: 'This checkout changed while the link was being saved. Nothing was changed; reload.',
+        code: 'CHECKOUT_NOT_SCHEDULED',
+      });
+    }
+    await auditAnchor(req, id.data, prior, appointment === null);
+
+    // Report what PERSISTED: the anchor read back after the write.
+    const now = await tenantDb.withTenantDb(req, (pool) => checkoutStore.findById(pool, office, id.data));
+    const handoff = now ? checkoutStore.toHandoff(now) : null;
+    const holds =
+      handoff &&
+      (appointment ? handoff.appointment !== null && handoff.appointment.aptNum === appointment.aptNum : handoff.appointment === null);
+    if (!holds) {
+      return res.status(500).json({
+        success: false,
+        error: 'The appointment link could not be read back as saved. Reload before trusting it.',
+        code: 'APPOINTMENT_NOT_PERSISTED',
+      });
+    }
+    return res.json({ success: true, handoff, unchanged: false });
+  })
+);
+
 // ── POST /:id/outcome ───────────────────────────────────────────────────────
 
 router.post(
@@ -589,6 +776,33 @@ router.post(
     const actor = actorEmail(req);
     const now = clock().toISOString();
     const note = body.appointmentNote || '';
+
+    // CO-4a: a picked appointment goes only with Scheduled, and is re-read from
+    // the STORED record's office's Open Dental BEFORE the transaction opens (no
+    // transaction is held across a network call). A failed read records
+    // nothing: the desk retries, or answers "Not in Open Dental yet".
+    let appointment = null;
+    if (body.aptNum != null) {
+      if (body.outcome !== 'scheduled') {
+        return res.status(400).json({ success: false, error: 'An appointment goes only with Scheduled', code: 'APPOINTMENT_NOT_SCHEDULED' });
+      }
+      const pre = await tenantDb.withTenantDb(req, (pool) => checkoutStore.findById(pool, office, id.data));
+      if (!pre) return res.status(404).json({ success: false, error: 'Checkout handoff not found', code: 'NOT_FOUND' });
+      // Already answered: refuse BEFORE asking Open Dental (review round 1), so
+      // a stale screen costs no PHI read. The transaction re-checks regardless.
+      if (!checkoutStore.WAITING_STATUSES.includes(pre.status || 'open')) {
+        return res.status(409).json({
+          success: false,
+          error: `This checkout cannot be answered: it is already ${contract.TC_CHECKOUT_STATUS_LABELS[pre.status] || pre.status}.`,
+          code: 'CHECKOUT_NOT_ACTIONABLE',
+          handoff: checkoutStore.toHandoff(pre),
+        });
+      }
+      const read = await readUpcoming(req, res, pre, today, `checkout:${id.data}`);
+      if (read.answered) return undefined;
+      appointment = pickAppointment(res, read.appointments, body.aptNum);
+      if (!appointment) return undefined;
+    }
 
     let result;
     try {
@@ -816,6 +1030,10 @@ router.post(
           err.code = 'CHECKOUT_RACE';
           throw err; // rolls back any case written above
         }
+        // CO-4a: the anchor and the outcome are one action — same transaction.
+        if (appointment && !(await checkoutStore.setAnchor(client, { office, handoffId: id.data, appointment, actor }))) {
+          throw new Error('the appointment anchor was not stored');
+        }
         return { priorState, caseId, caseAction, stoppedEnrollments };
       });
     } catch (err) {
@@ -846,6 +1064,7 @@ router.post(
     }
 
     await auditTc(req, 'UPDATE', 'tc_checkout_handoff', id.data, { office, priorState: result.priorState });
+    if (appointment) await auditAnchor(req, id.data, null, false);
     if (result.caseId) await auditTc(req, result.caseAction, 'tc_case', result.caseId, { office });
     for (const enrollmentId of result.stoppedEnrollments || []) {
       await auditTc(req, 'UPDATE', 'tc_nurture_enrollment.stopped', enrollmentId, { office });
@@ -882,14 +1101,19 @@ router.get(
     const today = await enter(req, res);
     if (today === null) return undefined;
     const office = req.tcOffice;
-    const { rows, attestations } = await tenantDb.withTenantDb(req, async (pool) => {
+    const { rows, attestations, caseOpen } = await tenantDb.withTenantDb(req, async (pool) => {
       const found = await checkoutStore.listForCase(pool, office, caseId.data);
+      const header = found.length ? await store.getCaseHeader(pool, office, caseId.data) : null;
       const atts = await checkoutStore.listAttestations(
         pool,
         office,
         found.map((r) => String(r.handoff_id))
       );
-      return { rows: found, attestations: atts };
+      return {
+        rows: found,
+        attestations: atts,
+        caseOpen: caseTakesAppointmentLink(header),
+      };
     });
     // A PHI read (the staged treatment): audited even when it is empty.
     await auditTc(req, 'READ', 'tc_checkout_handoff', null, { office, sourceRef: `case:${caseId.data}` });
@@ -897,12 +1121,14 @@ router.get(
       success: true,
       caseId: caseId.data,
       canUnattest: holdsPermission(req, 'admin.all'),
-      visits: rows.map((row) =>
-        panelVisit(
+      visits: rows.map((row) => ({
+        ...panelVisit(
           row,
           attestations.filter((a) => String(a.handoff_id) === String(row.handoff_id))
-        )
-      ),
+        ),
+        // CO-4a: a Scheduled visit on a still-open case may be (re)linked.
+        canLinkAppointment: caseOpen && row.status === 'scheduled',
+      })),
     });
   })
 );

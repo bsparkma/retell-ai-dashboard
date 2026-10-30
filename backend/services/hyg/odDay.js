@@ -1038,6 +1038,9 @@ module.exports = {
   // list this same request's day read just cached (asked with a refusing
   // reader, so it never costs an Open Dental request).
   readProviderLabels,
+  // CO-4a: the TC Scheduled-anchor picker names a visit type from the same
+  // hour-cached list (services/odConfigCache.js), never a second copy of it.
+  readAppointmentTypeLabels,
   minutesFromPattern,
   odBool,
   odInt,

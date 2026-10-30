@@ -11,6 +11,8 @@ import {
   TcCheckoutSummary,
   TcCheckoutCaseTreatment,
   TcCheckoutPanelItem,
+  TcCheckoutAppointmentsResponse,
+  type TcCheckoutUpcomingAppointment,
   type TcCheckoutOutcome,
   type TcCheckoutWorkupRequest,
 } from "@shared/tc/checkout";
@@ -107,15 +109,49 @@ export async function recordCheckoutOutcome(
   handoffId: string,
   outcome: TcCheckoutOutcome,
   appointmentNote: string,
+  /** CO-4a, Scheduled only: the picked AptNum, or null for "Not in Open Dental yet". */
+  aptNum: number | null = null,
 ): Promise<CheckoutOutcomeResult> {
   return parse(
     OutcomeResponse,
     await tcRequest<unknown>(`/tc/checkout/${handoffId}/outcome`, {
       office,
       method: "POST",
-      body: { outcome, appointmentNote },
+      body: outcome === "scheduled" ? { outcome, appointmentNote, aptNum } : { outcome, appointmentNote },
     }),
   );
+}
+
+// ── CO-4a: the "Scheduled" appointment anchor ───────────────────────────────
+
+/**
+ * The checkout's patient's UPCOMING Open Dental appointments, soonest first.
+ * The server reads them for the stored record's office and patient; nothing
+ * here names either. A failed read throws (OD_APPOINTMENTS_UNAVAILABLE) — it is
+ * never an empty list.
+ */
+export async function listCheckoutAppointments(
+  office: OfficeId,
+  handoffId: string,
+): Promise<TcCheckoutUpcomingAppointment[]> {
+  const res = parse(
+    TcCheckoutAppointmentsResponse,
+    await tcRequest<unknown>(`/tc/checkout/${handoffId}/appointments`, { office }),
+  );
+  return res.appointments;
+}
+
+/** Link, change, or (null) clear a Scheduled checkout's appointment, later. */
+export async function linkCheckoutAppointment(
+  office: OfficeId,
+  handoffId: string,
+  aptNum: number | null,
+): Promise<TcCheckoutHandoff> {
+  const res = parse(
+    OneResponse,
+    await tcRequest<unknown>(`/tc/checkout/${handoffId}/appointment`, { office, method: "POST", body: { aptNum } }),
+  );
+  return res.handoff;
 }
 
 // ── C2b (item 50b): the staff panel and "entered in Open Dental" ────────────

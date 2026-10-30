@@ -14979,6 +14979,9 @@ __export(contract_entry_exports, {
   TcCaseEventDetail: () => TcCaseEventDetail,
   TcCaseItem: () => TcCaseItem,
   TcCasePhase: () => TcCasePhase,
+  TcCheckoutAppointmentAnchor: () => TcCheckoutAppointmentAnchor,
+  TcCheckoutAppointmentLinkRequest: () => TcCheckoutAppointmentLinkRequest,
+  TcCheckoutAppointmentsResponse: () => TcCheckoutAppointmentsResponse,
   TcCheckoutCaseTreatment: () => TcCheckoutCaseTreatment,
   TcCheckoutDismissRequest: () => TcCheckoutDismissRequest,
   TcCheckoutHandoff: () => TcCheckoutHandoff,
@@ -14998,6 +15001,7 @@ __export(contract_entry_exports, {
   TcCheckoutSubmit: () => TcCheckoutSubmit,
   TcCheckoutSubmitResponse: () => TcCheckoutSubmitResponse,
   TcCheckoutSummary: () => TcCheckoutSummary,
+  TcCheckoutUpcomingAppointment: () => TcCheckoutUpcomingAppointment,
   TcCheckoutWorkup: () => TcCheckoutWorkup,
   TcCheckoutWorkupMark: () => TcCheckoutWorkupMark,
   TcCheckoutWorkupRequest: () => TcCheckoutWorkupRequest,
@@ -15086,6 +15090,7 @@ __export(contract_entry_exports, {
   VoiceHandoffDetail: () => VoiceHandoffDetail,
   ZodError: () => import_zod12.ZodError,
   allPresetViolations: () => allPresetViolations,
+  appointmentWhenLabel: () => appointmentWhenLabel,
   assertPresetsWithinCaps: () => assertPresetsWithinCaps,
   attachmentProblem: () => attachmentProblem,
   caseFromRows: () => caseFromRows,
@@ -17595,6 +17600,32 @@ function emptyCheckoutSnapshot() {
     financialNote: ""
   };
 }
+var TcCheckoutUpcomingAppointment = import_zod7.z.object({
+  aptNum: import_zod7.z.number().int().positive(),
+  dateTime: import_zod7.z.string(),
+  provider: import_zod7.z.string(),
+  appointmentType: import_zod7.z.string(),
+  operatory: import_zod7.z.string()
+});
+var TcCheckoutAppointmentAnchor = TcCheckoutUpcomingAppointment.extend({
+  linkedBy: import_zod7.z.string().nullable(),
+  linkedAt: import_zod7.z.string().nullable()
+});
+var TcCheckoutAppointmentsResponse = import_zod7.z.object({
+  success: import_zod7.z.literal(true),
+  appointments: import_zod7.z.array(TcCheckoutUpcomingAppointment)
+});
+var TcCheckoutAppointmentLinkRequest = import_zod7.z.object({ aptNum: import_zod7.z.number().int().positive().nullable() }).strict();
+function appointmentWhenLabel(dateTime) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(dateTime);
+  if (!m) return dateTime;
+  const [, y, mo, d, hh, mm] = m;
+  const day = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d)));
+  const date = day.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
+  const h = Number(hh);
+  const time = `${h % 12 === 0 ? 12 : h % 12}:${mm} ${h < 12 ? "AM" : "PM"}`;
+  return `${date}, ${time}`;
+}
 var TcCheckoutReopened = import_zod7.z.object({
   outcome: TcCheckoutOutcome,
   outcomeBy: import_zod7.z.string().nullable(),
@@ -17602,7 +17633,9 @@ var TcCheckoutReopened = import_zod7.z.object({
   appointmentNote: import_zod7.z.string().nullable(),
   /** The case that outcome made or moved. The case itself is left as it is. */
   caseId: import_zod7.z.string().uuid().nullable(),
-  reopenedAt: import_zod7.z.string()
+  reopenedAt: import_zod7.z.string(),
+  /** CO-4a: the appointment that answer was anchored to, if any. */
+  appointment: TcCheckoutAppointmentAnchor.nullable().default(null)
 });
 var TcCheckoutHandoff = import_zod7.z.object({
   handoffId: import_zod7.z.string().uuid(),
@@ -17651,7 +17684,13 @@ var TcCheckoutHandoff = import_zod7.z.object({
    * CO-5a fix. Set when a hygiene visit arrived after this card was ANSWERED
    * and reopened it: the answer it had, kept as history. Null otherwise.
    */
-  reopenedFrom: TcCheckoutReopened.nullable().default(null)
+  reopenedFrom: TcCheckoutReopened.nullable().default(null),
+  /**
+   * CO-4a. The Open Dental appointment a Scheduled checkout is anchored to.
+   * Null on every other status, on every record before CO-4a, and on a
+   * Scheduled checkout marked "Not in Open Dental yet".
+   */
+  appointment: TcCheckoutAppointmentAnchor.nullable().default(null)
 });
 function checkoutHasHygieneData(h) {
   return h.source !== "manual" || h.hygieneMergedAt !== null;
@@ -17660,7 +17699,13 @@ var TcCheckoutManualAddRequest = import_zod7.z.object({ patNum: import_zod7.z.nu
 var TcCheckoutOutcomeRequest = import_zod7.z.object({
   outcome: TcCheckoutOutcome,
   /** Optional, and only meaningful for "Scheduled" ("Tue 9am, Dr. chair"). */
-  appointmentNote: import_zod7.z.string().trim().max(500).default("")
+  appointmentNote: import_zod7.z.string().trim().max(500).default(""),
+  /**
+   * CO-4a, Scheduled only. The AptNum picked from the patient's upcoming
+   * appointments, or null / absent for "Not in Open Dental yet". Re-read
+   * from Open Dental before anything is stored.
+   */
+  aptNum: import_zod7.z.number().int().positive().nullable().optional()
 }).strict();
 var TcCheckoutDismissRequest = import_zod7.z.object({ reason: import_zod7.z.string().trim().min(1).max(500) }).strict();
 var TcCheckoutSummary = import_zod7.z.object({
@@ -17716,7 +17761,9 @@ var TcCheckoutCaseTreatment = import_zod7.z.object({
   visits: import_zod7.z.array(
     import_zod7.z.object({
       handoff: TcCheckoutHandoff,
-      items: import_zod7.z.array(TcCheckoutPanelItem)
+      items: import_zod7.z.array(TcCheckoutPanelItem),
+      /** CO-4a: a Scheduled visit whose case is still open may be (re)linked to an appointment. */
+      canLinkAppointment: import_zod7.z.boolean().default(false)
     })
   )
 });
@@ -18794,6 +18841,9 @@ function odToothText(tooth) {
   TcCaseEventDetail,
   TcCaseItem,
   TcCasePhase,
+  TcCheckoutAppointmentAnchor,
+  TcCheckoutAppointmentLinkRequest,
+  TcCheckoutAppointmentsResponse,
   TcCheckoutCaseTreatment,
   TcCheckoutDismissRequest,
   TcCheckoutHandoff,
@@ -18813,6 +18863,7 @@ function odToothText(tooth) {
   TcCheckoutSubmit,
   TcCheckoutSubmitResponse,
   TcCheckoutSummary,
+  TcCheckoutUpcomingAppointment,
   TcCheckoutWorkup,
   TcCheckoutWorkupMark,
   TcCheckoutWorkupRequest,
@@ -18901,6 +18952,7 @@ function odToothText(tooth) {
   VoiceHandoffDetail,
   ZodError,
   allPresetViolations,
+  appointmentWhenLabel,
   assertPresetsWithinCaps,
   attachmentProblem,
   caseFromRows,
