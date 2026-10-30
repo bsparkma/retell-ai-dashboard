@@ -323,6 +323,19 @@ test('anchor: only with Scheduled — an AptNum on Not scheduled / Nothing neede
   assert.equal(db.table('tc_checkout_handoffs')[0].status, 'open');
 });
 
+test('anchor: an already-answered checkout is refused BEFORE Open Dental is asked (no PHI read for a stale screen)', async (t) => {
+  switchCheckout(t);
+  const { baseUrl, db } = await boot(t);
+  const row = seed(db, { status: 'nothing_needed', outcome_by: 'tc@carein.ai', outcome_at: NOW });
+  await withOd(async ({ calls }) => {
+    const r = await api(baseUrl, 'POST', OUTCOME(row.handoff_id), { outcome: 'scheduled', aptNum: 5001 });
+    assert.equal(r.status, 409, JSON.stringify(r.body));
+    assert.equal(r.body.code, 'CHECKOUT_NOT_ACTIONABLE');
+    assert.deepEqual(calls, []);
+  });
+  assert.equal(auditRows(db).filter((a) => a.resource_type === 'od_appointment').length, 0);
+});
+
 // ── office isolation ────────────────────────────────────────────────────────
 
 test('office isolation: a valley card reads only valley\'s Open Dental; roland\'s AptNum is never accepted; roland cannot reach the card', async (t) => {

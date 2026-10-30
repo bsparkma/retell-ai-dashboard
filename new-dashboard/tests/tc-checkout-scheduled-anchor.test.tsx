@@ -206,6 +206,40 @@ describe("tapping Scheduled", () => {
   });
 });
 
+describe("review round 1: the picker never shows a stale list", () => {
+  it("a slow answer to an older read never overwrites a newer one (Retry while the first is in flight)", async () => {
+    let resolveFirst: (v: TcCheckoutUpcomingAppointment[]) => void = () => {};
+    api.listCheckoutAppointments
+      .mockImplementationOnce(() => Promise.reject(new Error("down")))
+      .mockImplementationOnce(() => new Promise((r) => (resolveFirst = r)))
+      .mockImplementationOnce(async () => [UPCOMING[1]]);
+    mount(card());
+    fireEvent.click(screen.getByTestId("checkout-outcome-scheduled"));
+    fireEvent.click(await screen.findByTestId("appointment-picker-retry")); // read 2: hangs
+    fireEvent.click(screen.getByTestId("checkout-outcome-scheduled")); // no-op while open
+    // Close and reopen: read 3 answers first, then read 2's late answer arrives.
+    fireEvent.keyDown(screen.getByTestId("appointment-picker"), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("appointment-picker")).toBeNull());
+    fireEvent.click(screen.getByTestId("checkout-outcome-scheduled"));
+    expect((await screen.findAllByTestId("appointment-picker-option")).map((o) => o.dataset.aptNum)).toEqual(["5002"]);
+    resolveFirst(UPCOMING);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.getAllByTestId("appointment-picker-option").map((o) => o.dataset.aptNum)).toEqual(["5002"]);
+  });
+
+  it("a pick refused as no longer upcoming keeps the picker open and reads the list again", async () => {
+    api.recordCheckoutOutcome.mockRejectedValueOnce(
+      new TcApiError("That appointment is not one of this patient's upcoming appointments in Open Dental.", 409, "APPOINTMENT_NOT_UPCOMING", null, []),
+    );
+    mount(card());
+    fireEvent.click(screen.getByTestId("checkout-outcome-scheduled"));
+    fireEvent.click((await screen.findAllByTestId("appointment-picker-option"))[0]);
+    await waitFor(() => expect(api.listCheckoutAppointments).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId("appointment-picker")).toBeTruthy();
+    expect(toastMock.error).toHaveBeenCalled();
+  });
+});
+
 describe("an answered Scheduled card", () => {
   it("unanchored: 'No appointment linked' with 'Link appointment', which links one later through the same picker", async () => {
     api.linkCheckoutAppointment.mockResolvedValue(scheduled({ ...UPCOMING[1], linkedBy: "tc@carein.ai", linkedAt: "x" }));

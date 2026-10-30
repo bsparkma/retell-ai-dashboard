@@ -165,6 +165,16 @@ jobs:
           MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
         run: node scripts/fees-verify-queries.js
 
+      # CO-4a: the checkout appointment anchor's CHECKs (all-or-none, Scheduled
+      # only, the wall-clock shape) and its NULL parameter typing, EXECUTED
+      # against the real schema — the unit suite's Map database accepts any
+      # row. One transaction, always rolled back.
+      - name: checkout anchor verification (real statements, real rows, real schema)
+        working-directory: backend
+        env:
+          MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
+        run: node scripts/checkout-anchor-verify-queries.js
+
       - name: spine smoke test (registry / tenantDb / append-only audit / entitlement)
         working-directory: backend
         env:

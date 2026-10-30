@@ -788,6 +788,16 @@ router.post(
       }
       const pre = await tenantDb.withTenantDb(req, (pool) => checkoutStore.findById(pool, office, id.data));
       if (!pre) return res.status(404).json({ success: false, error: 'Checkout handoff not found', code: 'NOT_FOUND' });
+      // Already answered: refuse BEFORE asking Open Dental (review round 1), so
+      // a stale screen costs no PHI read. The transaction re-checks regardless.
+      if (!checkoutStore.WAITING_STATUSES.includes(pre.status || 'open')) {
+        return res.status(409).json({
+          success: false,
+          error: `This checkout cannot be answered: it is already ${contract.TC_CHECKOUT_STATUS_LABELS[pre.status] || pre.status}.`,
+          code: 'CHECKOUT_NOT_ACTIONABLE',
+          handoff: checkoutStore.toHandoff(pre),
+        });
+      }
       const read = await readUpcoming(req, res, pre, today, `checkout:${id.data}`);
       if (read.answered) return undefined;
       appointment = pickAppointment(res, read.appointments, body.aptNum);

@@ -22,7 +22,7 @@ import { CalendarCheck, CalendarX, CheckCircle2, CircleSlash, Hand, Loader2, Sen
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { tcErrorMessage } from "@/features/tc/api";
+import { TcApiError, tcErrorMessage } from "@/features/tc/api";
 import { claimCheckout, recordCheckoutOutcome } from "@/features/tc/checkout/checkoutApi";
 import { AppointmentAnchorLine, AppointmentPicker } from "@/features/tc/checkout/AppointmentPicker";
 import {
@@ -54,6 +54,7 @@ export function CheckoutOutcome({ office, handoff, onAdopt, onReload }: Checkout
   const [busy, setBusy] = useState<TcCheckoutOutcome | "claim" | null>(null);
   const [note, setNote] = useState("");
   const [picking, setPicking] = useState(false);
+  const [pickerReload, setPickerReload] = useState(0);
 
   const claim = async () => {
     setBusy("claim");
@@ -84,6 +85,9 @@ export function CheckoutOutcome({ office, handoff, onAdopt, onReload }: Checkout
       );
     } catch (e) {
       toast.error(tcErrorMessage(e));
+      // CO-4a: the picked appointment is no longer upcoming in Open Dental —
+      // keep the picker open on a fresh list rather than a stale one.
+      if (e instanceof TcApiError && e.code === "APPOINTMENT_NOT_UPCOMING") setPickerReload((n) => n + 1);
       await onReload();
     } finally {
       setBusy(null);
@@ -134,6 +138,7 @@ export function CheckoutOutcome({ office, handoff, onAdopt, onReload }: Checkout
         handoffId={handoff.handoffId}
         mode="outcome"
         busy={busy === "scheduled"}
+        reloadToken={pickerReload}
         onClose={() => setPicking(false)}
         onPick={(aptNum) => void answer("scheduled", aptNum)}
       />

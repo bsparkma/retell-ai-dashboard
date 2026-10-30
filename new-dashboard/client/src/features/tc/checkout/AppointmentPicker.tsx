@@ -15,13 +15,13 @@
  * The anchor line renders what the SERVER stored: "Scheduled → Tue, Nov 4,
  * 9:00 AM", or "No appointment linked" with "Link appointment".
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, CalendarClock, CalendarPlus, Link2, Loader2, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { tcErrorMessage } from "@/features/tc/api";
+import { TcApiError, tcErrorMessage } from "@/features/tc/api";
 import { linkCheckoutAppointment, listCheckoutAppointments } from "@/features/tc/checkout/checkoutApi";
 import {
   appointmentWhenLabel,
@@ -49,26 +49,45 @@ export interface AppointmentPickerProps {
   /** The appointment already linked, in link mode (to mark it, and to offer Unlink). */
   currentAptNum?: number | null;
   busy?: boolean;
+  /** Bumped by the caller to read the list again (e.g. after "not upcoming any more"). */
+  reloadToken?: number;
   onClose: () => void;
   /** The choice: an AptNum, or null ("Not in Open Dental yet" / "Unlink"). */
   onPick: (aptNum: number | null) => void;
 }
 
-export function AppointmentPicker({ open, office, handoffId, mode, currentAptNum = null, busy = false, onClose, onPick }: AppointmentPickerProps) {
+export function AppointmentPicker({
+  open,
+  office,
+  handoffId,
+  mode,
+  currentAptNum = null,
+  busy = false,
+  reloadToken = 0,
+  onClose,
+  onPick,
+}: AppointmentPickerProps) {
   const [load, setLoad] = useState<Load>({ state: "loading" });
+  // Only the newest read may land (review round 1): a slow answer to an older
+  // open or Retry must not overwrite a newer one.
+  const seq = useRef(0);
 
   const fetchList = useCallback(async () => {
+    const mine = ++seq.current;
     setLoad({ state: "loading" });
     try {
-      setLoad({ state: "ready", appointments: await listCheckoutAppointments(office, handoffId) });
+      const appointments = await listCheckoutAppointments(office, handoffId);
+      if (mine === seq.current) setLoad({ state: "ready", appointments });
     } catch {
-      setLoad({ state: "failed", message: "Couldn't load appointments from Open Dental" });
+      if (mine === seq.current) setLoad({ state: "failed", message: "Couldn't load appointments from Open Dental" });
     }
   }, [office, handoffId]);
 
+  // Every open starts from "loading" (never last time's list), and so does a reload.
   useEffect(() => {
     if (open) void fetchList();
-  }, [open, fetchList]);
+    else seq.current += 1;
+  }, [open, reloadToken, fetchList]);
 
   return (
     <Dialog open={open} onOpenChange={(o) => (!o && !busy ? onClose() : undefined)}>
@@ -176,6 +195,7 @@ export function AppointmentAnchorLine({
 }) {
   const [picking, setPicking] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [reload, setReload] = useState(0);
   if (handoff.status !== "scheduled") return null;
   const a = handoff.appointment;
 
@@ -188,6 +208,8 @@ export function AppointmentAnchorLine({
       setPicking(false);
     } catch (e) {
       toast.error(tcErrorMessage(e));
+      // The list was stale (the appointment moved or was broken): read it again.
+      if (e instanceof TcApiError && e.code === "APPOINTMENT_NOT_UPCOMING") setReload((n) => n + 1);
     } finally {
       setBusy(false);
     }
@@ -216,6 +238,7 @@ export function AppointmentAnchorLine({
         mode="link"
         currentAptNum={a ? a.aptNum : null}
         busy={busy}
+        reloadToken={reload}
         onClose={() => setPicking(false)}
         onPick={(n) => void pick(n)}
       />
