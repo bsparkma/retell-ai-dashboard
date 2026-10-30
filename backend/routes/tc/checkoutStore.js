@@ -40,6 +40,8 @@ const COLS = [
   'case_id',
   'expired_at',
   'expired_by',
+  // CO-1.
+  'workup',
 ];
 
 /**
@@ -108,7 +110,48 @@ function toHandoff(row) {
     caseId: row.case_id ? String(row.case_id) : null,
     expiredAt: iso(row.expired_at),
     expiredBy: row.expired_by ?? null,
+    workup: workupOf(row),
   };
+}
+
+/**
+ * The row's workup checklist (CO-1), always the full shape: a NULL column (every
+ * record before CO-1, and every one nobody has ticked) reads as nothing ticked.
+ */
+function workupOf(row) {
+  const w = obj(row.workup);
+  const o = w && typeof w === 'object' && !Array.isArray(w) ? w : {};
+  const record = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+  return {
+    workedUp: record(o.workedUp),
+    present: record(o.present),
+    collected: o.collected && typeof o.collected === 'object' ? o.collected : null,
+    referrals: o.referrals && typeof o.referrals === 'object' ? o.referrals : null,
+  };
+}
+
+/**
+ * Lock one handoff's row for the rest of the transaction (SELECT … FOR
+ * UPDATE), so two ticks on the same checkout serialize instead of one
+ * read-modify-write erasing the other. A lock, not a write: a refused or no-op
+ * tick leaves the row exactly as it was (review round 1). False when there is
+ * no such row in this office.
+ */
+async function lockHandoff(q, office, handoffId) {
+  const res = await q.query(
+    'SELECT handoff_id FROM tc_checkout_handoffs WHERE office_id = $1 AND handoff_id = $2 FOR UPDATE',
+    [office, handoffId]
+  );
+  return res.rows.length === 1;
+}
+
+/** Replace the workup checklist (call with the row locked). A real change, so updated_at moves. */
+async function writeWorkup(q, office, handoffId, workup) {
+  const res = await q.query(
+    'UPDATE tc_checkout_handoffs SET workup = $3::jsonb, updated_at = now() WHERE office_id = $1 AND handoff_id = $2 RETURNING handoff_id',
+    [office, handoffId, JSON.stringify(workup)]
+  );
+  return res.rowCount === 1;
 }
 
 /** One handoff by id, in one office, or null. */
@@ -329,6 +372,51 @@ async function recordOutcome(q, { office, handoffId, expectStatus, outcome, acto
   return res.rowCount === 1;
 }
 
+// ── CO-1: same-day hygiene intakes belong to the checkout card ─────────────
+
+/**
+ * The checkout statuses that HAND a same-day hygiene intake back to the TC
+ * Inbox: "not a checkout after all" (dismissed), and a day that ended with
+ * nobody answering it (expired). Every other status means the front desk has
+ * the patient: waiting (open / claimed) or answered.
+ */
+const RELEASES_INBOX_STATUSES = Object.freeze(['dismissed', 'expired']);
+
+/**
+ * The checkout handoffs, in one office, for any of these patients on any of
+ * these days. One indexed, office-scoped read; the caller does the matching.
+ */
+async function listForPatientsOnDays(q, office, odPatientIds, days) {
+  if (odPatientIds.length === 0 || days.length === 0) return [];
+  const res = await q.query(
+    `SELECT handoff_id, od_patient_id, visit_date, status FROM tc_checkout_handoffs
+      WHERE office_id = $1 AND od_patient_id = ANY($2) AND visit_date = ANY($3)`,
+    [office, odPatientIds, days]
+  );
+  return res.rows;
+}
+
+/**
+ * Which Inbox rows a same-day checkout entry claims. Pure.
+ *
+ * An intake is "same-day" when a checkout handoff in the same office exists for
+ * the same Open Dental patient with the same visit day, in a status that holds
+ * it (anything but RELEASES_INBOX_STATUSES). An intake with no PatNum, or no
+ * day, is never claimed: there is nothing to match it on.
+ *
+ * @param {Array<{ od_patient_id: unknown, day: string|null }>} intakes
+ * @param {Array<{ od_patient_id: unknown, visit_date: unknown, status: string }>} handoffs
+ * @returns {boolean[]} true = belongs to the checkout card, not the Inbox
+ */
+function claimedBySameDayCheckout(intakes, handoffs) {
+  const holding = new Set(
+    handoffs
+      .filter((h) => !RELEASES_INBOX_STATUSES.includes(h.status || 'open'))
+      .map((h) => `${num(h.od_patient_id)}|${isoDate(h.visit_date)}`)
+  );
+  return intakes.map((i) => i.od_patient_id != null && i.day != null && holding.has(`${num(i.od_patient_id)}|${i.day}`));
+}
+
 /** The handoff for one source key in one office, or null. */
 async function findBySourceKey(q, office, sourceKey) {
   const res = await q.query(
@@ -404,6 +492,9 @@ module.exports = {
   OUTCOMES,
   PG_UNIQUE_VIOLATION,
   toHandoff,
+  workupOf,
+  lockHandoff,
+  writeWorkup,
   findById,
   listForCase,
   listForCases,
@@ -419,6 +510,9 @@ module.exports = {
   claim,
   dismiss,
   recordOutcome,
+  RELEASES_INBOX_STATUSES,
+  listForPatientsOnDays,
+  claimedBySameDayCheckout,
   findBySourceKey,
   insertHandoff,
   updatePayload,

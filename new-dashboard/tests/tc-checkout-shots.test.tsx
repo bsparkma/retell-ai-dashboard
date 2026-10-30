@@ -176,7 +176,8 @@ describe.skipIf(!SHOOT)("tc checkout screenshot dumps", () => {
   it("02 — the sidebar", async () => {
     fixtures.rows = [handoff(3)];
     page();
-    fireEvent.click(await screen.findByTestId("checkout-row"));
+    // RULING (CO-1): the sidebar is now the row's "Quick look"; a row opens the workup view.
+    fireEvent.click(await screen.findByTestId("checkout-row-quicklook"));
     await screen.findByTestId("checkout-procedures");
     dump("tccheckout-02-sidebar@1280x1100");
   });
@@ -184,7 +185,8 @@ describe.skipIf(!SHOOT)("tc checkout screenshot dumps", () => {
   it("03 — answered: Scheduled", async () => {
     fixtures.rows = [handoff(3)];
     page();
-    fireEvent.click(await screen.findByTestId("checkout-row"));
+    // RULING (CO-1): the sidebar is now the row's "Quick look"; a row opens the workup view.
+    fireEvent.click(await screen.findByTestId("checkout-row-quicklook"));
     fireEvent.change(await screen.findByTestId("checkout-appointment-note"), {
       target: { value: "Tue 10/21 9:00, Dr. chair" },
     });

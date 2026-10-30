@@ -1,5 +1,5 @@
 /**
- * /tc/hygiene/inbox — the TC's queue of unclaimed hygiene handoffs
+ * /tc/inbox — the TC's queue of unclaimed hygiene handoffs
  * (hygiene_review cases). Urgent-first ordering comes from the server and is
  * preserved as-is. Claim assigns the SSO caller and moves the case to
  * pending_tc; a concurrent claim surfaces as 409/404 → toast the server

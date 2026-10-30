@@ -42,11 +42,10 @@ import { useLocation } from "wouter";
 import TcPipeline from "./pages/tc/TcPipeline";
 import TcCaseView from "./pages/tc/TcCaseView";
 import TcFollowups from "./pages/tc/TcFollowups";
-import TcHygieneIntake from "./pages/tc/TcHygieneIntake";
-import TcHygieneSubmissions from "./pages/tc/TcHygieneSubmissions";
 import TcHygieneInbox from "./pages/tc/TcHygieneInbox";
 import TcOpportunities from "./pages/tc/TcOpportunities";
 import TcCheckout from "./pages/tc/TcCheckout";
+import TcCheckoutWorkup from "./pages/tc/TcCheckoutWorkup";
 import TcReferralSignoffRedirect from "./pages/tc/TcReferralSignoffRedirect";
 import TcReferralsHub from "./pages/tc/TcReferralsHub";
 import TcPreauth from "./pages/tc/TcPreauth";
@@ -232,12 +231,25 @@ export function Router() {
         <Route path="/tc/followups" component={TcFollowups} />
         <Route path="/tc/opportunities" component={TcOpportunities} />
         <Route path="/tc/checkout" component={TcCheckout} />
+        <Route path="/tc/checkout/:id" component={TcCheckoutWorkup} />
         <Route path="/tc/referrals" component={TcReferralsHub} />
         {/* The old sign-off page's path: now the hub's sign-off view (alerts, bookmarks). */}
         <Route path="/tc/referrals/signoff" component={TcReferralSignoffRedirect} />
-        <Route path="/tc/hygiene" component={TcHygieneIntake} />
-        <Route path="/tc/hygiene/submissions" component={TcHygieneSubmissions} />
-        <Route path="/tc/hygiene/inbox" component={TcHygieneInbox} />
+        <Route path="/tc/inbox" component={TcHygieneInbox} />
+        {/* CO-2: the TC app's Hygiene pages are gone — the hygiene app replaces
+            them, and its visit Send still lands in TC exactly as before. Their
+            old addresses (bookmarks, muscle memory) redirect rather than 404:
+            the handoff form to Checkout, where a same-day hygiene send now
+            lands; Submissions and the old Inbox path to the TC Inbox. */}
+        <Route path="/tc/hygiene">
+          <Redirect to="/tc/checkout" replace />
+        </Route>
+        <Route path="/tc/hygiene/submissions">
+          <Redirect to="/tc/inbox" replace />
+        </Route>
+        <Route path="/tc/hygiene/inbox">
+          <Redirect to="/tc/inbox" replace />
+        </Route>
         <Route path="/tc/preauth" component={TcPreauth} />
         <Route path="/tc/templates" component={TcTemplates} />
         <Route path="/tc/templates/:id" component={TcTemplateEditor} />

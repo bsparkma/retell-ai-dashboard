@@ -34,21 +34,23 @@ describe("F8: one name per thing", () => {
   it('the async queue is "TC Inbox" wherever it is named', () => {
     for (const file of [
       "client/src/pages/tc/TcHygieneInbox.tsx",
-      "client/src/pages/tc/TcHygieneIntake.tsx",
-      "client/src/features/tc/hygiene/IntakeForm.tsx",
+      // RULING (CO-2): the Intake page and its form are deleted, so they leave
+      // this list; the two files that remain still carry the one name.
       "client/src/components/DashboardLayout.tsx",
     ]) {
       const s = src(file);
       expect(s, file).not.toMatch(/Hygiene Inbox|TC inbox/);
     }
     expect(src("client/src/pages/tc/TcHygieneInbox.tsx")).toContain('title="TC Inbox"');
+    expect(src("client/src/components/DashboardLayout.tsx")).toContain('{ path: "/tc/inbox", label: "TC Inbox", icon: Inbox }');
   });
 
-  it('the handoff is "Hygiene handoff": the nav item, the Intake page, the visit tray and its server title', () => {
-    expect(src("client/src/components/DashboardLayout.tsx")).toContain(
-      '{ path: "/tc/hygiene", label: "Hygiene handoff", icon: ClipboardList }',
-    );
-    expect(src("client/src/pages/tc/TcHygieneIntake.tsx")).toContain('title="Hygiene handoff"');
+  // RULING (CO-2): the TC app's "Hygiene handoff" nav item and Intake page are
+  // removed (the hygiene app replaces them), so the name is pinned where it
+  // still lives — the visit tray and its server title — and the old nav item
+  // is pinned as gone.
+  it('the handoff is "Hygiene handoff": the visit tray and its server title (CO-2: no TC nav item)', () => {
+    expect(src("client/src/components/DashboardLayout.tsx")).not.toContain('label: "Hygiene handoff"');
     expect(src("client/src/features/hyg/visit/StagedWritesTray.tsx")).toContain('"tc-handoff": "Hygiene handoff"');
     expect(src("../backend/services/hyg/stagedWriteComposer.js")).toContain("title: 'Hygiene handoff'");
     for (const file of [

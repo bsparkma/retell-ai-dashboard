@@ -17,9 +17,9 @@
  * Renders nothing while checkout is switched off for the office, or for a
  * case no checkout landed on.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { CheckCircle2, ClipboardList, Loader2, Undo2 } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronRight, ClipboardList, Loader2, Undo2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -50,6 +50,7 @@ import {
   EXISTING_TX_WAIT_LABELS,
   groupExistingTxForTc,
   type ExistingTxHandoffItem,
+  type ExistingTxPatient,
 } from "@shared/hyg/existingTx";
 
 import { getCaseHygieneTreatment, markItemEntered, undoItemEntered } from "./checkoutApi";
@@ -90,60 +91,106 @@ function teethLine(p: TcCheckoutProcedure): string {
  * is a red Urgent pill — a CareIN priority, not Open Dental's. Read straight off
  * the handoff's stored snapshot, like the table above it: nothing here reads
  * Open Dental or the hygiene visit again.
+ *
+ * `groupAction` (CO-1) puts something beside a group's heading — the workup
+ * view's "Ready to present" box. Absent, the block renders exactly as before.
+ *
+ * `collapsedGroups` (CO-1 polish) starts the named groups folded to their
+ * heading and count; a tap opens one. Only the workup view passes it (for "Not
+ * discussed"). The open/closed state lives in this component and nowhere else,
+ * so it lasts for the current view only. Absent, every group renders open.
  */
-export function ExistingTreatmentFromHygiene({ items }: { items: readonly ExistingTxHandoffItem[] }) {
+export function ExistingTreatmentFromHygiene({
+  items,
+  groupAction,
+  collapsedGroups,
+}: {
+  items: readonly ExistingTxHandoffItem[];
+  groupAction?: (group: ExistingTxPatient) => ReactNode;
+  collapsedGroups?: readonly ExistingTxPatient[];
+}) {
   const groups = groupExistingTxForTc(items);
+  const [expanded, setExpanded] = useState<ReadonlySet<ExistingTxPatient>>(() => new Set());
+  const toggle = (group: ExistingTxPatient) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(group)) next.delete(group);
+      else next.add(group);
+      return next;
+    });
   return (
     <div className="space-y-2" data-testid="tc-existing-tx">
       <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         Existing treatment discussed ({items.length})
       </p>
-      {groups.map((g) => (
-        <div key={g.patient} className="space-y-1" data-testid={`tc-existing-tx-group-${g.patient}`}>
-          <p className="text-xs font-medium text-foreground">
-            {EXISTING_TX_PATIENT_LABELS[g.patient]} ({g.items.length})
-          </p>
-          <ul className="space-y-1">
-            {g.items.map((i) => {
-              const where = i.tooth ? `${odToothText(i.tooth)}${i.surface ? ` ${i.surface}` : ""}` : i.surface;
-              return (
-                <li
-                  key={i.procNum}
-                  className="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md border border-border px-2 py-1 text-sm"
-                  data-testid="tc-existing-tx-item"
+      {groups.map((g) => {
+        const collapsible = collapsedGroups?.includes(g.patient) ?? false;
+        const open = !collapsible || expanded.has(g.patient);
+        const heading = `${EXISTING_TX_PATIENT_LABELS[g.patient]} (${g.items.length})`;
+        return (
+          <div key={g.patient} className="space-y-1" data-testid={`tc-existing-tx-group-${g.patient}`}>
+            <p className="flex flex-wrap items-center justify-between gap-2 text-xs font-medium text-foreground">
+              {collapsible ? (
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 rounded hover:text-foreground/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-expanded={open}
+                  aria-controls={`tc-existing-tx-items-${g.patient}`}
+                  onClick={() => toggle(g.patient)}
+                  data-testid={`tc-existing-tx-toggle-${g.patient}`}
                 >
-                  <span className="font-medium text-foreground">
-                    {[where, i.code].filter(Boolean).join(" ")}
-                  </span>
-                  {i.description ? <span className="text-muted-foreground">{i.description}</span> : null}
-                  {i.clinical === "worse_urgent" ? (
-                    <span
-                      className="rounded-full bg-red-600 px-2 py-0.5 text-[11px] font-semibold text-white dark:bg-red-500"
-                      data-testid="tc-existing-tx-urgent"
+                  {open ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                  {heading}
+                </button>
+              ) : (
+                <span>{heading}</span>
+              )}
+              {groupAction ? groupAction(g.patient) : null}
+            </p>
+            {open ? (
+              <ul className="space-y-1" id={`tc-existing-tx-items-${g.patient}`}>
+                {g.items.map((i) => {
+                  const where = i.tooth ? `${odToothText(i.tooth)}${i.surface ? ` ${i.surface}` : ""}` : i.surface;
+                  return (
+                    <li
+                      key={i.procNum}
+                      className="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md border border-border px-2 py-1 text-sm"
+                      data-testid="tc-existing-tx-item"
                     >
-                      Urgent
-                    </span>
-                  ) : null}
-                  {i.clinical && i.clinical !== "worse_urgent" ? (
-                    <span className="text-xs text-muted-foreground">{EXISTING_TX_CLINICAL_LABELS[i.clinical]}</span>
-                  ) : null}
-                  {i.patient === "wants_to_wait" && i.waitTimeframe ? (
-                    <span className="text-xs text-muted-foreground">
-                      Wait: {EXISTING_TX_WAIT_LABELS[i.waitTimeframe]}
-                    </span>
-                  ) : null}
-                  {i.scheduled ? (
-                    <Badge variant="outline" className="text-[10px]">
-                      Already scheduled
-                    </Badge>
-                  ) : null}
-                  {i.note ? <span className="basis-full text-xs text-muted-foreground">Note: {i.note}</span> : null}
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      ))}
+                      <span className="font-medium text-foreground">
+                        {[where, i.code].filter(Boolean).join(" ")}
+                      </span>
+                      {i.description ? <span className="text-muted-foreground">{i.description}</span> : null}
+                      {i.clinical === "worse_urgent" ? (
+                        <span
+                          className="rounded-full bg-red-600 px-2 py-0.5 text-[11px] font-semibold text-white dark:bg-red-500"
+                          data-testid="tc-existing-tx-urgent"
+                        >
+                          Urgent
+                        </span>
+                      ) : null}
+                      {i.clinical && i.clinical !== "worse_urgent" ? (
+                        <span className="text-xs text-muted-foreground">{EXISTING_TX_CLINICAL_LABELS[i.clinical]}</span>
+                      ) : null}
+                      {i.patient === "wants_to_wait" && i.waitTimeframe ? (
+                        <span className="text-xs text-muted-foreground">
+                          Wait: {EXISTING_TX_WAIT_LABELS[i.waitTimeframe]}
+                        </span>
+                      ) : null}
+                      {i.scheduled ? (
+                        <Badge variant="outline" className="text-[10px]">
+                          Already scheduled
+                        </Badge>
+                      ) : null}
+                      {i.note ? <span className="basis-full text-xs text-muted-foreground">Note: {i.note}</span> : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : null}
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -3,9 +3,12 @@
  * (queue item 50).
  *
  * Newest first. Claim ("I've got this patient") and Dismiss (a reason is
- * required) work the way the Opportunities inbox does; a row — or the arrival
- * toast, which links here with `?handoff=` — opens the patient SIDEBAR, where
- * the front desk records Scheduled / Not scheduled / Nothing needed. An
+ * required) work the way the Opportunities inbox does. A row opens the
+ * full-screen WORKUP view (/tc/checkout/:id, CO-1), where the front desk works
+ * the patient and records Scheduled / Not scheduled / Nothing needed; each
+ * waiting card says how far that workup has got ("2 of 4 sections done").
+ * "Quick look" — and the arrival toast, which links here with `?handoff=` —
+ * opens the patient SIDEBAR instead, the same exit in a narrow sheet. An
  * answered checkout leaves the Waiting tab and shows under Done today.
  *
  * Yesterday's unanswered checkouts close themselves as Expired on the server;
@@ -14,10 +17,10 @@
  * DARK: an office with checkout switched off answers CHECKOUT_DISABLED, which
  * this page reads as "not on here" — never as an error.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearch } from "wouter";
+import { useEffect, useMemo, useState } from "react";
+import { useLocation, useSearch } from "wouter";
 import { toast } from "sonner";
-import { AlertTriangle, DoorOpen, Hand, Loader2, RefreshCw, X } from "lucide-react";
+import { AlertTriangle, DoorOpen, Eye, Hand, Loader2, RefreshCw, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,26 +35,23 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { TcOfficeGate, TcPageHeader, TcPartialDataNotice } from "@/features/tc/components/TcShell";
 import { OfficeBadge } from "@/features/tc/components/OfficeBadge";
-import { TcApiError, tcErrorMessage } from "@/features/tc/api";
+import { tcErrorMessage } from "@/features/tc/api";
+import { officeScopeKey, useTcOfficeScope } from "@/features/tc/officeScope";
+import { claimCheckout, dismissCheckout } from "@/features/tc/checkout/checkoutApi";
+import { CHECKOUT_TABS, useCheckoutList } from "@/features/tc/checkout/useCheckoutList";
 import {
-  fanOutOfficeValues,
-  officeScopeKey,
-  useTcOfficeScope,
-} from "@/features/tc/officeScope";
+  CheckoutSidebar,
+  PriorityChip,
+  checkoutClock,
+  checkoutWorkupHref,
+} from "@/features/tc/checkout/CheckoutSidebar";
 import {
-  claimCheckout,
-  dismissCheckout,
-  listCheckout,
-  type CheckoutView,
-} from "@/features/tc/checkout/checkoutApi";
-import { CheckoutSidebar, PriorityChip, checkoutClock } from "@/features/tc/checkout/CheckoutSidebar";
-import { TC_CHECKOUT_STATUS_LABELS, type TcCheckoutHandoff } from "@shared/tc/checkout";
+  TC_CHECKOUT_STATUS_LABELS,
+  checkoutWorkupProgress,
+  checkoutWorkupProgressLabel,
+  type TcCheckoutHandoff,
+} from "@shared/tc/checkout";
 import type { OfficeId } from "@shared/tc/contract";
-
-const TABS: { id: CheckoutView; label: string }[] = [
-  { id: "waiting", label: "Waiting" },
-  { id: "done", label: "Done today" },
-];
 
 function DismissDialog({
   row,
@@ -110,6 +110,7 @@ function Row({
   showOfficeBadges,
   busy,
   onOpen,
+  onQuickLook,
   onClaim,
   onDismiss,
 }: {
@@ -117,11 +118,13 @@ function Row({
   showOfficeBadges: boolean;
   busy: boolean;
   onOpen: () => void;
+  onQuickLook: () => void;
   onClaim: () => void;
   onDismiss: () => void;
 }) {
   const waiting = row.status === "open" || row.status === "claimed";
   const count = row.snapshot.procedures.length;
+  const progress = checkoutWorkupProgress(row);
   return (
     <div
       className="rounded-xl border border-border bg-card p-3 flex flex-wrap items-center gap-3 cursor-pointer hover:bg-accent/30"
@@ -153,6 +156,19 @@ function Row({
           {checkoutClock(row.createdAt)} · {count === 0 ? "nothing staged" : `${count} ${count === 1 ? "item" : "items"} staged`}
           {row.providerSeen ? ` · ${row.providerSeen}` : ""}
         </p>
+        {waiting && (
+          <p
+            className={`text-xs font-medium mt-1 ${progress.done === progress.total ? "text-emerald-700 dark:text-emerald-300" : "text-foreground"}`}
+            data-testid="checkout-row-progress"
+          >
+            {checkoutWorkupProgressLabel(progress)}
+          </p>
+        )}
+      </div>
+      <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+        <Button size="sm" variant="ghost" className="gap-1.5" onClick={onQuickLook} data-testid="checkout-row-quicklook">
+          <Eye className="w-3.5 h-3.5" /> Quick look
+        </Button>
       </div>
       {waiting && (
         <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
@@ -173,47 +189,12 @@ function Row({
 
 export function CheckoutInbox({ offices, showOfficeBadges }: { offices: OfficeId[]; showOfficeBadges: boolean }) {
   const search = useSearch();
+  const [, navigate] = useLocation();
   const query = useMemo(() => new URLSearchParams(search), [search]);
-  const [tab, setTab] = useState<CheckoutView>("waiting");
-  const [rows, setRows] = useState<TcCheckoutHandoff[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [enabledOffices, setEnabledOffices] = useState<OfficeId[] | null>(null);
+  const { tab, setTab, rows, loading, error, notice, enabledOffices, load, replace } = useCheckoutList(offices);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [dismissing, setDismissing] = useState<TcCheckoutHandoff | null>(null);
   const [opened, setOpened] = useState<{ office: OfficeId; handoffId: string } | null>(null);
-  const loadSeq = useRef(0);
-
-  const load = useCallback(async () => {
-    const seq = ++loadSeq.current;
-    setLoading(true);
-    setError(null);
-    const res = await fanOutOfficeValues(offices, async (office) => {
-      try {
-        return (await listCheckout(office, tab)).handoffs;
-      } catch (e) {
-        // Off for this office is a fact about the office, not a failed load.
-        if (e instanceof TcApiError && e.code === "CHECKOUT_DISABLED") return null;
-        throw e;
-      }
-    });
-    if (seq !== loadSeq.current) return;
-    const on = res.values.filter((v) => v.value !== null);
-    setEnabledOffices(on.map((v) => v.officeId));
-    setRows(
-      on
-        .flatMap((v) => v.value ?? [])
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-    );
-    if (res.failed) setError(res.errors[0]?.message ?? "The checkout list could not be loaded.");
-    else setNotice(res.partial ? `Some offices could not be loaded: ${res.errors.map((e) => e.officeId).join(", ")}` : null);
-    setLoading(false);
-  }, [offices, tab]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
 
   // The arrival toast links here with ?handoff=&office= — open the same sidebar.
   useEffect(() => {
@@ -223,17 +204,6 @@ export function CheckoutInbox({ offices, showOfficeBadges }: { offices: OfficeId
       setOpened({ office, handoffId });
     }
   }, [query, offices]);
-
-  const replace = (next: TcCheckoutHandoff) => {
-    setRows((prev) => {
-      const stillHere = tab === "waiting" ? next.status === "open" || next.status === "claimed" : !(next.status === "open" || next.status === "claimed");
-      const without = prev.filter((r) => r.handoffId !== next.handoffId);
-      if (!stillHere) return without;
-      return prev.some((r) => r.handoffId === next.handoffId)
-        ? prev.map((r) => (r.handoffId === next.handoffId ? next : r))
-        : [next, ...without];
-    });
-  };
 
   const claim = async (row: TcCheckoutHandoff) => {
     setBusyId(row.handoffId);
@@ -259,7 +229,7 @@ export function CheckoutInbox({ offices, showOfficeBadges }: { offices: OfficeId
   return (
     <>
       <div className="flex items-center gap-2 mb-4" role="tablist">
-        {TABS.map((t) => (
+        {CHECKOUT_TABS.map((t) => (
           <Button
             key={t.id}
             role="tab"
@@ -303,7 +273,8 @@ export function CheckoutInbox({ offices, showOfficeBadges }: { offices: OfficeId
               row={r}
               showOfficeBadges={showOfficeBadges}
               busy={busyId === r.handoffId}
-              onOpen={() => setOpened({ office: r.officeId, handoffId: r.handoffId })}
+              onOpen={() => navigate(checkoutWorkupHref(r.officeId, r.handoffId))}
+              onQuickLook={() => setOpened({ office: r.officeId, handoffId: r.handoffId })}
               onClaim={() => void claim(r)}
               onDismiss={() => setDismissing(r)}
             />

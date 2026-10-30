@@ -578,7 +578,7 @@ test('M: once per milestone — a second write is a named 409 that never reaches
   assert.deepEqual(chartEvents(db).map((e) => e.chart_note_milestone), ['sent', 'received']);
 });
 
-test('M: each of the six milestones is reachable, and each note is dated from its own history row', async (t) => {
+test('M: each of the six milestones is reachable, and each note is dated when it is written', async (t) => {
   switchReferrals(t);
   const od = fakeOd(t);
   const { baseUrl, db } = await boot(t);
@@ -603,8 +603,36 @@ test('M: each of the six milestones is reachable, and each note is dated from it
   const declined = await walkTo(baseUrl, db, 'declined');
   assert.equal((await write(baseUrl, declined, { milestone: 'declined', note: 'Declined: not needed yet.' })).status, 201);
   const dates = od.posts().map((p) => p.body.CommDateTime);
-  assert.equal(dates[2], '2026-10-20 14:30:00', "the scheduled note is dated when the link said so, in Roland's clock");
+  // RULING (prod hotfix 2026-10-29): a chart note is dated when it is WRITTEN,
+  // not at its milestone. Was '2026-10-20 14:30:00' (the link's moment), which
+  // filed a note written today under last week's chart date.
+  assert.equal(dates[2], '2026-10-27 10:00:00', "the scheduled note is dated when it was written, in Roland's clock");
   assert.equal(chartEvents(db).length, 6);
+});
+
+test('D: a note written days after its milestone is dated at the write, office-local, and matches its history row', async (t) => {
+  // The prod defect: a note written 10/29 ~1:09 PM CT for a referral sent 10/23
+  // landed under 10/23 in the chart.
+  switchReferrals(t);
+  const od = fakeOd(t);
+  const { baseUrl, db } = await boot(t);
+  transitions.setClockForTests(() => new Date('2026-10-23T14:00:00.000Z'));
+  const id = await walkTo(baseUrl, db, 'sent');
+
+  const writtenAt = new Date('2026-10-29T18:09:00.000Z');
+  transitions.setClockForTests(() => writtenAt);
+  const r = await write(baseUrl, id);
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.equal(od.posts()[0].body.CommDateTime, '2026-10-29 13:09:00', "today, in Roland's clock (CDT) — not 10/23, not UTC");
+  assert.equal(new Date(chartEvents(db)[0].at).toISOString(), writtenAt.toISOString(), 'the chart and the history agree on when');
+  assert.equal(r.body.referral.events.at(-1).at, writtenAt.toISOString());
+
+  // Late evening: 03:30Z is still 10/29 at the office. A UTC date would say 10/30.
+  const late = await walkTo(baseUrl, db, 'sent');
+  transitions.setClockForTests(() => new Date('2026-10-30T03:30:00.000Z'));
+  // Its own words: the same text on the same fixture chart is refused as already there.
+  assert.equal((await write(baseUrl, late, { milestone: 'sent', note: 'Referral sent this evening.' })).status, 201);
+  assert.equal(od.posts()[1].body.CommDateTime, '2026-10-29 22:30:00');
 });
 
 // ── F: failures are named, and nothing is claimed ───────────────────────────

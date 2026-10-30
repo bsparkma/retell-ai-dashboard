@@ -14939,6 +14939,8 @@ __export(contract_entry_exports, {
   TC_CHECKOUT_RECORD_STATUS_LABELS: () => TC_CHECKOUT_RECORD_STATUS_LABELS,
   TC_CHECKOUT_STATUS_LABELS: () => TC_CHECKOUT_STATUS_LABELS,
   TC_CHECKOUT_WAITING: () => TC_CHECKOUT_WAITING,
+  TC_CHECKOUT_WORKUP_SECTIONS: () => TC_CHECKOUT_WORKUP_SECTIONS,
+  TC_CHECKOUT_WORKUP_SECTION_LABELS: () => TC_CHECKOUT_WORKUP_SECTION_LABELS,
   TC_EMAIL_IDENTITY_FIELD_LABELS: () => TC_EMAIL_IDENTITY_FIELD_LABELS,
   TC_INTAKE_KIND_LABELS: () => TC_INTAKE_KIND_LABELS,
   TC_NOTIFICATION_EVENT_LABELS: () => TC_NOTIFICATION_EVENT_LABELS,
@@ -14993,6 +14995,9 @@ __export(contract_entry_exports, {
   TcCheckoutSubmit: () => TcCheckoutSubmit,
   TcCheckoutSubmitResponse: () => TcCheckoutSubmitResponse,
   TcCheckoutSummary: () => TcCheckoutSummary,
+  TcCheckoutWorkup: () => TcCheckoutWorkup,
+  TcCheckoutWorkupMark: () => TcCheckoutWorkupMark,
+  TcCheckoutWorkupRequest: () => TcCheckoutWorkupRequest,
   TcCollectAtCheckout: () => TcCollectAtCheckout,
   TcCommunication: () => TcCommunication,
   TcContactConsent: () => TcContactConsent,
@@ -15082,12 +15087,17 @@ __export(contract_entry_exports, {
   attachmentProblem: () => attachmentProblem,
   caseFromRows: () => caseFromRows,
   caseToRows: () => caseToRows,
+  checkoutCollectKey: () => checkoutCollectKey,
   checkoutItemKey: () => checkoutItemKey,
   checkoutPhaseName: () => checkoutPhaseName,
   checkoutPhaseNames: () => checkoutPhaseNames,
+  checkoutPresentKey: () => checkoutPresentKey,
   checkoutPriorityOf: () => checkoutPriorityOf,
+  checkoutWorkupProgress: () => checkoutWorkupProgress,
+  checkoutWorkupProgressLabel: () => checkoutWorkupProgressLabel,
   communicationToRow: () => communicationToRow,
   emailBodyText: () => emailBodyText,
+  emptyCheckoutWorkup: () => emptyCheckoutWorkup,
   escapeHtml: () => escapeHtml,
   fillBlockTokens: () => fillBlockTokens,
   fillMergeTokens: () => fillMergeTokens,
@@ -17411,7 +17421,16 @@ var TcCheckoutProcedure = import_zod7.z.object({
   surfaces: import_zod7.z.array(import_zod7.z.string().max(4)).max(10),
   /** The hygienist marked this to schedule at the next visit. */
   scheduleNext: import_zod7.z.boolean(),
-  note: import_zod7.z.string().max(500)
+  note: import_zod7.z.string().max(500),
+  /**
+   * The routing slip's diagnosis shorthand ("D", "RD", "FX"…), verbatim (CO-1).
+   * OPTIONAL and additive: every snapshot stored before CO-1 has no such key
+   * and parses as it did. Kept as short strings rather than the hygiene
+   * enum, so a code the slip gains later cannot make TC refuse a handoff.
+   */
+  dx: import_zod7.z.array(import_zod7.z.string().regex(/^[A-Za-z]{1,8}$/)).max(20).optional(),
+  /** The hygienist's free-text diagnosis note, when there is one (CO-1). */
+  dxNote: import_zod7.z.string().max(500).optional()
 }).strict();
 var TcCheckoutNextVisit = import_zod7.z.object({
   type: import_zod7.z.string().max(120).nullable(),
@@ -17499,6 +17518,67 @@ var TC_CHECKOUT_OUTCOME_LABELS = {
   not_scheduled: "Not scheduled",
   nothing_needed: "Nothing needed"
 };
+var TcCheckoutWorkupMark = import_zod7.z.object({ by: import_zod7.z.string(), at: import_zod7.z.string() }).strict();
+var TcCheckoutKeyedMark = TcCheckoutWorkupMark.extend({ key: import_zod7.z.string() });
+var TcCheckoutWorkup = import_zod7.z.object({
+  workedUp: import_zod7.z.record(import_zod7.z.string().regex(/^\d{1,3}$/), TcCheckoutKeyedMark).default({}),
+  present: import_zod7.z.record(import_zod7.z.string(), TcCheckoutKeyedMark).default({}),
+  collected: TcCheckoutKeyedMark.nullable().default(null),
+  referrals: TcCheckoutWorkupMark.nullable().default(null)
+}).strict();
+function checkoutPresentKey(existingTx, group) {
+  return JSON.stringify(
+    (existingTx ?? []).filter((i) => i.patient === group).map((i) => i.procNum).sort((a, b) => a - b)
+  );
+}
+function checkoutCollectKey(collect) {
+  return JSON.stringify(collect ?? []);
+}
+function emptyCheckoutWorkup() {
+  return { workedUp: {}, present: {}, collected: null, referrals: null };
+}
+var TcCheckoutWorkupRequest = import_zod7.z.discriminatedUnion("section", [
+  import_zod7.z.object({ section: import_zod7.z.literal("workup"), index: import_zod7.z.number().int().min(0).max(99), done: import_zod7.z.boolean() }).strict(),
+  import_zod7.z.object({ section: import_zod7.z.literal("present"), group: import_zod7.z.string().min(1).max(40), done: import_zod7.z.boolean() }).strict(),
+  import_zod7.z.object({ section: import_zod7.z.literal("collect"), done: import_zod7.z.boolean() }).strict(),
+  import_zod7.z.object({ section: import_zod7.z.literal("referrals"), done: import_zod7.z.boolean() }).strict()
+]);
+var TC_CHECKOUT_WORKUP_SECTIONS = ["workup", "present", "collect", "referrals"];
+var TC_CHECKOUT_WORKUP_SECTION_LABELS = {
+  workup: "Work up in OD",
+  present: "Existing treatment to present",
+  collect: "Collect payment",
+  referrals: "Referrals"
+};
+function checkoutWorkupProgress(h) {
+  const w = h.workup ?? emptyCheckoutWorkup();
+  const procs = h.snapshot.procedures;
+  const groups = Array.from(new Set((h.snapshot.existingTx ?? []).map((i) => i.patient)));
+  const collect = h.snapshot.collectAtCheckout ?? [];
+  const sections = [
+    {
+      section: "workup",
+      applies: procs.length > 0,
+      done: procs.length > 0 && procs.every((p, i) => w.workedUp[String(i)]?.key === checkoutItemKey(p))
+    },
+    {
+      section: "present",
+      applies: groups.length > 0,
+      done: groups.length > 0 && groups.every((g) => w.present[g]?.key === checkoutPresentKey(h.snapshot.existingTx, g))
+    },
+    {
+      section: "collect",
+      applies: collect.length > 0,
+      done: collect.length > 0 && w.collected?.key === checkoutCollectKey(collect)
+    },
+    { section: "referrals", applies: true, done: w.referrals !== null }
+  ];
+  const applying = sections.filter((s) => s.applies);
+  return { sections, done: applying.filter((s) => s.done).length, total: applying.length };
+}
+function checkoutWorkupProgressLabel(p) {
+  return `${p.done} of ${p.total} ${p.total === 1 ? "section" : "sections"} done`;
+}
 var TcCheckoutHandoff = import_zod7.z.object({
   handoffId: import_zod7.z.string().uuid(),
   officeId: import_zod7.z.enum(["roland", "valley"]),
@@ -17527,7 +17607,9 @@ var TcCheckoutHandoff = import_zod7.z.object({
   caseId: import_zod7.z.string().uuid().nullable().default(null),
   expiredAt: import_zod7.z.string().nullable().default(null),
   /** Always `system:checkout_expiry` when set — the system closed it, not a person. */
-  expiredBy: import_zod7.z.string().nullable().default(null)
+  expiredBy: import_zod7.z.string().nullable().default(null),
+  /** CO-1. Defaulted so a pre-CO-1 reader and a pre-CO-1 record both parse. */
+  workup: TcCheckoutWorkup.default(emptyCheckoutWorkup)
 });
 var TcCheckoutOutcomeRequest = import_zod7.z.object({
   outcome: TcCheckoutOutcome,
@@ -18626,6 +18708,8 @@ function odToothText(tooth) {
   TC_CHECKOUT_RECORD_STATUS_LABELS,
   TC_CHECKOUT_STATUS_LABELS,
   TC_CHECKOUT_WAITING,
+  TC_CHECKOUT_WORKUP_SECTIONS,
+  TC_CHECKOUT_WORKUP_SECTION_LABELS,
   TC_EMAIL_IDENTITY_FIELD_LABELS,
   TC_INTAKE_KIND_LABELS,
   TC_NOTIFICATION_EVENT_LABELS,
@@ -18680,6 +18764,9 @@ function odToothText(tooth) {
   TcCheckoutSubmit,
   TcCheckoutSubmitResponse,
   TcCheckoutSummary,
+  TcCheckoutWorkup,
+  TcCheckoutWorkupMark,
+  TcCheckoutWorkupRequest,
   TcCollectAtCheckout,
   TcCommunication,
   TcContactConsent,
@@ -18769,12 +18856,17 @@ function odToothText(tooth) {
   attachmentProblem,
   caseFromRows,
   caseToRows,
+  checkoutCollectKey,
   checkoutItemKey,
   checkoutPhaseName,
   checkoutPhaseNames,
+  checkoutPresentKey,
   checkoutPriorityOf,
+  checkoutWorkupProgress,
+  checkoutWorkupProgressLabel,
   communicationToRow,
   emailBodyText,
+  emptyCheckoutWorkup,
   escapeHtml,
   fillBlockTokens,
   fillMergeTokens,

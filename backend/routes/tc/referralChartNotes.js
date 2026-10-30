@@ -19,7 +19,8 @@
  * from the referral row, the office from the request's server-derived office
  * (and the row is read in that office only), the commlog type from THAT
  * office's configuration (config/odOffices: roland 491, valley 452 — never
- * crossed, never a fallback), and the commlog's date from the milestone.
+ * crossed, never a fallback), and the commlog's date from the moment it is
+ * written, as the office's wall clock (not the milestone's date).
  *
  * WHAT A PERSON APPROVES IS WHAT IS WRITTEN. The note must already be what
  * Open Dental will store (contract.referralChartNoteOdSafe, a pinned mirror of
@@ -138,12 +139,16 @@ async function writeChartNote(req, { referralId, body, office = req.tcOffice }) 
       const od = odOffices.assertOfficeMatch(office, odOffices.getOdOffice(office));
       const commType = await commlogTypes.assertAllowed(od, od.referralCommTypeDefNum);
 
-      // 5. The chart write, read back.
+      // 5. The chart write, read back. Dated NOW — when a person wrote it —
+      // not at the milestone: a note written today for a referral sent last
+      // week filed itself under last week in the chart, where nobody looks
+      // for today's work. The milestone's own date stays in the history.
+      const writtenAt = transitions.clock().toISOString();
       const written = await chartNote.writeChartNote(od, {
         patNum: Number(row.od_patient_id),
         note: body.note,
         commType,
-        at: state.at,
+        at: writtenAt,
       });
       if (!written.ok) return { failed: written };
 
@@ -155,7 +160,7 @@ async function writeChartNote(req, { referralId, body, office = req.tcOffice }) 
           referralId,
           status: row.status,
           actor: actorEmail(req),
-          at: transitions.clock().toISOString(),
+          at: writtenAt,
           note: body.note,
           milestone: body.milestone,
           commLogNum: written.commLogNum,

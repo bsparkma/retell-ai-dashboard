@@ -15,24 +15,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { ReferralsPanel } from "@/features/tc/referrals/ReferralsPanel";
 import { Link } from "wouter";
-import { toast } from "sonner";
-import {
-  AlertTriangle,
-  CalendarCheck,
-  CalendarX,
-  CheckCircle2,
-  CircleSlash,
-  Clock,
-  CreditCard,
-  FileText,
-  Hand,
-  Loader2,
-  Send,
-} from "lucide-react";
+import { AlertTriangle, Clock, CreditCard, FileText, Loader2, Maximize2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import {
   Sheet,
   SheetContent,
@@ -42,36 +27,30 @@ import {
 } from "@/components/ui/sheet";
 import { OfficeBadge } from "@/features/tc/components/OfficeBadge";
 import { tcErrorMessage } from "@/features/tc/api";
-import {
-  claimCheckout,
-  getCheckoutHandoff,
-  recordCheckoutOutcome,
-} from "@/features/tc/checkout/checkoutApi";
+import { getCheckoutHandoff } from "@/features/tc/checkout/checkoutApi";
+import { CheckoutOutcome, checkoutClock } from "@/features/tc/checkout/CheckoutOutcome";
 import {
   TC_CHECKOUT_PRIORITY_LABELS,
   TC_CHECKOUT_RECORD_STATUS_LABELS,
   TC_CHECKOUT_STATUS_LABELS,
-  TC_CHECKOUT_WAITING,
   type TcCheckoutHandoff,
-  type TcCheckoutOutcome,
   type TcCheckoutPriority,
 } from "@shared/tc/checkout";
 import type { OfficeId } from "@shared/tc/contract";
 import { teethText } from "@shared/hyg/teeth";
 import { ExistingTreatmentFromHygiene } from "@/features/tc/checkout/HygieneTreatmentPanel";
 
-const PRIORITY_CLASS: Record<TcCheckoutPriority, string> = {
+export { checkoutClock };
+
+export const PRIORITY_CLASS: Record<TcCheckoutPriority, string> = {
   urgent: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
   preventative: "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300",
   cosmetic: "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-300",
 };
 
-/** "9:42 AM" in the office's own reading of the instant. */
-export function checkoutClock(iso: string | null): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/Chicago" });
+/** The workup view's address for one checkout (CO-1): linkable, office in the query. */
+export function checkoutWorkupHref(office: OfficeId, handoffId: string): string {
+  return `/tc/checkout/${handoffId}?office=${office}`;
 }
 
 export function PriorityChip({ priority, prefix = "" }: { priority: TcCheckoutPriority | null; prefix?: string }) {
@@ -91,7 +70,7 @@ export function PriorityChip({ priority, prefix = "" }: { priority: TcCheckoutPr
  * "Preventative" were the category. Now the priority is a filled, coloured pill
  * that SAYS "priority", and the category is a plain outlined tag.
  */
-function ProcedureTags({ priority, category }: { priority: TcCheckoutPriority; category: string }) {
+export function ProcedureTags({ priority, category }: { priority: TcCheckoutPriority; category: string }) {
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5">
       <span
@@ -113,7 +92,7 @@ function ProcedureTags({ priority, category }: { priority: TcCheckoutPriority; c
   );
 }
 
-function teethLine(teeth: number[] | "mouth"): string {
+export function teethLine(teeth: number[] | "mouth"): string {
   if (teeth === "mouth") return "Whole mouth";
   return teeth.length ? teethText(teeth) : "—";
 }
@@ -131,8 +110,6 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
   const open = office !== null && handoffId !== null;
   const [handoff, setHandoff] = useState<TcCheckoutHandoff | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<TcCheckoutOutcome | "claim" | null>(null);
-  const [note, setNote] = useState("");
 
   const load = useCallback(async () => {
     if (!office || !handoffId) return;
@@ -146,7 +123,6 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
 
   useEffect(() => {
     setHandoff(null);
-    setNote("");
     if (open) void load();
   }, [open, load]);
 
@@ -155,43 +131,6 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
     onChanged?.(next);
   };
 
-  const claim = async () => {
-    if (!office || !handoff) return;
-    setBusy("claim");
-    try {
-      adopt(await claimCheckout(office, handoff.handoffId));
-    } catch (e) {
-      toast.error(tcErrorMessage(e));
-      await load();
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const answer = async (outcome: TcCheckoutOutcome) => {
-    if (!office || !handoff) return;
-    setBusy(outcome);
-    try {
-      const res = await recordCheckoutOutcome(office, handoff.handoffId, outcome, outcome === "scheduled" ? note : "");
-      adopt(res.handoff);
-      const url = res.url;
-      toast.success(
-        outcome === "nothing_needed"
-          ? "Checkout closed — nothing to schedule"
-          : res.attached
-            ? "Added to the patient's open case"
-            : "Case created",
-        url ? { action: { label: "Open case", onClick: () => window.location.assign(url) } } : undefined,
-      );
-    } catch (e) {
-      toast.error(tcErrorMessage(e));
-      await load();
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const waiting = handoff ? TC_CHECKOUT_WAITING.includes(handoff.status) : false;
   const snap = handoff?.snapshot;
 
   return (
@@ -238,6 +177,14 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
                   {TC_CHECKOUT_STATUS_LABELS[handoff.status]}
                   {handoff.status === "claimed" && handoff.claimedBy ? ` · ${handoff.claimedBy}` : ""}
                 </Badge>
+                {/* CO-1: the sheet is the quick glance; the workup view is where the desk works. */}
+                <Link
+                  href={checkoutWorkupHref(handoff.officeId, handoff.handoffId)}
+                  className="ml-auto inline-flex items-center gap-1 text-sm font-medium text-primary underline-offset-2 hover:underline"
+                  data-testid="checkout-open-workup"
+                >
+                  <Maximize2 className="w-3.5 h-3.5" /> Open full workup
+                </Link>
               </div>
 
               {/* CHECKOUT V2: WHAT TO TAKE PAYMENT FOR, FIRST. The reason this
@@ -358,58 +305,8 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
                   reads "None" exactly as before while referrals is off. */}
               <ReferralsPanel compact office={handoff.officeId} source={{ handoffId: handoff.handoffId }} />
 
-              {waiting ? (
-                <section className="space-y-3 border-t border-border pt-4">
-                  {handoff.status === "open" && (
-                    <Button variant="outline" size="sm" className="gap-1.5" disabled={busy !== null} onClick={() => void claim()} data-testid="checkout-claim">
-                      {busy === "claim" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Hand className="w-3.5 h-3.5" />}
-                      I&apos;ve got this patient
-                    </Button>
-                  )}
-                  <div>
-                    <label htmlFor="checkout-appointment-note" className="text-xs font-medium text-muted-foreground">
-                      Appointment note (for Scheduled)
-                    </label>
-                    <Textarea
-                      id="checkout-appointment-note"
-                      value={note}
-                      maxLength={500}
-                      rows={2}
-                      placeholder="e.g. Tue 10/21 9:00, Dr. chair"
-                      onChange={(e) => setNote(e.target.value)}
-                      data-testid="checkout-appointment-note"
-                    />
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    <Button className="gap-1.5 min-h-11" disabled={busy !== null} onClick={() => void answer("scheduled")} data-testid="checkout-outcome-scheduled">
-                      {busy === "scheduled" ? <Loader2 className="w-4 h-4 animate-spin" /> : <CalendarCheck className="w-4 h-4" />}
-                      Scheduled
-                    </Button>
-                    <Button variant="outline" className="gap-1.5 min-h-11" disabled={busy !== null} onClick={() => void answer("not_scheduled")} data-testid="checkout-outcome-not_scheduled">
-                      {busy === "not_scheduled" ? <Loader2 className="w-4 h-4 animate-spin" /> : <CalendarX className="w-4 h-4" />}
-                      Not scheduled
-                    </Button>
-                    <Button variant="outline" className="gap-1.5 min-h-11" disabled={busy !== null} onClick={() => void answer("nothing_needed")} data-testid="checkout-outcome-nothing_needed">
-                      {busy === "nothing_needed" ? <Loader2 className="w-4 h-4 animate-spin" /> : <CircleSlash className="w-4 h-4" />}
-                      Nothing needed
-                    </Button>
-                  </div>
-                </section>
-              ) : (
-                <section className="border-t border-border pt-4 text-sm space-y-1" data-testid="checkout-answered">
-                  <p className="flex items-center gap-2 font-medium">
-                    {handoff.status === "expired" ? <Send className="w-4 h-4 text-muted-foreground" /> : <CheckCircle2 className="w-4 h-4 text-emerald-600" />}
-                    {TC_CHECKOUT_STATUS_LABELS[handoff.status]}
-                    {handoff.outcomeAt && <span className="font-normal text-muted-foreground">at {checkoutClock(handoff.outcomeAt)} by {handoff.outcomeBy}</span>}
-                  </p>
-                  {handoff.appointmentNote && <p className="text-muted-foreground">{handoff.appointmentNote}</p>}
-                  {handoff.dismissedReason && <p className="text-muted-foreground">Dismissed: {handoff.dismissedReason}</p>}
-                  {handoff.caseId && (
-                    <Link href={`/tc/cases/${handoff.caseId}`} className="underline text-primary">
-                      Open the case
-                    </Link>
-                  )}
-                </section>
+              {office && (
+                <CheckoutOutcome key={handoff.handoffId} office={office} handoff={handoff} onAdopt={adopt} onReload={load} />
               )}
             </>
           )}
