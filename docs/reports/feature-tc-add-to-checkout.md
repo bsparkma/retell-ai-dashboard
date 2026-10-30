@@ -218,3 +218,5 @@ The Waiting-merge assertions are the one place an existing test changed: they we
 - Dashboard: `pnpm run check` is clean. `pnpm run test` gives 3053 passed and 1 failed; the failure is `rcm-ui-s3` "k goes the other way", the same untouched j/k timing flake as CI attempt 1 above.
 
 **Screenshot:** `docs/screenshots/tc/co5a/tccheckout-co5a-04-reopened-1280x1500-{light,dark}.png` shows the reopened card with the notice, the history line, all four sections, Waiting and live outcome buttons.
+
+**CI (fix round):** `build-test` on `refs/pull/297/merge`, run 40997706239 at head e0ef476, **passed on the first attempt**. That covers typecheck, vitest, `node --check`, `node --test`, migrations against an ephemeral Postgres (including 1793700000000) and the smoke spine. No fix pushes. Not merged.
