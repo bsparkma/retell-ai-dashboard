@@ -17711,6 +17711,11 @@ var TcCheckoutScheduleCheck = import_zod7.z.object({
   running: import_zod7.z.boolean(),
   lastSuccessAt: import_zod7.z.string().nullable(),
   lastAttemptAt: import_zod7.z.string().nullable(),
+  /**
+   * Cards made since the server started. Monotonic, so the page reloads its
+   * list after ANY read that made cards — even when a later one made none.
+   */
+  createdTotal: import_zod7.z.number().int().nonnegative().default(0),
   /** Counts from the last read that finished. Never a PatNum or a name. */
   summary: import_zod7.z.object({
     completedNonHygiene: import_zod7.z.number().int().nonnegative(),

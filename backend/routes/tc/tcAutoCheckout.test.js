@@ -420,6 +420,54 @@ test('dedupe: two sweeps racing on one appointment make ONE card (the unique ind
   assert.equal(audits.length, 1);
 });
 
+/**
+ * Run `slip(db)` once, at the patient-day lock — i.e. AFTER the sweep's cheap
+ * pre-check and BEFORE its in-transaction re-check: a racing writer that
+ * committed in between.
+ */
+function slipInAtLock(db, slip) {
+  let done = false;
+  db.onQuery(/^SELECT pg_advisory_xact_lock\(/, () => {
+    if (!done) {
+      done = true;
+      slip(db);
+    }
+    return { rows: [{}], rowCount: 1 };
+  });
+}
+
+test('race: a card for the patient committed between the pre-check and the lock — the in-transaction re-check yields', async (t) => {
+  switches(t);
+  od.roland.schedule = [apt({})];
+  const db = new FakeTenantDb();
+  slipInAtLock(db, (d) =>
+    handoffs(d).push({
+      handoff_id: randomUUID(), office_id: 'roland', od_patient_id: 12827, visit_date: TODAY, status: 'open',
+      source: 'manual', origin_apt_num: null, created_at: new Date(), updated_at: new Date(),
+    })
+  );
+  const audits = [];
+  const out = await engine.sweepOffice({ office: 'roland', today: TODAY, pool: db, audit: async (e) => audits.push(e) });
+  assert.equal(out.summary.created, 0);
+  assert.equal(scheduleCards(db).length, 0, 'the racing manual card stands alone');
+  assert.equal(audits.length, 0);
+});
+
+test('race: a card from the same AptNum committed (then dismissed) between the pre-check and the lock — the re-check yields', async (t) => {
+  switches(t);
+  od.roland.schedule = [apt({})];
+  const db = new FakeTenantDb();
+  slipInAtLock(db, (d) =>
+    handoffs(d).push({
+      handoff_id: randomUUID(), office_id: 'roland', od_patient_id: 12827, visit_date: TODAY, status: 'dismissed',
+      source: 'schedule', origin_apt_num: 5001, created_at: new Date(), updated_at: new Date(),
+    })
+  );
+  const out = await engine.sweepOffice({ office: 'roland', today: TODAY, pool: db, audit: async () => {} });
+  assert.equal(out.summary.created, 0);
+  assert.equal(scheduleCards(db).length, 1, 'only the dismissed one');
+});
+
 // ── 3. Merge ────────────────────────────────────────────────────────────────
 
 test('merge: a hygiene handoff that arrives later merges onto the schedule card (same id, the visit\'s data, the appointment kept)', async (t) => {
@@ -670,6 +718,68 @@ test('a failed audit write leaves no card behind (the audit is inside the transa
     tcCheckout.resetCacheForTests();
     tcAutoCheckout.resetCacheForTests();
   }
+});
+
+test('REVIEW: the switch turned off MID-SWEEP stops it — no further names read, no further cards', async (t) => {
+  switches(t);
+  od.roland.schedule = [apt({ AptNum: 5001, PatNum: 12827 }), apt({ AptNum: 5002, PatNum: 12828, AptDateTime: `${TODAY} 10:00:00` })];
+  const db = new FakeTenantDb();
+  // The break-glass lands while the schedule is being read.
+  const { client } = odOffices.getOdOffice('roland');
+  const inner = client.apiGetRaw;
+  client.apiGetRaw = async (p, params, opts) => {
+    if (p === '/appointments') {
+      process.env.TC_AUTO_CHECKOUT_ENABLED_ROLAND = 'false';
+      tcAutoCheckout.resetCacheForTests();
+    }
+    return inner(p, params, opts);
+  };
+  const out = await engine.sweepOffice({ office: 'roland', today: TODAY, pool: db, audit: async () => assert.fail('no card') });
+  assert.equal(out.status, 'off');
+  assert.equal(calls.filter((c) => /^\/patients\//.test(c.path)).length, 0, 'no names read after the switch went off');
+  assert.equal(handoffs(db).length, 0);
+});
+
+test('REVIEW: the switch turned off between two cards — the second is not made', async (t) => {
+  switches(t);
+  od.roland.schedule = [apt({ AptNum: 5001, PatNum: 12827 }), apt({ AptNum: 5002, PatNum: 12828, AptDateTime: `${TODAY} 10:00:00` })];
+  const db = new FakeTenantDb();
+  const audit = async () => {
+    process.env.TC_AUTO_CHECKOUT_ENABLED_ROLAND = 'false';
+    tcAutoCheckout.resetCacheForTests();
+  };
+  const out = await engine.sweepOffice({ office: 'roland', today: TODAY, pool: db, audit });
+  assert.equal(out.status, 'off');
+  assert.deepEqual(scheduleCards(db).map((c) => c.origin_apt_num), [5001]);
+});
+
+test('REVIEW: one appointment that cannot be carded does not hold the queue — the rest are made, it waits at the back, the read says partial', async (t) => {
+  switches(t);
+  od.roland.schedule = [apt({ AptNum: 5001, PatNum: 12827 }), apt({ AptNum: 5002, PatNum: 12828, AptDateTime: `${TODAY} 10:00:00` })];
+  const { baseUrl, db } = await boot(t, { role: 'tc' });
+  let poison = true;
+  const realInsert = db.query.bind(db);
+  db.query = async (sql, params) => {
+    if (poison && /^INSERT INTO tc_checkout_handoffs/.test(String(sql)) && (params || []).includes(5001)) {
+      const err = new Error('new row violates check constraint');
+      err.code = '23514';
+      throw err;
+    }
+    return realInsert(sql, params);
+  };
+  await check(baseUrl);
+  assert.deepEqual(scheduleCards(db).map((c) => c.origin_apt_num), [5002]);
+  const st = status();
+  assert.equal(st.status, 'ok');
+  assert.equal(st.summary.partial, true);
+  assert.equal(st.summary.deferred, 1);
+  assert.equal(st.createdTotal, 1);
+
+  poison = false;
+  engine.setNowForTests(() => NOW.getTime() + 61_000);
+  await check(baseUrl);
+  assert.deepEqual(scheduleCards(db).map((c) => c.origin_apt_num).sort(), [5001, 5002]);
+  assert.equal(status().createdTotal, 2, 'monotonic across reads');
 });
 
 // ── 8. Office isolation ─────────────────────────────────────────────────────

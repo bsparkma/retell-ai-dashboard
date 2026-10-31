@@ -43,8 +43,9 @@ export function useScheduleCheck(offices: readonly OfficeId[], onCardsMade: () =
   const [states, setStates] = useState<ScheduleCheckState[]>([]);
   const onMade = useRef(onCardsMade);
   onMade.current = onCardsMade;
-  /** Per office: the last success seen, so a NEW success with cards reloads once. */
+  /** Per office: the last success seen (for the failure line) and the cards-made count. */
   const seen = useRef(new Map<OfficeId, string | null>());
+  const madeSeen = useRef(new Map<OfficeId, number>());
   const key = offices.join(",");
 
   useEffect(() => {
@@ -56,9 +57,15 @@ export function useScheduleCheck(offices: readonly OfficeId[], onCardsMade: () =
     let disposed = false;
     let followUp: ReturnType<typeof setTimeout> | null = null;
     let busy = false;
+    /** An ask that arrived while one was in flight: answered when it lands, never dropped. */
+    let again = false;
 
     const ask = async () => {
-      if (disposed || busy || document.visibilityState === "hidden") return;
+      if (disposed || document.visibilityState === "hidden") return;
+      if (busy) {
+        again = true;
+        return;
+      }
       busy = true;
       try {
         const next = await Promise.all(
@@ -74,9 +81,12 @@ export function useScheduleCheck(offices: readonly OfficeId[], onCardsMade: () =
         let made = false;
         for (const s of next) {
           if (s.kind !== "answer") continue;
-          const prior = seen.current.get(s.officeId);
-          if (s.check.lastSuccessAt && s.check.lastSuccessAt !== prior && (s.check.summary?.created ?? 0) > 0) made = true;
-          seen.current.set(s.officeId, s.check.lastSuccessAt);
+          // A NEW card since the last answer — counted on the server, so two
+          // reads finishing between asks cannot hide the first one's cards.
+          const priorMade = madeSeen.current.get(s.officeId);
+          if (priorMade !== undefined && s.check.createdTotal > priorMade) made = true;
+          madeSeen.current.set(s.officeId, s.check.createdTotal);
+          if (s.check.lastSuccessAt) seen.current.set(s.officeId, s.check.lastSuccessAt);
         }
         setStates(next);
         if (made) onMade.current();
@@ -86,6 +96,10 @@ export function useScheduleCheck(offices: readonly OfficeId[], onCardsMade: () =
           : null;
       } finally {
         busy = false;
+        if (again && !disposed) {
+          again = false;
+          void ask();
+        }
       }
     };
     const onVisibility = () => {

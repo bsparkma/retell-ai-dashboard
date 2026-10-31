@@ -572,6 +572,11 @@ export const TcCheckoutScheduleCheck = z.object({
   running: z.boolean(),
   lastSuccessAt: z.string().nullable(),
   lastAttemptAt: z.string().nullable(),
+  /**
+   * Cards made since the server started. Monotonic, so the page reloads its
+   * list after ANY read that made cards — even when a later one made none.
+   */
+  createdTotal: z.number().int().nonnegative().default(0),
   /** Counts from the last read that finished. Never a PatNum or a name. */
   summary: z
     .object({

@@ -81,7 +81,7 @@ const SYSTEM_ACTOR = 'system:auto_checkout';
  * Per-office state, in process.
  * @type {Map<string, { lastAttemptAt: string|null, lastAttemptMs: number, lastSuccessAt: string|null,
  *                      failed: boolean, summary: SweepSummary|null, running: Promise<unknown>|null,
- *                      deferredAptNums: Set<number> }>}
+ *                      deferredAptNums: Set<number>, createdTotal: number }>}
  */
 const offices = new Map();
 
@@ -98,6 +98,7 @@ function stateOf(office) {
       summary: null,
       running: null,
       deferredAptNums: new Set(),
+      createdTotal: 0,
     });
   }
   return offices.get(office);
@@ -270,11 +271,19 @@ async function sweepOffice(opts) {
     return { status: 'ok', summary };
   }
 
+  // A sweep naming 100 patients runs for minutes at the batch spacing; the
+  // switch (and its env break-glass) is honoured mid-sweep, not only at start.
+  if (!(await isOn(office))) return { status: 'off' };
   const names = await odDay.readPatients(odGet, batch.map((c) => c.patNum), { office, odBudget: cap });
   const labels = await labelsFor(odGet, office);
   const nextDeferred = new Set();
 
   for (const c of batch) {
+    if (!(await isOn(office))) {
+      st.summary = summary;
+      st.createdTotal += summary.created;
+      return { status: 'off' };
+    }
     const patient = names.byPatNum.get(c.patNum);
     const patientName = patient && typeof patient.displayName === 'string' ? patient.displayName.trim() : '';
     if (!patientName) {
@@ -325,26 +334,47 @@ async function sweepOffice(opts) {
           origin_apt_num: c.aptNum,
           origin_appt: origin,
         });
-        // Inside the transaction: a failed audit write rolls the card back.
-        await audit({
-          action: 'CREATE',
-          resourceType: 'tc_checkout_handoff',
-          resourceId: handoffId,
-          result: 'SUCCESS',
-          office,
-          sourceRef: `apt_num:${c.aptNum}`,
-        });
+        // Before COMMIT, so a failed audit write rolls the card back. (The audit
+        // row is written on its own connection: a COMMIT that fails AFTER it
+        // leaves a CREATE row for a card that does not exist — the safe side.)
+        try {
+          await audit({
+            action: 'CREATE',
+            resourceType: 'tc_checkout_handoff',
+            resourceId: handoffId,
+            result: 'SUCCESS',
+            office,
+            sourceRef: `apt_num:${c.aptNum}`,
+          });
+        } catch (auditErr) {
+          if (auditErr && typeof auditErr === 'object') auditErr.auditFailed = true;
+          throw auditErr;
+        }
         return true;
       });
     } catch (err) {
       // Another sweep (or a racing click) won the unique index: theirs stands.
-      if (!err || err.code !== checkoutStore.PG_UNIQUE_VIOLATION) throw err;
-      made = false;
+      if (err && err.code === checkoutStore.PG_UNIQUE_VIOLATION) {
+        summary.alreadyCarded += 1;
+        continue;
+      }
+      // No trail, no cards: an audit failure stops the sweep (fail closed).
+      if (!err || err.auditFailed) throw err;
+      // ONE bad appointment must not hold the queue: it waits at the back,
+      // the sweep goes on, and the line says the read was partial.
+      console.error(
+        `[tc/auto-checkout] office=${office} a card could not be made (${(err && (err.code || err.name)) || 'error'}); it waits for the next sweep`
+      );
+      nextDeferred.add(c.aptNum);
+      summary.deferred += 1;
+      summary.partial = true;
+      continue;
     }
     if (made) summary.created += 1;
     else summary.alreadyCarded += 1;
   }
   st.deferredAptNums = nextDeferred;
+  st.createdTotal += summary.created;
   return { status: 'ok', summary };
 }
 
@@ -400,6 +430,9 @@ function statusOf(office, enabled) {
     lastSuccessAt: st.lastSuccessAt,
     lastAttemptAt: st.lastAttemptAt,
     summary: enabled ? st.summary : null,
+    // Cards made since the server started — monotonic, so the page reloads on
+    // ANY sweep that made cards, even when a later one made none.
+    createdTotal: st.createdTotal,
   };
 }
 

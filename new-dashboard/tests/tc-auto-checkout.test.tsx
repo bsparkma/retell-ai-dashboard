@@ -105,6 +105,7 @@ function check(over: Partial<TcCheckoutScheduleCheck> = {}): TcCheckoutScheduleC
     running: false,
     lastSuccessAt: "2026-10-30T15:02:00.000Z",
     lastAttemptAt: "2026-10-30T15:02:00.000Z",
+    createdTotal: 0,
     summary: { completedNonHygiene: 3, created: 0, alreadyCarded: 3, skippedHygiene: 9, skippedNoPatient: 1, deferred: 0, partial: false },
     ...over,
   };
@@ -229,7 +230,7 @@ describe("the polling (the day-progress pattern)", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     api.getScheduleCheck
       .mockResolvedValueOnce(check({ status: "pending", running: true, lastSuccessAt: null, summary: null }))
-      .mockResolvedValue(check({ summary: { ...check().summary!, created: 1 } }));
+      .mockResolvedValue(check({ createdTotal: 1, summary: { ...check().summary!, created: 1 } }));
     api.listCheckout
       .mockResolvedValueOnce({ success: true, today: "2026-10-30", view: "waiting", handoffs: [] })
       .mockResolvedValue({ success: true, today: "2026-10-30", view: "waiting", handoffs: [card()] });
@@ -245,12 +246,44 @@ describe("the polling (the day-progress pattern)", () => {
     const row = await screen.findByTestId("checkout-row");
     expect(within(row).getByTestId("checkout-row-schedule").textContent).toMatch(/From today's schedule/);
 
-    // The same success seen again does not reload again.
+    // The same count seen again does not reload again.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(SCHEDULE_CHECK_INTERVAL_MS);
     });
     await waitFor(() => expect(api.getScheduleCheck).toHaveBeenCalledTimes(3));
     expect(api.listCheckout).toHaveBeenCalledTimes(2);
+  });
+
+  it("cards made by an EARLIER read still reload the list when a later read made none (the count is monotonic)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    api.getScheduleCheck
+      .mockResolvedValueOnce(check({ createdTotal: 2 }))
+      // Two reads finished between asks: the first made a card, the second none.
+      .mockResolvedValue(check({ createdTotal: 3, lastSuccessAt: "2026-10-30T15:04:00.000Z", summary: { ...check().summary!, created: 0 } }));
+    renderInbox();
+    await waitFor(() => expect(api.getScheduleCheck).toHaveBeenCalledTimes(1));
+    expect(api.listCheckout).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SCHEDULE_CHECK_INTERVAL_MS);
+    });
+    await waitFor(() => expect(api.listCheckout).toHaveBeenCalledTimes(2));
+  });
+
+  it("an ask that arrives while one is in flight is answered when it lands, never dropped", async () => {
+    let release: (v: TcCheckoutScheduleCheck) => void = () => undefined;
+    api.getScheduleCheck
+      .mockImplementationOnce(() => new Promise<TcCheckoutScheduleCheck>((r) => (release = r)))
+      .mockResolvedValue(check());
+    renderInbox();
+    await waitFor(() => expect(api.getScheduleCheck).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(api.getScheduleCheck).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      release(check({ running: false }));
+    });
+    await waitFor(() => expect(api.getScheduleCheck).toHaveBeenCalledTimes(2));
   });
 
   it("a failed ask shows the amber line on the page", async () => {

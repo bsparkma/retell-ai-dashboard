@@ -125,7 +125,6 @@ const tcCheckout = require('../../config/tcCheckout');
 const odManualPatient = require('./odManualPatient');
 const checkoutAppointments = require('./checkoutAppointments');
 const odOffices = require('../../config/odOffices');
-const tcAutoCheckout = require('../../config/tcAutoCheckout');
 const autoCheckout = require('../../services/tc/autoCheckout');
 const { audit } = require('../../platform/audit');
 
@@ -458,7 +457,8 @@ router.get(
     const today = await enter(req, res);
     if (today === null) return undefined;
     const office = req.tcOffice;
-    const enabled = await tcAutoCheckout.isEnabled(office);
+    // Checkout is on (enter() answered otherwise), so this is both switches.
+    const enabled = await autoCheckout.isOn(office);
     if (enabled) await kickScheduleSweep(req, office);
     return res.json({ success: true, office, ...autoCheckout.statusOf(office, enabled) });
   })
