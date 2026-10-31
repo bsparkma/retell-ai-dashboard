@@ -782,6 +782,39 @@ test('REVIEW: one appointment that cannot be carded does not hold the queue — 
   assert.equal(status().createdTotal, 2, 'monotonic across reads');
 });
 
+test('REVIEW 2: a database that refuses EVERY card (not a per-row CHECK) reads as failed, never "checked"', async (t) => {
+  switches(t);
+  od.roland.schedule = [apt({ AptNum: 5001, PatNum: 12827 }), apt({ AptNum: 5002, PatNum: 12828, AptDateTime: `${TODAY} 10:00:00` })];
+  const { baseUrl, db } = await boot(t, { role: 'tc' });
+  await check(baseUrl);
+  const okAt = status().lastSuccessAt;
+  od.roland.schedule.push(apt({ AptNum: 5003, PatNum: 99998 }));
+  PATIENTS.roland[99998] = { PatNum: 99998, LName: 'Test', FName: 'Synthetic' };
+  t.after(() => delete PATIENTS.roland[99998]);
+  db.connect = async () => {
+    throw new Error('connection terminated unexpectedly');
+  };
+  engine.setNowForTests(() => NOW.getTime() + 61_000);
+  await check(baseUrl);
+  assert.equal(status().status, 'failed');
+  assert.equal(status().lastSuccessAt, okAt);
+});
+
+test('REVIEW 2: createdTotal counts a card the moment it commits, even if the sweep then dies', async (t) => {
+  switches(t);
+  od.roland.schedule = [apt({ AptNum: 5001, PatNum: 12827 }), apt({ AptNum: 5002, PatNum: 12828, AptDateTime: `${TODAY} 10:00:00` })];
+  const db = new FakeTenantDb();
+  let n = 0;
+  const audit = async () => {
+    n += 1;
+    if (n === 2) throw new Error('audit store down');
+  };
+  const run = () => engine.sweepOffice({ office: 'roland', today: TODAY, pool: db, audit });
+  await engine.ensureFresh('roland', run);
+  assert.equal(engine.statusOf('roland', true).status, 'failed');
+  assert.equal(engine.statusOf('roland', true).createdTotal, 1);
+});
+
 // ── 8. Office isolation ─────────────────────────────────────────────────────
 
 test('office isolation: each office reads only its own Open Dental; the same AptNum in both is two appointments', async (t) => {

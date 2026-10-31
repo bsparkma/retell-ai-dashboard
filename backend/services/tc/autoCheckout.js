@@ -279,11 +279,7 @@ async function sweepOffice(opts) {
   const nextDeferred = new Set();
 
   for (const c of batch) {
-    if (!(await isOn(office))) {
-      st.summary = summary;
-      st.createdTotal += summary.created;
-      return { status: 'off' };
-    }
+    if (!(await isOn(office))) return { status: 'off' };
     const patient = names.byPatNum.get(c.patNum);
     const patientName = patient && typeof patient.displayName === 'string' ? patient.displayName.trim() : '';
     if (!patientName) {
@@ -359,7 +355,10 @@ async function sweepOffice(opts) {
         continue;
       }
       // No trail, no cards: an audit failure stops the sweep (fail closed).
-      if (!err || err.auditFailed) throw err;
+      // So does anything that is not a per-ROW refusal (pg class 23 — a
+      // CHECK, a NOT NULL, a length): a database that is down fails every
+      // card alike, and must read as "Couldn't check", never as "checked".
+      if (!err || err.auditFailed || typeof err.code !== 'string' || !err.code.startsWith('23')) throw err;
       // ONE bad appointment must not hold the queue: it waits at the back,
       // the sweep goes on, and the line says the read was partial.
       console.error(
@@ -370,11 +369,13 @@ async function sweepOffice(opts) {
       summary.partial = true;
       continue;
     }
-    if (made) summary.created += 1;
-    else summary.alreadyCarded += 1;
+    if (made) {
+      summary.created += 1;
+      // Counted as each card commits, so a sweep that dies later still counts it.
+      st.createdTotal += 1;
+    } else summary.alreadyCarded += 1;
   }
   st.deferredAptNums = nextDeferred;
-  st.createdTotal += summary.created;
   return { status: 'ok', summary };
 }
 

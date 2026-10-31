@@ -84,7 +84,8 @@ export function useScheduleCheck(offices: readonly OfficeId[], onCardsMade: () =
           // A NEW card since the last answer — counted on the server, so two
           // reads finishing between asks cannot hide the first one's cards.
           const priorMade = madeSeen.current.get(s.officeId);
-          if (priorMade !== undefined && s.check.createdTotal > priorMade) made = true;
+          // `!==`, not `>`: a server restart resets the count, and its new cards count too.
+          if (priorMade !== undefined && s.check.createdTotal !== priorMade) made = true;
           madeSeen.current.set(s.officeId, s.check.createdTotal);
           if (s.check.lastSuccessAt) seen.current.set(s.officeId, s.check.lastSuccessAt);
         }
