@@ -12,6 +12,7 @@ import {
   TcCheckoutCaseTreatment,
   TcCheckoutPanelItem,
   TcCheckoutAppointmentsResponse,
+  TcCheckoutScheduleCheck,
   type TcCheckoutUpcomingAppointment,
   type TcCheckoutOutcome,
   type TcCheckoutWorkupRequest,
@@ -49,6 +50,15 @@ function parse<T>(schema: z.ZodType<T>, raw: unknown): T {
 
 export async function listCheckout(office: OfficeId, view: CheckoutView) {
   return parse(ListResponse, await tcRequest<unknown>("/tc/checkout", { office, params: { view } }));
+}
+
+/**
+ * Cards from today's schedule (CO-5b): the office's state. Asking also starts
+ * a schedule read on the server when the office's last one is older than its
+ * 60-second window, so the answer can say `running: true`.
+ */
+export async function getScheduleCheck(office: OfficeId): Promise<TcCheckoutScheduleCheck> {
+  return parse(TcCheckoutScheduleCheck, await tcRequest<unknown>("/tc/checkout/schedule-check", { office }));
 }
 
 export async function getCheckoutSummary(office: OfficeId): Promise<TcCheckoutSummary> {

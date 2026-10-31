@@ -2213,6 +2213,19 @@ export const api = {
     );
   },
 
+  /** The TC checkout-cards-from-today's-schedule switch for every office (CO-5b), with the layer that answered. */
+  async getTcAutoCheckoutOffices(): Promise<TcReferralsSwitchState> {
+    return request<TcReferralsSwitchState>("/platform/tc-auto-checkout-offices");
+  },
+
+  /** Turn checkout cards from today's schedule on or off for ONE office. Returns the state as stored. */
+  async setTcAutoCheckoutOfficeEnabled(office: string, enabled: boolean): Promise<TcReferralsSwitchState> {
+    return request<TcReferralsSwitchState>(
+      `/platform/tc-auto-checkout-offices/${encodeURIComponent(office)}`,
+      { method: "PUT", body: JSON.stringify({ enabled }) },
+    );
+  },
+
   /** The TC referrals switch for every office (item 52), with the layer that answered. */
   async getTcReferralsOffices(): Promise<TcReferralsSwitchState> {
     return request<TcReferralsSwitchState>("/platform/tc-referrals-offices");

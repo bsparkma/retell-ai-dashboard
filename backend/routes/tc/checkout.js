@@ -20,6 +20,8 @@
  *   POST   /manual            "Add patient": a card added by hand (CO-5a)
  *   GET    /:id/appointments  the patient's upcoming OD appointments (CO-4a)
  *   POST   /:id/appointment   link / change / clear a Scheduled checkout's anchor (CO-4a)
+ *   GET    /schedule-check    cards from today's schedule: the office's state, and a
+ *                             refresh when it is older than its window (CO-5b)
  *
  * THE WORKUP CHECKLIST (CO-1). The full-screen workup view's boxes — each
  * staged item "Worked up", each existing-treatment group "Ready to present",
@@ -96,7 +98,9 @@
  *   - ZERO Open Dental writes. The reads: POST /manual's re-read of the patient
  *     the person picked (CO-5a, the referrals hub's check), and the patient's
  *     upcoming appointments for the Scheduled anchor (CO-4a,
- *     checkoutAppointments.js) — always the STORED record's office and PatNum.
+ *     checkoutAppointments.js) — always the STORED record's office and PatNum —
+ *     and the office's appointments today for cards from the schedule (CO-5b,
+ *     services/tc/autoCheckout.js), at most one read per office per window.
  *     Everything else renders the snapshot.
  *   - Office from `?office=` through requireOffice, in every WHERE. The PatNum
  *     a case is opened for is the HANDOFF's — never a request's.
@@ -121,6 +125,8 @@ const tcCheckout = require('../../config/tcCheckout');
 const odManualPatient = require('./odManualPatient');
 const checkoutAppointments = require('./checkoutAppointments');
 const odOffices = require('../../config/odOffices');
+const autoCheckout = require('../../services/tc/autoCheckout');
+const { audit } = require('../../platform/audit');
 
 const {
   z,
@@ -406,6 +412,55 @@ router.get(
         ? { handoffId: newest.handoffId, patientName: newest.patientName, createdAt: newest.createdAt }
         : null,
     });
+  })
+);
+
+// ── GET /schedule-check — cards from today's schedule (CO-5b) ───────────────
+
+/**
+ * Start a sweep of the office's schedule today when its last one is older than
+ * the cache window (or `force`), unless one is running. Does not wait for it.
+ * The cards it makes, and their audit rows, are the SYSTEM's
+ * (`system:auto_checkout`), written through this request's tenant. Off (either
+ * switch) → nothing at all. Returns whether a sweep is now running.
+ *
+ * Also the Pipeline's "Sync now" (routes/tc/odSync.js), with `force`.
+ *
+ * @param {import('express').Request} req
+ * @param {string} office  the request's office (requireOffice)
+ * @param {{ force?: boolean }} [opts]
+ */
+async function kickScheduleSweep(req, office, { force = false } = {}) {
+  if (!(await autoCheckout.isOn(office))) return false;
+  const today = officeToday();
+  const asSystem = Object.assign(Object.create(req), { user: { email: autoCheckout.SYSTEM_ACTOR } });
+  const running = autoCheckout.ensureFresh(
+    office,
+    () =>
+      tenantDb.withTenantDb(req, (pool) =>
+        autoCheckout.sweepOffice({ office, today, pool, audit: (entry) => audit(asSystem, entry) })
+      ),
+    { force }
+  );
+  return running !== null;
+}
+
+/**
+ * The Checkout page asks this on focus, on becoming visible, and every 60 s
+ * while visible. Answers at once with the office's state; a refresh it starts
+ * shows as `running: true`, and the page asks again soon after. Counts only —
+ * never a PatNum or a name.
+ */
+router.get(
+  '/schedule-check',
+  h(async (req, res) => {
+    const today = await enter(req, res);
+    if (today === null) return undefined;
+    const office = req.tcOffice;
+    // Checkout is on (enter() answered otherwise), so this is both switches.
+    const enabled = await autoCheckout.isOn(office);
+    if (enabled) await kickScheduleSweep(req, office);
+    return res.json({ success: true, office, ...autoCheckout.statusOf(office, enabled) });
   })
 );
 
@@ -1405,6 +1460,7 @@ module.exports = router;
 module.exports.setClockForTests = setClockForTests;
 module.exports.applyWorkupTick = applyWorkupTick;
 module.exports.officeToday = officeToday;
+module.exports.kickScheduleSweep = kickScheduleSweep;
 // Exported for the tests: TC's own text for a hygiene procedure (feedback round 1
 // pins that a primary tooth prints as its letter here too).
 module.exports.procedureLines = procedureLines;
