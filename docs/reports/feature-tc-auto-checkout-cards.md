@@ -134,3 +134,7 @@ Left as is, with the reviewer agreeing:
 - `tccheckout-co5b-01-list` — schedule cards beside a hygiene card, with "Today's schedule checked at …"
 - `tccheckout-co5b-02-read-failed` — "Couldn't check today's schedule" with the last success
 - `tccheckout-co5b-03-workup` — a schedule card's workup: badge, origin line, honest empty hygiene section
+
+## CI
+
+PR #300. `build-test` run 41161530775 on `refs/pull/300/merge` (head `0cede78`) passed on the **first attempt**, with no fix pushes. That run included typecheck, vitest, the sharded backend tests, the rcm, fees and checkout-anchor verifiers, and the **new od pipeline sync verification step**. Since then only this CI section has been added to the report. **Not merged.**
