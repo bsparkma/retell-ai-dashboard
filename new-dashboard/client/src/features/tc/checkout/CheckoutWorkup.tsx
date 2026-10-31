@@ -22,7 +22,7 @@
  */
 import { useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { Check, CheckCircle2, ClipboardCopy, Clock, CreditCard, FileText, UserPlus } from "lucide-react";
+import { CalendarCheck, Check, CheckCircle2, ClipboardCopy, Clock, CreditCard, FileText, UserPlus } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,7 @@ import { tcErrorMessage } from "@/features/tc/api";
 import { ReferralsPanel } from "@/features/tc/referrals/ReferralsPanel";
 import { setCheckoutWorkup } from "@/features/tc/checkout/checkoutApi";
 import { CheckoutOutcome, checkoutClock } from "@/features/tc/checkout/CheckoutOutcome";
+import { checkoutOriginText } from "@/features/tc/checkout/checkoutOrigin";
 import { PriorityChip, ProcedureTags, teethLine } from "@/features/tc/checkout/CheckoutSidebar";
 import { ExistingTreatmentFromHygiene } from "@/features/tc/checkout/HygieneTreatmentPanel";
 import { ReopenedNotice } from "@/features/tc/checkout/ReopenedNotice";
@@ -236,6 +237,11 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
             <UserPlus className="w-3 h-3" /> Added by hand
           </Badge>
         )}
+        {handoff.source === "schedule" && (
+          <Badge variant="outline" data-testid="workup-schedule">
+            <CalendarCheck className="w-3 h-3" /> From today&apos;s schedule
+          </Badge>
+        )}
         {!hygieneData ? null : snap.notesPending ? (
           <Badge variant="outline" className="border-transparent bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200 gap-1">
             <Clock className="w-3 h-3" /> Hygiene notes still being finished
@@ -254,10 +260,8 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
         </span>
       </div>
       <p className="text-sm text-muted-foreground" data-testid="workup-origin">
-        {handoff.source === "manual"
-          ? `Added by hand at ${checkoutClock(handoff.createdAt)} by ${handoff.submittedBy}`
-          : `Sent by hygiene at ${checkoutClock(handoff.createdAt)}`}
-        {handoff.source === "manual" && handoff.hygieneMergedAt
+        {checkoutOriginText(handoff)}
+        {handoff.source !== "hygiene" && handoff.hygieneMergedAt
           ? ` · hygiene visit arrived at ${checkoutClock(handoff.hygieneMergedAt)}`
           : ""}
         {handoff.providerSeen ? ` · seen by ${handoff.providerSeen}` : ""}
@@ -284,7 +288,10 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
         <section className="rounded-xl border border-dashed border-border bg-muted/30 p-4 space-y-1" data-testid="workup-no-hygiene-data">
           <h2 className="text-base font-semibold text-foreground">No hygiene visit data</h2>
           <p className="text-sm text-muted-foreground">
-            This patient was added at the desk, and no hygiene visit has sent anything for them today, so there is no
+            {handoff.source === "schedule"
+              ? "This card was made from today's schedule (a finished visit that was not a hygiene visit)"
+              : "This patient was added at the desk"}
+            , and no hygiene visit has sent anything for them today, so there is no
             staged treatment to work up, no existing treatment from hygiene, and no collect list. If a hygiene visit
             sends this patient later today, it lands on this card.
           </p>

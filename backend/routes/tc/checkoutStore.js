@@ -53,6 +53,9 @@ const COLS = [
   'appt_snapshot',
   'appt_linked_by',
   'appt_linked_at',
+  // CO-5b.
+  'origin_apt_num',
+  'origin_appt',
 ];
 
 /**
@@ -123,10 +126,28 @@ function toHandoff(row) {
     expiredBy: row.expired_by ?? null,
     workup: workupOf(row),
     // CO-5a. NULL is every record before it: they all came from hygiene.
-    source: row.source === 'manual' ? 'manual' : 'hygiene',
+    // CO-5b adds 'schedule': made from today's Open Dental schedule.
+    source: row.source === 'manual' || row.source === 'schedule' ? row.source : 'hygiene',
     hygieneMergedAt: iso(row.hygiene_merged_at),
     reopenedFrom: reopenedOf(row),
     appointment: anchorOf(row),
+    scheduleAppointment: originOf(row),
+  };
+}
+
+/**
+ * The Open Dental appointment a 'schedule' card was made from (CO-5b), as Open
+ * Dental described it then, or null on every other card.
+ */
+function originOf(row) {
+  if (row.origin_apt_num == null) return null;
+  const snap = obj(row.origin_appt) || {};
+  return {
+    aptNum: Number(row.origin_apt_num),
+    dateTime: typeof snap.dateTime === 'string' ? snap.dateTime : '',
+    appointmentType: typeof snap.appointmentType === 'string' ? snap.appointmentType : '',
+    provider: typeof snap.provider === 'string' ? snap.provider : '',
+    operatory: typeof snap.operatory === 'string' ? snap.operatory : '',
   };
 }
 
@@ -519,8 +540,10 @@ async function insertHandoff(q, row) {
     'updated_by',
     'status',
     'source',
+    'origin_apt_num',
+    'origin_appt',
   ];
-  const placeholders = cols.map((c, i) => (c === 'payload' ? `$${i + 1}::jsonb` : `$${i + 1}`));
+  const placeholders = cols.map((c, i) => (c === 'payload' || c === 'origin_appt' ? `$${i + 1}::jsonb` : `$${i + 1}`));
   await q.query(
     `INSERT INTO tc_checkout_handoffs (${cols.join(', ')}) VALUES (${placeholders.join(', ')})`,
     cols.map((c) =>
@@ -530,7 +553,11 @@ async function insertHandoff(q, row) {
           ? row.status || 'open'
           : c === 'source'
             ? row.source || 'hygiene'
-            : row[c]
+            : c === 'origin_apt_num'
+              ? row.origin_apt_num ?? null
+              : c === 'origin_appt'
+                ? row.origin_appt == null ? null : JSON.stringify(row.origin_appt)
+                : row[c]
     )
   );
 }
@@ -598,17 +625,24 @@ async function findHoldingForPatientDay(q, office, odPatientId, day) {
 }
 
 /**
- * The manual card a hygiene handoff for this patient and day merges onto: one
- * added by hand, still holding the patient, that no hygiene handoff has merged
- * onto yet. Null when there is none (the handoff then makes its own card).
+ * The sources a later hygiene handoff MERGES onto rather than opening a second
+ * card beside: a card added by hand (CO-5a) and a card made from today's
+ * schedule (CO-5b). Neither carries hygiene visit data until the merge.
+ */
+const MERGEABLE_SOURCES = Object.freeze(['manual', 'schedule']);
+
+/**
+ * The manual (or schedule, CO-5b) card a hygiene handoff for this patient and
+ * day merges onto: one still holding the patient, that no hygiene handoff has
+ * merged onto yet. Null when there is none (the handoff then makes its own card).
  */
 async function findManualAwaitingHygiene(q, office, odPatientId, day) {
   const res = await q.query(
     `SELECT ${COLS.join(', ')} FROM tc_checkout_handoffs
       WHERE office_id = $1 AND od_patient_id = $2 AND visit_date = $3 AND status = ANY($4)
-        AND source = 'manual' AND hygiene_merged_at IS NULL
+        AND source = ANY($5) AND hygiene_merged_at IS NULL
       ORDER BY created_at DESC, handoff_id DESC LIMIT 1`,
-    [office, odPatientId, day, [...HOLDING_STATUSES]]
+    [office, odPatientId, day, [...HOLDING_STATUSES], [...MERGEABLE_SOURCES]]
   );
   return res.rows[0] || null;
 }
@@ -629,7 +663,7 @@ async function mergeHygieneOntoManual(q, { office, handoffId, expectRevision, so
         SET source_key = $3, payload = $4::jsonb, is_final = $5, revision = $6, patient_name = $7,
             provider = $8, provider_seen = $9, operatory = $10, updated_by = $11,
             hygiene_merged_at = now(), updated_at = now()
-      WHERE office_id = $1 AND handoff_id = $2 AND source = 'manual' AND hygiene_merged_at IS NULL
+      WHERE office_id = $1 AND handoff_id = $2 AND source = ANY($13) AND hygiene_merged_at IS NULL
         AND revision = $12`,
     [
       office,
@@ -644,9 +678,33 @@ async function mergeHygieneOntoManual(q, { office, handoffId, expectRevision, so
       row.operatory,
       row.updated_by,
       expectRevision,
+      [...MERGEABLE_SOURCES],
     ]
   );
   return res.rowCount === 1;
+}
+
+// ── CO-5b: cards made from today's schedule ─────────────────────────────────
+
+/** The AptNums (of these) that already made a card in this office — any status, ever. */
+async function findOriginAptNums(q, office, aptNums) {
+  if (aptNums.length === 0) return new Set();
+  const res = await q.query(
+    'SELECT origin_apt_num FROM tc_checkout_handoffs WHERE office_id = $1 AND origin_apt_num = ANY($2)',
+    [office, aptNums]
+  );
+  return new Set(res.rows.map((r) => Number(r.origin_apt_num)));
+}
+
+/** The PatNums (of these) that already hold a card on this day in this office. */
+async function findHoldingPatientsOnDay(q, office, odPatientIds, day) {
+  if (odPatientIds.length === 0) return new Set();
+  const res = await q.query(
+    `SELECT od_patient_id FROM tc_checkout_handoffs
+      WHERE office_id = $1 AND od_patient_id = ANY($2) AND visit_date = $3 AND status = ANY($4)`,
+    [office, odPatientIds, day, [...HOLDING_STATUSES]]
+  );
+  return new Set(res.rows.map((r) => Number(r.od_patient_id)));
 }
 
 /**
@@ -729,4 +787,8 @@ module.exports = {
   reopenAnswered,
   anchorOf,
   setAnchor,
+  MERGEABLE_SOURCES,
+  originOf,
+  findOriginAptNums,
+  findHoldingPatientsOnDay,
 };

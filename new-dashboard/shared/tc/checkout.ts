@@ -382,8 +382,12 @@ export function checkoutWorkupProgressLabel(p: { done: number; total: number }):
   return `${p.done} of ${p.total} ${p.total === 1 ? "section" : "sections"} done`;
 }
 
-/** Where a checkout card came from (CO-5a). */
-export const TcCheckoutSource = z.enum(["hygiene", "manual"]);
+/**
+ * Where a checkout card came from: the hygiene visit, the front desk's "Add
+ * patient" (CO-5a), or today's Open Dental schedule (CO-5b — a non-hygiene
+ * appointment Open Dental marked Complete).
+ */
+export const TcCheckoutSource = z.enum(["hygiene", "manual", "schedule"]);
 export type TcCheckoutSource = z.infer<typeof TcCheckoutSource>;
 
 /**
@@ -528,18 +532,60 @@ export const TcCheckoutHandoff = z.object({
    * Scheduled checkout marked "Not in Open Dental yet".
    */
   appointment: TcCheckoutAppointmentAnchor.nullable().default(null),
+  /**
+   * CO-5b. On a `schedule` card, the Open Dental appointment it was made from,
+   * as Open Dental described it then. It stays when a hygiene handoff later
+   * merges onto the card. Null on every other card.
+   */
+  scheduleAppointment: TcCheckoutUpcomingAppointment.nullable().default(null),
 });
 export type TcCheckoutHandoff = z.infer<typeof TcCheckoutHandoff>;
 
 /**
  * Does this card carry hygiene visit data? A hygiene card always does; a manual
- * card only once a hygiene handoff merged onto it. When it does not, the workup
- * view says so instead of rendering the hygiene sections as if they were empty.
- * Pure.
+ * or schedule card only once a hygiene handoff merged onto it. When it does
+ * not, the workup view says so instead of rendering the hygiene sections as if
+ * they were empty. Pure.
  */
 export function checkoutHasHygieneData(h: Pick<TcCheckoutHandoff, "source" | "hygieneMergedAt">): boolean {
-  return h.source !== "manual" || h.hygieneMergedAt !== null;
+  return h.source === "hygiene" || h.hygieneMergedAt !== null;
 }
+
+/**
+ * GET /api/tc/checkout/schedule-check — the Checkout page's "today's schedule"
+ * line (CO-5b), per office. Asking also refreshes the office's schedule read
+ * when it is older than its cache window; the answer is the state as it stands.
+ *
+ *   off      the office's switch is off: nothing is read, nothing is made
+ *   pending  switched on, no read has finished since the server started
+ *   ok       the last read succeeded
+ *   failed   the last read failed — the page says "Couldn't check today's
+ *            schedule" with `lastSuccessAt`, never a silent stale list
+ */
+export const TcCheckoutScheduleCheckStatus = z.enum(["off", "pending", "ok", "failed"]);
+export type TcCheckoutScheduleCheckStatus = z.infer<typeof TcCheckoutScheduleCheckStatus>;
+
+export const TcCheckoutScheduleCheck = z.object({
+  success: z.literal(true),
+  office: z.enum(["roland", "valley"]),
+  status: TcCheckoutScheduleCheckStatus,
+  running: z.boolean(),
+  lastSuccessAt: z.string().nullable(),
+  lastAttemptAt: z.string().nullable(),
+  /** Counts from the last read that finished. Never a PatNum or a name. */
+  summary: z
+    .object({
+      completedNonHygiene: z.number().int().nonnegative(),
+      created: z.number().int().nonnegative(),
+      alreadyCarded: z.number().int().nonnegative(),
+      skippedHygiene: z.number().int().nonnegative(),
+      skippedNoPatient: z.number().int().nonnegative(),
+      deferred: z.number().int().nonnegative(),
+      partial: z.boolean(),
+    })
+    .nullable(),
+});
+export type TcCheckoutScheduleCheck = z.infer<typeof TcCheckoutScheduleCheck>;
 
 /**
  * POST /api/tc/checkout/manual — the front desk's "Add patient" (CO-5a).

@@ -59,6 +59,7 @@ const hygPilot = require('../config/hygPilot');
 const tcCheckout = require('../config/tcCheckout');
 const tcReferrals = require('../config/tcReferrals');
 const tcOdSync = require('../config/tcOdSync');
+const tcAutoCheckout = require('../config/tcAutoCheckout');
 const tcReferralEmail = require('../config/tcReferralEmail');
 const tcReferralPatientEmail = require('../config/tcReferralPatientEmail');
 const { realOffices } = require('../config/tcOfficeSwitch');
@@ -795,6 +796,58 @@ router.put('/tc-od-sync-offices/:office', async (req, res) => {
     console.error('[platform] OD sync switch write failed:', err && err.message ? err.message : err);
     const status = code === 'INVALID_OFFICE' || code === 'INVALID_BODY' ? 400 : 500;
     return fail(res, status, 'Could not save the Open Dental sync switch', code);
+  }
+});
+
+// ── TC checkout cards from today's schedule (CO-5b) — the same shape ─────────
+//
+// Per office, default OFF, TC_AUTO_CHECKOUT_ENABLED_<OFFICE>=false supreme.
+// When on (and checkout is on), the Checkout page's schedule check reads the
+// office's appointments today (GET only) and makes a Waiting card for each
+// completed non-hygiene appointment.
+
+function tcAutoCheckoutPayload() {
+  return {
+    offices: realOffices().map((office) => tcAutoCheckout.officeState(office)),
+    settingKey: tcAutoCheckout.settingKey,
+  };
+}
+
+/** GET /tc-auto-checkout-offices — refreshed from the control plane before answering. */
+router.get('/tc-auto-checkout-offices', async (req, res) => {
+  const refreshed = await tcAutoCheckout.refreshFromDb();
+  return res.json({ success: true, ...tcAutoCheckoutPayload(), controlPlaneError: refreshed.error });
+});
+
+/** PUT /tc-auto-checkout-offices/:office   { enabled: boolean } — written, read back, audited with priorState on|off. */
+router.put('/tc-auto-checkout-offices/:office', async (req, res) => {
+  const office = String(req.params.office || '');
+  const enabled = req.body ? req.body.enabled : undefined;
+  if (typeof enabled !== 'boolean') {
+    return fail(res, 400, 'enabled must be true or false', 'INVALID_BODY');
+  }
+  if (!realOffices().includes(office)) {
+    return fail(res, 404, 'No such office', 'INVALID_OFFICE');
+  }
+
+  try {
+    await tcAutoCheckout.refreshFromDb();
+    const before = tcAutoCheckout.officeState(office);
+    await tcAutoCheckout.persist(office, enabled, actorEmail(req));
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'platform_setting',
+      resourceId: tcAutoCheckout.settingKey,
+      result: 'SUCCESS',
+      office,
+      priorState: before.enabled ? 'on' : 'off',
+    });
+    return res.json({ success: true, ...tcAutoCheckoutPayload() });
+  } catch (err) {
+    const code = err && err.code ? err.code : 'TC_AUTO_CHECKOUT_SWITCH_WRITE_FAILED';
+    console.error('[platform] auto-checkout switch write failed:', err && err.message ? err.message : err);
+    const status = code === 'INVALID_OFFICE' || code === 'INVALID_BODY' ? 400 : 500;
+    return fail(res, status, 'Could not save the checkout-from-schedule switch', code);
   }
 });
 

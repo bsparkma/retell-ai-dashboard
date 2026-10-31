@@ -25,6 +25,11 @@
  *
  * The voice module's "Sync now" (routes/unifiedCalls.js) is the pattern: the
  * person asks, the system runs, the trail names both.
+ *
+ * CO-5b: an accepted Sync now also re-reads the office's schedule today for
+ * checkout cards (routes/tc/checkout.js kickScheduleSweep, forced past its
+ * 60-second window) when that switch is on. Answered as `scheduleCheck`:
+ * 'started' or 'off'.
  */
 
 const express = require('express');
@@ -36,6 +41,7 @@ const { auditMany } = require('../../platform/audit');
 const store = require('./caseStore');
 const tcOdSync = require('../../config/tcOdSync');
 const engine = require('../../services/tc/odPipelineSync');
+const { kickScheduleSweep } = require('./checkout');
 
 const router = express.Router();
 router.use(requireOffice);
@@ -176,7 +182,13 @@ router.post(
         });
       inflight.set(runId, done);
       accepted = true;
-      return res.status(202).json({ success: true, runId });
+      const scheduleCheck = (await kickScheduleSweep(req, office, { force: true }).catch((err) => {
+        console.error(`[tc/od-sync] office=${office} schedule check could not start: ${(err && err.message) || err}`);
+        return false;
+      }))
+        ? 'started'
+        : 'off';
+      return res.status(202).json({ success: true, runId, scheduleCheck });
     } finally {
       if (!accepted) starting.delete(office);
     }

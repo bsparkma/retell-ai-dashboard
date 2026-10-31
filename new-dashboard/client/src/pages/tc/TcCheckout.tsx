@@ -15,6 +15,11 @@
  * list by hand, through the referrals hub's Open Dental patient search; a
  * patient who already has a card today gets that card opened instead.
  *
+ * Cards from today's schedule (CO-5b): where the office has it switched on, a
+ * non-hygiene visit Open Dental marks Complete gets a Waiting card by itself.
+ * The line under the tabs says when the schedule was last read — and, in
+ * amber, when it could not be (features/tc/checkout/ScheduleCheck.tsx).
+ *
  * Yesterday's unanswered checkouts close themselves as Expired on the server;
  * they never show here.
  *
@@ -24,7 +29,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 import { toast } from "sonner";
-import { AlertTriangle, DoorOpen, Eye, Hand, Loader2, RefreshCw, X } from "lucide-react";
+import { AlertTriangle, CalendarCheck, DoorOpen, Eye, Hand, Loader2, RefreshCw, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -45,6 +50,7 @@ import { claimCheckout, dismissCheckout } from "@/features/tc/checkout/checkoutA
 import { CHECKOUT_TABS, useCheckoutList } from "@/features/tc/checkout/useCheckoutList";
 import { AddCheckoutPatient, useCanAddCheckoutPatient } from "@/features/tc/checkout/AddCheckoutPatient";
 import { ReopenedBadge } from "@/features/tc/checkout/ReopenedNotice";
+import { ScheduleCheckLine, useScheduleCheck } from "@/features/tc/checkout/ScheduleCheck";
 import {
   CheckoutSidebar,
   PriorityChip,
@@ -154,6 +160,11 @@ function Row({
           {row.source === "manual" && (
             <Badge variant="outline" data-testid="checkout-row-manual">Added by hand</Badge>
           )}
+          {row.source === "schedule" && (
+            <Badge variant="outline" className="gap-1" data-testid="checkout-row-schedule">
+              <CalendarCheck className="w-3 h-3" /> From today&apos;s schedule
+            </Badge>
+          )}
           {row.reopenedFrom && <ReopenedBadge />}
           {hygieneData && <PriorityChip priority={row.snapshot.priority} />}
           {row.snapshot.notesPending && <Badge variant="outline">Notes pending</Badge>}
@@ -166,6 +177,7 @@ function Row({
         </div>
         <p className="text-xs text-muted-foreground mt-0.5">
           {checkoutClock(row.createdAt)} ·{" "}
+          {row.scheduleAppointment?.appointmentType ? `${row.scheduleAppointment.appointmentType} · ` : ""}
           {!hygieneData
             ? "no hygiene visit data"
             : count === 0
@@ -213,6 +225,8 @@ export function CheckoutInbox({ offices, showOfficeBadges }: { offices: OfficeId
   const [dismissing, setDismissing] = useState<TcCheckoutHandoff | null>(null);
   const [opened, setOpened] = useState<{ office: OfficeId; handoffId: string } | null>(null);
   const canAdd = useCanAddCheckoutPatient();
+  // CO-5b: keeps the server's read of today's schedule fresh while this page is open.
+  const scheduleStates = useScheduleCheck(enabledOffices ?? [], () => void load());
 
   // The arrival toast links here with ?handoff=&office= — open the same sidebar.
   useEffect(() => {
@@ -266,6 +280,7 @@ export function CheckoutInbox({ offices, showOfficeBadges }: { offices: OfficeId
         {canAdd && enabledOffices && enabledOffices.length > 0 && <AddCheckoutPatient offices={enabledOffices} />}
       </div>
 
+      <ScheduleCheckLine states={scheduleStates} showOfficeBadges={showOfficeBadges} />
       {notice && <TcPartialDataNotice message={notice} />}
 
       {loading ? (
@@ -324,7 +339,7 @@ export default function TcCheckout() {
   }
   return (
     <div className="p-6 max-w-4xl mx-auto">
-      <TcPageHeader title="Checkout" subtitle="Patients at the front desk today: sent by the hygiene visit, or added by hand" />
+      <TcPageHeader title="Checkout" subtitle="Patients at the front desk today: sent by the hygiene visit, from today's schedule, or added by hand" />
       <CheckoutInbox key={officeScopeKey(scope.offices)} offices={scope.offices} showOfficeBadges={scope.showOfficeBadges} />
     </div>
   );

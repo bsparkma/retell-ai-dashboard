@@ -29,6 +29,7 @@ import { OfficeBadge } from "@/features/tc/components/OfficeBadge";
 import { tcErrorMessage } from "@/features/tc/api";
 import { getCheckoutHandoff } from "@/features/tc/checkout/checkoutApi";
 import { CheckoutOutcome, checkoutClock } from "@/features/tc/checkout/CheckoutOutcome";
+import { checkoutOriginText } from "@/features/tc/checkout/checkoutOrigin";
 import { ReopenedNotice } from "@/features/tc/checkout/ReopenedNotice";
 import {
   TC_CHECKOUT_PRIORITY_LABELS,
@@ -148,7 +149,7 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
           </SheetTitle>
           <SheetDescription>
             {handoff
-              ? `${handoff.source === "manual" ? `Added by hand at ${checkoutClock(handoff.createdAt)} by ${handoff.submittedBy}` : `Sent by hygiene at ${checkoutClock(handoff.createdAt)}`}${handoff.providerSeen ? ` · seen by ${handoff.providerSeen}` : ""}${handoff.provider ? ` · ${handoff.provider}` : ""}${handoff.operatory ? ` · ${handoff.operatory}` : ""}`
+              ? `${checkoutOriginText(handoff)}${handoff.providerSeen ? ` · seen by ${handoff.providerSeen}` : ""}${handoff.provider ? ` · ${handoff.provider}` : ""}${handoff.operatory ? ` · ${handoff.operatory}` : ""}`
               : "Loading the checkout…"}
           </SheetDescription>
         </SheetHeader>
@@ -171,6 +172,9 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
                 {hygieneData && <PriorityChip priority={snap.priority} prefix="Priority: " />}
                 {handoff.source === "manual" && (
                   <Badge variant="outline" data-testid="checkout-manual">Added by hand</Badge>
+                )}
+                {handoff.source === "schedule" && (
+                  <Badge variant="outline" data-testid="checkout-schedule">From today&apos;s schedule</Badge>
                 )}
                 {!hygieneData ? null : snap.notesPending ? (
                   <Badge variant="outline" className="border-transparent bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200 gap-1" data-testid="checkout-notes-pending">
@@ -231,8 +235,8 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
 
               {!hygieneData && (
                 <p className="rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground" data-testid="checkout-no-hygiene-data">
-                  No hygiene visit data: this patient was added at the desk, and no hygiene visit has sent anything for
-                  them today.
+                  No hygiene visit data: {handoff.source === "schedule" ? "this card was made from today's schedule" : "this patient was added at the desk"}, and
+                  no hygiene visit has sent anything for them today.
                 </p>
               )}
 

@@ -56,7 +56,7 @@ function RailCard({
       </span>
       <span className="mt-0.5 block text-xs text-muted-foreground">
         {checkoutClock(row.createdAt)}
-        {row.source === "manual" ? " · added by hand" : ""}
+        {row.source === "manual" ? " · added by hand" : row.source === "schedule" ? " · from today's schedule" : ""}
         {waiting ? ` · ${checkoutWorkupProgressLabel(progress)}` : ` · ${TC_CHECKOUT_STATUS_LABELS[row.status]}`}
       </span>
     </button>

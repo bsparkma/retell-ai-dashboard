@@ -14995,6 +14995,8 @@ __export(contract_entry_exports, {
   TcCheckoutRecord: () => TcCheckoutRecord,
   TcCheckoutRecordStatus: () => TcCheckoutRecordStatus,
   TcCheckoutReopened: () => TcCheckoutReopened,
+  TcCheckoutScheduleCheck: () => TcCheckoutScheduleCheck,
+  TcCheckoutScheduleCheckStatus: () => TcCheckoutScheduleCheckStatus,
   TcCheckoutSnapshot: () => TcCheckoutSnapshot,
   TcCheckoutSource: () => TcCheckoutSource,
   TcCheckoutStatus: () => TcCheckoutStatus,
@@ -17589,7 +17591,7 @@ function checkoutWorkupProgress(h) {
 function checkoutWorkupProgressLabel(p) {
   return `${p.done} of ${p.total} ${p.total === 1 ? "section" : "sections"} done`;
 }
-var TcCheckoutSource = import_zod7.z.enum(["hygiene", "manual"]);
+var TcCheckoutSource = import_zod7.z.enum(["hygiene", "manual", "schedule"]);
 function emptyCheckoutSnapshot() {
   return {
     procedures: [],
@@ -17690,11 +17692,36 @@ var TcCheckoutHandoff = import_zod7.z.object({
    * Null on every other status, on every record before CO-4a, and on a
    * Scheduled checkout marked "Not in Open Dental yet".
    */
-  appointment: TcCheckoutAppointmentAnchor.nullable().default(null)
+  appointment: TcCheckoutAppointmentAnchor.nullable().default(null),
+  /**
+   * CO-5b. On a `schedule` card, the Open Dental appointment it was made from,
+   * as Open Dental described it then. It stays when a hygiene handoff later
+   * merges onto the card. Null on every other card.
+   */
+  scheduleAppointment: TcCheckoutUpcomingAppointment.nullable().default(null)
 });
 function checkoutHasHygieneData(h) {
-  return h.source !== "manual" || h.hygieneMergedAt !== null;
+  return h.source === "hygiene" || h.hygieneMergedAt !== null;
 }
+var TcCheckoutScheduleCheckStatus = import_zod7.z.enum(["off", "pending", "ok", "failed"]);
+var TcCheckoutScheduleCheck = import_zod7.z.object({
+  success: import_zod7.z.literal(true),
+  office: import_zod7.z.enum(["roland", "valley"]),
+  status: TcCheckoutScheduleCheckStatus,
+  running: import_zod7.z.boolean(),
+  lastSuccessAt: import_zod7.z.string().nullable(),
+  lastAttemptAt: import_zod7.z.string().nullable(),
+  /** Counts from the last read that finished. Never a PatNum or a name. */
+  summary: import_zod7.z.object({
+    completedNonHygiene: import_zod7.z.number().int().nonnegative(),
+    created: import_zod7.z.number().int().nonnegative(),
+    alreadyCarded: import_zod7.z.number().int().nonnegative(),
+    skippedHygiene: import_zod7.z.number().int().nonnegative(),
+    skippedNoPatient: import_zod7.z.number().int().nonnegative(),
+    deferred: import_zod7.z.number().int().nonnegative(),
+    partial: import_zod7.z.boolean()
+  }).nullable()
+});
 var TcCheckoutManualAddRequest = import_zod7.z.object({ patNum: import_zod7.z.number().int().positive() }).strict();
 var TcCheckoutOutcomeRequest = import_zod7.z.object({
   outcome: TcCheckoutOutcome,
@@ -18857,6 +18884,8 @@ function odToothText(tooth) {
   TcCheckoutRecord,
   TcCheckoutRecordStatus,
   TcCheckoutReopened,
+  TcCheckoutScheduleCheck,
+  TcCheckoutScheduleCheckStatus,
   TcCheckoutSnapshot,
   TcCheckoutSource,
   TcCheckoutStatus,
