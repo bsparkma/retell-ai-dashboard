@@ -1368,9 +1368,64 @@ async function listUpcomingAppointments(odGet, patNum, { from }) {
     .sort((a, b) => a.dateTime.localeCompare(b.dateTime) || a.aptNum - b.aptNum);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CO-4b: one anchored appointment, by AptNum (the pipeline sync's read)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /appointments/{AptNum} — ONE request. Only the four fields the sync
+ * decides on leave here: AptNum, PatNum (to prove it is still the anchored
+ * patient's), AptStatus, and the date/time. No notes.
+ *
+ * A 404 is an ANSWER ("Open Dental no longer has it"), so it is returned as
+ * `{ missing: true }`. Anything else that is not a 200 is a FAILURE and throws
+ * (with `odStatus`), so the caller can fail the whole office closed rather
+ * than read an outage as a signal.
+ *
+ * @param {(path: string, params: object, opts: object) => Promise<{ok:boolean,status:number,data:unknown}>} odGet
+ * @param {number} aptNum
+ * @param {{ timeoutMs?: number, minIntervalMs?: number }} [opts]
+ * @returns {Promise<{ missing: true } | { missing: false, appointment: { aptNum: number, patNum: number|null, aptStatus: string, dateTime: string } }>}
+ */
+async function getAppointment(odGet, aptNum, opts = {}) {
+  const res = await odGet(
+    `/appointments/${Number(aptNum)}`,
+    {},
+    { timeoutMs: opts.timeoutMs || OD_CALL_TIMEOUT_MS, ...(opts.minIntervalMs ? { minIntervalMs: opts.minIntervalMs } : {}) }
+  );
+  if (!res.ok) {
+    // A 404 is "no such appointment" -- unless Open Dental is saying the KEY
+    // cannot reach /appointments at all, which is our outage, not an answer.
+    if (res.status === 404 && !/not a valid resource|not enabled|permission/i.test(String(res.error || ''))) {
+      return { missing: true };
+    }
+    const err = new Error(`OD appointment read failed (${res.status})`);
+    err.odStatus = res.status;
+    throw err;
+  }
+  const raw = Array.isArray(res.data) ? res.data[0] : res.data;
+  // A 200 that is not this appointment (an empty body, a proxy page) is not an
+  // answer either: fail, so the office fails closed rather than flag every case.
+  if (!raw || typeof raw !== 'object' || num(raw.AptNum) !== Number(aptNum)) {
+    const err = new Error('OD appointment read returned an unreadable body');
+    err.odStatus = res.status;
+    throw err;
+  }
+  return {
+    missing: false,
+    appointment: {
+      aptNum: num(raw.AptNum),
+      patNum: raw.PatNum == null ? null : num(raw.PatNum),
+      aptStatus: String(raw.AptStatus || ''),
+      dateTime: String(raw.AptDateTime || '').slice(0, 19),
+    },
+  };
+}
+
 module.exports = {
   // reads
   searchPatients,
+  getAppointment,
   getPatient,
   // R6.2: the statuses the search hides, so a by-PatNum read can refuse the same ones.
   EXCLUDED_PAT_STATUS,

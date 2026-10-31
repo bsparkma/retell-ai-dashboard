@@ -31,6 +31,7 @@ import { UrgencyBadge } from "../components/TcShell";
 import { OfficeBadge } from "../components/OfficeBadge";
 import { OrthoWorkupChip } from "../caseview/OrthoScreeningSection";
 import { TxNotInOdChip } from "../checkout/HygieneTreatmentPanel";
+import { OdSyncCardLine } from "../odSync/OdSyncPanel";
 
 /** Whole days the case has sat in its current status (statusChangedAt, falling back to createdAt). */
 export function daysInStatus(row: TcCaseSummary): number {
@@ -45,12 +46,15 @@ export function CaseCardBody({
   onMove,
   pending = false,
   showOfficeBadge = false,
+  onOdSyncUndone,
 }: {
   caseRow: TcCaseSummary;
   /** Requested status move — the parent validates + transitions (lost opens the reason dialog). */
   onMove: (status: CaseStatusId) => void;
   pending?: boolean;
   showOfficeBadge?: boolean;
+  /** CO-4b: an Undo on the card's Open Dental sync badge landed; the board re-reads. */
+  onOdSyncUndone?: () => void;
 }) {
   const days = daysInStatus(caseRow);
   return (
@@ -119,6 +123,14 @@ export function CaseCardBody({
         </div>
       )}
 
+      {/* CO-4b: "Moved by Open Dental sync" + Undo, or "Open Dental no longer matches — check". */}
+      <OdSyncCardLine
+        office={caseRow.officeId}
+        caseId={caseRow.caseId}
+        state={caseRow.odSync}
+        onUndone={onOdSyncUndone}
+      />
+
       <div className="mt-2 flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-1.5">
           <UrgencyBadge urgency={caseRow.urgency} />
@@ -147,6 +159,7 @@ export function CaseCard({
   pending = false,
   muted = false,
   showOfficeBadge = false,
+  onOdSyncUndone,
 }: {
   caseRow: TcCaseSummary;
   onOpen: () => void;
@@ -158,6 +171,8 @@ export function CaseCard({
   muted?: boolean;
   /** All-offices view: show which office this case belongs to. */
   showOfficeBadge?: boolean;
+  /** CO-4b: see CaseCardBody. */
+  onOdSyncUndone?: () => void;
 }) {
   const { setNodeRef, listeners, attributes, isDragging } = useDraggable({
     id: caseRow.caseId,
@@ -193,6 +208,7 @@ export function CaseCard({
         onMove={onMove}
         pending={pending}
         showOfficeBadge={showOfficeBadge}
+        onOdSyncUndone={onOdSyncUndone}
       />
     </div>
   );

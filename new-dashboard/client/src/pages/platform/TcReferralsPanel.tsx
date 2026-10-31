@@ -12,7 +12,7 @@
  */
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { AlertTriangle, Loader2, Mail, Send, ShieldAlert, UserRound } from "lucide-react";
+import { AlertTriangle, CalendarClock, Loader2, Mail, Send, ShieldAlert, UserRound } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -223,6 +223,24 @@ export function TcReferralsPanel() {
 /** The referral email switch (R5). */
 export function TcReferralEmailPanel() {
   return <OfficeSwitchPanel config={REFERRAL_EMAIL} />;
+}
+
+const OD_SYNC: SwitchPanelConfig = {
+  prefix: "tc-od-sync",
+  noun: "Open Dental sync",
+  icon: <CalendarClock className="w-4 h-4" />,
+  title: "TC Open Dental pipeline sync",
+  description:
+    "When on, the Pipeline's \"Sync now\" and the nightly pass read each Scheduled case's linked appointment from this office's Open Dental and act only on an unambiguous signal: Complete moves the case to Completed, Broken or Unscheduled moves it to Pending Patient, a new date or time updates the link. Anything else is flagged for a person. Every move has an Undo. Read-only — nothing is written to Open Dental. Per office.",
+  confirmDescription:
+    "Scheduled cases in this office with a linked appointment will follow Open Dental from the next sync: they can move to Completed or Pending Patient on their own, each with a badge and an Undo. Nothing is written to Open Dental. You can turn it off again at any time, instantly.",
+  load: () => api.getTcOdSyncOffices(),
+  save: (office, enabled) => api.setTcOdSyncOfficeEnabled(office, enabled),
+};
+
+/** The Open Dental pipeline sync switch (CO-4b). */
+export function TcOdSyncPanel() {
+  return <OfficeSwitchPanel config={OD_SYNC} />;
 }
 
 /** The referral PATIENT email switch (R5b): only the patient's email after a send. */

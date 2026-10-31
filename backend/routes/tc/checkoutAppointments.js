@@ -83,4 +83,6 @@ async function upcomingForPatient(office, odPatientId, from) {
   }));
 }
 
-module.exports = { upcomingForPatient, AppointmentsUnavailable };
+// CO-4b: the pipeline sync reads the anchored appointment through this same
+// office-checked, GET-only transport.
+module.exports = { upcomingForPatient, AppointmentsUnavailable, odGetForOffice };

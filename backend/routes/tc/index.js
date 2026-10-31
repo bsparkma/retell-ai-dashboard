@@ -104,6 +104,9 @@ router.use('/reports', tcFull, require('./reports'));
 router.use('/opportunities', tcFull, require('./opportunities'));
 router.use('/nurture', tcFull, require('./nurture'));
 router.use('/checkout', tcFull, require('./checkout'));
+// CO-4b: the Pipeline's Open Dental sync (status, Sync now, Undo). Its own
+// per-office switch (config/tcOdSync.js) gates the sweep; Undo is not behind it.
+router.use('/od-sync', tcFull, require('./odSync'));
 router.use('/notification-prefs', tcFull, require('./notifications'));
 // R5c: the office's email identity (reply-to, practice name, practice phone).
 // tc.full here like every TC mount; the router itself then requires

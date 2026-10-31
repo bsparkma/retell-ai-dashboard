@@ -2200,6 +2200,19 @@ export const api = {
     );
   },
 
+  /** The TC Open Dental pipeline sync switch for every office (CO-4b), with the layer that answered. */
+  async getTcOdSyncOffices(): Promise<TcReferralsSwitchState> {
+    return request<TcReferralsSwitchState>("/platform/tc-od-sync-offices");
+  },
+
+  /** Turn the Open Dental pipeline sync on or off for ONE office. Returns the state as stored. */
+  async setTcOdSyncOfficeEnabled(office: string, enabled: boolean): Promise<TcReferralsSwitchState> {
+    return request<TcReferralsSwitchState>(
+      `/platform/tc-od-sync-offices/${encodeURIComponent(office)}`,
+      { method: "PUT", body: JSON.stringify({ enabled }) },
+    );
+  },
+
   /** The TC referrals switch for every office (item 52), with the layer that answered. */
   async getTcReferralsOffices(): Promise<TcReferralsSwitchState> {
     return request<TcReferralsSwitchState>("/platform/tc-referrals-offices");
