@@ -319,6 +319,10 @@ async function bootstrap() {
   // ABOVE /api/platform on purpose, so this one path answers under admin.all
   // and every other /api/platform path still meets requireSuperAdmin below.
   app.use('/api/platform/hyg-staff', requirePermission('admin.all'), require('./routes/hygStaff'));
+  // Print templates (CO-3): the school/work excuse and appointment card wording
+  // and letterhead, per office. Same gate and the same reason: the office
+  // manager edits them, so this path also sits ABOVE the super_admin mount.
+  app.use('/api/platform/print-templates', requirePermission('admin.all'), require('./routes/printTemplates'));
   // The Platform Console (PR C): the tenant catalog, module entitlements, and
   // the call-store retention policy. NO module guard, deliberately — entitlement
   // answers "did this practice buy the product?", and this is the surface that
