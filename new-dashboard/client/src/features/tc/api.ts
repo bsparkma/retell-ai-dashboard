@@ -257,6 +257,44 @@ export async function tcFetchObjectUrl(path: string, office: OfficeId): Promise<
   return URL.createObjectURL(await res.blob());
 }
 
+/**
+ * CO-3: POST a JSON body and take the answer as a file (a printout's PDF), with
+ * TC's transport — office in the query, the same auth, the same typed refusals
+ * when the server answers with JSON instead. The caller opens and later revokes
+ * the object URL.
+ */
+export async function tcPostForObjectUrl(
+  path: string,
+  office: OfficeId,
+  body: unknown,
+): Promise<{ url: string; headers: Headers }> {
+  const url = new URL(`${BASE}${path.startsWith("/") ? "" : "/"}${path}`, window.location.origin);
+  url.searchParams.set("office", office);
+  const res = await fetch(url.toString(), {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...(DASHBOARD_TOKEN ? { Authorization: `Bearer ${DASHBOARD_TOKEN}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) {
+    let code: string | null = null;
+    let message = `HTTP ${res.status}`;
+    try {
+      const obj = (await res.json()) as { error?: unknown; code?: unknown };
+      if (typeof obj.error === "string") message = obj.error;
+      if (typeof obj.code === "string") code = obj.code;
+    } catch {
+      /* not JSON */
+    }
+    throw new TcApiError(message, res.status, code, null, []);
+  }
+  return { url: URL.createObjectURL(await res.blob()), headers: res.headers };
+}
+
 // ── Cases ───────────────────────────────────────────────────────────────────
 
 /** GET /cases list item — TcCase scalars (no children) + timestamps. */
