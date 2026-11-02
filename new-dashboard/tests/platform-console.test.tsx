@@ -69,6 +69,7 @@ const MODULES = () => [
 ];
 
 /** Everything the fake server holds, plus the calls it recorded. */
+const signatureCalls = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 const server = vi.hoisted(() => ({
   practicesCalls: 0,
   moduleWrites: [] as Array<{ tenantId: string; module: string; enabled: boolean }>,
@@ -147,6 +148,22 @@ vi.mock("@/lib/api", async (importOriginal) => {
         }
         return { email, role: "hygiene" as const, status: "active" as const, lastLoginAt: null, homeOffice: null, ...patch };
       }),
+      // Signature on notes, through the console's door. Records which practice
+      // each call named, so a test can prove the panel uses THIS door.
+      getPracticeUserSignature: vi.fn(async (tenantId: string, email: string) => {
+        signatureCalls.push({ verb: "get", tenantId, email });
+        return { success: true as const, office: "roland" as const, signature: null };
+      }),
+      savePracticeUserSignature: vi.fn(
+        async (tenantId: string, email: string, input: { fullName: string | null; license: string | null }) => {
+          signatureCalls.push({ verb: "put", tenantId, email, input });
+          return {
+            success: true as const,
+            office: "roland" as const,
+            signature: input.fullName ? { fullName: input.fullName, license: input.license } : null,
+          };
+        },
+      ),
       listPracticeAudit: vi.fn(async (_t: string, filters: Record<string, unknown> = {}) => {
         const all = Array.from({ length: 120 }, (_, i) => ({
           auditId: `a${i}`,
@@ -483,6 +500,30 @@ describe("users", () => {
     );
     expect(await screen.findByText("Re-enable")).toBeTruthy();
     expect(screen.getByTestId("status-temp@carein.ai").textContent).toBe("Disabled");
+  });
+
+  it("the shared editor's Signature on notes panel writes through THIS practice's door", async () => {
+    signatureCalls.length = 0;
+    renderPage();
+    await openPractice("carein", "users");
+    await screen.findByTestId("user-row-temp@carein.ai");
+
+    fireEvent.click(screen.getByTestId("signature-toggle-temp@carein.ai"));
+    await screen.findByTestId("signature-panel-temp@carein.ai");
+    fireEvent.change(screen.getByTestId("signature-name-temp@carein.ai"), { target: { value: "Jamie Example" } });
+    fireEvent.click(screen.getByTestId("signature-save-temp@carein.ai"));
+
+    await waitFor(() =>
+      expect(signatureCalls).toEqual([
+        { verb: "get", tenantId: CAREIN, email: "temp@carein.ai" },
+        {
+          verb: "put",
+          tenantId: CAREIN,
+          email: "temp@carein.ai",
+          input: { fullName: "Jamie Example", license: null },
+        },
+      ]),
+    );
   });
 
   it("locks the operator's own row's role and status, like /admin/users does", async () => {

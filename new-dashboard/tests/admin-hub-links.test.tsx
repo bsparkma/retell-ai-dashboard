@@ -1,6 +1,7 @@
 /**
  * fix/staff-settings-link — the Admin page is the hub for managing people, so
- * it links to Users and Practice staff (ruling: no new nav tabs in any module).
+ * it links to Users (ruling: no new nav tabs in any module). The Practice staff
+ * card is gone: signatures are entered on each person's Users row now.
  *
  * Also dumps the page for the PR screenshot, the admin-staff-shots way:
  *
@@ -49,15 +50,14 @@ function renderAdmin() {
 }
 
 describe("Admin hub — people links", () => {
-  it("links to Users and Practice staff above the tabs, whichever tab is open", async () => {
+  it("links to Users above the tabs, whichever tab is open — and no longer to Practice staff", async () => {
     renderAdmin();
     const users = await screen.findByTestId("admin-link-users");
-    const staff = await screen.findByTestId("admin-link-staff");
 
     expect(users.getAttribute("href")).toBe("/admin/users");
-    expect(staff.getAttribute("href")).toBe("/admin/staff");
-    expect(staff.textContent).toContain("Practice staff");
-    expect(staff.textContent).toContain("Hygienist names, licence numbers and sign-ins");
+    expect(users.textContent).toContain("the name and licence their notes print");
+    expect(screen.queryByTestId("admin-link-staff")).toBeNull();
+    expect(document.querySelector('a[href="/admin/staff"]')).toBeNull();
   });
 });
 
@@ -67,7 +67,7 @@ const SHOTS = process.env.STAFF_SHOTS === "1";
 describe.skipIf(!SHOTS)("admin hub shots", () => {
   it("staff-04-admin-hub", async () => {
     renderAdmin();
-    await screen.findByTestId("admin-link-staff");
+    await screen.findByTestId("admin-link-users");
     // Wait for the load to settle so the shot is the page, not its spinner.
     await screen.findByText("Integrations");
     await new Promise((r) => setTimeout(r, 50));

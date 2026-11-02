@@ -23,6 +23,8 @@ const registry = require('../platform/registry');
 const auditModule = require('../platform/audit');
 const userContext = require('../platform/userContext');
 const { requirePermission } = require('../config/permissions');
+const tenantDb = require('../platform/tenantDb');
+const { FakeHygDb } = require('./hyg/hygTestUtils');
 
 const TENANT = 'T1';
 
@@ -46,6 +48,10 @@ const REGISTRY_KEYS = [
 const original = {};
 for (const k of REGISTRY_KEYS) original[k] = registry[k];
 const originalAudit = auditModule.audit;
+const originalGetTenantPool = tenantDb.getTenantPool;
+const originalWithTenantDb = tenantDb.withTenantDb;
+/** The practice's own database — where hyg_staff (signatures) lives. */
+let db;
 
 function activeAdmins() {
   return rows.filter((r) => r.role === 'admin' && r.status === 'active').length;
@@ -101,11 +107,23 @@ beforeEach(() => {
   auditModule.audit = async (_req, entry) => {
     auditRows.push(entry);
   };
+
+  db = new FakeHygDb();
+  tenantDb.getTenantPool = async (tenantId) => {
+    assert.equal(tenantId, TENANT, 'only ever the session tenant’s database');
+    return db;
+  };
+  tenantDb.withTenantDb = async (req, fn) => {
+    assert.equal(req.tenant.id, TENANT);
+    return fn(db);
+  };
 });
 
 afterEach(() => {
   for (const k of REGISTRY_KEYS) registry[k] = original[k];
   auditModule.audit = originalAudit;
+  tenantDb.getTenantPool = originalGetTenantPool;
+  tenantDb.withTenantDb = originalWithTenantDb;
   userContext.clearCache();
 });
 
@@ -145,6 +163,7 @@ function boot({ role = 'admin', isSuperAdmin = false, actor = 'boss@carein.ai' }
         get: (p) => call('GET', p),
         post: (p, b) => call('POST', p, b),
         patch: (p, b) => call('PATCH', p, b),
+        put: (p, b) => call('PUT', p, b),
         close: () => new Promise((r) => server.close(r)),
       });
     });
@@ -565,6 +584,174 @@ test('home office: setting it on YOURSELF is allowed — it locks nobody out', a
     const res = await app.patch('/api/users/boss@carein.ai', { homeOffice: 'roland' });
     assert.equal(res.status, 200, JSON.stringify(res.body));
     assert.equal(res.body.user.homeOffice, 'roland');
+  } finally {
+    await app.close();
+  }
+});
+
+// --- signature on notes (/:email/signature) --------------------------------
+//
+// The sign-in a note matches on is the app_user email, taken from the row
+// server-side. Synthetic names only.
+
+const SIG = '/api/users/hyg@carein.ai/signature';
+const staff = () => db.hyg_staff;
+const sigAudit = () => auditRows.filter((r) => r.resourceType === 'hyg_staff');
+
+test('signature: saving creates ONE row whose only sign-in is the app_user email, in the home office', async () => {
+  rows.find((r) => r.email === 'hyg@carein.ai').home_office = 'valley';
+  const app = await boot();
+  try {
+    const before = await app.get(SIG);
+    assert.equal(before.status, 200);
+    assert.deepEqual(before.body, { success: true, office: 'valley', signature: null });
+
+    // The path names the person in mixed case; the stored sign-in is still the
+    // row's own lowercase email.
+    const saved = await app.put('/api/users/HYG@CareIN.ai/signature', { fullName: '  Avery   Example ', license: ' 9101 ' });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.deepEqual(saved.body, {
+      success: true,
+      office: 'valley',
+      signature: { fullName: 'Avery Example', license: '9101' },
+    });
+    assert.equal(staff().length, 1);
+    assert.equal(staff()[0].office, 'valley');
+    assert.deepEqual(staff()[0].sign_in_ids, ['hyg@carein.ai']);
+    assert.equal(staff()[0].created_by, 'boss@carein.ai');
+    assert.deepEqual(
+      sigAudit().map((r) => [r.action, r.result, r.office, r.priorState]),
+      [['CREATE', 'SUCCESS', 'valley', null]]
+    );
+
+    assert.deepEqual((await app.get(SIG)).body.signature, { fullName: 'Avery Example', license: '9101' });
+  } finally {
+    await app.close();
+  }
+});
+
+test('signature: no home office falls back to the first office; a blank licence is null, never a placeholder', async () => {
+  const app = await boot();
+  try {
+    const saved = await app.put(SIG, { fullName: 'Avery Example', license: '' });
+    assert.equal(saved.status, 200);
+    assert.equal(saved.body.office, 'roland');
+    assert.equal(saved.body.signature.license, null);
+    assert.equal(staff()[0].license, null);
+  } finally {
+    await app.close();
+  }
+});
+
+test('signature: the body can never name the sign-in or the office (strict body, 400, nothing written)', async () => {
+  const app = await boot();
+  try {
+    for (const extra of [{ signInIds: ['someone@else.ai'] }, { email: 'someone@else.ai' }, { office: 'valley' }]) {
+      const res = await app.put(SIG, { fullName: 'Avery Example', license: null, ...extra });
+      assert.equal(res.status, 400, JSON.stringify(extra));
+      assert.equal(res.body.code, 'INVALID_BODY');
+    }
+    const orphan = await app.put(SIG, { fullName: '', license: '9101' });
+    assert.equal(orphan.status, 400, 'a licence with no name is refused');
+    assert.equal(staff().length, 0);
+    assert.equal(sigAudit().length, 0);
+  } finally {
+    await app.close();
+  }
+});
+
+test('signature: saving again updates the same row (sign-ins reset to the email); clearing both deactivates it', async () => {
+  const app = await boot();
+  try {
+    await app.put(SIG, { fullName: 'Avery Example', license: '9101' });
+    // A row the retired /admin/staff page could have left with an extra alias.
+    staff()[0].sign_in_ids = ['hyg@carein.ai', 'avery e'];
+    const edited = await app.put(SIG, { fullName: 'Avery Example', license: '9102' });
+    assert.equal(edited.status, 200);
+    assert.equal(staff().length, 1, 'an upsert, not a second row');
+    assert.equal(staff()[0].license, '9102');
+    assert.deepEqual(staff()[0].sign_in_ids, ['hyg@carein.ai']);
+
+    const cleared = await app.put(SIG, { fullName: '', license: '' });
+    assert.equal(cleared.status, 200);
+    assert.equal(cleared.body.signature, null);
+    assert.equal(staff().length, 1, 'deactivated, never deleted');
+    assert.equal(staff()[0].active, false);
+    assert.equal((await app.get(SIG)).body.signature, null);
+
+    // Saving again revives the same row.
+    const revived = await app.put(SIG, { fullName: 'Avery Example', license: null });
+    assert.equal(revived.body.signature.fullName, 'Avery Example');
+    assert.equal(staff().length, 1);
+    assert.equal(staff()[0].active, true);
+
+    assert.deepEqual(
+      sigAudit().map((r) => [r.action, r.priorState]),
+      [
+        ['CREATE', null],
+        ['UPDATE', 'edited:licence_sign_ins'],
+        ['UPDATE', 'active'],
+        ['UPDATE', 'edited:licence'],
+        ['UPDATE', 'inactive'],
+      ]
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test('signature: an unknown user is 404; a platform admin’s is protected from a tenant admin', async () => {
+  platformAdmins.add('hyg@carein.ai');
+  const app = await boot();
+  try {
+    assert.equal((await app.put('/api/users/nobody@carein.ai/signature', { fullName: 'X', license: null })).status, 404);
+    const refused = await app.put(SIG, { fullName: 'Avery Example', license: null });
+    assert.equal(refused.status, 403);
+    assert.equal(refused.body.code, 'PLATFORM_ADMIN_PROTECTED');
+    assert.equal(staff().length, 0);
+  } finally {
+    await app.close();
+  }
+  const sup = await boot({ isSuperAdmin: true, role: 'office' });
+  try {
+    assert.equal((await sup.put(SIG, { fullName: 'Avery Example', license: null })).status, 200);
+  } finally {
+    await sup.close();
+  }
+});
+
+test('signature: you may set your OWN — it locks nobody out', async () => {
+  const app = await boot();
+  try {
+    const res = await app.put('/api/users/boss@carein.ai/signature', { fullName: 'Morgan Example', license: null });
+    assert.equal(res.status, 200);
+    assert.deepEqual(staff()[0].sign_in_ids, ['boss@carein.ai']);
+  } finally {
+    await app.close();
+  }
+});
+
+test('signature: a non-admin is refused by the mount gate', async () => {
+  const app = await boot({ role: 'hygiene', actor: 'hyg@carein.ai' });
+  try {
+    assert.equal((await app.get(SIG)).status, 403);
+    assert.equal((await app.put(SIG, { fullName: 'Avery Example', license: null })).status, 403);
+    assert.equal(staff().length, 0);
+  } finally {
+    await app.close();
+  }
+});
+
+test('signature: deactivating the USER deactivates their signature row', async () => {
+  const app = await boot();
+  try {
+    await app.put(SIG, { fullName: 'Avery Example', license: '9101' });
+    const off = await app.patch('/api/users/hyg@carein.ai', { status: 'disabled' });
+    assert.equal(off.status, 200);
+    assert.equal(staff()[0].active, false);
+    // Re-enabling the user does not silently bring the signature back.
+    await app.patch('/api/users/hyg@carein.ai', { status: 'active' });
+    assert.equal(staff()[0].active, false);
   } finally {
     await app.close();
   }

@@ -86,3 +86,49 @@ export const HygStaffListSchema = z.object({
   usingBuiltInList: z.boolean(),
 });
 export type HygStaffList = z.infer<typeof HygStaffListSchema>;
+
+/**
+ * ── The Users page's "Signature on notes" ─────────────────────────────────
+ *
+ * One door per person: the signature a note prints for someone is entered on
+ * THEIR Users row, keyed to their app_user email. The body carries the two
+ * things a person types and nothing else — never an email, never an office.
+ * The server takes the sign-in from the app_user row and the office from the
+ * user's home office, so a typo can no longer leave a licence unmatched.
+ *
+ * Both blank CLEARS the signature (the hyg_staff row is deactivated, never
+ * deleted). A licence with no name is refused: a licence line needs a name to
+ * hang on.
+ */
+const OptionalTrimmed = (max: number, label: string) =>
+  z
+    .union([z.string(), z.null()])
+    .transform((v) => (v === null ? null : v.replace(/\s+/g, " ").trim() || null))
+    .pipe(z.union([z.string().max(max, `${label} is at most ${max} characters`), z.null()]));
+
+export const UserSignatureInputSchema = z
+  .object({
+    fullName: OptionalTrimmed(120, "A name"),
+    license: OptionalTrimmed(40, "A licence number"),
+  })
+  .strict()
+  .refine((v) => !(v.fullName === null && v.license !== null), {
+    message: "Enter the name the licence belongs to",
+    path: ["fullName"],
+  });
+export type UserSignatureInput = z.input<typeof UserSignatureInputSchema>;
+
+/** GET and PUT /users/:email/signature (and the platform console's twin). */
+export const UserSignatureResponseSchema = z.object({
+  success: z.literal(true),
+  /** The office whose notes this signature prints on (the user's home office). */
+  office: z.enum(["roland", "valley"]),
+  /** null = no active signature: the signed-in name prints alone. */
+  signature: z
+    .object({
+      fullName: z.string(),
+      license: z.string().nullable(),
+    })
+    .nullable(),
+});
+export type UserSignatureResponse = z.infer<typeof UserSignatureResponseSchema>;

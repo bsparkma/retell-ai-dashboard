@@ -9,6 +9,8 @@
  *   GET    /practices/:tenantId/users            roster + the editor's vocabularies
  *   POST   /practices/:tenantId/users            add a user to that practice
  *   PATCH  /practices/:tenantId/users/:email     change role / status / home office
+ *   GET    /practices/:tenantId/users/:email/signature   what a hygiene note prints for them
+ *   PUT    /practices/:tenantId/users/:email/signature   set, change or clear it
  *   GET    /practices/:tenantId/audit            paginated audit_log read
  *   GET    /retention                            the call-store window + policy source
  *   PUT    /retention                            change it (30 | 60 | 90)
@@ -68,6 +70,7 @@ const retentionScheduler = require('../services/retentionScheduler');
 const unifiedCallStore = require('../services/unifiedCallStore');
 const callRetention = require('../services/callRetention');
 const tenantUsers = require('../services/tenantUsers');
+const userSignature = require('../services/userSignature');
 const { MODULE_CATALOG, isKnownModule } = require('../config/modules');
 
 const router = express.Router();
@@ -331,11 +334,62 @@ router.patch('/practices/:tenantId/users/:email', loadPractice, async (req, res)
       audit: (entry) => auditForTenant(req, tenantId, entry),
       email: req.params.email,
       body: req.body || {},
+      tenantPool: () => tenantDb.getTenantPool(tenantId),
     });
     return sendOutcome(res, outcome);
   } catch (err) {
     console.error('[platform] user update failed:', err && err.message ? err.message : err);
     return fail(res, 500, 'Could not update that user', 'USER_UPDATE_FAILED');
+  }
+});
+
+/** Write a signature Outcome as the response — same shape as /api/users'. */
+function sendSignature(res, outcome) {
+  if (!outcome.ok) return fail(res, outcome.status, outcome.error, outcome.code, outcome.extra);
+  return res
+    .status(outcome.status)
+    .json({ success: true, office: outcome.office, signature: outcome.signature });
+}
+
+/**
+ * GET /practices/:tenantId/users/:email/signature
+ *
+ * The same rule set as /api/users/:email/signature (services/userSignature.js);
+ * the practice's database is reached by the registry-resolved tenant id.
+ */
+router.get('/practices/:tenantId/users/:email/signature', loadPractice, async (req, res) => {
+  const tenantId = req.practice.tenant_id;
+  try {
+    const pool = await tenantDb.getTenantPool(tenantId);
+    const outcome = await userSignature.getSignature({ tenantId, pool, email: req.params.email });
+    return sendSignature(res, outcome);
+  } catch (err) {
+    console.error('[platform] signature read failed:', err && err.message ? err.message : err);
+    return fail(res, 503, 'Could not load the signature', 'SIGNATURE_UNAVAILABLE');
+  }
+});
+
+/**
+ * PUT /practices/:tenantId/users/:email/signature   { fullName, license }
+ *
+ * Audited in THAT practice's log, like every write through this door.
+ */
+router.put('/practices/:tenantId/users/:email/signature', loadPractice, async (req, res) => {
+  const tenantId = req.practice.tenant_id;
+  try {
+    const pool = await tenantDb.getTenantPool(tenantId);
+    const outcome = await userSignature.saveSignature({
+      tenantId,
+      actor: actorOf(req),
+      audit: (entry) => auditForTenant(req, tenantId, entry),
+      pool,
+      email: req.params.email,
+      body: req.body,
+    });
+    return sendSignature(res, outcome);
+  } catch (err) {
+    console.error('[platform] signature save failed:', err && err.message ? err.message : err);
+    return fail(res, 500, 'Could not save the signature', 'SIGNATURE_SAVE_FAILED');
   }
 });
 

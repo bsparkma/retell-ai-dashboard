@@ -15025,6 +15025,8 @@ __export(contract_entry_exports, {
   TreatmentPrioritySchema: () => TreatmentPrioritySchema,
   TreatmentStatusSchema: () => TreatmentStatusSchema,
   UPPER_PRIMARY: () => UPPER_PRIMARY,
+  UserSignatureInputSchema: () => UserSignatureInputSchema,
+  UserSignatureResponseSchema: () => UserSignatureResponseSchema,
   VISIT_TYPES: () => VISIT_TYPES,
   VISIT_TYPE_AUTONOTE: () => VISIT_TYPE_AUTONOTE,
   VISIT_TYPE_LABELS: () => VISIT_TYPE_LABELS,
@@ -18356,6 +18358,24 @@ var HygStaffListSchema = import_zod7.z.object({
    */
   usingBuiltInList: import_zod7.z.boolean()
 });
+var OptionalTrimmed = (max, label) => import_zod7.z.union([import_zod7.z.string(), import_zod7.z.null()]).transform((v) => v === null ? null : v.replace(/\s+/g, " ").trim() || null).pipe(import_zod7.z.union([import_zod7.z.string().max(max, `${label} is at most ${max} characters`), import_zod7.z.null()]));
+var UserSignatureInputSchema = import_zod7.z.object({
+  fullName: OptionalTrimmed(120, "A name"),
+  license: OptionalTrimmed(40, "A licence number")
+}).strict().refine((v) => !(v.fullName === null && v.license !== null), {
+  message: "Enter the name the licence belongs to",
+  path: ["fullName"]
+});
+var UserSignatureResponseSchema = import_zod7.z.object({
+  success: import_zod7.z.literal(true),
+  /** The office whose notes this signature prints on (the user's home office). */
+  office: import_zod7.z.enum(["roland", "valley"]),
+  /** null = no active signature: the signed-in name prints alone. */
+  signature: import_zod7.z.object({
+    fullName: import_zod7.z.string(),
+    license: import_zod7.z.string().nullable()
+  }).nullable()
+});
 
 // ../backend/hyg/contract.entry.ts
 var import_zod8 = __toESM(require_zod());
@@ -18593,6 +18613,8 @@ function odToothText(tooth) {
   TreatmentPrioritySchema,
   TreatmentStatusSchema,
   UPPER_PRIMARY,
+  UserSignatureInputSchema,
+  UserSignatureResponseSchema,
   VISIT_TYPES,
   VISIT_TYPE_AUTONOTE,
   VISIT_TYPE_LABELS,

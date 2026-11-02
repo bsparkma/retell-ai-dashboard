@@ -40,7 +40,6 @@ import {
   CreditCard,
   LibraryBig,
   Users,
-  IdCard,
   Loader2,
   AlertTriangle,
   Receipt,
@@ -125,9 +124,9 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
         { path: "/admin", label: "Admin", icon: Settings },
         // Tenant user management. Sits under /admin so it inherits admin.all
         // from ROUTE_PERMISSIONS' prefix match — one place decides.
+        // Also where each person's "Signature on notes" (name + licence) is
+        // entered — the retired /admin/staff page's job, one door per person.
         { path: "/admin/users", label: "Users", icon: Users },
-        // The hygienists whose names and licences print on a note. Same gate.
-        { path: "/admin/staff", label: "Practice staff", icon: IdCard },
       ],
     },
   ],
