@@ -98,4 +98,4 @@ These are RCM-owned test files. The change is synchronization only: no product c
 
 ## CI
 
-_Filled in after the PR's run._
+PR #303. `build-test` run 41383038204 on `refs/pull/303/merge` (head `763c83b`) passed on the **first attempt**, with no fix pushes. Since then only this CI section has been added to the report. **Not merged.**
