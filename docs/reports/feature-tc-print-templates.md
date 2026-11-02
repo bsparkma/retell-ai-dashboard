@@ -204,4 +204,4 @@ A fresh-context reviewer ran two rounds.
 
 ## CI
 
-_Below._
+PR #305. `build-test` run 41509437249 on `refs/pull/305/merge` (head `12a2f86`) passed on the **first attempt**, with no fix pushes. Since then only this CI section has been added to the report. **Not merged.**
