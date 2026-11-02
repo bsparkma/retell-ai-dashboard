@@ -14979,9 +14979,13 @@ __export(contract_entry_exports, {
   TcCaseEventDetail: () => TcCaseEventDetail,
   TcCaseItem: () => TcCaseItem,
   TcCasePhase: () => TcCasePhase,
+  TcCheckoutAppointmentAnchor: () => TcCheckoutAppointmentAnchor,
+  TcCheckoutAppointmentLinkRequest: () => TcCheckoutAppointmentLinkRequest,
+  TcCheckoutAppointmentsResponse: () => TcCheckoutAppointmentsResponse,
   TcCheckoutCaseTreatment: () => TcCheckoutCaseTreatment,
   TcCheckoutDismissRequest: () => TcCheckoutDismissRequest,
   TcCheckoutHandoff: () => TcCheckoutHandoff,
+  TcCheckoutManualAddRequest: () => TcCheckoutManualAddRequest,
   TcCheckoutNextVisit: () => TcCheckoutNextVisit,
   TcCheckoutOutcome: () => TcCheckoutOutcome,
   TcCheckoutOutcomeRequest: () => TcCheckoutOutcomeRequest,
@@ -14990,11 +14994,16 @@ __export(contract_entry_exports, {
   TcCheckoutProcedure: () => TcCheckoutProcedure,
   TcCheckoutRecord: () => TcCheckoutRecord,
   TcCheckoutRecordStatus: () => TcCheckoutRecordStatus,
+  TcCheckoutReopened: () => TcCheckoutReopened,
+  TcCheckoutScheduleCheck: () => TcCheckoutScheduleCheck,
+  TcCheckoutScheduleCheckStatus: () => TcCheckoutScheduleCheckStatus,
   TcCheckoutSnapshot: () => TcCheckoutSnapshot,
+  TcCheckoutSource: () => TcCheckoutSource,
   TcCheckoutStatus: () => TcCheckoutStatus,
   TcCheckoutSubmit: () => TcCheckoutSubmit,
   TcCheckoutSubmitResponse: () => TcCheckoutSubmitResponse,
   TcCheckoutSummary: () => TcCheckoutSummary,
+  TcCheckoutUpcomingAppointment: () => TcCheckoutUpcomingAppointment,
   TcCheckoutWorkup: () => TcCheckoutWorkup,
   TcCheckoutWorkupMark: () => TcCheckoutWorkupMark,
   TcCheckoutWorkupRequest: () => TcCheckoutWorkupRequest,
@@ -15083,11 +15092,13 @@ __export(contract_entry_exports, {
   VoiceHandoffDetail: () => VoiceHandoffDetail,
   ZodError: () => import_zod12.ZodError,
   allPresetViolations: () => allPresetViolations,
+  appointmentWhenLabel: () => appointmentWhenLabel,
   assertPresetsWithinCaps: () => assertPresetsWithinCaps,
   attachmentProblem: () => attachmentProblem,
   caseFromRows: () => caseFromRows,
   caseToRows: () => caseToRows,
   checkoutCollectKey: () => checkoutCollectKey,
+  checkoutHasHygieneData: () => checkoutHasHygieneData,
   checkoutItemKey: () => checkoutItemKey,
   checkoutPhaseName: () => checkoutPhaseName,
   checkoutPhaseNames: () => checkoutPhaseNames,
@@ -15097,6 +15108,7 @@ __export(contract_entry_exports, {
   checkoutWorkupProgressLabel: () => checkoutWorkupProgressLabel,
   communicationToRow: () => communicationToRow,
   emailBodyText: () => emailBodyText,
+  emptyCheckoutSnapshot: () => emptyCheckoutSnapshot,
   emptyCheckoutWorkup: () => emptyCheckoutWorkup,
   escapeHtml: () => escapeHtml,
   fillBlockTokens: () => fillBlockTokens,
@@ -17579,6 +17591,54 @@ function checkoutWorkupProgress(h) {
 function checkoutWorkupProgressLabel(p) {
   return `${p.done} of ${p.total} ${p.total === 1 ? "section" : "sections"} done`;
 }
+var TcCheckoutSource = import_zod7.z.enum(["hygiene", "manual", "schedule"]);
+function emptyCheckoutSnapshot() {
+  return {
+    procedures: [],
+    priority: null,
+    nextVisit: { type: null, intervalMonths: null, lengthMin: null, withDoctor: false, rtc: "" },
+    notesPending: false,
+    frontDeskNote: "",
+    financialNote: ""
+  };
+}
+var TcCheckoutUpcomingAppointment = import_zod7.z.object({
+  aptNum: import_zod7.z.number().int().positive(),
+  dateTime: import_zod7.z.string(),
+  provider: import_zod7.z.string(),
+  appointmentType: import_zod7.z.string(),
+  operatory: import_zod7.z.string()
+});
+var TcCheckoutAppointmentAnchor = TcCheckoutUpcomingAppointment.extend({
+  linkedBy: import_zod7.z.string().nullable(),
+  linkedAt: import_zod7.z.string().nullable()
+});
+var TcCheckoutAppointmentsResponse = import_zod7.z.object({
+  success: import_zod7.z.literal(true),
+  appointments: import_zod7.z.array(TcCheckoutUpcomingAppointment)
+});
+var TcCheckoutAppointmentLinkRequest = import_zod7.z.object({ aptNum: import_zod7.z.number().int().positive().nullable() }).strict();
+function appointmentWhenLabel(dateTime) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(dateTime);
+  if (!m) return dateTime;
+  const [, y, mo, d, hh, mm] = m;
+  const day = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d)));
+  const date = day.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
+  const h = Number(hh);
+  const time = `${h % 12 === 0 ? 12 : h % 12}:${mm} ${h < 12 ? "AM" : "PM"}`;
+  return `${date}, ${time}`;
+}
+var TcCheckoutReopened = import_zod7.z.object({
+  outcome: TcCheckoutOutcome,
+  outcomeBy: import_zod7.z.string().nullable(),
+  outcomeAt: import_zod7.z.string().nullable(),
+  appointmentNote: import_zod7.z.string().nullable(),
+  /** The case that outcome made or moved. The case itself is left as it is. */
+  caseId: import_zod7.z.string().uuid().nullable(),
+  reopenedAt: import_zod7.z.string(),
+  /** CO-4a: the appointment that answer was anchored to, if any. */
+  appointment: TcCheckoutAppointmentAnchor.nullable().default(null)
+});
 var TcCheckoutHandoff = import_zod7.z.object({
   handoffId: import_zod7.z.string().uuid(),
   officeId: import_zod7.z.enum(["roland", "valley"]),
@@ -17609,12 +17669,75 @@ var TcCheckoutHandoff = import_zod7.z.object({
   /** Always `system:checkout_expiry` when set — the system closed it, not a person. */
   expiredBy: import_zod7.z.string().nullable().default(null),
   /** CO-1. Defaulted so a pre-CO-1 reader and a pre-CO-1 record both parse. */
-  workup: TcCheckoutWorkup.default(emptyCheckoutWorkup)
+  workup: TcCheckoutWorkup.default(emptyCheckoutWorkup),
+  /**
+   * CO-5a. Where the card came from: the hygiene visit, or the front desk's
+   * "Add patient". Every record before CO-5a reads as `hygiene`, which is what
+   * it was. Who added a manual card is `submittedBy`.
+   */
+  source: TcCheckoutSource.default("hygiene"),
+  /**
+   * CO-5a. When a hygiene handoff for the same patient and day arrived after a
+   * manual card and merged onto it. Null on a hygiene card, and on a manual
+   * card that has no hygiene visit data.
+   */
+  hygieneMergedAt: import_zod7.z.string().nullable().default(null),
+  /**
+   * CO-5a fix. Set when a hygiene visit arrived after this card was ANSWERED
+   * and reopened it: the answer it had, kept as history. Null otherwise.
+   */
+  reopenedFrom: TcCheckoutReopened.nullable().default(null),
+  /**
+   * CO-4a. The Open Dental appointment a Scheduled checkout is anchored to.
+   * Null on every other status, on every record before CO-4a, and on a
+   * Scheduled checkout marked "Not in Open Dental yet".
+   */
+  appointment: TcCheckoutAppointmentAnchor.nullable().default(null),
+  /**
+   * CO-5b. On a `schedule` card, the Open Dental appointment it was made from,
+   * as Open Dental described it then. It stays when a hygiene handoff later
+   * merges onto the card. Null on every other card.
+   */
+  scheduleAppointment: TcCheckoutUpcomingAppointment.nullable().default(null)
 });
+function checkoutHasHygieneData(h) {
+  return h.source === "hygiene" || h.hygieneMergedAt !== null;
+}
+var TcCheckoutScheduleCheckStatus = import_zod7.z.enum(["off", "pending", "ok", "failed"]);
+var TcCheckoutScheduleCheck = import_zod7.z.object({
+  success: import_zod7.z.literal(true),
+  office: import_zod7.z.enum(["roland", "valley"]),
+  status: TcCheckoutScheduleCheckStatus,
+  running: import_zod7.z.boolean(),
+  lastSuccessAt: import_zod7.z.string().nullable(),
+  lastAttemptAt: import_zod7.z.string().nullable(),
+  /**
+   * Cards made since the server started. Monotonic, so the page reloads its
+   * list after ANY read that made cards — even when a later one made none.
+   */
+  createdTotal: import_zod7.z.number().int().nonnegative().default(0),
+  /** Counts from the last read that finished. Never a PatNum or a name. */
+  summary: import_zod7.z.object({
+    completedNonHygiene: import_zod7.z.number().int().nonnegative(),
+    created: import_zod7.z.number().int().nonnegative(),
+    alreadyCarded: import_zod7.z.number().int().nonnegative(),
+    skippedHygiene: import_zod7.z.number().int().nonnegative(),
+    skippedNoPatient: import_zod7.z.number().int().nonnegative(),
+    deferred: import_zod7.z.number().int().nonnegative(),
+    partial: import_zod7.z.boolean()
+  }).nullable()
+});
+var TcCheckoutManualAddRequest = import_zod7.z.object({ patNum: import_zod7.z.number().int().positive() }).strict();
 var TcCheckoutOutcomeRequest = import_zod7.z.object({
   outcome: TcCheckoutOutcome,
   /** Optional, and only meaningful for "Scheduled" ("Tue 9am, Dr. chair"). */
-  appointmentNote: import_zod7.z.string().trim().max(500).default("")
+  appointmentNote: import_zod7.z.string().trim().max(500).default(""),
+  /**
+   * CO-4a, Scheduled only. The AptNum picked from the patient's upcoming
+   * appointments, or null / absent for "Not in Open Dental yet". Re-read
+   * from Open Dental before anything is stored.
+   */
+  aptNum: import_zod7.z.number().int().positive().nullable().optional()
 }).strict();
 var TcCheckoutDismissRequest = import_zod7.z.object({ reason: import_zod7.z.string().trim().min(1).max(500) }).strict();
 var TcCheckoutSummary = import_zod7.z.object({
@@ -17670,7 +17793,9 @@ var TcCheckoutCaseTreatment = import_zod7.z.object({
   visits: import_zod7.z.array(
     import_zod7.z.object({
       handoff: TcCheckoutHandoff,
-      items: import_zod7.z.array(TcCheckoutPanelItem)
+      items: import_zod7.z.array(TcCheckoutPanelItem),
+      /** CO-4a: a Scheduled visit whose case is still open may be (re)linked to an appointment. */
+      canLinkAppointment: import_zod7.z.boolean().default(false)
     })
   )
 });
@@ -18748,9 +18873,13 @@ function odToothText(tooth) {
   TcCaseEventDetail,
   TcCaseItem,
   TcCasePhase,
+  TcCheckoutAppointmentAnchor,
+  TcCheckoutAppointmentLinkRequest,
+  TcCheckoutAppointmentsResponse,
   TcCheckoutCaseTreatment,
   TcCheckoutDismissRequest,
   TcCheckoutHandoff,
+  TcCheckoutManualAddRequest,
   TcCheckoutNextVisit,
   TcCheckoutOutcome,
   TcCheckoutOutcomeRequest,
@@ -18759,11 +18888,16 @@ function odToothText(tooth) {
   TcCheckoutProcedure,
   TcCheckoutRecord,
   TcCheckoutRecordStatus,
+  TcCheckoutReopened,
+  TcCheckoutScheduleCheck,
+  TcCheckoutScheduleCheckStatus,
   TcCheckoutSnapshot,
+  TcCheckoutSource,
   TcCheckoutStatus,
   TcCheckoutSubmit,
   TcCheckoutSubmitResponse,
   TcCheckoutSummary,
+  TcCheckoutUpcomingAppointment,
   TcCheckoutWorkup,
   TcCheckoutWorkupMark,
   TcCheckoutWorkupRequest,
@@ -18852,11 +18986,13 @@ function odToothText(tooth) {
   VoiceHandoffDetail,
   ZodError,
   allPresetViolations,
+  appointmentWhenLabel,
   assertPresetsWithinCaps,
   attachmentProblem,
   caseFromRows,
   caseToRows,
   checkoutCollectKey,
+  checkoutHasHygieneData,
   checkoutItemKey,
   checkoutPhaseName,
   checkoutPhaseNames,
@@ -18866,6 +19002,7 @@ function odToothText(tooth) {
   checkoutWorkupProgressLabel,
   communicationToRow,
   emailBodyText,
+  emptyCheckoutSnapshot,
   emptyCheckoutWorkup,
   escapeHtml,
   fillBlockTokens,

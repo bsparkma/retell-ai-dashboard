@@ -42,6 +42,20 @@ const COLS = [
   'expired_by',
   // CO-1.
   'workup',
+  // CO-5a.
+  'source',
+  'hygiene_merged_at',
+  // CO-5a fix.
+  'reopened_from',
+  // CO-4a.
+  'appt_num',
+  'appt_at_local',
+  'appt_snapshot',
+  'appt_linked_by',
+  'appt_linked_at',
+  // CO-5b.
+  'origin_apt_num',
+  'origin_appt',
 ];
 
 /**
@@ -111,7 +125,88 @@ function toHandoff(row) {
     expiredAt: iso(row.expired_at),
     expiredBy: row.expired_by ?? null,
     workup: workupOf(row),
+    // CO-5a. NULL is every record before it: they all came from hygiene.
+    // CO-5b adds 'schedule': made from today's Open Dental schedule.
+    source: row.source === 'manual' || row.source === 'schedule' ? row.source : 'hygiene',
+    hygieneMergedAt: iso(row.hygiene_merged_at),
+    reopenedFrom: reopenedOf(row),
+    appointment: anchorOf(row),
+    scheduleAppointment: originOf(row),
   };
+}
+
+/**
+ * The Open Dental appointment a 'schedule' card was made from (CO-5b), as Open
+ * Dental described it then, or null on every other card.
+ */
+function originOf(row) {
+  if (row.origin_apt_num == null) return null;
+  const snap = obj(row.origin_appt) || {};
+  return {
+    aptNum: Number(row.origin_apt_num),
+    dateTime: typeof snap.dateTime === 'string' ? snap.dateTime : '',
+    appointmentType: typeof snap.appointmentType === 'string' ? snap.appointmentType : '',
+    provider: typeof snap.provider === 'string' ? snap.provider : '',
+    operatory: typeof snap.operatory === 'string' ? snap.operatory : '',
+  };
+}
+
+/**
+ * The Open Dental appointment this Scheduled checkout is anchored to (CO-4a),
+ * or null: every record before CO-4a, and every "Not in Open Dental yet".
+ */
+function anchorOf(row) {
+  if (row.appt_num == null) return null;
+  const snap = obj(row.appt_snapshot) || {};
+  return {
+    aptNum: num(row.appt_num),
+    dateTime: String(row.appt_at_local || ''),
+    provider: typeof snap.provider === 'string' ? snap.provider : '',
+    appointmentType: typeof snap.appointmentType === 'string' ? snap.appointmentType : '',
+    operatory: typeof snap.operatory === 'string' ? snap.operatory : '',
+    linkedBy: row.appt_linked_by ?? null,
+    linkedAt: iso(row.appt_linked_at),
+  };
+}
+
+/**
+ * Set, replace or clear (appointment null) a Scheduled checkout's anchor.
+ * Conditional on the checkout still being Scheduled — an anchor never lands on
+ * anything else (the DB CHECK says the same). `appointment` is one row of
+ * checkoutAppointments.upcomingForPatient, re-read from Open Dental for this
+ * request; the office is the row's own.
+ *
+ * @returns {Promise<boolean>} whether the row was Scheduled and was written
+ */
+async function setAnchor(q, { office, handoffId, appointment, actor }) {
+  const res = await q.query(
+    `UPDATE tc_checkout_handoffs
+        SET appt_num = $3, appt_at_local = $4, appt_snapshot = $5::jsonb, appt_linked_by = $6,
+            appt_linked_at = $7, updated_at = now()
+      WHERE office_id = $1 AND handoff_id = $2 AND status = 'scheduled'`,
+    appointment
+      ? [
+          office,
+          handoffId,
+          appointment.aptNum,
+          appointment.dateTime,
+          JSON.stringify({
+            provider: appointment.provider,
+            appointmentType: appointment.appointmentType,
+            operatory: appointment.operatory,
+          }),
+          actor,
+          new Date().toISOString(),
+        ]
+      : [office, handoffId, null, null, null, null, null]
+  );
+  return res.rowCount === 1;
+}
+
+/** The answer a reopened card had (CO-5a fix), or null. */
+function reopenedOf(row) {
+  const r = obj(row.reopened_from);
+  return r && typeof r === 'object' && !Array.isArray(r) && r.outcome ? r : null;
 }
 
 /**
@@ -444,12 +539,25 @@ async function insertHandoff(q, row) {
     'submitted_by',
     'updated_by',
     'status',
+    'source',
+    'origin_apt_num',
+    'origin_appt',
   ];
-  const placeholders = cols.map((c, i) => (c === 'payload' ? `$${i + 1}::jsonb` : `$${i + 1}`));
+  const placeholders = cols.map((c, i) => (c === 'payload' || c === 'origin_appt' ? `$${i + 1}::jsonb` : `$${i + 1}`));
   await q.query(
     `INSERT INTO tc_checkout_handoffs (${cols.join(', ')}) VALUES (${placeholders.join(', ')})`,
     cols.map((c) =>
-      c === 'payload' ? JSON.stringify(row[c]) : c === 'status' ? row.status || 'open' : row[c]
+      c === 'payload'
+        ? JSON.stringify(row[c])
+        : c === 'status'
+          ? row.status || 'open'
+          : c === 'source'
+            ? row.source || 'hygiene'
+            : c === 'origin_apt_num'
+              ? row.origin_apt_num ?? null
+              : c === 'origin_appt'
+                ? row.origin_appt == null ? null : JSON.stringify(row.origin_appt)
+                : row[c]
     )
   );
 }
@@ -484,6 +592,161 @@ async function updatePayload(q, { office, handoffId, expectRevision, row }) {
   return res.rowCount === 1;
 }
 
+// ── CO-5a: a card added by hand, and a hygiene handoff that arrives after ───
+
+/** The statuses in which a card still HOLDS its patient for the day (CO-1's rule). */
+const HOLDING_STATUSES = Object.freeze(STATUSES.filter((st) => !RELEASES_INBOX_STATUSES.includes(st)));
+
+/**
+ * Serialize, for the rest of the transaction, everything that creates or
+ * merges a checkout card for ONE patient on ONE day in ONE office: two "Add
+ * patient" clicks, or a click and a hygiene handoff arriving at the same
+ * moment, run one after the other, so the second sees the first's card. A
+ * transaction-scoped advisory lock: released at COMMIT or ROLLBACK, and never
+ * blocks anything about any other patient.
+ */
+async function lockPatientDay(q, office, odPatientId, day) {
+  await q.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`tc_checkout_patient_day:${office}:${odPatientId}:${day}`]);
+}
+
+/**
+ * The newest card that holds this patient on this day in this office — any
+ * source, any status but dismissed / expired — or null. "Add patient" opens it
+ * instead of making a second.
+ */
+async function findHoldingForPatientDay(q, office, odPatientId, day) {
+  const res = await q.query(
+    `SELECT ${COLS.join(', ')} FROM tc_checkout_handoffs
+      WHERE office_id = $1 AND od_patient_id = $2 AND visit_date = $3 AND status = ANY($4)
+      ORDER BY created_at DESC, handoff_id DESC LIMIT 1`,
+    [office, odPatientId, day, [...HOLDING_STATUSES]]
+  );
+  return res.rows[0] || null;
+}
+
+/**
+ * The sources a later hygiene handoff MERGES onto rather than opening a second
+ * card beside: a card added by hand (CO-5a) and a card made from today's
+ * schedule (CO-5b). Neither carries hygiene visit data until the merge.
+ */
+const MERGEABLE_SOURCES = Object.freeze(['manual', 'schedule']);
+
+/**
+ * The manual (or schedule, CO-5b) card a hygiene handoff for this patient and
+ * day merges onto: one still holding the patient, that no hygiene handoff has
+ * merged onto yet. Null when there is none (the handoff then makes its own card).
+ */
+async function findManualAwaitingHygiene(q, office, odPatientId, day) {
+  const res = await q.query(
+    `SELECT ${COLS.join(', ')} FROM tc_checkout_handoffs
+      WHERE office_id = $1 AND od_patient_id = $2 AND visit_date = $3 AND status = ANY($4)
+        AND source = ANY($5) AND hygiene_merged_at IS NULL
+      ORDER BY created_at DESC, handoff_id DESC LIMIT 1`,
+    [office, odPatientId, day, [...HOLDING_STATUSES], [...MERGEABLE_SOURCES]]
+  );
+  return res.rows[0] || null;
+}
+
+/**
+ * Merge a hygiene handoff onto a manual card (call with lockPatientDay held).
+ * The card takes the hygiene SOURCE KEY, so every later revision from the same
+ * visit finds it exactly as it would have found its own card, and the visit's
+ * snapshot. It keeps its id, its status, its workup ticks, who added it, and
+ * `source = 'manual'`. Conditional on not having merged already, and on the
+ * revision the caller read (a compare-and-swap, like updatePayload).
+ *
+ * @returns {Promise<boolean>} whether THIS call merged
+ */
+async function mergeHygieneOntoManual(q, { office, handoffId, expectRevision, sourceKey, row }) {
+  const res = await q.query(
+    `UPDATE tc_checkout_handoffs
+        SET source_key = $3, payload = $4::jsonb, is_final = $5, revision = $6, patient_name = $7,
+            provider = $8, provider_seen = $9, operatory = $10, updated_by = $11,
+            hygiene_merged_at = now(), updated_at = now()
+      WHERE office_id = $1 AND handoff_id = $2 AND source = ANY($13) AND hygiene_merged_at IS NULL
+        AND revision = $12`,
+    [
+      office,
+      handoffId,
+      sourceKey,
+      JSON.stringify(row.payload),
+      row.is_final,
+      expectRevision + 1,
+      row.patient_name,
+      row.provider,
+      row.provider_seen,
+      row.operatory,
+      row.updated_by,
+      expectRevision,
+      [...MERGEABLE_SOURCES],
+    ]
+  );
+  return res.rowCount === 1;
+}
+
+// ── CO-5b: cards made from today's schedule ─────────────────────────────────
+
+/** The AptNums (of these) that already made a card in this office — any status, ever. */
+async function findOriginAptNums(q, office, aptNums) {
+  if (aptNums.length === 0) return new Set();
+  const res = await q.query(
+    'SELECT origin_apt_num FROM tc_checkout_handoffs WHERE office_id = $1 AND origin_apt_num = ANY($2)',
+    [office, aptNums]
+  );
+  return new Set(res.rows.map((r) => Number(r.origin_apt_num)));
+}
+
+/** The PatNums (of these) that already hold a card on this day in this office. */
+async function findHoldingPatientsOnDay(q, office, odPatientIds, day) {
+  if (odPatientIds.length === 0) return new Set();
+  const res = await q.query(
+    `SELECT od_patient_id FROM tc_checkout_handoffs
+      WHERE office_id = $1 AND od_patient_id = ANY($2) AND visit_date = $3 AND status = ANY($4)`,
+    [office, odPatientIds, day, [...HOLDING_STATUSES]]
+  );
+  return new Set(res.rows.map((r) => Number(r.od_patient_id)));
+}
+
+/**
+ * A hygiene visit arrived after this card was ANSWERED (CO-5a fix, PM ruling):
+ * put it back in Waiting. Clears the outcome — who, when, the note and the
+ * case link, which the outcome CHECKs tie to an answered status — any claim,
+ * and the appointment anchor (CO-4a: an anchor lives only on a Scheduled
+ * card) — and keeps what it was in `reopened_from` for the card's history. The
+ * case the answer made or moved is left exactly as it is. The checklist ticks
+ * stay. Call inside the merge's transaction, with lockPatientDay held;
+ * conditional on the status the caller read.
+ *
+ * @returns {Promise<object|null>} the history it stored, or null when the row
+ *   was no longer in that status
+ */
+async function reopenAnswered(q, { office, handoffId, row, at }) {
+  const prior = row.status;
+  if (!OUTCOMES.includes(prior)) return null;
+  const history = {
+    outcome: prior,
+    outcomeBy: row.outcome_by ?? null,
+    outcomeAt: iso(row.outcome_at),
+    appointmentNote: row.appointment_note ?? null,
+    caseId: row.case_id ? String(row.case_id) : null,
+    reopenedAt: at,
+    // CO-4a: the appointment that answer was anchored to, if any.
+    appointment: anchorOf(row),
+  };
+  const res = await q.query(
+    `UPDATE tc_checkout_handoffs
+        SET status = 'open', outcome_by = $4, outcome_at = $5, appointment_note = $6, case_id = $7,
+            claimed_by = $8, claimed_at = $9, reopened_from = $10::jsonb,
+            appt_num = $11, appt_at_local = $12, appt_snapshot = $13, appt_linked_by = $14, appt_linked_at = $15,
+            updated_at = now()
+      WHERE office_id = $1 AND handoff_id = $2 AND status = $3`,
+    // One NULL per column: Postgres deduces ONE type per parameter, so a single
+    // $n shared across text, timestamptz and uuid columns would be refused.
+    [office, handoffId, prior, null, null, null, null, null, null, JSON.stringify(history), null, null, null, null, null]
+  );
+  return res.rowCount === 1 ? history : null;
+}
+
 module.exports = {
   COLS,
   WAITING_STATUSES,
@@ -516,4 +779,16 @@ module.exports = {
   findBySourceKey,
   insertHandoff,
   updatePayload,
+  HOLDING_STATUSES,
+  lockPatientDay,
+  findHoldingForPatientDay,
+  findManualAwaitingHygiene,
+  mergeHygieneOntoManual,
+  reopenAnswered,
+  anchorOf,
+  setAnchor,
+  MERGEABLE_SOURCES,
+  originOf,
+  findOriginAptNums,
+  findHoldingPatientsOnDay,
 };

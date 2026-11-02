@@ -49,6 +49,8 @@ import type {
   Urgency,
 } from "@shared/tc/contract";
 import { parseServedFunnel } from "./reports/funnel";
+// Type-only: the card state the case list carries (CO-4b).
+import type { OdSyncCardState } from "./odSync/odSyncApi";
 import type { ServedFunnel } from "./reports/funnel";
 
 type CaseStatusId = z.infer<typeof CaseStatus>;
@@ -276,6 +278,13 @@ export type TcCaseSummary = Omit<
    * the same optionality as hasOrthoScreening.
    */
   txNotInOd?: boolean;
+  /**
+   * CO-4b: the Open Dental sync's standing change on this case (the "Moved by
+   * Open Dental sync" badge, with Undo) or its flag ("Open Dental no longer
+   * matches — check"). Null when neither stands; optional for the same reason
+   * as the two above.
+   */
+  odSync?: OdSyncCardState | null;
 };
 
 export interface TcCaseListFilters {

@@ -11,6 +11,15 @@
  * opens the patient SIDEBAR instead, the same exit in a narrow sheet. An
  * answered checkout leaves the Waiting tab and shows under Done today.
  *
+ * "Add patient" (CO-5a, tc.full) puts someone no hygiene visit sent on today's
+ * list by hand, through the referrals hub's Open Dental patient search; a
+ * patient who already has a card today gets that card opened instead.
+ *
+ * Cards from today's schedule (CO-5b): where the office has it switched on, a
+ * non-hygiene visit Open Dental marks Complete gets a Waiting card by itself.
+ * The line under the tabs says when the schedule was last read — and, in
+ * amber, when it could not be (features/tc/checkout/ScheduleCheck.tsx).
+ *
  * Yesterday's unanswered checkouts close themselves as Expired on the server;
  * they never show here.
  *
@@ -20,7 +29,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 import { toast } from "sonner";
-import { AlertTriangle, DoorOpen, Eye, Hand, Loader2, RefreshCw, X } from "lucide-react";
+import { AlertTriangle, CalendarCheck, DoorOpen, Eye, Hand, Loader2, RefreshCw, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -39,6 +48,9 @@ import { tcErrorMessage } from "@/features/tc/api";
 import { officeScopeKey, useTcOfficeScope } from "@/features/tc/officeScope";
 import { claimCheckout, dismissCheckout } from "@/features/tc/checkout/checkoutApi";
 import { CHECKOUT_TABS, useCheckoutList } from "@/features/tc/checkout/useCheckoutList";
+import { AddCheckoutPatient, useCanAddCheckoutPatient } from "@/features/tc/checkout/AddCheckoutPatient";
+import { ReopenedBadge } from "@/features/tc/checkout/ReopenedNotice";
+import { ScheduleCheckLine, useScheduleCheck } from "@/features/tc/checkout/ScheduleCheck";
 import {
   CheckoutSidebar,
   PriorityChip,
@@ -47,6 +59,7 @@ import {
 } from "@/features/tc/checkout/CheckoutSidebar";
 import {
   TC_CHECKOUT_STATUS_LABELS,
+  checkoutHasHygieneData,
   checkoutWorkupProgress,
   checkoutWorkupProgressLabel,
   type TcCheckoutHandoff,
@@ -125,6 +138,7 @@ function Row({
   const waiting = row.status === "open" || row.status === "claimed";
   const count = row.snapshot.procedures.length;
   const progress = checkoutWorkupProgress(row);
+  const hygieneData = checkoutHasHygieneData(row);
   return (
     <div
       className="rounded-xl border border-border bg-card p-3 flex flex-wrap items-center gap-3 cursor-pointer hover:bg-accent/30"
@@ -143,7 +157,16 @@ function Row({
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-semibold text-foreground">{row.patientName}</span>
           {showOfficeBadges && <OfficeBadge officeId={row.officeId} />}
-          <PriorityChip priority={row.snapshot.priority} />
+          {row.source === "manual" && (
+            <Badge variant="outline" data-testid="checkout-row-manual">Added by hand</Badge>
+          )}
+          {row.source === "schedule" && (
+            <Badge variant="outline" className="gap-1" data-testid="checkout-row-schedule">
+              <CalendarCheck className="w-3 h-3" /> From today&apos;s schedule
+            </Badge>
+          )}
+          {row.reopenedFrom && <ReopenedBadge />}
+          {hygieneData && <PriorityChip priority={row.snapshot.priority} />}
           {row.snapshot.notesPending && <Badge variant="outline">Notes pending</Badge>}
           {!waiting || row.status === "claimed" ? (
             <Badge variant="outline">
@@ -153,7 +176,13 @@ function Row({
           ) : null}
         </div>
         <p className="text-xs text-muted-foreground mt-0.5">
-          {checkoutClock(row.createdAt)} · {count === 0 ? "nothing staged" : `${count} ${count === 1 ? "item" : "items"} staged`}
+          {checkoutClock(row.createdAt)} ·{" "}
+          {row.scheduleAppointment?.appointmentType ? `${row.scheduleAppointment.appointmentType} · ` : ""}
+          {!hygieneData
+            ? "no hygiene visit data"
+            : count === 0
+              ? "nothing staged"
+              : `${count} ${count === 1 ? "item" : "items"} staged`}
           {row.providerSeen ? ` · ${row.providerSeen}` : ""}
         </p>
         {waiting && (
@@ -195,6 +224,9 @@ export function CheckoutInbox({ offices, showOfficeBadges }: { offices: OfficeId
   const [busyId, setBusyId] = useState<string | null>(null);
   const [dismissing, setDismissing] = useState<TcCheckoutHandoff | null>(null);
   const [opened, setOpened] = useState<{ office: OfficeId; handoffId: string } | null>(null);
+  const canAdd = useCanAddCheckoutPatient();
+  // CO-5b: keeps the server's read of today's schedule fresh while this page is open.
+  const scheduleStates = useScheduleCheck(enabledOffices ?? [], () => void load());
 
   // The arrival toast links here with ?handoff=&office= — open the same sidebar.
   useEffect(() => {
@@ -245,8 +277,10 @@ export function CheckoutInbox({ offices, showOfficeBadges }: { offices: OfficeId
         <Button size="sm" variant="ghost" className="ml-auto gap-1.5 text-xs" onClick={() => void load()}>
           <RefreshCw className="w-3.5 h-3.5" /> Check again
         </Button>
+        {canAdd && enabledOffices && enabledOffices.length > 0 && <AddCheckoutPatient offices={enabledOffices} />}
       </div>
 
+      <ScheduleCheckLine states={scheduleStates} showOfficeBadges={showOfficeBadges} />
       {notice && <TcPartialDataNotice message={notice} />}
 
       {loading ? (
@@ -305,7 +339,7 @@ export default function TcCheckout() {
   }
   return (
     <div className="p-6 max-w-4xl mx-auto">
-      <TcPageHeader title="Checkout" subtitle="Patients the hygiene visit sent to the front desk today" />
+      <TcPageHeader title="Checkout" subtitle="Patients at the front desk today: sent by the hygiene visit, from today's schedule, or added by hand" />
       <CheckoutInbox key={officeScopeKey(scope.offices)} offices={scope.offices} showOfficeBadges={scope.showOfficeBadges} />
     </div>
   );

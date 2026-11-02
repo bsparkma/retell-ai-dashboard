@@ -205,6 +205,11 @@ class FakeTenantDb {
 
     if (/^(BEGIN|COMMIT|ROLLBACK)$/i.test(text)) return { rows: [], rowCount: 0 };
 
+    // A transaction-scoped advisory lock (CO-5a's patient-day lock) is a no-op
+    // here, like FOR UPDATE: one process, one store. What it serializes is a
+    // real-Postgres property; the unique index behind it is what tests emulate.
+    if (/^SELECT pg_advisory_xact_lock\(/i.test(text)) return { rows: [{}], rowCount: 1 };
+
     let m;
 
     // Media-proxy ownership probe (UNION across the two blob-key tables).

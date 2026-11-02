@@ -74,6 +74,8 @@ export interface PipelineBoardProps {
   ) => Promise<boolean>;
   /** All-offices view: cards carry an office badge. */
   showOfficeBadges?: boolean;
+  /** CO-4b: a card's Open Dental sync Undo landed; re-read the cases. */
+  onOdSyncUndone?: () => void;
 }
 
 export function PipelineBoard({
@@ -81,6 +83,7 @@ export function PipelineBoard({
   onOpen,
   onTransition,
   showOfficeBadges = false,
+  onOdSyncUndone,
 }: PipelineBoardProps) {
   const [lostTarget, setLostTarget] = useState<TcCaseSummary | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -159,6 +162,7 @@ export function PipelineBoard({
                 onOpen={onOpen}
                 onMove={handleMove}
                 showOfficeBadges={showOfficeBadges}
+                onOdSyncUndone={onOdSyncUndone}
               />
             ))}
             {/* Ghost Nurture column (legacy behavior) — visually muted, still moveable. */}
@@ -210,6 +214,7 @@ function BoardColumn({
   onMove,
   showOfficeBadges = false,
   ghost = false,
+  onOdSyncUndone,
 }: {
   status: CaseStatusId;
   cases: TcCaseSummary[];
@@ -218,6 +223,7 @@ function BoardColumn({
   onMove: (row: TcCaseSummary, status: CaseStatusId) => void;
   showOfficeBadges?: boolean;
   ghost?: boolean;
+  onOdSyncUndone?: () => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: caseColumnDroppableId(status) });
   const totalCents = cases.reduce((sum, c) => sum + c.caseValueCents, 0);
@@ -247,6 +253,7 @@ function BoardColumn({
             muted={ghost}
             pending={pendingIds.includes(row.caseId)}
             showOfficeBadge={showOfficeBadges}
+            onOdSyncUndone={onOdSyncUndone}
             onOpen={() => onOpen(row.caseId)}
             onMove={(next) => onMove(row, next)}
           />

@@ -233,6 +233,9 @@ describe("the Checkout inbox", () => {
       target: { value: "Tue 9am" },
     });
     fireEvent.click(within(sheet).getByTestId("checkout-outcome-scheduled"));
+    // RULING (CO-4a): Scheduled now asks which Open Dental appointment was
+    // booked; "Not in Open Dental yet" answers exactly as Scheduled did before.
+    fireEvent.click(await screen.findByTestId("appointment-picker-not-in-od"));
     await within(sheet).findByTestId("checkout-answered");
     expect(state.outcomes).toEqual([["roland", handoff().handoffId, "scheduled", "Tue 9am"]]);
     expect(within(sheet).getByTestId("checkout-answered").textContent).toMatch(/Scheduled/);

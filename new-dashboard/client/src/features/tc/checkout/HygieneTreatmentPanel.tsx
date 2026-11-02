@@ -38,6 +38,7 @@ import {
   TC_CHECKOUT_OUTCOME_LABELS,
   TC_CHECKOUT_PRIORITY_LABELS,
   type TcCheckoutCaseTreatment,
+  type TcCheckoutHandoff,
   type TcCheckoutPanelItem,
   type TcCheckoutPriority,
   type TcCheckoutProcedure,
@@ -54,6 +55,7 @@ import {
 } from "@shared/hyg/existingTx";
 
 import { getCaseHygieneTreatment, markItemEntered, undoItemEntered } from "./checkoutApi";
+import { AppointmentAnchorLine } from "./AppointmentPicker";
 
 /** The card's "Tx not in OD" chip (pipeline board). */
 export function TxNotInOdChip() {
@@ -247,6 +249,15 @@ export function HygieneTreatmentPanel({ office, caseId }: HygieneTreatmentPanelP
     );
   }
 
+  // CO-4a: the server's read-back after an appointment is linked from here.
+  function replaceHandoff(next: TcCheckoutHandoff) {
+    setData((prev) =>
+      prev
+        ? { ...prev, visits: prev.visits.map((v) => (v.handoff.handoffId === next.handoffId ? { ...v, handoff: next } : v)) }
+        : prev,
+    );
+  }
+
   async function act(handoffId: string, index: number, undo: boolean) {
     const key = `${handoffId}:${index}`;
     setBusy(key);
@@ -304,7 +315,15 @@ export function HygieneTreatmentPanel({ office, caseId }: HygieneTreatmentPanelP
       </CardHeader>
       <CardContent className="space-y-4">
         {data.visits.map((v) => (
-          <VisitBlock key={v.handoff.handoffId} visit={v} canUnattest={data.canUnattest} busy={busy} onAct={act} />
+          <VisitBlock
+            key={v.handoff.handoffId}
+            office={office}
+            visit={v}
+            canUnattest={data.canUnattest}
+            busy={busy}
+            onAct={act}
+            onHandoff={replaceHandoff}
+          />
         ))}
       </CardContent>
     </Card>
@@ -312,12 +331,16 @@ export function HygieneTreatmentPanel({ office, caseId }: HygieneTreatmentPanelP
 }
 
 function VisitBlock({
+  office,
   visit,
   canUnattest,
   busy,
   onAct,
+  onHandoff,
 }: {
+  office: OfficeId;
   visit: Visit;
+  onHandoff: (next: TcCheckoutHandoff) => void;
   canUnattest: boolean;
   busy: string | null;
   onAct: (handoffId: string, index: number, undo: boolean) => void;
@@ -342,6 +365,8 @@ function VisitBlock({
           {outcome ? ` · ${outcome} at checkout` : ""}
         </span>
       </div>
+      {/* CO-4a: the appointment this Scheduled checkout is anchored to, on the case. */}
+      <AppointmentAnchorLine office={office} handoff={h} canLink={visit.canLinkAppointment} onLinked={onHandoff} />
       {(nextBits.length > 0 || next.rtc) && (
         <p className="text-xs text-muted-foreground">
           <span className="font-medium text-foreground">Next visit:</span>{" "}

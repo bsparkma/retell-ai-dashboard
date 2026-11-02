@@ -36,6 +36,8 @@ const checkoutStore = require('./checkoutStore');
 const tcCheckout = require('../../config/tcCheckout');
 // (item 47) A case leaving TC work stops its nurture enrollment.
 const nurtureHooks = require('../../services/tcNurture/hooks');
+// CO-4b: the card's Open Dental sync badge / flag.
+const odPipelineSync = require('../../services/tc/odPipelineSync');
 
 const { z, TcCase, TcCasePhase, TcCaseItem, TcObjection, ContactAttemptDetail, CaseStatus, LostReason, Uuid, caseToRows } = contract;
 
@@ -290,7 +292,7 @@ router.get(
 
     const rows = await tenantDb.withTenantDb(req, (pool) =>
       pool.query(
-        `SELECT ${store.CASE_COLS.join(', ')}, created_at, updated_at
+        `SELECT ${store.CASE_COLS.join(', ')}, od_sync_action, od_sync_flag, created_at, updated_at
            FROM tc_cases
           WHERE ${where.join(' AND ')}
           ORDER BY created_at DESC
@@ -338,6 +340,9 @@ router.get(
         ...caseRowToSummary(r),
         hasOrthoScreening: screened.has(r.case_id),
         txNotInOd: unentered.has(String(r.case_id)),
+        // CO-4b: "Moved by Open Dental sync" (with Undo) / "Open Dental no
+        // longer matches — check", while either stands. Null otherwise.
+        odSync: odPipelineSync.cardState(r.status, r.od_sync_action, r.od_sync_flag),
       })),
     });
   })

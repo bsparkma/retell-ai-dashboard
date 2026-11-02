@@ -1020,7 +1020,10 @@ test('no OD route reaches a write method — the transport is GET-only by constr
   const fs = require('node:fs');
   const path = require('node:path');
 
-  for (const file of ['od.js', 'odReads.js', 'odPatientSearch.js']) {
+  // RULING (CO-4a): the checkout's appointment read (checkoutAppointments.js)
+  // and CO-5a's hand-start patient re-read (odManualPatient.js)
+  // are TC Open Dental reads too, so the same GET-only rule covers them.
+  for (const file of ['od.js', 'odReads.js', 'odPatientSearch.js', 'checkoutAppointments.js', 'odManualPatient.js']) {
     const src = fs.readFileSync(path.join(__dirname, file), 'utf8');
     assert.ok(!/router\.(post|put|patch|delete)\s*\(/.test(src), `${file} must expose only GET routes`);
     assert.ok(

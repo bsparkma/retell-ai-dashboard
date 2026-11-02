@@ -33,7 +33,13 @@ import PracticesPanel from "./platform/PracticesPanel";
 import RetentionPanel from "./platform/RetentionPanel";
 import HygienePanel from "./platform/HygienePanel";
 import { TcCheckoutPanel } from "./platform/TcCheckoutPanel";
-import { TcReferralEmailPanel, TcReferralPatientEmailPanel, TcReferralsPanel } from "./platform/TcReferralsPanel";
+import {
+  TcAutoCheckoutPanel,
+  TcOdSyncPanel,
+  TcReferralEmailPanel,
+  TcReferralPatientEmailPanel,
+  TcReferralsPanel,
+} from "./platform/TcReferralsPanel";
 
 /** The message to show for a failed request — the server's, whenever it sent one. */
 export function loadError(e: unknown): string {
@@ -151,8 +157,12 @@ export default function Platform() {
           <HygienePanel practices={practices} />
         </TabsContent>
 
-        <TabsContent value="tc-checkout" className="mt-4">
+        <TabsContent value="tc-checkout" className="mt-4 space-y-8">
           <TcCheckoutPanel />
+          {/* CO-4b: the pipeline's Open Dental sync follows the checkout's appointment anchor. */}
+          <TcOdSyncPanel />
+          {/* CO-5b: Waiting cards made from today's completed non-hygiene visits. */}
+          <TcAutoCheckoutPanel />
         </TabsContent>
 
         <TabsContent value="tc-referrals" className="mt-4 space-y-8">

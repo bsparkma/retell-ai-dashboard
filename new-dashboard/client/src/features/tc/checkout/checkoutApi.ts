@@ -11,6 +11,9 @@ import {
   TcCheckoutSummary,
   TcCheckoutCaseTreatment,
   TcCheckoutPanelItem,
+  TcCheckoutAppointmentsResponse,
+  TcCheckoutScheduleCheck,
+  type TcCheckoutUpcomingAppointment,
   type TcCheckoutOutcome,
   type TcCheckoutWorkupRequest,
 } from "@shared/tc/checkout";
@@ -49,6 +52,15 @@ export async function listCheckout(office: OfficeId, view: CheckoutView) {
   return parse(ListResponse, await tcRequest<unknown>("/tc/checkout", { office, params: { view } }));
 }
 
+/**
+ * Cards from today's schedule (CO-5b): the office's state. Asking also starts
+ * a schedule read on the server when the office's last one is older than its
+ * 60-second window, so the answer can say `running: true`.
+ */
+export async function getScheduleCheck(office: OfficeId): Promise<TcCheckoutScheduleCheck> {
+  return parse(TcCheckoutScheduleCheck, await tcRequest<unknown>("/tc/checkout/schedule-check", { office }));
+}
+
 export async function getCheckoutSummary(office: OfficeId): Promise<TcCheckoutSummary> {
   return parse(TcCheckoutSummary, await tcRequest<unknown>("/tc/checkout/summary", { office }));
 }
@@ -56,6 +68,26 @@ export async function getCheckoutSummary(office: OfficeId): Promise<TcCheckoutSu
 export async function getCheckoutHandoff(office: OfficeId, handoffId: string): Promise<TcCheckoutHandoff> {
   const res = parse(OneResponse, await tcRequest<unknown>(`/tc/checkout/${handoffId}`, { office }));
   return res.handoff;
+}
+
+const ManualAddResponse = z.object({
+  success: z.literal(true),
+  /** False when the patient already had a card today: the server opened that one. */
+  created: z.boolean(),
+  handoff: TcCheckoutHandoff,
+});
+export type CheckoutManualAddResult = z.infer<typeof ManualAddResponse>;
+
+/**
+ * "Add patient" (CO-5a): put the picked patient on today's Checkout, or open
+ * the card they already have. The body names only the PatNum; the server takes
+ * the office from the request and the name from that office's Open Dental.
+ */
+export async function addCheckoutPatient(office: OfficeId, patNum: number): Promise<CheckoutManualAddResult> {
+  return parse(
+    ManualAddResponse,
+    await tcRequest<unknown>("/tc/checkout/manual", { office, method: "POST", body: { patNum } }),
+  );
 }
 
 export async function claimCheckout(office: OfficeId, handoffId: string): Promise<TcCheckoutHandoff> {
@@ -87,15 +119,49 @@ export async function recordCheckoutOutcome(
   handoffId: string,
   outcome: TcCheckoutOutcome,
   appointmentNote: string,
+  /** CO-4a, Scheduled only: the picked AptNum, or null for "Not in Open Dental yet". */
+  aptNum: number | null = null,
 ): Promise<CheckoutOutcomeResult> {
   return parse(
     OutcomeResponse,
     await tcRequest<unknown>(`/tc/checkout/${handoffId}/outcome`, {
       office,
       method: "POST",
-      body: { outcome, appointmentNote },
+      body: outcome === "scheduled" ? { outcome, appointmentNote, aptNum } : { outcome, appointmentNote },
     }),
   );
+}
+
+// ── CO-4a: the "Scheduled" appointment anchor ───────────────────────────────
+
+/**
+ * The checkout's patient's UPCOMING Open Dental appointments, soonest first.
+ * The server reads them for the stored record's office and patient; nothing
+ * here names either. A failed read throws (OD_APPOINTMENTS_UNAVAILABLE) — it is
+ * never an empty list.
+ */
+export async function listCheckoutAppointments(
+  office: OfficeId,
+  handoffId: string,
+): Promise<TcCheckoutUpcomingAppointment[]> {
+  const res = parse(
+    TcCheckoutAppointmentsResponse,
+    await tcRequest<unknown>(`/tc/checkout/${handoffId}/appointments`, { office }),
+  );
+  return res.appointments;
+}
+
+/** Link, change, or (null) clear a Scheduled checkout's appointment, later. */
+export async function linkCheckoutAppointment(
+  office: OfficeId,
+  handoffId: string,
+  aptNum: number | null,
+): Promise<TcCheckoutHandoff> {
+  const res = parse(
+    OneResponse,
+    await tcRequest<unknown>(`/tc/checkout/${handoffId}/appointment`, { office, method: "POST", body: { aptNum } }),
+  );
+  return res.handoff;
 }
 
 // ── C2b (item 50b): the staff panel and "entered in Open Dental" ────────────

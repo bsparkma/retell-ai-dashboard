@@ -1313,9 +1313,119 @@ async function getNextAppointment(odGet, patNum) {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. Upcoming appointments (CO-4a: the "Scheduled" anchor picker)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Every UPCOMING, booked appointment of one patient, soonest first — what the
+ * desk picks from when it marks a checkout Scheduled.
+ *
+ * ONE request: GET /appointments?PatNum&AptStatus=Scheduled&dateStart=<from>.
+ * `Scheduled` is Open Dental's string enum for a booked appointment
+ * (docs/OD_API_CONTRACT.md §1), so the filter alone leaves out Broken,
+ * Complete, Planned, the Unscheduled list and patient-note rows. The same
+ * rules are re-applied to the rows that come back, so an Open Dental that
+ * ignored a filter can never put a broken or past appointment in the picker.
+ * Unlike getNextAppointment there is NO unfiltered fallback: an Open Dental
+ * that refuses the filter is a failed read, said as such.
+ *
+ * `from` is the OFFICE's today ('YYYY-MM-DD'), passed by the caller — never this
+ * process's clock. Returns the raw fields only; labels are the caller's.
+ *
+ * @param {Function} odGet
+ * @param {number} patNum
+ * @param {{ from: string }} opts
+ * @returns {Promise<Array<{ aptNum: number, dateTime: string, provAbbr: string, appointmentTypeNum: number|null, op: number|null, procDescript: string }>>}
+ */
+async function listUpcomingAppointments(odGet, patNum, { from }) {
+  const res = await odGet(
+    '/appointments',
+    { PatNum: patNum, AptStatus: 'Scheduled', dateStart: from },
+    { timeoutMs: OD_CALL_TIMEOUT_MS }
+  );
+  if (!res.ok) {
+    const err = new Error(`Failed to fetch appointments (${res.status})`);
+    err.odStatus = res.status;
+    throw err;
+  }
+  return asArray(res.data)
+    .filter((a) => {
+      if (num(a.PatNum) !== patNum) return false; // never another patient's row
+      if (String(a.AptStatus || '') !== 'Scheduled') return false;
+      const day = odDate(a.AptDateTime);
+      return !!day && day >= from;
+    })
+    .map((a) => ({
+      aptNum: num(a.AptNum),
+      dateTime: String(a.AptDateTime).slice(0, 19),
+      provAbbr: String(a.provAbbr || ''),
+      appointmentTypeNum: a.AppointmentTypeNum == null || num(a.AppointmentTypeNum) === 0 ? null : num(a.AppointmentTypeNum),
+      op: a.Op == null || num(a.Op) === 0 ? null : num(a.Op),
+      procDescript: String(a.ProcDescript || ''),
+    }))
+    .filter((a) => Number.isInteger(a.aptNum) && a.aptNum > 0)
+    .sort((a, b) => a.dateTime.localeCompare(b.dateTime) || a.aptNum - b.aptNum);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CO-4b: one anchored appointment, by AptNum (the pipeline sync's read)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /appointments/{AptNum} — ONE request. Only the four fields the sync
+ * decides on leave here: AptNum, PatNum (to prove it is still the anchored
+ * patient's), AptStatus, and the date/time. No notes.
+ *
+ * A 404 is an ANSWER ("Open Dental no longer has it"), so it is returned as
+ * `{ missing: true }`. Anything else that is not a 200 is a FAILURE and throws
+ * (with `odStatus`), so the caller can fail the whole office closed rather
+ * than read an outage as a signal.
+ *
+ * @param {(path: string, params: object, opts: object) => Promise<{ok:boolean,status:number,data:unknown}>} odGet
+ * @param {number} aptNum
+ * @param {{ timeoutMs?: number, minIntervalMs?: number }} [opts]
+ * @returns {Promise<{ missing: true } | { missing: false, appointment: { aptNum: number, patNum: number|null, aptStatus: string, dateTime: string } }>}
+ */
+async function getAppointment(odGet, aptNum, opts = {}) {
+  const res = await odGet(
+    `/appointments/${Number(aptNum)}`,
+    {},
+    { timeoutMs: opts.timeoutMs || OD_CALL_TIMEOUT_MS, ...(opts.minIntervalMs ? { minIntervalMs: opts.minIntervalMs } : {}) }
+  );
+  if (!res.ok) {
+    // A 404 is "no such appointment" -- unless Open Dental is saying the KEY
+    // cannot reach /appointments at all, which is our outage, not an answer.
+    if (res.status === 404 && !/not a valid resource|not enabled|permission/i.test(String(res.error || ''))) {
+      return { missing: true };
+    }
+    const err = new Error(`OD appointment read failed (${res.status})`);
+    err.odStatus = res.status;
+    throw err;
+  }
+  const raw = Array.isArray(res.data) ? res.data[0] : res.data;
+  // A 200 that is not this appointment (an empty body, a proxy page) is not an
+  // answer either: fail, so the office fails closed rather than flag every case.
+  if (!raw || typeof raw !== 'object' || num(raw.AptNum) !== Number(aptNum)) {
+    const err = new Error('OD appointment read returned an unreadable body');
+    err.odStatus = res.status;
+    throw err;
+  }
+  return {
+    missing: false,
+    appointment: {
+      aptNum: num(raw.AptNum),
+      patNum: raw.PatNum == null ? null : num(raw.PatNum),
+      aptStatus: String(raw.AptStatus || ''),
+      dateTime: String(raw.AptDateTime || '').slice(0, 19),
+    },
+  };
+}
+
 module.exports = {
   // reads
   searchPatients,
+  getAppointment,
   getPatient,
   // R6.2: the statuses the search hides, so a by-PatNum read can refuse the same ones.
   EXCLUDED_PAT_STATUS,
@@ -1325,6 +1435,7 @@ module.exports = {
   getTpProcedureRows,
   getInsuranceSnapshot,
   getNextAppointment,
+  listUpcomingAppointments,
   // exported for tests / reuse
   asArray,
   isCapabilityMiss,

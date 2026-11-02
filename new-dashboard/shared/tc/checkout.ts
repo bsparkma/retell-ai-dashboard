@@ -382,6 +382,101 @@ export function checkoutWorkupProgressLabel(p: { done: number; total: number }):
   return `${p.done} of ${p.total} ${p.total === 1 ? "section" : "sections"} done`;
 }
 
+/**
+ * Where a checkout card came from: the hygiene visit, the front desk's "Add
+ * patient" (CO-5a), or today's Open Dental schedule (CO-5b — a non-hygiene
+ * appointment Open Dental marked Complete).
+ */
+export const TcCheckoutSource = z.enum(["hygiene", "manual", "schedule"]);
+export type TcCheckoutSource = z.infer<typeof TcCheckoutSource>;
+
+/**
+ * The snapshot a card added by hand is stored with: nothing staged, nothing to
+ * collect, no next visit, no notes. Never rendered as hygiene data —
+ * checkoutHasHygieneData says the card has none. Pure.
+ */
+export function emptyCheckoutSnapshot(): TcCheckoutSnapshot {
+  return {
+    procedures: [],
+    priority: null,
+    nextVisit: { type: null, intervalMonths: null, lengthMin: null, withDoctor: false, rtc: "" },
+    notesPending: false,
+    frontDeskNote: "",
+    financialNote: "",
+  };
+}
+
+/**
+ * One of the patient's UPCOMING Open Dental appointments, as the "Scheduled"
+ * picker lists it (CO-4a). Exactly these fields — no notes, no other patient.
+ * `dateTime` is Open Dental's own wall-clock reading for the office,
+ * 'YYYY-MM-DD HH:MM:SS'; it is never converted between timezones.
+ */
+export const TcCheckoutUpcomingAppointment = z.object({
+  aptNum: z.number().int().positive(),
+  dateTime: z.string(),
+  provider: z.string(),
+  appointmentType: z.string(),
+  operatory: z.string(),
+});
+export type TcCheckoutUpcomingAppointment = z.infer<typeof TcCheckoutUpcomingAppointment>;
+
+/**
+ * The appointment a Scheduled checkout is anchored to (CO-4a): what Open
+ * Dental said about it when it was linked, and who linked it. The office is
+ * the checkout's own. What the OD-driven sync (CO-4b) will track.
+ */
+export const TcCheckoutAppointmentAnchor = TcCheckoutUpcomingAppointment.extend({
+  linkedBy: z.string().nullable(),
+  linkedAt: z.string().nullable(),
+});
+export type TcCheckoutAppointmentAnchor = z.infer<typeof TcCheckoutAppointmentAnchor>;
+
+/** GET /api/tc/checkout/:id/appointments — the picker's list, soonest first. */
+export const TcCheckoutAppointmentsResponse = z.object({
+  success: z.literal(true),
+  appointments: z.array(TcCheckoutUpcomingAppointment),
+});
+export type TcCheckoutAppointmentsResponse = z.infer<typeof TcCheckoutAppointmentsResponse>;
+
+/**
+ * POST /api/tc/checkout/:id/appointment — link, change, or (null) clear a
+ * Scheduled checkout's anchor later. The AptNum must be one of that patient's
+ * upcoming appointments in that office, re-read from Open Dental.
+ */
+export const TcCheckoutAppointmentLinkRequest = z.object({ aptNum: z.number().int().positive().nullable() }).strict();
+export type TcCheckoutAppointmentLinkRequest = z.infer<typeof TcCheckoutAppointmentLinkRequest>;
+
+/** "Tue, Nov 4, 9:00 AM" from an OD wall-clock 'YYYY-MM-DD HH:MM[:SS]'. Pure; no timezone math. */
+export function appointmentWhenLabel(dateTime: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(dateTime);
+  if (!m) return dateTime;
+  const [, y, mo, d, hh, mm] = m;
+  const day = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d)));
+  const date = day.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
+  const h = Number(hh);
+  const time = `${h % 12 === 0 ? 12 : h % 12}:${mm} ${h < 12 ? "AM" : "PM"}`;
+  return `${date}, ${time}`;
+}
+
+/**
+ * The answer a card had before a later hygiene visit reopened it (CO-5a fix,
+ * PM ruling): a hygiene handoff that merges onto an answered card puts it back
+ * in Waiting, and what it was answered with is kept here as history.
+ */
+export const TcCheckoutReopened = z.object({
+  outcome: TcCheckoutOutcome,
+  outcomeBy: z.string().nullable(),
+  outcomeAt: z.string().nullable(),
+  appointmentNote: z.string().nullable(),
+  /** The case that outcome made or moved. The case itself is left as it is. */
+  caseId: z.string().uuid().nullable(),
+  reopenedAt: z.string(),
+  /** CO-4a: the appointment that answer was anchored to, if any. */
+  appointment: TcCheckoutAppointmentAnchor.nullable().default(null),
+});
+export type TcCheckoutReopened = z.infer<typeof TcCheckoutReopened>;
+
 /** A checkout handoff as TC reads it back. */
 export const TcCheckoutHandoff = z.object({
   handoffId: z.string().uuid(),
@@ -414,8 +509,97 @@ export const TcCheckoutHandoff = z.object({
   expiredBy: z.string().nullable().default(null),
   /** CO-1. Defaulted so a pre-CO-1 reader and a pre-CO-1 record both parse. */
   workup: TcCheckoutWorkup.default(emptyCheckoutWorkup),
+  /**
+   * CO-5a. Where the card came from: the hygiene visit, or the front desk's
+   * "Add patient". Every record before CO-5a reads as `hygiene`, which is what
+   * it was. Who added a manual card is `submittedBy`.
+   */
+  source: TcCheckoutSource.default("hygiene"),
+  /**
+   * CO-5a. When a hygiene handoff for the same patient and day arrived after a
+   * manual card and merged onto it. Null on a hygiene card, and on a manual
+   * card that has no hygiene visit data.
+   */
+  hygieneMergedAt: z.string().nullable().default(null),
+  /**
+   * CO-5a fix. Set when a hygiene visit arrived after this card was ANSWERED
+   * and reopened it: the answer it had, kept as history. Null otherwise.
+   */
+  reopenedFrom: TcCheckoutReopened.nullable().default(null),
+  /**
+   * CO-4a. The Open Dental appointment a Scheduled checkout is anchored to.
+   * Null on every other status, on every record before CO-4a, and on a
+   * Scheduled checkout marked "Not in Open Dental yet".
+   */
+  appointment: TcCheckoutAppointmentAnchor.nullable().default(null),
+  /**
+   * CO-5b. On a `schedule` card, the Open Dental appointment it was made from,
+   * as Open Dental described it then. It stays when a hygiene handoff later
+   * merges onto the card. Null on every other card.
+   */
+  scheduleAppointment: TcCheckoutUpcomingAppointment.nullable().default(null),
 });
 export type TcCheckoutHandoff = z.infer<typeof TcCheckoutHandoff>;
+
+/**
+ * Does this card carry hygiene visit data? A hygiene card always does; a manual
+ * or schedule card only once a hygiene handoff merged onto it. When it does
+ * not, the workup view says so instead of rendering the hygiene sections as if
+ * they were empty. Pure.
+ */
+export function checkoutHasHygieneData(h: Pick<TcCheckoutHandoff, "source" | "hygieneMergedAt">): boolean {
+  return h.source === "hygiene" || h.hygieneMergedAt !== null;
+}
+
+/**
+ * GET /api/tc/checkout/schedule-check — the Checkout page's "today's schedule"
+ * line (CO-5b), per office. Asking also refreshes the office's schedule read
+ * when it is older than its cache window; the answer is the state as it stands.
+ *
+ *   off      the office's switch is off: nothing is read, nothing is made
+ *   pending  switched on, no read has finished since the server started
+ *   ok       the last read succeeded
+ *   failed   the last read failed — the page says "Couldn't check today's
+ *            schedule" with `lastSuccessAt`, never a silent stale list
+ */
+export const TcCheckoutScheduleCheckStatus = z.enum(["off", "pending", "ok", "failed"]);
+export type TcCheckoutScheduleCheckStatus = z.infer<typeof TcCheckoutScheduleCheckStatus>;
+
+export const TcCheckoutScheduleCheck = z.object({
+  success: z.literal(true),
+  office: z.enum(["roland", "valley"]),
+  status: TcCheckoutScheduleCheckStatus,
+  running: z.boolean(),
+  lastSuccessAt: z.string().nullable(),
+  lastAttemptAt: z.string().nullable(),
+  /**
+   * Cards made since the server started. Monotonic, so the page reloads its
+   * list after ANY read that made cards — even when a later one made none.
+   */
+  createdTotal: z.number().int().nonnegative().default(0),
+  /** Counts from the last read that finished. Never a PatNum or a name. */
+  summary: z
+    .object({
+      completedNonHygiene: z.number().int().nonnegative(),
+      created: z.number().int().nonnegative(),
+      alreadyCarded: z.number().int().nonnegative(),
+      skippedHygiene: z.number().int().nonnegative(),
+      skippedNoPatient: z.number().int().nonnegative(),
+      deferred: z.number().int().nonnegative(),
+      partial: z.boolean(),
+    })
+    .nullable(),
+});
+export type TcCheckoutScheduleCheck = z.infer<typeof TcCheckoutScheduleCheck>;
+
+/**
+ * POST /api/tc/checkout/manual — the front desk's "Add patient" (CO-5a).
+ * The PatNum names which patient the person picked from the patient search;
+ * the office is the request's, and the name is re-read from that office's Open
+ * Dental. Nothing else rides along.
+ */
+export const TcCheckoutManualAddRequest = z.object({ patNum: z.number().int().positive() }).strict();
+export type TcCheckoutManualAddRequest = z.infer<typeof TcCheckoutManualAddRequest>;
 
 /** POST /api/tc/checkout/:id/outcome */
 export const TcCheckoutOutcomeRequest = z
@@ -423,6 +607,12 @@ export const TcCheckoutOutcomeRequest = z
     outcome: TcCheckoutOutcome,
     /** Optional, and only meaningful for "Scheduled" ("Tue 9am, Dr. chair"). */
     appointmentNote: z.string().trim().max(500).default(""),
+    /**
+     * CO-4a, Scheduled only. The AptNum picked from the patient's upcoming
+     * appointments, or null / absent for "Not in Open Dental yet". Re-read
+     * from Open Dental before anything is stored.
+     */
+    aptNum: z.number().int().positive().nullable().optional(),
   })
   .strict();
 export type TcCheckoutOutcomeRequest = z.infer<typeof TcCheckoutOutcomeRequest>;
@@ -534,6 +724,8 @@ export const TcCheckoutCaseTreatment = z.object({
     z.object({
       handoff: TcCheckoutHandoff,
       items: z.array(TcCheckoutPanelItem),
+      /** CO-4a: a Scheduled visit whose case is still open may be (re)linked to an appointment. */
+      canLinkAppointment: z.boolean().default(false),
     }),
   ),
 });
