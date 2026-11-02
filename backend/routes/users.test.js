@@ -52,6 +52,12 @@ const originalGetTenantPool = tenantDb.getTenantPool;
 const originalWithTenantDb = tenantDb.withTenantDb;
 /** The practice's own database — where hyg_staff (signatures) lives. */
 let db;
+/**
+ * Flip to make the audit writer throw an AuditError, as a dead audit store
+ * would. A flag, not a re-stub: users.js binds `audit` when it is first
+ * required, so only the stub installed then is ever called.
+ */
+let auditThrows = false;
 
 function activeAdmins() {
   return rows.filter((r) => r.role === 'admin' && r.status === 'active').length;
@@ -104,7 +110,9 @@ beforeEach(() => {
     return row;
   };
 
+  auditThrows = false;
   auditModule.audit = async (_req, entry) => {
+    if (auditThrows) throw new auditModule.AuditError('audit store down');
     auditRows.push(entry);
   };
 
@@ -604,7 +612,7 @@ test('signature: saving creates ONE row whose only sign-in is the app_user email
   try {
     const before = await app.get(SIG);
     assert.equal(before.status, 200);
-    assert.deepEqual(before.body, { success: true, office: 'valley', signature: null });
+    assert.deepEqual(before.body, { success: true, office: 'valley', signature: null, usingBuiltInList: true });
 
     // The path names the person in mixed case; the stored sign-in is still the
     // row's own lowercase email.
@@ -614,6 +622,8 @@ test('signature: saving creates ONE row whose only sign-in is the app_user email
       success: true,
       office: 'valley',
       signature: { fullName: 'Avery Example', license: '9101' },
+      // The office now has a row, so it no longer prints from the built-in list.
+      usingBuiltInList: false,
     });
     assert.equal(staff().length, 1);
     assert.equal(staff()[0].office, 'valley');
@@ -752,6 +762,59 @@ test('signature: deactivating the USER deactivates their signature row', async (
     // Re-enabling the user does not silently bring the signature back.
     await app.patch('/api/users/hyg@carein.ai', { status: 'active' });
     assert.equal(staff()[0].active, false);
+  } finally {
+    await app.close();
+  }
+});
+
+test('signature: a DISABLED user can have theirs cleared but not set (409 USER_DISABLED)', async () => {
+  const app = await boot();
+  try {
+    await app.put(SIG, { fullName: 'Avery Example', license: '9101' });
+    rows.find((r) => r.email === 'hyg@carein.ai').status = 'disabled';
+    // Reactivating the row behind the retire is refused...
+    staff()[0].active = false;
+    const refused = await app.put(SIG, { fullName: 'Avery Example', license: '9101' });
+    assert.equal(refused.status, 409);
+    assert.equal(refused.body.code, 'USER_DISABLED');
+    assert.equal(staff()[0].active, false);
+    // ...and so is a first-time set.
+    db.hyg_staff.length = 0;
+    assert.equal((await app.put(SIG, { fullName: 'Avery Example', license: null })).status, 409);
+    assert.equal(staff().length, 0);
+    // A clear is always allowed.
+    assert.equal((await app.put(SIG, { fullName: null, license: null })).status, 200);
+  } finally {
+    await app.close();
+  }
+});
+
+test('signature: a save whose audit row then fails says it WAS saved, not that nothing happened', async () => {
+  const app = await boot();
+  try {
+    auditThrows = true;
+    const res = await app.put(SIG, { fullName: 'Avery Example', license: '9101' });
+    assert.equal(res.status, 500);
+    assert.equal(res.body.code, 'SAVED_AUDIT_FAILED');
+    assert.match(res.body.error, /was saved/);
+    assert.equal(staff().length, 1, 'the row did land');
+  } finally {
+    await app.close();
+  }
+});
+
+test('signature: usingBuiltInList is per office and flips with the office’s first row', async () => {
+  const app = await boot();
+  try {
+    // No rows anywhere: still on the built-in list.
+    assert.equal((await app.get(SIG)).body.usingBuiltInList, true);
+    // A valley row does not take ROLAND off the built-in list.
+    await app.put('/api/users/front@carein.ai/signature', { fullName: 'Jamie Example', license: null });
+    rows.find((r) => r.email === 'front@carein.ai').home_office = 'valley';
+    db.hyg_staff[0].office = 'valley';
+    assert.equal((await app.get(SIG)).body.usingBuiltInList, true);
+    await app.put(SIG, { fullName: 'Avery Example', license: null });
+    assert.equal((await app.get(SIG)).body.usingBuiltInList, false);
   } finally {
     await app.close();
   }

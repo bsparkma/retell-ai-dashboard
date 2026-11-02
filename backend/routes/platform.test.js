@@ -733,6 +733,7 @@ test('signature: the console door writes into THAT practice\u2019s database, key
     success: true,
     office: 'roland',
     signature: { fullName: 'Jamie Example', license: '9102' },
+    usingBuiltInList: false,
   });
   assert.deepEqual(opened, [CAREIN]);
   assert.equal(dbs[SMITH].hyg_staff.length, 0);

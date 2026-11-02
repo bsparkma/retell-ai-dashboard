@@ -152,7 +152,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
       // each call named, so a test can prove the panel uses THIS door.
       getPracticeUserSignature: vi.fn(async (tenantId: string, email: string) => {
         signatureCalls.push({ verb: "get", tenantId, email });
-        return { success: true as const, office: "roland" as const, signature: null };
+        return { success: true as const, office: "roland" as const, signature: null, usingBuiltInList: false };
       }),
       savePracticeUserSignature: vi.fn(
         async (tenantId: string, email: string, input: { fullName: string | null; license: string | null }) => {
@@ -161,6 +161,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
             success: true as const,
             office: "roland" as const,
             signature: input.fullName ? { fullName: input.fullName, license: input.license } : null,
+            usingBuiltInList: false,
           };
         },
       ),

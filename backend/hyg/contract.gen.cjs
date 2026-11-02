@@ -18374,7 +18374,13 @@ var UserSignatureResponseSchema = import_zod7.z.object({
   signature: import_zod7.z.object({
     fullName: import_zod7.z.string(),
     license: import_zod7.z.string().nullable()
-  }).nullable()
+  }).nullable(),
+  /**
+   * True while this office has NO hyg_staff rows, so notes still take licences
+   * from the built-in list in backend/config/hygStaff.js. The first signature
+   * saved switches the office to the table — the page warns before that save.
+   */
+  usingBuiltInList: import_zod7.z.boolean()
 });
 
 // ../backend/hyg/contract.entry.ts

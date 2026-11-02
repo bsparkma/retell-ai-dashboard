@@ -54,6 +54,8 @@ const server = vi.hoisted(() => ({
   signatures: {} as Record<string, { fullName: string; license: string | null } | null>,
   signatureSaves: [] as Array<{ email: string; input: unknown }>,
   signatureError: null as { message: string; code: string } | null,
+  // Whether the office still prints from the built-in list (no hyg_staff rows).
+  usingBuiltInList: false,
 }));
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -85,6 +87,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
         success: true as const,
         office: "roland" as const,
         signature: server.signatures[email] ?? null,
+        usingBuiltInList: server.usingBuiltInList,
       })),
       saveUserSignature: vi.fn(
         async (email: string, input: { fullName: string | null; license: string | null }) => {
@@ -94,7 +97,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
           }
           const signature = input.fullName ? { fullName: input.fullName, license: input.license } : null;
           server.signatures[email] = signature;
-          return { success: true as const, office: "roland" as const, signature };
+          server.usingBuiltInList = false;
+          return { success: true as const, office: "roland" as const, signature, usingBuiltInList: false };
         },
       ),
     },
@@ -117,6 +121,7 @@ beforeEach(() => {
   server.signatures = {};
   server.signatureSaves = [];
   server.signatureError = null;
+  server.usingBuiltInList = false;
   toasts.errors = [];
   toasts.successes = [];
   authState.email = "boss@carein.ai";
@@ -402,5 +407,30 @@ describe("Signature on notes", () => {
 
     expect(screen.getByTestId("signature-name-hyg@carein.ai").hasAttribute("disabled")).toBe(true);
     expect(screen.getByTestId("signature-hint-hyg@carein.ai").textContent).toContain("disabled");
+  });
+});
+
+describe("Signature on notes — the built-in list switch", () => {
+  it("warns, before the first save, that it switches the office off the built-in list", async () => {
+    server.usingBuiltInList = true;
+    renderPage();
+    await screen.findByTestId("user-row-front@carein.ai");
+    fireEvent.click(screen.getByTestId("signature-toggle-front@carein.ai"));
+
+    const warning = await screen.findByTestId("signature-builtin-warning-front@carein.ai");
+    expect(warning.textContent).toContain("built-in list");
+    expect(warning.textContent).toContain("without a");
+
+    fireEvent.change(screen.getByTestId("signature-name-front@carein.ai"), { target: { value: "Avery Example" } });
+    fireEvent.click(screen.getByTestId("signature-save-front@carein.ai"));
+    await waitFor(() => expect(screen.queryByTestId("signature-builtin-warning-front@carein.ai")).toBeNull());
+  });
+
+  it("says nothing once the office has its own list", async () => {
+    renderPage();
+    await screen.findByTestId("user-row-front@carein.ai");
+    fireEvent.click(screen.getByTestId("signature-toggle-front@carein.ai"));
+    await screen.findByTestId("signature-panel-front@carein.ai");
+    expect(screen.queryByTestId("signature-builtin-warning-front@carein.ai")).toBeNull();
   });
 });

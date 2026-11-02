@@ -76,6 +76,8 @@ const REFUSAL_HEADLINE: Record<string, string> = {
   INVALID_BODY: "Check the signature",
   SIGNATURE_RETIRE_FAILED: "Signature not retired",
   SAVE_NOT_CONFIRMED: "Not confirmed",
+  SAVED_AUDIT_FAILED: "Saved, audit failed",
+  USER_DISABLED: "Account disabled",
 };
 
 /** A refusal the editor shows inline: which rule, and the server's own words. */
@@ -434,6 +436,19 @@ function SignaturePanel({
       <p className="text-xs text-muted-foreground" data-testid={`signature-hint-${user.email}`}>
         {hint}
       </p>
+      {loaded.usingBuiltInList && !disabled && (
+        <p
+          className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-300"
+          data-testid={`signature-builtin-warning-${user.email}`}
+        >
+          <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
+          <span>
+            {officeName} notes still take licence numbers from the built-in list. Saving the first signature here
+            switches {officeName} to this page — anyone not entered here will then print their name without a
+            licence. Enter everyone who writes notes.
+          </span>
+        </p>
+      )}
       {refusal && <RefusalNote refusal={refusal} testId={`signature-refusal-${user.email}`} />}
     </div>
   );

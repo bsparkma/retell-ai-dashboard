@@ -122,7 +122,12 @@ function sendSignature(res, outcome) {
   if (!outcome.ok) return fail(res, outcome.status, outcome.error, outcome.code, outcome.extra);
   return res
     .status(outcome.status)
-    .json({ success: true, office: outcome.office, signature: outcome.signature });
+    .json({
+      success: true,
+      office: outcome.office,
+      signature: outcome.signature,
+      usingBuiltInList: outcome.usingBuiltInList,
+    });
 }
 
 router.get('/:email/signature', async (req, res) => {

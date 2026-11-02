@@ -26,6 +26,15 @@
  *   CLEAR    both fields blank deactivates the row. There is no delete.
  *   RETIRE   deactivating the USER deactivates their row in every office
  *            (retireSignatures, called by services/tenantUsers.updateUser).
+ *            A disabled user's signature can be cleared but not set (409
+ *            USER_DISABLED), so a direct PUT cannot undo the retire.
+ *
+ * THE FALLBACK SWITCH (unchanged behaviour, now visible). An office with NO
+ * hyg_staff rows prints licences from the built-in list in config/hygStaff.js;
+ * once it has any row, the table is the whole answer (staffStore.signatureRoster).
+ * So the FIRST signature saved for an office switches that office off the
+ * built-in list. Every answer carries `usingBuiltInList` so the page can say
+ * so before that first save. The rule itself is not changed here.
  *
  * Same guards as the rest of the Users page: the door's admin.all gate, the
  * tenant from the door (never the body), and the platform-admin rule — a
@@ -41,6 +50,7 @@
  */
 
 const contract = require('../hyg/contract.gen.cjs');
+const { AuditError } = require('../platform/audit');
 const registry = require('../platform/registry');
 const staffStore = require('./hyg/staffStore');
 
@@ -49,9 +59,15 @@ const staffStore = require('./hyg/staffStore');
  * @typedef {{ query: Function }} Pool
  * @typedef {(entry: Record<string, unknown>) => Promise<unknown>} AuditWriter
  * @typedef {{ fullName: string, license: string|null } | null} Signature
- * @typedef {{ ok: true, status: number, office: string, signature: Signature }
+ * @typedef {{ ok: true, status: number, office: string, signature: Signature, usingBuiltInList: boolean }
  *         | { ok: false, status: number, error: string, code: string, extra?: Record<string, unknown> }} Outcome
  */
+
+/** A success answer: what prints, and whether the office is still on the built-in list. */
+async function answer(pool, office, signature) {
+  const rows = await staffStore.listForOffice(pool, office);
+  return { ok: true, status: 200, office, signature, usingBuiltInList: rows.length === 0 };
+}
 
 function refuse(status, error, code, extra) {
   return extra ? { ok: false, status, error, code, extra } : { ok: false, status, error, code };
@@ -110,7 +126,7 @@ async function getSignature({ tenantId, pool, email }) {
   const office = officeFor(loaded.row);
   if (!office) return refuse(409, 'This practice has no office to sign notes in', 'NO_OFFICE');
   const row = await staffStore.findBySignIn(pool, { office, signInId: signInOf(loaded.row) });
-  return { ok: true, status: 200, office, signature: toSignature(row) };
+  return answer(pool, office, toSignature(row));
 }
 
 /**
@@ -133,6 +149,16 @@ async function saveSignature({ tenantId, actor, audit, pool, email, body }) {
   if ('refusal' in loaded) return loaded.refusal;
   const user = loaded.row;
 
+  // A disabled account's signature was retired with it. Setting one would
+  // quietly undo that, so only a clear is accepted.
+  if (user.status === 'disabled' && input.fullName !== null) {
+    return refuse(
+      409,
+      'This account is disabled. Re-enable it before giving it a signature on notes.',
+      'USER_DISABLED'
+    );
+  }
+
   // Rule 2 of the Users page, verbatim in effect: a platform administrator's
   // row — signature included — is changed only by a platform administrator.
   if (actor.isSuperAdmin !== true) {
@@ -152,15 +178,36 @@ async function saveSignature({ tenantId, actor, audit, pool, email, body }) {
   const existing = await staffStore.findBySignIn(pool, { office, signInId });
   const writeAudit = (entry) =>
     audit({ resourceType: 'hyg_staff', office, sourceRef: null, priorState: null, ...entry });
+  /**
+   * The SUCCESS row for a write that has already landed. If the audit store
+   * refuses it, the answer must not read as "nothing was saved" — the row IS
+   * saved — so it says that, and what to do. Same rule as routes/hygStaff.js.
+   * @returns {Promise<Outcome|null>} a refusal to return, or null when audited
+   */
+  const auditSaved = async (entry) => {
+    try {
+      await writeAudit({ ...entry, result: 'SUCCESS' });
+      return null;
+    } catch (err) {
+      if (!(err instanceof AuditError)) throw err;
+      console.error('[userSignature] saved, but the audit write failed:', err.message);
+      return refuse(
+        500,
+        'The signature was saved, but its audit entry could not be written. Reload to see it, and tell your administrator.',
+        'SAVED_AUDIT_FAILED'
+      );
+    }
+  };
 
   // ── CLEAR: both blank. Deactivate; there is no delete. ─────────────────
   if (input.fullName === null) {
     if (existing && existing.active) {
       const out = await staffStore.setActive(pool, { office, id: existing.id, active: false, actor: actor.email });
       if (!out.ok) return notConfirmed(writeAudit, existing.id);
-      await writeAudit({ action: 'UPDATE', resourceId: existing.id, result: 'SUCCESS', priorState: 'active' });
+      const failed = await auditSaved({ action: 'UPDATE', resourceId: existing.id, priorState: 'active' });
+      if (failed) return failed;
     }
-    return { ok: true, status: 200, office, signature: null };
+    return answer(pool, office, null);
   }
 
   const fields = { fullName: input.fullName, license: input.license, signInIds: [signInId] };
@@ -169,27 +216,29 @@ async function saveSignature({ tenantId, actor, audit, pool, email, body }) {
   if (!existing) {
     const out = await staffStore.create(pool, { office, input: fields, actor: actor.email });
     if (!out.ok) return storeRefusal(writeAudit, 'CREATE', null, out);
-    await writeAudit({ action: 'CREATE', resourceId: out.staff.id, result: 'SUCCESS' });
-    return { ok: true, status: 200, office, signature: toSignature(out.staff) };
+    const failed = await auditSaved({ action: 'CREATE', resourceId: out.staff.id });
+    if (failed) return failed;
+    return answer(pool, office, toSignature(out.staff));
   }
 
   // ── UPDATE (and reactivate a deactivated row) ──────────────────────────
   const out = await staffStore.update(pool, { office, id: existing.id, input: fields, actor: actor.email });
   if (!out.ok) return storeRefusal(writeAudit, 'UPDATE', existing.id, out);
-  await writeAudit({
+  const editFailed = await auditSaved({
     action: 'UPDATE',
     resourceId: existing.id,
-    result: 'SUCCESS',
     priorState: editedSlug(out.prior, out.staff),
   });
+  if (editFailed) return editFailed;
   let staff = out.staff;
   if (!staff.active) {
     const re = await staffStore.setActive(pool, { office, id: existing.id, active: true, actor: actor.email });
     if (!re.ok) return notConfirmed(writeAudit, existing.id);
-    await writeAudit({ action: 'UPDATE', resourceId: existing.id, result: 'SUCCESS', priorState: 'inactive' });
+    const reFailed = await auditSaved({ action: 'UPDATE', resourceId: existing.id, priorState: 'inactive' });
+    if (reFailed) return reFailed;
     staff = re.staff;
   }
-  return { ok: true, status: 200, office, signature: toSignature(staff) };
+  return answer(pool, office, toSignature(staff));
 }
 
 async function notConfirmed(writeAudit, id) {

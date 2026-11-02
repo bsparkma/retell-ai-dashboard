@@ -130,5 +130,11 @@ export const UserSignatureResponseSchema = z.object({
       license: z.string().nullable(),
     })
     .nullable(),
+  /**
+   * True while this office has NO hyg_staff rows, so notes still take licences
+   * from the built-in list in backend/config/hygStaff.js. The first signature
+   * saved switches the office to the table — the page warns before that save.
+   */
+  usingBuiltInList: z.boolean(),
 });
 export type UserSignatureResponse = z.infer<typeof UserSignatureResponseSchema>;
