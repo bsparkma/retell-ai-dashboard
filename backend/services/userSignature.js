@@ -229,15 +229,18 @@ async function saveSignature({ tenantId, actor, audit, pool, email, body }) {
     resourceId: existing.id,
     priorState: editedSlug(out.prior, out.staff),
   });
-  if (editFailed) return editFailed;
+  // NOT an early return: the edit has landed, so the save must be finished
+  // (reactivated) before anyone is told "it was saved" — otherwise the row
+  // would sit inactive and print nothing behind a message saying it was saved.
   let staff = out.staff;
+  let reFailed = null;
   if (!staff.active) {
     const re = await staffStore.setActive(pool, { office, id: existing.id, active: true, actor: actor.email });
     if (!re.ok) return notConfirmed(writeAudit, existing.id);
-    const reFailed = await auditSaved({ action: 'UPDATE', resourceId: existing.id, priorState: 'inactive' });
-    if (reFailed) return reFailed;
+    reFailed = await auditSaved({ action: 'UPDATE', resourceId: existing.id, priorState: 'inactive' });
     staff = re.staff;
   }
+  if (editFailed || reFailed) return editFailed || reFailed;
   return answer(pool, office, toSignature(staff));
 }
 

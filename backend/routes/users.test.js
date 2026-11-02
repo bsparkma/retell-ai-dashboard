@@ -819,3 +819,22 @@ test('signature: usingBuiltInList is per office and flips with the office’s fi
     await app.close();
   }
 });
+
+test('signature: re-saving a CLEARED signature still reactivates it when the audit write fails', async () => {
+  const app = await boot();
+  try {
+    await app.put(SIG, { fullName: 'Avery Example', license: '9101' });
+    await app.put(SIG, { fullName: null, license: null });
+    assert.equal(staff()[0].active, false);
+
+    auditThrows = true;
+    const res = await app.put(SIG, { fullName: 'Avery Example', license: '9102' });
+    assert.equal(res.status, 500);
+    assert.equal(res.body.code, 'SAVED_AUDIT_FAILED');
+    // "It was saved" must be true: the row is edited AND active, so it prints.
+    assert.equal(staff()[0].license, '9102');
+    assert.equal(staff()[0].active, true);
+  } finally {
+    await app.close();
+  }
+});
