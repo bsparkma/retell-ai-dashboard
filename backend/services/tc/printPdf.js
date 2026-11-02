@@ -84,18 +84,19 @@ function renderPrintPdf(doc, { logo = null } = {}) {
     textX = MARGIN + w + 14;
     blockBottom = y - h;
   }
-  // Wrapped to the width left beside the logo, so a long line cannot run off the page.
+  // Wrapped to the width left beside the logo, so a long line cannot run off the
+  // page. Generous average widths (bold caps ~0.65 em, digits ~0.56 em).
   const room = RIGHT - textX;
   let ty = y - NAME_SIZE;
   if (doc.letterhead.name) {
-    for (const row of wrapTo(doc.letterhead.name, Math.floor(room / (NAME_SIZE * 0.6)))) {
+    for (const row of wrapTo(doc.letterhead.name, Math.floor(room / (NAME_SIZE * 0.65)))) {
       ops.push(text('F2', NAME_SIZE, textX, ty, row));
       ty -= NAME_SIZE + 2;
     }
     ty += NAME_SIZE + 2 - (SMALL_SIZE + 6);
   }
   for (const line of [...doc.letterhead.addressLines, doc.letterhead.phone].filter(Boolean)) {
-    for (const row of wrapTo(line, Math.floor(room / (SMALL_SIZE * 0.5)))) {
+    for (const row of wrapTo(line, Math.floor(room / (SMALL_SIZE * 0.56)))) {
       ops.push(text('F1', SMALL_SIZE, textX, ty, row));
       ty -= SMALL_SIZE + 3;
     }
