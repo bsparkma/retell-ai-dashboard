@@ -100,7 +100,9 @@
  *   3. each shard's raw stdout + stderr is also written to a file
  *      (`SHARD_OUTPUT_DIR`, default `<os tmpdir>/carein-shard-runner/`), and a
  *      red run names those files, so the evidence survives even a log that a
- *      viewer truncates.
+ *      viewer truncates. On a CI runner they vanish with the job unless a
+ *      workflow step uploads them — fixes 1 and 2 are what keep the CI LOG
+ *      whole; the files are for local runs and any future upload step.
  * A green run prints exactly what it printed before.
  *
  * Usage:  node scripts/shard-runner.mjs        (from backend/)
@@ -133,8 +135,9 @@ function counters(output) {
 }
 
 /**
- * Write and WAIT until the stream has handed the text on. Resolves on error too
- * (a closed pipe must not hang the run); the exit code still reflects the tests.
+ * Write and WAIT until the stream has handed the text on. The callback fires on
+ * error too, so a closed pipe cannot HANG the run — though the stream's own
+ * 'error' event still ends it (EPIPE, exit 1), exactly as a plain write did.
  * @param {NodeJS.WriteStream} stream @param {string} text
  */
 function flushed(stream, text) {
