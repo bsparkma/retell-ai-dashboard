@@ -213,4 +213,6 @@ function renderSlipPdf({ title, subtitle, lines }) {
   return Buffer.from(pdf, 'latin1');
 }
 
-module.exports = { renderSlipPdf, asciiSafe, wrap };
+// CO-3: the TC print templates' PDF (services/tc/printPdf.js) reuses the same
+// text handling rather than a second copy of it.
+module.exports = { renderSlipPdf, asciiSafe, wrap, pdfEscape };

@@ -36,6 +36,7 @@ import { checkoutOriginText } from "@/features/tc/checkout/checkoutOrigin";
 import { PriorityChip, ProcedureTags, teethLine } from "@/features/tc/checkout/CheckoutSidebar";
 import { ExistingTreatmentFromHygiene } from "@/features/tc/checkout/HygieneTreatmentPanel";
 import { ReopenedNotice } from "@/features/tc/checkout/ReopenedNotice";
+import { CheckoutPrint } from "@/features/tc/checkout/CheckoutPrint";
 import {
   TC_CHECKOUT_PRIORITY_LABELS,
   TC_CHECKOUT_RECORD_STATUS_LABELS,
@@ -467,6 +468,9 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
         </p>
         <ReferralsPanel office={handoff.officeId} source={{ handoffId: handoff.handoffId }} />
       </SectionCard>
+
+      {/* CO-3: the school/work excuse and the appointment card. */}
+      <CheckoutPrint office={office} handoffId={handoff.handoffId} />
 
       {/* THE EXIT — the same component the sidebar uses. */}
       <section className="rounded-xl border border-border bg-card p-4" data-testid="workup-exit">
