@@ -63,6 +63,8 @@ test('the bounds match the contract, and the logo pair is all-or-none', () => {
     assert.equal(contract.PrintTemplateFields.safeParse({ ...base, [field]: 'x'.repeat(max + 1) }).success, false, col);
   }
   assert.match(migration.CHECKS.tc_print_templates_logo_check, /logo_key IS NULL AND logo_content_type IS NULL/);
+  // A NULL type must not slip through the IN (...) as NULL (found on real Postgres).
+  assert.match(migration.CHECKS.tc_print_templates_logo_check, /logo_key IS NOT NULL AND logo_content_type IS NOT NULL AND/);
   assert.match(migration.CHECKS.tc_print_templates_logo_check, /'image\/png', 'image\/jpeg'/);
 });
 

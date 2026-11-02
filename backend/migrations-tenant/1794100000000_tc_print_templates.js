@@ -44,9 +44,11 @@ const CHECKS = {
   tc_print_templates_lengths_check:
     'length(heading) <= 120 AND length(letterhead_name) <= 120 AND length(letterhead_address) <= 300 ' +
     'AND length(letterhead_phone) <= 40 AND length(body) <= 4000 AND length(signature_line) <= 200',
+  // `logo_content_type IS NOT NULL` is load-bearing: without it a NULL type
+  // makes the IN (...) NULL, the whole CHECK NULL, and Postgres lets NULL pass.
   tc_print_templates_logo_check:
     '(logo_key IS NULL AND logo_content_type IS NULL) OR ' +
-    "(logo_key IS NOT NULL AND logo_content_type IN ('image/png', 'image/jpeg'))",
+    "(logo_key IS NOT NULL AND logo_content_type IS NOT NULL AND logo_content_type IN ('image/png', 'image/jpeg'))",
 };
 exports.CHECKS = CHECKS;
 
