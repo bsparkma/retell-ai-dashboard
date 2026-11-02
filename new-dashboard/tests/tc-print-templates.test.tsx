@@ -38,6 +38,8 @@ class ResizeObserverStub {
   disconnect() {}
 }
 (globalThis as Record<string, unknown>).ResizeObserver ??= ResizeObserverStub;
+// jsdom has no object URLs; the editor revokes the logo preview's on unmount.
+URL.revokeObjectURL ??= () => undefined;
 
 const { api, toastMock } = vi.hoisted(() => ({
   toastMock: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), info: vi.fn() }),
@@ -193,6 +195,29 @@ describe("Settings → Print templates", () => {
     renderSettings();
     expect((await screen.findByTestId("print-logo-unavailable")).textContent).toContain("Logo storage is not set up for this environment");
     expect((screen.getByTestId("print-logo-input") as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it("REVIEW: a logo upload keeps unsaved wording; the caret lands after an inserted placeholder", async () => {
+    api.getPrintTemplates.mockResolvedValue(templates({ logoStorageConfigured: true }));
+    api.uploadPrintLogo.mockResolvedValue(
+      stateOf("excuse", { stored: true, logo: { present: true, contentType: "image/png" }, updatedAt: "2026-11-02T15:00:00.000Z" }),
+    );
+    api.fetchPrintLogoUrl.mockResolvedValue("blob:logo");
+    renderSettings();
+    const body = (await screen.findByTestId("print-field-body")) as HTMLTextAreaElement;
+    fireEvent.change(body, { target: { value: "Hello  today." } });
+    body.focus();
+    body.setSelectionRange(6, 6);
+    fireEvent.click(screen.getByTestId("print-insert-date_seen"));
+    await waitFor(() => expect(body.value).toBe("Hello {{date_seen}} today."));
+    await waitFor(() => expect(body.selectionStart).toBe(6 + "{{date_seen}}".length));
+
+    fireEvent.change(screen.getByTestId("print-logo-input"), {
+      target: { files: [new File([new Uint8Array([137, 80, 78, 71])], "logo.png", { type: "image/png" })] },
+    });
+    await waitFor(() => expect(api.uploadPrintLogo).toHaveBeenCalled());
+    await screen.findByTestId("print-preview-logo");
+    expect(body.value).toBe("Hello {{date_seen}} today.");
   });
 
   it("with storage, an upload the server refuses shows its words", async () => {

@@ -134,9 +134,10 @@ async function saveFields(q, { office, type, fields, actor }) {
     );
     return 'updated';
   }
+  // ONE atomic upsert: two FIRST saves racing (FOR UPDATE above locked nothing,
+  // there was no row) end as the later one's wording, never a primary-key 500.
   await q.query(
-    `INSERT INTO tc_print_templates (office_id, template_type, heading, letterhead_name, letterhead_address,
-       letterhead_phone, body, signature_line, updated_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    'INSERT INTO tc_print_templates (office_id, template_type, heading, letterhead_name, letterhead_address, letterhead_phone, body, signature_line, updated_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (office_id, template_type) DO UPDATE SET heading = EXCLUDED.heading, letterhead_name = EXCLUDED.letterhead_name, letterhead_address = EXCLUDED.letterhead_address, letterhead_phone = EXCLUDED.letterhead_phone, body = EXCLUDED.body, signature_line = EXCLUDED.signature_line, updated_by = EXCLUDED.updated_by, updated_at = now()',
     [office, type, ...values]
   );
   return 'created';

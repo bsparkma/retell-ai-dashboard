@@ -83,8 +83,15 @@ function TemplateEditor({
   const bodyRef = useRef<HTMLTextAreaElement | null>(null);
   const sigRef = useRef<HTMLInputElement | null>(null);
 
+  /*
+   * Take the server's wording only when the SAVED WORDING changed. A logo
+   * upload or removal answers a new state with the same wording, and must not
+   * throw away what is typed but not yet saved.
+   */
+  const savedFields = useRef(state.fields);
   useEffect(() => {
-    setDraft(state.fields);
+    if (!sameFields(savedFields.current, state.fields)) setDraft(state.fields);
+    savedFields.current = state.fields;
   }, [state]);
 
   // The stored logo, for the preview. Revoked when it changes or the editor goes.
@@ -121,18 +128,17 @@ function TemplateEditor({
     const token = `{{${p}}}`;
     const field = target.current;
     const el = field === "body" ? bodyRef.current : sigRef.current;
-    setDraft((d) => {
-      const value = d[field];
-      const start = el?.selectionStart ?? value.length;
-      const end = el?.selectionEnd ?? value.length;
-      return { ...d, [field]: value.slice(0, start) + token + value.slice(end) };
-    });
+    // The selection is read ONCE, before the update: after React re-renders the
+    // field the browser has moved the caret to the end.
+    const value = draft[field];
+    const start = el?.selectionStart ?? value.length;
+    const end = el?.selectionEnd ?? value.length;
+    setDraft((d) => ({ ...d, [field]: value.slice(0, start) + token + value.slice(end) }));
     setSavedNote(null);
     requestAnimationFrame(() => {
       if (!el) return;
       el.focus();
-      const at = (el.selectionStart ?? 0) + token.length;
-      el.setSelectionRange(at, at);
+      el.setSelectionRange(start + token.length, start + token.length);
     });
   };
 

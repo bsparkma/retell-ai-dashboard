@@ -419,6 +419,61 @@ test('logo: only PNG or JPEG, at most 2 MB', async (t) => {
   assert.equal(tooBig.body.code, 'LOGO_TOO_LARGE');
 });
 
+test('REVIEW: a PNG that inflates past its own header (a zip bomb) is refused, never allocated; so is one too large in pixels', () => {
+  const { prepareLogo, LogoImageError, MAX_SIDE } = require('../services/tc/printImage');
+  const crc32 = (buf) => {
+    let crc = 0xffffffff;
+    for (const b of buf) {
+      let c = (crc ^ b) & 0xff;
+      for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      crc = (crc >>> 8) ^ c;
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const td = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(td));
+    return Buffer.concat([len, td, crc]);
+  };
+  const pngOf = (w, h, idat) => {
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(w, 0);
+    ihdr.writeUInt32BE(h, 4);
+    ihdr[8] = 8;
+    ihdr[9] = 6;
+    return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', idat), chunk('IEND', Buffer.alloc(0))]);
+  };
+  // Claims 2x2, but inflates to 64 MB of zeros.
+  const bomb = pngOf(2, 2, zlib.deflateSync(Buffer.alloc(64 * 1024 * 1024)));
+  assert.ok(bomb.length < 200 * 1024, 'a small file');
+  assert.throws(() => prepareLogo(bomb), (e) => e instanceof LogoImageError && e.code === 'LOGO_IMAGE_UNREADABLE');
+  assert.throws(
+    () => prepareLogo(pngOf(MAX_SIDE + 1, 1, zlib.deflateSync(Buffer.alloc(1)))),
+    (e) => e instanceof LogoImageError && e.code === 'LOGO_IMAGE_FORMAT'
+  );
+});
+
+test('REVIEW: two FIRST saves racing — the loser applies as an update, not a 500', async () => {
+  const store = require('../services/tc/printTemplateStore');
+  const db = new FakeTenantDb();
+  const fields = contract.defaultPrintTemplate('excuse', { name: 'x', address: '', phone: '' });
+  // The other save's row is already there, but this save's lock read ran first and saw none.
+  db.table('tc_print_templates').push({ office_id: 'roland', template_type: 'excuse', heading: 'theirs', updated_by: 'other@carein.ai' });
+  let lockReads = 0;
+  db.onQuery(/FROM tc_print_templates WHERE office_id = \$1 AND template_type = \$2 FOR UPDATE$/, () => {
+    lockReads += 1;
+    return { rows: [] };
+  });
+  const out = await store.saveFields(db, { office: 'roland', type: 'excuse', fields: { ...fields, heading: 'mine' }, actor: 'om@carein.ai' });
+  assert.equal(lockReads, 1);
+  assert.equal(out, 'created', 'it believed it was first');
+  assert.equal(db.table('tc_print_templates').length, 1, 'one row, never a second');
+  assert.equal(db.table('tc_print_templates')[0].heading, 'mine');
+});
+
 // ── 6. Printing ─────────────────────────────────────────────────────────────
 
 const PRINT = (id, office = 'roland') => `/api/tc/checkout/${id}/print?office=${office}`;

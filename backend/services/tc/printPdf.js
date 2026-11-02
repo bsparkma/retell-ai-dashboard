@@ -84,14 +84,21 @@ function renderPrintPdf(doc, { logo = null } = {}) {
     textX = MARGIN + w + 14;
     blockBottom = y - h;
   }
+  // Wrapped to the width left beside the logo, so a long line cannot run off the page.
+  const room = RIGHT - textX;
   let ty = y - NAME_SIZE;
   if (doc.letterhead.name) {
-    ops.push(text('F2', NAME_SIZE, textX, ty, doc.letterhead.name));
-    ty -= SMALL_SIZE + 6;
+    for (const row of wrapTo(doc.letterhead.name, Math.floor(room / (NAME_SIZE * 0.6)))) {
+      ops.push(text('F2', NAME_SIZE, textX, ty, row));
+      ty -= NAME_SIZE + 2;
+    }
+    ty += NAME_SIZE + 2 - (SMALL_SIZE + 6);
   }
   for (const line of [...doc.letterhead.addressLines, doc.letterhead.phone].filter(Boolean)) {
-    ops.push(text('F1', SMALL_SIZE, textX, ty, line));
-    ty -= SMALL_SIZE + 3;
+    for (const row of wrapTo(line, Math.floor(room / (SMALL_SIZE * 0.5)))) {
+      ops.push(text('F1', SMALL_SIZE, textX, ty, row));
+      ty -= SMALL_SIZE + 3;
+    }
   }
   blockBottom = Math.min(blockBottom, ty + SMALL_SIZE);
   y = blockBottom - 10;

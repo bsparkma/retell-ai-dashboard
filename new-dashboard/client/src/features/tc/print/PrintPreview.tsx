@@ -8,8 +8,11 @@ import type { PrintDocument } from "@shared/tc/printTemplates";
 
 export function PrintPreview({ doc, logoUrl }: { doc: PrintDocument; logoUrl?: string | null }) {
   return (
+    // PAPER, in both themes: this is a picture of the printout, which is white
+    // whatever the app's theme. The text colour is fixed dark with it, so the
+    // two can never invert into white-on-white (tests/dark-mode-contrast.test.ts).
     <div
-      className="mx-auto w-full max-w-[612px] aspect-[8.5/11] overflow-hidden rounded-md border border-border bg-white p-10 text-[13px] leading-relaxed text-neutral-900 shadow-sm"
+      className="mx-auto w-full max-w-[612px] aspect-[8.5/11] overflow-hidden rounded-md border border-border bg-white dark:bg-white p-10 text-[13px] leading-relaxed text-neutral-900 dark:text-neutral-900 shadow-sm"
       data-testid="print-preview"
     >
       <div className="flex items-start gap-4 border-b border-neutral-300 pb-3">

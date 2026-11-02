@@ -21,6 +21,9 @@
 
 const zlib = require('node:zlib');
 
+/** The largest logo, in pixels a side. */
+const MAX_SIDE = 2048;
+
 /** A refusal the upload route answers with by name. */
 class LogoImageError extends Error {
   /** @param {string} code @param {string} message */
@@ -123,8 +126,10 @@ function decodePng(buf) {
       'That PNG is 16-bit or interlaced, which the printout cannot use. Save it as an ordinary 8-bit PNG, or as a JPEG.'
     );
   }
-  if (width * height > 4096 * 4096) {
-    throw new LogoImageError('LOGO_IMAGE_FORMAT', 'That image is too large in pixels for a logo. Use one under 4096 pixels a side.');
+  // A logo is drawn about an inch wide; 2048 a side is far more than it needs,
+  // and keeps the synchronous decode below small.
+  if (width > MAX_SIDE || height > MAX_SIDE) {
+    throw new LogoImageError('LOGO_IMAGE_FORMAT', `That image is too large in pixels for a logo. Use one at most ${MAX_SIDE} pixels a side.`);
   }
 
   const samples = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }[colorType];
@@ -133,7 +138,9 @@ function decodePng(buf) {
   const stride = Math.ceil((width * bitsPerPixel) / 8);
   let raw;
   try {
-    raw = zlib.inflateSync(Buffer.concat(idat));
+    // BOUNDED: exactly what the header says the image is. A small file that
+    // inflates past that (a "zip bomb") is refused, never allocated.
+    raw = zlib.inflateSync(Buffer.concat(idat), { maxOutputLength: (stride + 1) * height });
   } catch {
     throw new LogoImageError('LOGO_IMAGE_UNREADABLE', 'That PNG could not be read. Save it again as a standard PNG or JPEG.');
   }
@@ -207,6 +214,31 @@ function decodePng(buf) {
  * @throws {LogoImageError}
  */
 function prepareLogo(buf) {
+  if (!Buffer.isBuffer(buf)) throw new LogoImageError('LOGO_TYPE_NOT_ALLOWED', 'A logo must be a PNG or JPEG image.');
+  const key = cacheKey(buf);
+  const hit = cache.get(key);
+  if (hit) return hit;
+  // A refusal throws before this line, so only a good logo is ever cached.
+  const prepared = prepareUncached(buf);
+  cache.set(key, prepared);
+  if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
+  return prepared;
+}
+
+/**
+ * Prepared logos, by content hash: every print of an office's letter reuses
+ * the decode instead of repeating it on the request thread. A handful of
+ * offices × types, so a few entries.
+ */
+const CACHE_MAX = 8;
+/** @type {Map<string, ReturnType<typeof prepareUncached>>} */
+const cache = new Map();
+function cacheKey(buf) {
+  return require('node:crypto').createHash('sha256').update(buf).digest('hex');
+}
+
+/** @param {Buffer} buf */
+function prepareUncached(buf) {
   const type = sniffLogoType(buf);
   if (type === 'image/jpeg') {
     const { width, height, components } = readJpeg(buf);
@@ -242,4 +274,4 @@ function prepareLogo(buf) {
   throw new LogoImageError('LOGO_TYPE_NOT_ALLOWED', 'A logo must be a PNG or JPEG image.');
 }
 
-module.exports = { prepareLogo, sniffLogoType, decodePng, LogoImageError };
+module.exports = { prepareLogo, sniffLogoType, decodePng, LogoImageError, MAX_SIDE };

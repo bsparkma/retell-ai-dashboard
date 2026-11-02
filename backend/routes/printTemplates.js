@@ -211,10 +211,16 @@ router.post(
       throw err;
     }
     const prefill = await store.prefillFor(office);
-    await withTenantTx(req, async (client) => {
-      const { prior } = await store.setLogo(client, { office, type, logoKey: stored.key, contentType, actor, prefill });
-      await auditTemplate(req, office, type, prior ? 'logo_set' : 'logo_none');
-    });
+    try {
+      await withTenantTx(req, async (client) => {
+        const { prior } = await store.setLogo(client, { office, type, logoKey: stored.key, contentType, actor, prefill });
+        await auditTemplate(req, office, type, prior ? 'logo_set' : 'logo_none');
+      });
+    } catch (err) {
+      // The bytes are stored but nothing points at them. Named, so they can be found.
+      console.error(`[print-templates] office=${office} logo stored at ${stored.key} but not saved: ${(err && err.message) || err}`);
+      throw err;
+    }
     const row = await tenantDb.withTenantDb(req, (pool) => store.rowFor(pool, office, type));
     if (!row || row.logo_key !== stored.key) {
       return fail(res, 500, 'The logo could not be read back as saved. Reload before trusting it.', 'SAVE_NOT_CONFIRMED');
