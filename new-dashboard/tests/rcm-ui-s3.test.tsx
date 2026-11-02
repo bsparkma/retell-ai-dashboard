@@ -35,7 +35,7 @@
  */
 import * as React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Router as WouterRouter } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 
@@ -449,18 +449,45 @@ import { OfficeProvider } from "@/contexts/OfficeContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
+/** RULING (flake-fix): the last tree `renderAt` drew, for `effectsFlushed`. */
+let drawn: { tree: React.ReactElement; rerender: (ui: React.ReactElement) => void } | null = null;
+
 function renderAt(ui: React.ReactElement, path: string, searchPath = "") {
   const memory = memoryLocation({ path, searchPath, record: true });
-  render(
+  const tree = (
     <WouterRouter hook={memory.hook} searchHook={memory.searchHook}>
       <ThemeProvider defaultTheme="light" switchable>
         <TooltipProvider>
           <OfficeProvider>{ui}</OfficeProvider>
         </TooltipProvider>
       </ThemeProvider>
-    </WouterRouter>,
+    </WouterRouter>
   );
+  drawn = { tree, rerender: render(tree).rerender };
   return memory;
+}
+
+/**
+ * RULING (flake-fix): wait until React has run the effects of what it has
+ * already drawn.
+ *
+ * The keys are bound by `useRcmKeys`, an EFFECT: the pager's link is in the DOM
+ * at commit, and the window listener that knows its target is attached a
+ * moment later. Under CPU load a test that saw the link could press `]` in that
+ * moment and reach the previous render's listener, which had no next claim yet
+ * — the CI failure: `expected '/rcm/claims/c-1…' to be '/rcm/claims/c-2…'`.
+ *
+ * Re-rendering the SAME element object makes React flush every pending effect
+ * before it starts (react-dom's performWorkOnRootViaSchedulerTask calls
+ * flushPendingEffects first) and then bail out without rendering any
+ * component, so nothing on the page changes. Public API only; deterministic.
+ */
+async function effectsFlushed() {
+  const d = drawn;
+  if (!d) return;
+  await act(async () => {
+    d.rerender(d.tree);
+  });
 }
 
 beforeEach(() => {
@@ -475,7 +502,11 @@ beforeEach(() => {
   state.auth = { status: "loading" };
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  // RULING (flake-fix): never re-render a tree a previous test unmounted.
+  drawn = null;
+});
 
 // ─── W-11: say what you skipped ──────────────────────────────────────────────
 
@@ -1109,6 +1140,8 @@ describe("the keys, and every case they stand down on", () => {
     const memory = renderAt(<ClaimMatch />, "/rcm/claims/c-1", "from=b-1");
     await screen.findByTestId("rcm-action-bar");
     await waitFor(() => expect(screen.getByTestId("claim-next")).toBeTruthy());
+    // RULING (flake-fix): the keys are live before any test presses one.
+    await effectsFlushed();
     return memory;
   }
 
