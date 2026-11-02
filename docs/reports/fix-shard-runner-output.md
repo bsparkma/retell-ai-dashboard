@@ -78,4 +78,17 @@ Nits:
 
 ## CI
 
-_(see below)_
+PR #306 run 41529882227 passed on the first attempt. It ran on `refs/pull/306/merge`, checked out as `4cb67b1 Merge 42a3c3e… into 2f228b7…`.
+
+The new runner's green summary:
+
+```
+  shard 1/4: exit 0 · 1120 tests · 1120 pass · 0 fail · 0 skipped
+  shard 2/4: exit 0 · 1349 tests · 1349 pass · 0 fail · 0 skipped
+  shard 3/4: exit 0 · 1136 tests · 1133 pass · 0 fail · 3 skipped
+  shard 4/4: exit 0 · 999 tests · 999 pass · 0 fail · 0 skipped
+  TOTAL: 4604 tests · 4601 pass · 0 fail · 3 skipped
+[shard-runner] 4 shards, all green
+```
+
+**Not merged.** It is waiting for the develop merge hold to be lifted.
