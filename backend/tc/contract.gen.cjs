@@ -14813,10 +14813,10 @@ var require_zod = __commonJS({
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.z = void 0;
-    var z13 = __importStar(require_external());
-    exports2.z = z13;
+    var z14 = __importStar(require_external());
+    exports2.z = z14;
     __exportStar(require_external(), exports2);
-    exports2.default = z13;
+    exports2.default = z14;
   }
 });
 
@@ -14907,10 +14907,21 @@ __export(contract_entry_exports, {
   OdTextConsent: () => OdTextConsent,
   OfficeId: () => OfficeId,
   PRIMARY_OFFSET: () => PRIMARY_OFFSET,
+  PRINT_BLANK: () => PRINT_BLANK,
+  PRINT_PLACEHOLDERS: () => PRINT_PLACEHOLDERS,
+  PRINT_PLACEHOLDER_LABELS: () => PRINT_PLACEHOLDER_LABELS,
+  PRINT_TEMPLATE_TYPES: () => PRINT_TEMPLATE_TYPES,
+  PRINT_TEMPLATE_TYPE_KEYS: () => PRINT_TEMPLATE_TYPE_KEYS,
   PatientInterestLevel: () => PatientInterestLevel,
   PerioStatus: () => PerioStatus,
   PreauthStatus: () => PreauthStatus,
   PreauthType: () => PreauthType,
+  PrintEditableValues: () => PrintEditableValues,
+  PrintTemplateFields: () => PrintTemplateFields,
+  PrintTemplateSaveResponse: () => PrintTemplateSaveResponse,
+  PrintTemplateState: () => PrintTemplateState,
+  PrintTemplateTypeSchema: () => PrintTemplateTypeSchema,
+  PrintTemplatesResponse: () => PrintTemplatesResponse,
   REFERRAL_ATTACHMENT_HINT: () => REFERRAL_ATTACHMENT_HINT,
   REFERRAL_CORRESPONDENCE_STATUSES: () => REFERRAL_CORRESPONDENCE_STATUSES,
   REFERRAL_DOCTOR_EDITABLE_STATUSES: () => REFERRAL_DOCTOR_EDITABLE_STATUSES,
@@ -14990,6 +15001,8 @@ __export(contract_entry_exports, {
   TcCheckoutOutcome: () => TcCheckoutOutcome,
   TcCheckoutOutcomeRequest: () => TcCheckoutOutcomeRequest,
   TcCheckoutPanelItem: () => TcCheckoutPanelItem,
+  TcCheckoutPrintDefaults: () => TcCheckoutPrintDefaults,
+  TcCheckoutPrintRequest: () => TcCheckoutPrintRequest,
   TcCheckoutPriority: () => TcCheckoutPriority,
   TcCheckoutProcedure: () => TcCheckoutProcedure,
   TcCheckoutRecord: () => TcCheckoutRecord,
@@ -15090,7 +15103,7 @@ __export(contract_entry_exports, {
   Urgency: () => Urgency,
   Uuid: () => Uuid,
   VoiceHandoffDetail: () => VoiceHandoffDetail,
-  ZodError: () => import_zod12.ZodError,
+  ZodError: () => import_zod13.ZodError,
   allPresetViolations: () => allPresetViolations,
   appointmentWhenLabel: () => appointmentWhenLabel,
   assertPresetsWithinCaps: () => assertPresetsWithinCaps,
@@ -15107,6 +15120,8 @@ __export(contract_entry_exports, {
   checkoutWorkupProgress: () => checkoutWorkupProgress,
   checkoutWorkupProgressLabel: () => checkoutWorkupProgressLabel,
   communicationToRow: () => communicationToRow,
+  composePrintDocument: () => composePrintDocument,
+  defaultPrintTemplate: () => defaultPrintTemplate,
   emailBodyText: () => emailBodyText,
   emptyCheckoutSnapshot: () => emptyCheckoutSnapshot,
   emptyCheckoutWorkup: () => emptyCheckoutWorkup,
@@ -15114,11 +15129,13 @@ __export(contract_entry_exports, {
   fillBlockTokens: () => fillBlockTokens,
   fillMergeTokens: () => fillMergeTokens,
   fillNurtureCopy: () => fillNurtureCopy,
+  fillPlaceholders: () => fillPlaceholders,
   galleryToRow: () => galleryToRow,
   htmlToPlainText: () => htmlToPlainText,
   intensityFor: () => intensityFor,
   isContactAttemptDetail: () => isContactAttemptDetail,
   isPrimaryTooth: () => isPrimaryTooth,
+  isPrintTemplateType: () => isPrintTemplateType,
   isVoiceHandoffDetail: () => isVoiceHandoffDetail,
   nurtureSchedule: () => nurtureSchedule,
   nurtureTemplateId: () => nurtureTemplateId,
@@ -15129,6 +15146,9 @@ __export(contract_entry_exports, {
   preauthToRow: () => preauthToRow,
   presetViolations: () => presetViolations,
   primaryToNumber: () => primaryToNumber,
+  printDateLabel: () => printDateLabel,
+  printNameParts: () => printNameParts,
+  printTimeLabel: () => printTimeLabel,
   providerDisplayName: () => providerDisplayName,
   readBlock: () => readBlock,
   readBlocks: () => readBlocks,
@@ -15155,6 +15175,7 @@ __export(contract_entry_exports, {
   renderEmail: () => renderEmail,
   resolveNotificationLevel: () => resolveNotificationLevel,
   safeUrl: () => safeUrl,
+  samplePrintValues: () => samplePrintValues,
   simulationToRow: () => simulationToRow,
   teethText: () => teethText,
   templateToRow: () => templateToRow,
@@ -15162,7 +15183,8 @@ __export(contract_entry_exports, {
   toothText: () => toothText,
   unpricedCheckoutPhases: () => unpricedCheckoutPhases,
   userMapEntryToRow: () => userMapEntryToRow,
-  z: () => import_zod12.z
+  validatePrintTemplate: () => validatePrintTemplate,
+  z: () => import_zod13.z
 });
 module.exports = __toCommonJS(contract_entry_exports);
 
@@ -18683,8 +18705,229 @@ function providerDisplayName(p) {
 }
 var TcPreauthStartCaseRequest = import_zod11.z.object({}).strict();
 
+// shared/tc/printTemplates.ts
+var import_zod12 = __toESM(require_zod(), 1);
+var PRINT_PLACEHOLDERS = [
+  "patient_first_name",
+  "patient_full_name",
+  "date_seen",
+  "time_seen_range",
+  "next_appointment_date",
+  "next_appointment_time",
+  "office_name",
+  "office_address",
+  "office_phone",
+  "provider_name"
+];
+var PRINT_PLACEHOLDER_LABELS = {
+  patient_first_name: "Patient first name",
+  patient_full_name: "Patient full name",
+  date_seen: "Date seen",
+  time_seen_range: "Time seen",
+  next_appointment_date: "Next appointment date",
+  next_appointment_time: "Next appointment time",
+  office_name: "Office name",
+  office_address: "Office address",
+  office_phone: "Office phone",
+  provider_name: "Provider name"
+};
+var PRINT_BLANK = "__________";
+var PRINT_TEMPLATE_TYPES = {
+  excuse: {
+    label: "School / work excuse",
+    heading: "School / Work Excuse",
+    body: [
+      "To whom it may concern,",
+      "",
+      "{{patient_full_name}} was seen in our office on {{date_seen}} ({{time_seen_range}}) for a dental appointment. Please excuse their absence from school or work for this time.",
+      "",
+      "If you have any questions, please call us at {{office_phone}}."
+    ].join("\n"),
+    signatureLine: "{{provider_name}}, {{office_name}}"
+  },
+  appointment_card: {
+    label: "Appointment card",
+    heading: "Your Next Appointment",
+    body: [
+      "{{patient_first_name}}, we look forward to seeing you again.",
+      "",
+      "{{next_appointment_date}} at {{next_appointment_time}}",
+      "",
+      "{{office_name}}",
+      "{{office_address}}",
+      "{{office_phone}}",
+      "",
+      "If you need to reschedule, please call us at least 24 hours ahead."
+    ].join("\n"),
+    signatureLine: ""
+  }
+};
+var PRINT_TEMPLATE_TYPE_KEYS = Object.keys(PRINT_TEMPLATE_TYPES);
+var PrintTemplateTypeSchema = import_zod12.z.enum(PRINT_TEMPLATE_TYPE_KEYS);
+function isPrintTemplateType(value) {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(PRINT_TEMPLATE_TYPES, value);
+}
+var PrintTemplateFields = import_zod12.z.object({
+  heading: import_zod12.z.string().trim().max(120),
+  letterheadName: import_zod12.z.string().trim().max(120),
+  letterheadAddress: import_zod12.z.string().trim().max(300),
+  letterheadPhone: import_zod12.z.string().trim().max(40),
+  body: import_zod12.z.string().max(4e3),
+  signatureLine: import_zod12.z.string().trim().max(200)
+}).strict();
+function defaultPrintTemplate(type, prefill) {
+  const d = PRINT_TEMPLATE_TYPES[type];
+  return {
+    heading: d.heading,
+    letterheadName: prefill.name,
+    letterheadAddress: prefill.address,
+    letterheadPhone: prefill.phone,
+    body: d.body,
+    signatureLine: d.signatureLine
+  };
+}
+var TOKEN = /\{\{\s*([^{}]*?)\s*\}\}/g;
+var FIELD_NAMES = {
+  heading: "the heading",
+  letterheadName: "the letterhead name",
+  letterheadAddress: "the letterhead address",
+  letterheadPhone: "the letterhead phone",
+  body: "the body",
+  signatureLine: "the signature line"
+};
+var PLACEHOLDER_FIELDS = ["body", "signatureLine"];
+function validatePrintTemplate(t) {
+  const problems = [];
+  for (const field of Object.keys(FIELD_NAMES)) {
+    const text = t[field];
+    const allowed = PLACEHOLDER_FIELDS.includes(field);
+    for (const m of Array.from(text.matchAll(TOKEN))) {
+      const name = m[1];
+      if (!allowed) {
+        problems.push({
+          field,
+          code: "PRINT_TEMPLATE_PLACEHOLDER_NOT_ALLOWED_HERE",
+          token: m[0],
+          message: `Placeholders can go only in the body and the signature line, not in ${FIELD_NAMES[field]} (found ${m[0]}).`
+        });
+      } else if (!PRINT_PLACEHOLDERS.includes(name)) {
+        problems.push({
+          field,
+          code: "PRINT_TEMPLATE_UNKNOWN_PLACEHOLDER",
+          token: m[0],
+          message: `${m[0]} in ${FIELD_NAMES[field]} is not on the placeholder menu. Insert placeholders with the picker.`
+        });
+      }
+    }
+    const rest = text.replace(TOKEN, "");
+    if (rest.includes("{{") || rest.includes("}}")) {
+      problems.push({
+        field,
+        code: "PRINT_TEMPLATE_MALFORMED_PLACEHOLDER",
+        message: `${FIELD_NAMES[field][0].toUpperCase()}${FIELD_NAMES[field].slice(1)} has a "{{" or "}}" that is not part of a placeholder.`
+      });
+    }
+  }
+  return problems;
+}
+function fillPlaceholders(text, values) {
+  return text.replace(TOKEN, (whole, name) => {
+    if (!PRINT_PLACEHOLDERS.includes(name)) return whole;
+    const v = values[name];
+    return typeof v === "string" && v.trim() !== "" ? v.trim() : PRINT_BLANK;
+  });
+}
+function composePrintDocument(t, values) {
+  const body = fillPlaceholders(t.body.replace(/\r\n?/g, "\n"), values);
+  const paragraphs2 = body.split(/\n\s*\n/).map((p) => p.split("\n").map((l) => l.trimEnd())).filter((lines2) => lines2.some((l) => l.trim() !== ""));
+  const signature = fillPlaceholders(t.signatureLine, values).trim();
+  return {
+    letterhead: {
+      name: t.letterheadName.trim(),
+      addressLines: t.letterheadAddress.split(/\r?\n/).map((l) => l.trim()).filter(Boolean),
+      phone: t.letterheadPhone.trim()
+    },
+    heading: t.heading.trim(),
+    paragraphs: paragraphs2,
+    signatureLine: signature === "" ? null : signature
+  };
+}
+function samplePrintValues(t) {
+  return {
+    patient_first_name: "Sample",
+    patient_full_name: "Sample Patient",
+    date_seen: "January 2, 2026",
+    time_seen_range: "9:00 AM - 10:00 AM",
+    next_appointment_date: "Tuesday, July 7, 2026",
+    next_appointment_time: "9:00 AM",
+    office_name: t.letterheadName.trim(),
+    office_address: t.letterheadAddress.replace(/\r?\n/g, ", ").trim(),
+    office_phone: t.letterheadPhone.trim(),
+    provider_name: "Dr. Sample Provider"
+  };
+}
+var PrintTemplateState = import_zod12.z.object({
+  type: PrintTemplateTypeSchema,
+  label: import_zod12.z.string(),
+  /** False: nobody has saved one; this is the shipped default. */
+  stored: import_zod12.z.boolean(),
+  fields: PrintTemplateFields,
+  logo: import_zod12.z.object({ present: import_zod12.z.boolean(), contentType: import_zod12.z.string().nullable() }),
+  updatedBy: import_zod12.z.string().nullable(),
+  updatedAt: import_zod12.z.string().nullable()
+});
+var PrintTemplatesResponse = import_zod12.z.object({
+  success: import_zod12.z.literal(true),
+  office: import_zod12.z.enum(["roland", "valley"]),
+  prefill: import_zod12.z.object({ name: import_zod12.z.string(), address: import_zod12.z.string(), phone: import_zod12.z.string() }),
+  templates: import_zod12.z.array(PrintTemplateState),
+  /** False: logo upload is refused here until the storage container exists. */
+  logoStorageConfigured: import_zod12.z.boolean()
+});
+var PrintTemplateSaveResponse = import_zod12.z.object({ success: import_zod12.z.literal(true), template: PrintTemplateState });
+var PrintEditableValues = import_zod12.z.object({
+  timeSeenRange: import_zod12.z.string().trim().max(80).default(""),
+  nextAppointmentDate: import_zod12.z.string().trim().max(80).default(""),
+  nextAppointmentTime: import_zod12.z.string().trim().max(40).default("")
+}).strict();
+var TcCheckoutPrintRequest = PrintEditableValues.extend({ templateType: PrintTemplateTypeSchema }).strict();
+var TcCheckoutPrintDefaults = import_zod12.z.object({
+  success: import_zod12.z.literal(true),
+  templates: import_zod12.z.array(import_zod12.z.object({ type: PrintTemplateTypeSchema, label: import_zod12.z.string() })),
+  /** Server-derived, shown read-only: the card's own patient, day and provider, and the office. */
+  fixed: import_zod12.z.object({ patientFullName: import_zod12.z.string(), dateSeen: import_zod12.z.string(), providerName: import_zod12.z.string(), officeName: import_zod12.z.string() }),
+  /** Pre-filled where known, editable before generating. */
+  editable: import_zod12.z.object({ timeSeenRange: import_zod12.z.string(), nextAppointmentDate: import_zod12.z.string(), nextAppointmentTime: import_zod12.z.string() })
+});
+function printNameParts(stored) {
+  const s = stored.trim();
+  const m = /^([^,]+),\s*(.+)$/.exec(s);
+  if (!m) return { first: s.split(/\s+/)[0] ?? s, full: s };
+  const last = m[1].trim();
+  const first = m[2].trim();
+  return { first, full: `${first} ${last}` };
+}
+function printDateLabel(isoDay, { weekday = false } = {}) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(isoDay);
+  if (!m) return isoDay;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return d.toLocaleDateString("en-US", {
+    ...weekday ? { weekday: "long" } : {},
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC"
+  });
+}
+function printTimeLabel(dateTime) {
+  const m = /[ T](\d{2}):(\d{2})/.exec(dateTime);
+  if (!m) return "";
+  const h = Number(m[1]);
+  return `${h % 12 === 0 ? 12 : h % 12}:${m[2]} ${h < 12 ? "AM" : "PM"}`;
+}
+
 // ../backend/tc/contract.entry.ts
-var import_zod12 = __toESM(require_zod());
+var import_zod13 = __toESM(require_zod());
 
 // shared/hyg/teeth.ts
 var UPPER_PRIMARY = "ABCDEFGHIJ".split("");
@@ -18801,10 +19044,21 @@ function odToothText(tooth) {
   OdTextConsent,
   OfficeId,
   PRIMARY_OFFSET,
+  PRINT_BLANK,
+  PRINT_PLACEHOLDERS,
+  PRINT_PLACEHOLDER_LABELS,
+  PRINT_TEMPLATE_TYPES,
+  PRINT_TEMPLATE_TYPE_KEYS,
   PatientInterestLevel,
   PerioStatus,
   PreauthStatus,
   PreauthType,
+  PrintEditableValues,
+  PrintTemplateFields,
+  PrintTemplateSaveResponse,
+  PrintTemplateState,
+  PrintTemplateTypeSchema,
+  PrintTemplatesResponse,
   REFERRAL_ATTACHMENT_HINT,
   REFERRAL_CORRESPONDENCE_STATUSES,
   REFERRAL_DOCTOR_EDITABLE_STATUSES,
@@ -18884,6 +19138,8 @@ function odToothText(tooth) {
   TcCheckoutOutcome,
   TcCheckoutOutcomeRequest,
   TcCheckoutPanelItem,
+  TcCheckoutPrintDefaults,
+  TcCheckoutPrintRequest,
   TcCheckoutPriority,
   TcCheckoutProcedure,
   TcCheckoutRecord,
@@ -19001,6 +19257,8 @@ function odToothText(tooth) {
   checkoutWorkupProgress,
   checkoutWorkupProgressLabel,
   communicationToRow,
+  composePrintDocument,
+  defaultPrintTemplate,
   emailBodyText,
   emptyCheckoutSnapshot,
   emptyCheckoutWorkup,
@@ -19008,11 +19266,13 @@ function odToothText(tooth) {
   fillBlockTokens,
   fillMergeTokens,
   fillNurtureCopy,
+  fillPlaceholders,
   galleryToRow,
   htmlToPlainText,
   intensityFor,
   isContactAttemptDetail,
   isPrimaryTooth,
+  isPrintTemplateType,
   isVoiceHandoffDetail,
   nurtureSchedule,
   nurtureTemplateId,
@@ -19023,6 +19283,9 @@ function odToothText(tooth) {
   preauthToRow,
   presetViolations,
   primaryToNumber,
+  printDateLabel,
+  printNameParts,
+  printTimeLabel,
   providerDisplayName,
   readBlock,
   readBlocks,
@@ -19049,6 +19312,7 @@ function odToothText(tooth) {
   renderEmail,
   resolveNotificationLevel,
   safeUrl,
+  samplePrintValues,
   simulationToRow,
   teethText,
   templateToRow,
@@ -19056,5 +19320,6 @@ function odToothText(tooth) {
   toothText,
   unpricedCheckoutPhases,
   userMapEntryToRow,
+  validatePrintTemplate,
   z
 });

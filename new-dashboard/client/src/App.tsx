@@ -24,6 +24,7 @@ import Scheduling from "./pages/Scheduling";
 import Analytics from "./pages/Analytics";
 import Admin from "./pages/Admin";
 import AdminUsers from "./pages/AdminUsers";
+import AdminPrintTemplates from "./pages/AdminPrintTemplates";
 import Platform from "./pages/Platform";
 import Callbacks from "./pages/Callbacks";
 import RcmToday from "./pages/rcm/RcmToday";
@@ -130,6 +131,9 @@ export function Router() {
         <Route path="/analytics" component={Analytics} />
         <Route path="/admin" component={Admin} />
         <Route path="/admin/users" component={AdminUsers} />
+        {/* Print templates (CO-3): the excuse and appointment card wording, per
+            office. Under /admin: admin.all, a card on the hub, no nav tab. */}
+        <Route path="/admin/print-templates" component={AdminPrintTemplates} />
         {/* Platform console. Deliberately absent from ROUTE_PERMISSIONS: the
             platform tier is not a permission action, and leaving it unlisted
             means the courtesy redirect above lets a non-super_admin ARRIVE, so

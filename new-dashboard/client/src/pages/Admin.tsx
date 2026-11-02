@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import {
   Building2, Users, Settings, CheckCircle2, AlertCircle,
   Globe, Key, Bell, ChevronRight, ChevronDown, RefreshCw, Loader2,
-  Play, Square,
+  Play, Square, Printer,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -341,17 +341,24 @@ export default function Admin() {
         </div>
       )}
 
-      {/* People — the hub's links to the two pages that manage who works here.
-          Above the tabs so they show whichever tab is open (the page opens on
-          Integrations). No permission check here: both pages sit under /admin,
-          which already demands admin.all for this whole page (ROUTE_PERMISSIONS). */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-4xl" data-testid="admin-people-links">
+      {/* The hub's links: the two pages that manage who works here, and (CO-3)
+          the print templates. Above the tabs so they show whichever tab is open
+          (the page opens on Integrations). No permission check here: every page
+          sits under /admin, which already demands admin.all for this whole page
+          (ROUTE_PERMISSIONS). A card here, never a nav tab. */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 max-w-6xl" data-testid="admin-people-links">
         {([
           {
             href: "/admin/users",
             icon: Users,
             title: "Users",
             detail: "Who can sign in, what each role lets them do, and the name and licence their notes print",
+          },
+          {
+            href: "/admin/print-templates",
+            icon: Printer,
+            title: "Print templates",
+            detail: "School/work excuses and appointment cards",
           },
         ] as const).map(({ href, icon: Icon, title, detail }) => (
           <Link key={href} href={href} className="block" data-testid={`admin-link-${href.split("/").pop()}`}>
