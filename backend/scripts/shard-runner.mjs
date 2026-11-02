@@ -79,12 +79,38 @@
  * `test/` directory will be executed rather than merely run. This is the same
  * discovery subtlety that makes hand-rolling the file list a bad idea.
  *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * A RED RUN MUST KEEP ITS OWN EVIDENCE
+ * ═════════════════════════════════════════════════════════════════════════════
+ * This script used to end a failing run with `process.exit(1)`. When stdout is a
+ * pipe (it is in CI), `process.stdout.write` of a large string hands the kernel
+ * one pipe buffer (~64 KiB) and queues the rest — and the queue only drains when
+ * the event loop runs. `spawnSync` blocks the event loop for every later shard,
+ * and `process.exit` then discards whatever is still queued. So a red run printed
+ * the first ~64 KiB of shard 1 and lost everything after it, INCLUDING the
+ * `not ok` line that named the failure (staging-cd run #276; and the reason an
+ * earlier truncated log sent a fix hunting in an innocent file, PR #207). A green
+ * run never called `process.exit`, which is why green logs were always whole.
+ *
+ * Three things now keep that from happening:
+ *   1. each shard's output is FLUSHED (we await the write callback) before the
+ *      next shard starts, so nothing waits behind a blocked event loop;
+ *   2. a failure sets `process.exitCode = 1` and returns, so Node drains stdout
+ *      before it exits — same exit code, nothing thrown away;
+ *   3. each shard's raw stdout + stderr is also written to a file
+ *      (`SHARD_OUTPUT_DIR`, default `<os tmpdir>/carein-shard-runner/`), and a
+ *      red run names those files, so the evidence survives even a log that a
+ *      viewer truncates.
+ * A green run prints exactly what it printed before.
+ *
  * Usage:  node scripts/shard-runner.mjs        (from backend/)
  *         TEST_SHARDS=6 node scripts/shard-runner.mjs
  */
 
 import { spawnSync } from 'node:child_process';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 /**
  * Four is a balance, not a magic number: enough that no parent carries most of
@@ -106,23 +132,53 @@ function counters(output) {
   return { tests: read('tests'), pass: read('pass'), fail: read('fail'), skipped: read('skipped') };
 }
 
+/**
+ * Write and WAIT until the stream has handed the text on. Resolves on error too
+ * (a closed pipe must not hang the run); the exit code still reflects the tests.
+ * @param {NodeJS.WriteStream} stream @param {string} text
+ */
+function flushed(stream, text) {
+  return new Promise((resolve) => {
+    stream.write(text, () => resolve(undefined));
+  });
+}
+
+/** Where each shard's raw output is kept. Best effort: a failure here never fails the run. */
+const OUTPUT_DIR = process.env.SHARD_OUTPUT_DIR || join(tmpdir(), 'carein-shard-runner');
+/** @param {number} index @param {string} stdout @param {string} stderr @returns {string|null} */
+function keepShardOutput(index, stdout, stderr) {
+  try {
+    mkdirSync(OUTPUT_DIR, { recursive: true });
+    const file = join(OUTPUT_DIR, `shard-${index}-of-${TOTAL}.log`);
+    writeFileSync(file, stderr ? `${stdout}\n--- stderr ---\n${stderr}` : stdout);
+    return file;
+  } catch (err) {
+    console.error(`[shard-runner] could not keep shard ${index} output: ${err && err.message}`);
+    return null;
+  }
+}
+
 const started = Date.now();
-/** @type {{index: number, code: number|null, tests: number|null, pass: number|null, fail: number|null, skipped: number|null}[]} */
+/** @type {{index: number, code: number|null, tests: number|null, pass: number|null, fail: number|null, skipped: number|null, file: string|null}[]} */
 const shards = [];
 
 for (let index = 1; index <= TOTAL; index++) {
-  console.log(`\n═══ shard ${index}/${TOTAL} ═══`);
+  await flushed(process.stdout, `\n═══ shard ${index}/${TOTAL} ═══\n`);
   const run = spawnSync(
     process.execPath,
     ['--test', '--test-concurrency=1', `--test-shard=${index}/${TOTAL}`],
     { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 }
   );
+  const stdout = run.stdout ?? '';
+  const stderr = run.stderr ?? '';
+  const file = keepShardOutput(index, stdout, stderr);
   // Streamed after the fact rather than inherited, because the counters have to
-  // be read back out of it. The whole output is printed either way, so a real
-  // failure is as legible in the log as it was before.
-  process.stdout.write(run.stdout ?? '');
-  if (run.stderr) process.stderr.write(run.stderr);
-  shards.push({ index, code: run.status, ...counters(run.stdout ?? '') });
+  // be read back out of it. Each write is FLUSHED before the next shard starts:
+  // spawnSync blocks the event loop, so an unflushed write would sit queued
+  // behind every later shard (see "A RED RUN MUST KEEP ITS OWN EVIDENCE").
+  await flushed(process.stdout, stdout);
+  if (stderr) await flushed(process.stderr, stderr);
+  shards.push({ index, code: run.status, ...counters(stdout), file });
 }
 
 const sum = (key) => shards.reduce((a, s) => a + (s[key] ?? 0), 0);
@@ -170,7 +226,14 @@ for (const s of shards) {
 if (totals.fail > 0) problems.push(`${totals.fail} failing test(s)`);
 
 if (problems.length > 0) {
-  console.error(`\n[shard-runner] FAILED: ${problems.join('; ')}`);
-  process.exit(1);
+  const kept = shards.filter((s) => s.file).map((s) => `  shard ${s.index}/${TOTAL}: ${s.file}`);
+  console.error(
+    `\n[shard-runner] FAILED: ${problems.join('; ')}` +
+      (kept.length ? `\n[shard-runner] full per-shard output kept in:\n${kept.join('\n')}` : '')
+  );
+  // NOT process.exit(1): that discards any output still queued for the pipe.
+  // Setting exitCode lets Node drain stdout/stderr first, then exit 1.
+  process.exitCode = 1;
+} else {
+  console.log(`[shard-runner] ${TOTAL} shards, all green`);
 }
-console.log(`[shard-runner] ${TOTAL} shards, all green`);
