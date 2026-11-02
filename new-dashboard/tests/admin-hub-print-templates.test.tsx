@@ -33,7 +33,7 @@ import { ROUTE_PERMISSIONS, canVisit, requiredActionFor } from "@/lib/permission
 afterEach(() => cleanup());
 
 describe("Admin hub — print templates", () => {
-  it("is the third card, linking to /admin/print-templates with its description", async () => {
+  it("is the second card, linking to /admin/print-templates with its description", async () => {
     const { hook } = memoryLocation({ path: "/admin", static: true });
     render(
       <WouterRouter hook={hook}>
@@ -45,7 +45,7 @@ describe("Admin hub — print templates", () => {
     expect(link.textContent).toContain("Print templates");
     expect(link.textContent).toContain("School/work excuses and appointment cards");
     const cards = within(screen.getByTestId("admin-people-links")).getAllByRole("link");
-    expect(cards.map((a) => a.getAttribute("href"))).toEqual(["/admin/users", "/admin/staff", "/admin/print-templates"]);
+    expect(cards.map((a) => a.getAttribute("href"))).toEqual(["/admin/users", "/admin/print-templates"]);
   });
 
   it("the page inherits /admin's admin.all gate", () => {
