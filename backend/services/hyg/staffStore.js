@@ -91,6 +91,29 @@ async function getById(pool, { office, id }) {
 }
 
 /**
+ * The row of this office that holds `signInId`, or null. Sign-ins are unique
+ * per office (the trigger), so there is at most one — the ORDER BY is only
+ * there so a broken invariant reads deterministically rather than randomly.
+ *
+ * The Users page's signature door upserts through this: the sign-in is the
+ * person's app_user email, never typed.
+ *
+ * @param {{ query: Function }} pool
+ * @param {{ office: string, signInId: string }} args
+ */
+async function findBySignIn(pool, { office, signInId }) {
+  const res = await pool.query(
+    `SELECT ${COLUMNS}
+       FROM hyg_staff
+      WHERE office = $1 AND sign_in_ids ? $2
+      ORDER BY active DESC, created_at
+      LIMIT 1`,
+    [office, signInId]
+  );
+  return res.rows[0] ? toStaff(res.rows[0]) : null;
+}
+
+/**
  * Which of `signInIds` another row of this office already holds.
  * @param {{ query: Function }} pool
  * @param {{ office: string, exceptId: string|null, signInIds: string[] }} args
@@ -237,6 +260,7 @@ async function signatureRoster(pool, office) {
 module.exports = {
   listForOffice,
   getById,
+  findBySignIn,
   create,
   update,
   setActive,

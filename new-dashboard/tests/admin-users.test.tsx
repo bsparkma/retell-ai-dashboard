@@ -50,6 +50,12 @@ const server = vi.hoisted(() => ({
   patchError: null as { message: string } | null,
   patched: [] as Array<{ email: string; patch: unknown }>,
   created: [] as Array<{ email: string; role: string }>,
+  // Signature on notes: what the server holds per email, and every PUT body.
+  signatures: {} as Record<string, { fullName: string; license: string | null } | null>,
+  signatureSaves: [] as Array<{ email: string; input: unknown }>,
+  signatureError: null as { message: string; code: string } | null,
+  // Whether the office still prints from the built-in list (no hyg_staff rows).
+  usingBuiltInList: false,
 }));
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -77,12 +83,31 @@ vi.mock("@/lib/api", async (importOriginal) => {
         const row = server.users.find((u) => u.email === email)!;
         return { ...row, ...patch };
       }),
+      getUserSignature: vi.fn(async (email: string) => ({
+        success: true as const,
+        office: "roland" as const,
+        signature: server.signatures[email] ?? null,
+        usingBuiltInList: server.usingBuiltInList,
+      })),
+      saveUserSignature: vi.fn(
+        async (email: string, input: { fullName: string | null; license: string | null }) => {
+          server.signatureSaves.push({ email, input });
+          if (server.signatureError) {
+            throw new real.ApiError(server.signatureError.message, 403, server.signatureError.code);
+          }
+          const signature = input.fullName ? { fullName: input.fullName, license: input.license } : null;
+          server.signatures[email] = signature;
+          server.usingBuiltInList = false;
+          return { success: true as const, office: "roland" as const, signature, usingBuiltInList: false };
+        },
+      ),
     },
   };
 });
 
 import { AuthProvider } from "@/contexts/AuthContext";
 import AdminUsers from "@/pages/AdminUsers";
+import { api } from "@/lib/api";
 
 beforeEach(() => {
   server.users = [
@@ -93,6 +118,10 @@ beforeEach(() => {
   server.patchError = null;
   server.patched = [];
   server.created = [];
+  server.signatures = {};
+  server.signatureSaves = [];
+  server.signatureError = null;
+  server.usingBuiltInList = false;
   toasts.errors = [];
   toasts.successes = [];
   authState.email = "boss@carein.ai";
@@ -268,5 +297,140 @@ describe("Home office column", () => {
     expect((screen.getByTestId("role-select-boss@carein.ai") as HTMLSelectElement).disabled).toBe(
       true,
     );
+  });
+});
+
+describe("Signature on notes", () => {
+  it("is collapsed by default on every row, whatever the role, and loads only when opened", async () => {
+    renderPage();
+    await screen.findByTestId("user-row-front@carein.ai");
+
+    for (const email of ["boss@carein.ai", "front@carein.ai", "hyg@carein.ai"]) {
+      expect(screen.getByTestId(`signature-toggle-${email}`).getAttribute("aria-expanded")).toBe("false");
+      expect(screen.queryByTestId(`signature-panel-${email}`)).toBeNull();
+    }
+    expect(api.getUserSignature).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("signature-toggle-front@carein.ai"));
+    expect(await screen.findByTestId("signature-panel-front@carein.ai")).toBeTruthy();
+    expect(api.getUserSignature).toHaveBeenCalledWith("front@carein.ai");
+    expect(screen.getByTestId("signature-panel-front@carein.ai").textContent).toContain("Roland notes");
+  });
+
+  it("saves a name and licence — and sends nothing else (no email, no office)", async () => {
+    renderPage();
+    await screen.findByTestId("user-row-front@carein.ai");
+    fireEvent.click(screen.getByTestId("signature-toggle-front@carein.ai"));
+    await screen.findByTestId("signature-panel-front@carein.ai");
+
+    fireEvent.change(screen.getByTestId("signature-name-front@carein.ai"), { target: { value: "  Avery   Example " } });
+    fireEvent.change(screen.getByTestId("signature-license-front@carein.ai"), { target: { value: " 9101 " } });
+    expect(screen.getByTestId("signature-hint-front@carein.ai").textContent).toContain("licence #9101");
+    fireEvent.click(screen.getByTestId("signature-save-front@carein.ai"));
+
+    await waitFor(() => expect(server.signatureSaves.length).toBe(1));
+    expect(server.signatureSaves[0]).toEqual({
+      email: "front@carein.ai",
+      input: { fullName: "Avery Example", license: "9101" },
+    });
+    await waitFor(() => expect(toasts.successes).toContain("Signature saved"));
+  });
+
+  it("a blank licence is sent as null and says the name prints alone — never a placeholder", async () => {
+    renderPage();
+    await screen.findByTestId("user-row-front@carein.ai");
+    fireEvent.click(screen.getByTestId("signature-toggle-front@carein.ai"));
+    await screen.findByTestId("signature-panel-front@carein.ai");
+
+    fireEvent.change(screen.getByTestId("signature-name-front@carein.ai"), { target: { value: "Avery Example" } });
+    const hint = screen.getByTestId("signature-hint-front@carein.ai").textContent ?? "";
+    expect(hint).toContain("the name prints alone");
+    expect(hint).not.toMatch(/#/);
+    fireEvent.click(screen.getByTestId("signature-save-front@carein.ai"));
+    await waitFor(() => expect(server.signatureSaves.length).toBe(1));
+    expect(server.signatureSaves[0].input).toEqual({ fullName: "Avery Example", license: null });
+  });
+
+  it("a licence with no name cannot be saved", async () => {
+    renderPage();
+    await screen.findByTestId("user-row-front@carein.ai");
+    fireEvent.click(screen.getByTestId("signature-toggle-front@carein.ai"));
+    await screen.findByTestId("signature-panel-front@carein.ai");
+
+    fireEvent.change(screen.getByTestId("signature-license-front@carein.ai"), { target: { value: "9101" } });
+    expect(screen.getByTestId("signature-save-front@carein.ai").hasAttribute("disabled")).toBe(true);
+    expect(screen.getByTestId("signature-hint-front@carein.ai").textContent).toContain("Enter the name");
+  });
+
+  it("shows the stored signature, and Remove clears both fields", async () => {
+    server.signatures["front@carein.ai"] = { fullName: "Jamie Example", license: null };
+    renderPage();
+    await screen.findByTestId("user-row-front@carein.ai");
+    fireEvent.click(screen.getByTestId("signature-toggle-front@carein.ai"));
+
+    await waitFor(() =>
+      expect((screen.getByTestId("signature-name-front@carein.ai") as HTMLInputElement).value).toBe("Jamie Example"),
+    );
+    fireEvent.click(screen.getByTestId("signature-remove-front@carein.ai"));
+    await waitFor(() => expect(server.signatureSaves.length).toBe(1));
+    expect(server.signatureSaves[0].input).toEqual({ fullName: null, license: null });
+    await waitFor(() =>
+      expect((screen.getByTestId("signature-name-front@carein.ai") as HTMLInputElement).value).toBe(""),
+    );
+    expect(toasts.successes).toContain("Signature removed");
+  });
+
+  it("is open on your OWN row too, and shows the server's refusal verbatim", async () => {
+    server.signatureError = {
+      message: "That account is a platform administrator and can only be changed by one.",
+      code: "PLATFORM_ADMIN_PROTECTED",
+    };
+    renderPage();
+    await screen.findByTestId("user-row-boss@carein.ai");
+    fireEvent.click(screen.getByTestId("signature-toggle-boss@carein.ai"));
+    await screen.findByTestId("signature-panel-boss@carein.ai");
+
+    fireEvent.change(screen.getByTestId("signature-name-boss@carein.ai"), { target: { value: "Morgan Example" } });
+    expect(screen.getByTestId("signature-save-boss@carein.ai").hasAttribute("disabled")).toBe(false);
+    fireEvent.click(screen.getByTestId("signature-save-boss@carein.ai"));
+
+    const refusal = await screen.findByTestId("signature-refusal-boss@carein.ai");
+    expect(refusal.getAttribute("data-code")).toBe("PLATFORM_ADMIN_PROTECTED");
+    expect(refusal.textContent).toContain("can only be changed by one");
+  });
+
+  it("a disabled account's signature cannot be edited — nothing prints for it", async () => {
+    renderPage();
+    await screen.findByTestId("user-row-hyg@carein.ai");
+    fireEvent.click(screen.getByTestId("signature-toggle-hyg@carein.ai"));
+    await screen.findByTestId("signature-panel-hyg@carein.ai");
+
+    expect(screen.getByTestId("signature-name-hyg@carein.ai").hasAttribute("disabled")).toBe(true);
+    expect(screen.getByTestId("signature-hint-hyg@carein.ai").textContent).toContain("disabled");
+  });
+});
+
+describe("Signature on notes — the built-in list switch", () => {
+  it("warns, before the first save, that it switches the office off the built-in list", async () => {
+    server.usingBuiltInList = true;
+    renderPage();
+    await screen.findByTestId("user-row-front@carein.ai");
+    fireEvent.click(screen.getByTestId("signature-toggle-front@carein.ai"));
+
+    const warning = await screen.findByTestId("signature-builtin-warning-front@carein.ai");
+    expect(warning.textContent).toContain("built-in list");
+    expect(warning.textContent).toContain("without a");
+
+    fireEvent.change(screen.getByTestId("signature-name-front@carein.ai"), { target: { value: "Avery Example" } });
+    fireEvent.click(screen.getByTestId("signature-save-front@carein.ai"));
+    await waitFor(() => expect(screen.queryByTestId("signature-builtin-warning-front@carein.ai")).toBeNull());
+  });
+
+  it("says nothing once the office has its own list", async () => {
+    renderPage();
+    await screen.findByTestId("user-row-front@carein.ai");
+    fireEvent.click(screen.getByTestId("signature-toggle-front@carein.ai"));
+    await screen.findByTestId("signature-panel-front@carein.ai");
+    expect(screen.queryByTestId("signature-builtin-warning-front@carein.ai")).toBeNull();
   });
 });

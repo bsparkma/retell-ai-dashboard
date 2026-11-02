@@ -59,6 +59,8 @@ let auditRows;
 let auditLogRows;
 /** Flip to make the fake auditForTenant throw, as a dead audit store would. */
 let auditForTenantFails = false;
+/** Flip to make the fake auditForTenant throw an AuditError (the real one's class). */
+let auditForTenantAuditError = false;
 /** Who each auditForTenant row was written as, parallel to the rows. */
 let auditActors = [];
 
@@ -166,10 +168,12 @@ beforeEach(async () => {
   };
   auditModule.auditForTenant = async (req, tenantId, entry) => {
     if (auditForTenantFails) throw new Error('audit store down');
+    if (auditForTenantAuditError) throw new auditModule.AuditError('audit store down');
     auditRows.push({ tenantId, ...entry });
     auditActors.push(req.user && req.user.email);
   };
   auditForTenantFails = false;
+  auditForTenantAuditError = false;
   auditActors = [];
 
   // A pg-shaped double: the audit reader is the only thing that opens a tenant
@@ -707,4 +711,105 @@ test('the impact endpoint refuses a nonsense window rather than answering 0', as
 
   assert.equal(res.status, 400);
   assert.equal((await res.json()).code, 'INVALID_DAYS');
+});
+
+// --- 7. signature on notes, through the console's door ----------------------
+//
+// The same rule set as /api/users/:email/signature (services/userSignature.js).
+// What this door adds: the practice's database is reached by the
+// REGISTRY-RESOLVED tenant id, and the audit lands in that practice's log.
+
+test('signature: the console door writes into THAT practice\u2019s database, keyed to the app_user email', async () => {
+  asSuperAdmin();
+  const { FakeHygDb } = require('./hyg/hygTestUtils');
+  const dbs = { [CAREIN]: new FakeHygDb(), [SMITH]: new FakeHygDb() };
+  /** @type {string[]} */
+  const opened = [];
+  tenantDb.getTenantPool = async (id) => {
+    opened.push(id);
+    return dbs[id];
+  };
+  const path = `/api/platform/practices/${CAREIN}/users/hyg@carein.ai/signature`;
+
+  const saved = await send('PUT', path, { fullName: 'Jamie Example', license: '9102' });
+  assert.equal(saved.status, 200);
+  assert.deepEqual(await saved.json(), {
+    success: true,
+    office: 'roland',
+    signature: { fullName: 'Jamie Example', license: '9102' },
+    usingBuiltInList: false,
+  });
+  assert.deepEqual(opened, [CAREIN]);
+  assert.equal(dbs[SMITH].hyg_staff.length, 0);
+  assert.deepEqual(dbs[CAREIN].hyg_staff.map((r) => r.sign_in_ids), [['hyg@carein.ai']]);
+  assert.deepEqual(
+    auditRows.filter((r) => r.resourceType === 'hyg_staff').map((r) => [r.tenantId, r.action, r.office]),
+    [[CAREIN, 'CREATE', 'roland']]
+  );
+
+  const read = await (await get(path)).json();
+  assert.deepEqual(read.signature, { fullName: 'Jamie Example', license: '9102' });
+
+  // Deactivating the user through this door retires the row too.
+  assert.equal((await send('PATCH', `/api/platform/practices/${CAREIN}/users/hyg@carein.ai`, { status: 'disabled' })).status, 200);
+  assert.equal(dbs[CAREIN].hyg_staff[0].active, false);
+});
+
+test('signature: an unknown practice 404s before any database is opened; a body cannot add a sign-in', async () => {
+  asSuperAdmin();
+  let opened = 0;
+  tenantDb.getTenantPool = async () => {
+    opened += 1;
+    throw new Error('must not be reached');
+  };
+  const res = await send('PUT', '/api/platform/practices/no-such-practice/users/hyg@carein.ai/signature', {
+    fullName: 'Jamie Example',
+    license: null,
+  });
+  assert.equal(res.status, 404);
+  assert.equal(opened, 0);
+
+  const { FakeHygDb } = require('./hyg/hygTestUtils');
+  const db = new FakeHygDb();
+  tenantDb.getTenantPool = async () => db;
+  const smuggled = await send('PUT', `/api/platform/practices/${CAREIN}/users/hyg@carein.ai/signature`, {
+    fullName: 'Jamie Example',
+    license: null,
+    signInIds: ['someone.else@carein.ai'],
+  });
+  assert.equal(smuggled.status, 400);
+  assert.equal(db.hyg_staff.length, 0);
+});
+
+test('signature: through the console door, a disabled user gets 409 USER_DISABLED (a clear still passes)', async () => {
+  asSuperAdmin();
+  const { FakeHygDb } = require('./hyg/hygTestUtils');
+  const db = new FakeHygDb();
+  tenantDb.getTenantPool = async () => db;
+  users[CAREIN].find((u) => u.email === 'hyg@carein.ai').status = 'disabled';
+  const path = `/api/platform/practices/${CAREIN}/users/hyg@carein.ai/signature`;
+
+  const refused = await send('PUT', path, { fullName: 'Jamie Example', license: '9102' });
+  assert.equal(refused.status, 409);
+  assert.equal((await refused.json()).code, 'USER_DISABLED');
+  assert.equal(db.hyg_staff.length, 0);
+  assert.equal((await send('PUT', path, { fullName: null, license: null })).status, 200);
+});
+
+test('signature: through the console door, an audit failure after the write says it WAS saved', async () => {
+  asSuperAdmin();
+  const { FakeHygDb } = require('./hyg/hygTestUtils');
+  const db = new FakeHygDb();
+  tenantDb.getTenantPool = async () => db;
+  auditForTenantAuditError = true;
+
+  const res = await send('PUT', `/api/platform/practices/${CAREIN}/users/hyg@carein.ai/signature`, {
+    fullName: 'Jamie Example',
+    license: null,
+  });
+  assert.equal(res.status, 500);
+  const body = await res.json();
+  assert.equal(body.code, 'SAVED_AUDIT_FAILED');
+  assert.match(body.error, /was saved/);
+  assert.equal(db.hyg_staff.length, 1);
 });

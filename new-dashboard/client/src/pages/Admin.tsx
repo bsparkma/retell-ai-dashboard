@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import {
   Building2, Users, Settings, CheckCircle2, AlertCircle,
   Globe, Key, Bell, ChevronRight, ChevronDown, RefreshCw, Loader2,
-  Play, Square, IdCard, Printer,
+  Play, Square, Printer,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -352,13 +352,7 @@ export default function Admin() {
             href: "/admin/users",
             icon: Users,
             title: "Users",
-            detail: "Who can sign in, and what each person's role lets them do",
-          },
-          {
-            href: "/admin/staff",
-            icon: IdCard,
-            title: "Practice staff",
-            detail: "Hygienist names, licence numbers and sign-ins",
+            detail: "Who can sign in, what each role lets them do, and the name and licence their notes print",
           },
           {
             href: "/admin/print-templates",

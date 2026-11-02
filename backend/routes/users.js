@@ -5,7 +5,9 @@
  *
  *   GET    /            list this tenant's app_user rows
  *   POST   /            pre-provision a user (email + role)
- *   PATCH  /:email      change role and/or status
+ *   PATCH  /:email            change role and/or status
+ *   GET    /:email/signature  what a hygiene note prints for them
+ *   PUT    /:email/signature  set, change or clear it (services/userSignature.js)
  *
  * Every route is gated `admin.all` at the mount in server.js, so a super_admin
  * passes automatically and nobody below tenant 'admin' gets here at all.
@@ -30,7 +32,9 @@
 const express = require('express');
 
 const tenantUsers = require('../services/tenantUsers');
-const { audit } = require('../platform/audit');
+const userSignature = require('../services/userSignature');
+const tenantDb = require('../platform/tenantDb');
+const { audit, AuditError } = require('../platform/audit');
 
 const router = express.Router();
 
@@ -98,11 +102,63 @@ router.patch('/:email', async (req, res) => {
       audit: (entry) => audit(req, entry),
       email: req.params.email,
       body: req.body || {},
+      tenantPool: () => tenantDb.getTenantPool(req.tenant.id),
     });
     return send(res, outcome);
   } catch (err) {
     console.error('[users] update failed:', err && err.message ? err.message : err);
     return fail(res, 503, 'Could not update that user', 'USER_UPDATE_FAILED');
+  }
+});
+
+// ── /:email/signature ───────────────────────────────────────────────────────
+//
+// The person's "Signature on notes". The sign-in it matches on is their
+// app_user email, read server-side; the office is their home office. The body
+// is a name and a licence, nothing else (UserSignatureInputSchema, .strict()).
+
+/** Write a signature Outcome as the response. */
+function sendSignature(res, outcome) {
+  if (!outcome.ok) return fail(res, outcome.status, outcome.error, outcome.code, outcome.extra);
+  return res
+    .status(outcome.status)
+    .json({
+      success: true,
+      office: outcome.office,
+      signature: outcome.signature,
+      usingBuiltInList: outcome.usingBuiltInList,
+    });
+}
+
+router.get('/:email/signature', async (req, res) => {
+  try {
+    const outcome = await tenantDb.withTenantDb(req, (pool) =>
+      userSignature.getSignature({ tenantId: req.tenant.id, pool, email: req.params.email })
+    );
+    return sendSignature(res, outcome);
+  } catch (err) {
+    console.error('[users] signature read failed:', err && err.message ? err.message : err);
+    return fail(res, 503, 'Could not load the signature', 'SIGNATURE_UNAVAILABLE');
+  }
+});
+
+router.put('/:email/signature', async (req, res) => {
+  try {
+    const outcome = await tenantDb.withTenantDb(req, (pool) =>
+      userSignature.saveSignature({
+        tenantId: req.tenant.id,
+        actor: actorOf(req),
+        audit: (entry) => audit(req, entry),
+        pool,
+        email: req.params.email,
+        body: req.body,
+      })
+    );
+    return sendSignature(res, outcome);
+  } catch (err) {
+    console.error('[users] signature save failed:', err && err.message ? err.message : err);
+    if (err instanceof AuditError) return fail(res, 500, 'Audit trail write failed', 'AUDIT_FAILED');
+    return fail(res, 500, 'Could not save the signature', 'SIGNATURE_SAVE_FAILED');
   }
 });
 
