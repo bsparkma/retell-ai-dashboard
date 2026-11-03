@@ -18,8 +18,8 @@
  *              type and size limits; with storage, the PDF carries it
  *   print      the PDF holds the filled values for a fixture card; the body can
  *              name no patient, office, provider or day; one audit row per
- *              print, and NO PDF when it cannot be written; nothing stored, no
- *              Open Dental call
+ *              print, and NO PDF when it cannot be written; nothing stored, and
+ *              no Open Dental call but the provider-name READ
  *
  * Test patients only (roland 12827, valley 7115); names synthetic.
  */
@@ -544,7 +544,9 @@ test('the PDF holds the filled values for a known fixture card — and the audit
   );
   assert.equal(JSON.stringify(db.table('tc_checkout_handoffs')), before, 'nothing is stored on the card');
   assert.equal(db.table('tc_print_templates').length, 0);
-  assert.deepEqual(odCalls, [], 'no Open Dental call');
+  // The provider-name lookup (services/tc/printProviderName.js) is the one
+  // Open Dental call a print makes: a READ of this office's provider list.
+  assert.deepEqual(odCalls, [{ office: 'roland', path: '/providers' }], 'one Open Dental call: the provider list read');
 });
 
 test('the appointment card prints the edited next appointment, and a blank prints as a line to write on', async (t) => {
