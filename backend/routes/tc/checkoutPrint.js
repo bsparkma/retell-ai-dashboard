@@ -17,7 +17,8 @@
  *   patient_first_name / patient_full_name   the STORED record's patient name
  *   date_seen                                the record's visit day
  *   provider_name                            the record's provider (seen by, else
- *                                            the hygiene provider)
+ *                                            the hygiene provider), as a FULL
+ *                                            name — see below
  *   office_name / _address / _phone          the office's template letterhead
  *   time_seen_range                          the request (pre-filled from the
  *                                            schedule appointment's start, CO-5b)
@@ -27,8 +28,16 @@
  * office holds under that id. The body cannot name a patient, an office, a
  * provider or a day.
  *
+ * THE PROVIDER'S NAME. The record stores Open Dental's provider abbreviation
+ * ("JF"); a letter signs with the name ("Dr. Jane Example"). Both the dialog
+ * and the PDF resolve it through services/tc/printProviderName.js — one READ
+ * (GET /providers, hour-cached per office) on the record's own office's
+ * client — so what the dialog shows is what prints. If that read cannot answer,
+ * the abbreviation prints exactly as before; a print never waits on it.
+ *
  * NOTHING IS STORED: no row, no file, nothing on the patient, nothing in Open
- * Dental (no Open Dental call at all). A printout is a DISCLOSURE, so each one
+ * Dental (the provider lookup is the only Open Dental call, and it is a read).
+ * A printout is a DISCLOSURE, so each one
  * writes an audit row first — resource_type 'tc_checkout_print', the checkout's
  * id, the office, source_ref `template:<type>|patient:<PatNum>`, who and when —
  * and if that row cannot be written, no PDF is sent (500 PRINT_AUDIT_FAILED).
@@ -48,10 +57,11 @@ const store = require('../../services/tc/printTemplateStore');
 const assets = require('../../services/tc/printAssetStore');
 const { prepareLogo } = require('../../services/tc/printImage');
 const { renderPrintPdf } = require('../../services/tc/printPdf');
+const { printProviderName } = require('../../services/tc/printProviderName');
 
 const HandoffId = z.string().uuid();
 
-/** The card's own facts, from the STORED row. Pure. */
+/** The card's own facts, from the STORED row. Pure; `providerName` is the stored label. */
 function factsOf(row) {
   const names = contract.printNameParts(String(row.patient_name || ''));
   const handoff = checkoutStore.toHandoff(row);
@@ -67,6 +77,15 @@ function factsOf(row) {
     nextAppointmentDate: anchor && anchor.dateTime ? contract.printDateLabel(anchor.dateTime.slice(0, 10), { weekday: true }) : '',
     nextAppointmentTime: anchor && anchor.dateTime ? contract.printTimeLabel(anchor.dateTime) : '',
   };
+}
+
+/**
+ * factsOf, with the provider's stored label resolved to the full name it signs
+ * with. Never throws; an unresolvable label is kept as stored.
+ */
+async function resolvedFactsOf(row, office) {
+  const facts = factsOf(row);
+  return { ...facts, providerName: await printProviderName(office, facts.providerName) };
 }
 
 /**
@@ -114,7 +133,7 @@ function mount(router, { enter }) {
       const row = await loadRow(req, res);
       if (!row) return undefined;
       const office = req.tcOffice;
-      const facts = factsOf(row);
+      const facts = await resolvedFactsOf(row, office);
       const prefill = await store.prefillFor(office);
       const saved = await tenantDb.withTenantDb(req, (pool) => store.rowFor(pool, office, 'excuse'));
       const officeName = store.effective('excuse', saved, prefill).letterheadName;
@@ -145,7 +164,7 @@ function mount(router, { enter }) {
       const prefill = await store.prefillFor(office);
       const saved = await tenantDb.withTenantDb(req, (pool) => store.rowFor(pool, office, type));
       const template = store.effective(type, saved, prefill);
-      const facts = factsOf(row);
+      const facts = await resolvedFactsOf(row, office);
       const doc = contract.composePrintDocument(template, printValues(facts, template, body));
 
       let logo = null;
@@ -189,4 +208,4 @@ function mount(router, { enter }) {
   );
 }
 
-module.exports = { mount, factsOf, printValues };
+module.exports = { mount, factsOf, resolvedFactsOf, printValues };
