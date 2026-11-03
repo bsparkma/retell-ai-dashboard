@@ -463,22 +463,55 @@ describe("Settings → Print templates → Style", () => {
 
 const OUT = resolve(import.meta.dirname, ".shots");
 function dump(name: string) {
+  // innerHTML carries attributes, not live state: mark each select's chosen
+  // option. And jsdom has no FontFace, so its "could not show the font" note is
+  // jsdom's, not the page's — the screenshot renderer loads the real fonts.
+  for (const sel of Array.from(document.querySelectorAll("select"))) {
+    for (const opt of Array.from(sel.options)) opt.toggleAttribute("selected", opt.selected);
+  }
+  document.querySelector('[data-testid="print-style-font-unavailable"]')?.remove();
   mkdirSync(dirname(resolve(OUT, `${name}.html`)), { recursive: true });
   writeFileSync(resolve(OUT, `${name}.html`), document.body.innerHTML, "utf8");
 }
 
+/** A synthetic square mark for the screenshots ("SRD"), never a real logo. */
+const SAMPLE_LOGO =
+  "data:image/svg+xml;base64," +
+  btoa(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="18" fill="#1f4e79"/>' +
+      '<text x="50" y="62" font-family="Arial" font-size="34" font-weight="700" fill="#fff" text-anchor="middle">SRD</text></svg>',
+  );
+
 describe.skipIf(process.env.TC_SHOTS !== "1")("CO-3b screenshot dumps", () => {
   beforeEach(() => {
     for (const fn of Object.values(api)) fn.mockReset();
-    api.getPrintTemplates.mockResolvedValue(templates());
+    const withLogo = templates();
+    withLogo.templates[0] = stateOf({ stored: true, logo: { present: true, contentType: "image/png" } });
+    api.getPrintTemplates.mockResolvedValue({ ...withLogo, logoStorageConfigured: true });
+    api.fetchPrintLogoUrl.mockResolvedValue(SAMPLE_LOGO);
+    api.fetchPrintFontUrl.mockResolvedValue("blob:font");
   });
   afterEach(cleanup);
-  for (const layout of LAYOUTS) {
+  const SHOTS: Array<[PrintLayout, PrintFontPair, PrintLogoPlacement, string]> = [
+    ["classic_letterhead", "modern", "left", "#1f4e79"],
+    ["centered_formal", "traditional", "center", "#8b0000"],
+    ["compact_card", "book", "right", "#0b6e4f"],
+  ];
+  for (const [layout, fontPair, logoPlacement, accent] of SHOTS) {
     it(`co3b — ${layout}`, async () => {
       renderSettings();
       fireEvent.click(await screen.findByTestId(`print-style-layout-${layout}`));
-      fireEvent.change(screen.getByTestId("print-style-accent"), { target: { value: "#1f4e79" } });
-      dump(`tccheckout-co3b-${layout}@1280x1700`);
+      fireEvent.change(screen.getByTestId("print-style-fontPair"), { target: { value: fontPair } });
+      fireEvent.click(screen.getByTestId(`print-style-logoPlacement-${logoPlacement}`));
+      fireEvent.change(screen.getByTestId("print-style-accent"), { target: { value: accent } });
+      await screen.findByTestId("print-preview-logo");
+      dump(`tccheckout-co3b-${layout}@1280x1800`);
     });
   }
+  it("co3b — a too-light accent named, Save off", async () => {
+    renderSettings();
+    fireEvent.change(await screen.findByTestId("print-style-accent-hex"), { target: { value: "#ffd966" } });
+    await screen.findByTestId("print-style-problem");
+    dump("tccheckout-co3b-accent-too-light@1280x1800");
+  });
 });
