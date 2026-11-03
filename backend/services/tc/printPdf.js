@@ -13,138 +13,77 @@
  * optional logo (services/tc/printImage.js prepares it).
  *
  * US Letter, one column. A body longer than a page continues on the next.
+ *
+ * CO-3b — STYLING. WHERE things go is decided by the shared layout engine
+ * (`layoutPrintDocument`, shared/tc/printStyling.ts), which the Settings
+ * preview draws from too; this file only SERIALISES its operations. With no
+ * styling saved the engine reproduces CO-3's arithmetic exactly and every op is
+ * written as CO-3 wrote it — no colour operators, the base-14 Helvetica pair,
+ * the same object numbers — so an untouched template's PDF is byte-identical
+ * to before (test/printStylingDefaults.test.js pins the hashes). An accent
+ * colour wraps only the letterhead text and the rule under it in `q … Q`; a
+ * bundled font pair is embedded, subset (services/tc/printFonts.js).
  */
 
 const { asciiSafe, pdfEscape } = require('../hyg/slipPdf');
+const contract = require('../../tc/contract.gen.cjs');
+const { fontObjects } = require('./printFonts');
 
-const PAGE_WIDTH = 612;
-const PAGE_HEIGHT = 792;
-const MARGIN = 54;
-const RIGHT = PAGE_WIDTH - MARGIN;
+const PAGE_WIDTH = contract.PRINT_PAGE.width;
+const PAGE_HEIGHT = contract.PRINT_PAGE.height;
 
-const NAME_SIZE = 14;
-const SMALL_SIZE = 10;
-const HEADING_SIZE = 16;
-const BODY_SIZE = 11;
-const BODY_LEADING = 15;
-/** Characters per body line before a word wrap: Helvetica 11pt in 504pt. */
-const BODY_CHARS = 88;
-const LOGO_BOX = 72;
+/** CO-3's number format: two decimals, except a whole number stays as written (the logo's x was `54`). */
+function num(v) {
+  return Number.isInteger(v) ? String(v) : v.toFixed(2);
+}
 
-/**
- * Word-wrap one line to `width` characters (a long unbroken token is cut).
- * @param {string} line @param {number} width @returns {string[]}
- */
-function wrapTo(line, width) {
-  const safe = asciiSafe(line);
-  if (safe.length <= width) return [safe];
-  const out = [];
-  let rest = safe;
-  while (rest.length > width) {
-    let cut = rest.lastIndexOf(' ', width);
-    if (cut <= 0) cut = width;
-    out.push(rest.slice(0, cut).trimEnd());
-    rest = rest.slice(cut).trimStart();
+/** `#rrggbb` → "r g b" in 0..1. */
+function rgb(hex) {
+  return [1, 3, 5].map((i) => (parseInt(hex.slice(i, i + 2), 16) / 255).toFixed(3)).join(' ');
+}
+
+/** One engine op → its content-stream text. */
+function opText(op) {
+  switch (op.kind) {
+    case 'text': {
+      const font = op.slot === 'heading' ? 'F2' : 'F1';
+      const t = `BT /${font} ${op.size} Tf 1 0 0 1 ${op.x.toFixed(2)} ${op.y.toFixed(2)} Tm (${pdfEscape(asciiSafe(op.text))}) Tj ET`;
+      return op.color ? `q ${rgb(op.color)} rg ${t} Q` : t;
+    }
+    case 'rule': {
+      const r = `0.6 w ${op.x1.toFixed(2)} ${op.y.toFixed(2)} m ${op.x2.toFixed(2)} ${op.y.toFixed(2)} l S`;
+      return op.color ? `q ${rgb(op.color)} RG ${r} Q` : r;
+    }
+    case 'image':
+      return `q ${op.w.toFixed(2)} 0 0 ${op.h.toFixed(2)} ${num(op.x)} ${op.y.toFixed(2)} cm /Im1 Do Q`;
+    case 'frame':
+      return `q 0.55 G 0.8 w ${num(op.x)} ${num(op.y)} ${num(op.w)} ${num(op.h)} re S Q`;
+    default:
+      throw new Error(`unknown print op ${op && op.kind}`);
   }
-  if (rest.length > 0) out.push(rest);
-  return out;
-}
-
-/** A text-showing op at an absolute position. */
-function text(font, size, x, y, value) {
-  return `BT /${font} ${size} Tf 1 0 0 1 ${x.toFixed(2)} ${y.toFixed(2)} Tm (${pdfEscape(asciiSafe(value))}) Tj ET`;
-}
-
-/** A thin horizontal rule. */
-function rule(x1, x2, y) {
-  return `0.6 w ${x1.toFixed(2)} ${y.toFixed(2)} m ${x2.toFixed(2)} ${y.toFixed(2)} l S`;
 }
 
 /**
  * Render a composed printout.
  *
  * @param {import('../../tc/contract.gen.cjs').PrintDocument} doc
- * @param {{ logo?: ReturnType<typeof import('./printImage').prepareLogo> | null }} [opts]
+ * @param {{ logo?: ReturnType<typeof import('./printImage').prepareLogo> | null, styling?: unknown }} [opts]
+ *   styling: the STORED value — null/absent is the defaults, today's printout
  * @returns {Buffer} the PDF, deterministic for the same input
  */
-function renderPrintPdf(doc, { logo = null } = {}) {
-  /** @type {string[][]} one op list per page */
-  const pages = [[]];
-  let ops = pages[0];
-  let y = PAGE_HEIGHT - MARGIN;
-
-  // ── letterhead ──────────────────────────────────────────────────────────
-  let textX = MARGIN;
-  let blockBottom = y;
-  if (logo) {
-    const scale = Math.min(LOGO_BOX / logo.width, LOGO_BOX / logo.height);
-    const w = logo.width * scale;
-    const h = logo.height * scale;
-    ops.push(`q ${w.toFixed(2)} 0 0 ${h.toFixed(2)} ${MARGIN} ${(y - h).toFixed(2)} cm /Im1 Do Q`);
-    textX = MARGIN + w + 14;
-    blockBottom = y - h;
-  }
-  // Wrapped to the width left beside the logo, so a long line cannot run off the
-  // page. Generous average widths (bold caps ~0.65 em, digits ~0.56 em).
-  const room = RIGHT - textX;
-  let ty = y - NAME_SIZE;
-  if (doc.letterhead.name) {
-    for (const row of wrapTo(doc.letterhead.name, Math.floor(room / (NAME_SIZE * 0.65)))) {
-      ops.push(text('F2', NAME_SIZE, textX, ty, row));
-      ty -= NAME_SIZE + 2;
-    }
-    ty += NAME_SIZE + 2 - (SMALL_SIZE + 6);
-  }
-  for (const line of [...doc.letterhead.addressLines, doc.letterhead.phone].filter(Boolean)) {
-    for (const row of wrapTo(line, Math.floor(room / (SMALL_SIZE * 0.56)))) {
-      ops.push(text('F1', SMALL_SIZE, textX, ty, row));
-      ty -= SMALL_SIZE + 3;
-    }
-  }
-  blockBottom = Math.min(blockBottom, ty + SMALL_SIZE);
-  y = blockBottom - 10;
-  ops.push(rule(MARGIN, RIGHT, y));
-  y -= 34;
-
-  // ── heading ─────────────────────────────────────────────────────────────
-  if (doc.heading) {
-    ops.push(text('F2', HEADING_SIZE, MARGIN, y, doc.heading));
-    y -= 30;
-  }
-
-  // ── body ────────────────────────────────────────────────────────────────
-  const newPage = () => {
-    ops = [];
-    pages.push(ops);
-    y = PAGE_HEIGHT - MARGIN - BODY_SIZE;
-  };
-  for (const para of doc.paragraphs) {
-    for (const line of para) {
-      const rows = line.trim() === '' ? [''] : wrapTo(line, BODY_CHARS);
-      for (const row of rows) {
-        if (y < MARGIN + BODY_SIZE) newPage();
-        if (row) ops.push(text('F1', BODY_SIZE, MARGIN, y, row));
-        y -= BODY_LEADING;
-      }
-    }
-    y -= 8;
-  }
-
-  // ── signature line ──────────────────────────────────────────────────────
-  if (doc.signatureLine) {
-    if (y < MARGIN + 60) newPage();
-    y -= 36;
-    ops.push(rule(MARGIN, MARGIN + 252, y));
-    y -= 14;
-    for (const row of wrapTo(doc.signatureLine, 60)) {
-      ops.push(text('F1', SMALL_SIZE, MARGIN, y, row));
-      y -= SMALL_SIZE + 3;
-    }
-  }
+function renderPrintPdf(doc, { logo = null, styling = null } = {}) {
+  const layout = contract.layoutPrintDocument(
+    doc,
+    contract.effectivePrintStyling(styling),
+    logo ? { width: logo.width, height: logo.height } : null
+  );
+  const pages = layout.pages.map((ops) => ops.map(opText));
+  const embedded = contract.PRINT_FONT_FACES[layout.faces.body].file !== null;
 
   // ── objects ─────────────────────────────────────────────────────────────
-  // 1 catalog, 2 pages, 3 Helvetica, 4 Helvetica-Bold, 5 logo, 6 its mask,
-  // then a Page and its Contents per page.
+  // 1 catalog, 2 pages, 3 the body font (/F1), 4 the heading font (/F2),
+  // 5 logo, 6 its mask, then a Page and its Contents per page, then — for a
+  // bundled pair only — each face's descriptor and font file.
   /** @type {Array<Buffer|null>} */
   const objects = [];
   const firstPage = 7;
@@ -155,8 +94,10 @@ function renderPrintPdf(doc, { logo = null } = {}) {
 
   objects[1] = str('<< /Type /Catalog /Pages 2 0 R >>');
   objects[2] = str(`<< /Type /Pages /Count ${pages.length} /Kids [${pageNums.map((n) => `${n} 0 R`).join(' ')}] >>`);
-  objects[3] = str('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
-  objects[4] = str('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
+  if (!embedded) {
+    objects[3] = str('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+    objects[4] = str('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
+  }
   if (logo) {
     objects[5] = streamObj(`/Type /XObject /Subtype /Image ${logo.dict}${logo.smask ? ' /SMask 6 0 R' : ''}`, logo.data);
     if (logo.smask) objects[6] = streamObj(`/Type /XObject /Subtype /Image ${logo.smask.dict}`, logo.smask.data);
@@ -169,6 +110,19 @@ function renderPrintPdf(doc, { logo = null } = {}) {
     );
     objects[n + 1] = streamObj('', str(pageOps.join('\n')));
   });
+  if (embedded) {
+    // Each face subset to exactly the characters it draws.
+    const drawn = { body: '', heading: '' };
+    for (const ops of layout.pages) for (const op of ops) if (op.kind === 'text') drawn[op.slot] += asciiSafe(op.text);
+    let next = firstPage + pages.length * 2;
+    for (const [slot, at] of [['body', 3], ['heading', 4]]) {
+      const [font, descriptor, file] = fontObjects(layout.faces[slot], drawn[slot], next - 1);
+      objects[at] = font;
+      objects[next] = descriptor;
+      objects[next + 1] = file;
+      next += 2;
+    }
+  }
 
   // ── assembly, with a real xref table ────────────────────────────────────
   const chunks = [str('%PDF-1.4\n%\xe2\xe3\xcf\xd3\n')];
@@ -193,4 +147,4 @@ function renderPrintPdf(doc, { logo = null } = {}) {
   return Buffer.concat(chunks);
 }
 
-module.exports = { renderPrintPdf, wrapTo };
+module.exports = { renderPrintPdf, opText };

@@ -29,6 +29,7 @@ const COLS = [
   'signature_line',
   'logo_key',
   'logo_content_type',
+  'styling',
   'updated_by',
   'updated_at',
 ];
@@ -85,6 +86,9 @@ function stateOf(type, row, prefill) {
     stored: Boolean(row),
     fields: effective(type, row, prefill),
     logo: { present: Boolean(row && row.logo_key), contentType: (row && row.logo_content_type) || null },
+    // CO-3b: NULL (every row before CO-3b) prints as the defaults — today's printout.
+    styling: contract.effectivePrintStyling(row ? row.styling ?? null : null),
+    styled: Boolean(row && row.styling != null),
     updatedBy: (row && row.updated_by) || null,
     updatedAt: row ? iso(row.updated_at) : null,
   };
@@ -169,4 +173,33 @@ async function setLogo(q, { office, type, logoKey, contentType, actor, prefill }
   return { prior: existing.logo_key || null };
 }
 
-module.exports = { COLS, PG_UNIQUE_VIOLATION, prefillFor, fieldsOf, effective, stateOf, rowsFor, rowFor, saveFields, setLogo };
+/**
+ * Save one template's styling (call inside a transaction). `styling` is a value
+ * the contract has ALREADY validated, or null for the defaults — a styling
+ * equal to the defaults is stored as NULL, so "never styled" and "styled back
+ * to the defaults" are one state and print the same bytes. A type with no saved
+ * row gets one with the shipped wording, as a logo does.
+ * @returns {Promise<{ prior: 'style_default' | 'style_set' }>}
+ */
+async function saveStyling(q, { office, type, styling, actor, prefill }) {
+  const stored = styling && !contract.isDefaultStyling(styling) ? styling : null;
+  const existing = await rowFor(q, office, type, { lock: true });
+  if (!existing) {
+    const f = contract.defaultPrintTemplate(type, prefill);
+    await q.query(
+      `INSERT INTO tc_print_templates (office_id, template_type, heading, letterhead_name, letterhead_address,
+         letterhead_phone, body, signature_line, styling, updated_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [office, type, f.heading, f.letterheadName, f.letterheadAddress, f.letterheadPhone, f.body, f.signatureLine, stored, actor]
+    );
+    return { prior: 'style_default' };
+  }
+  await q.query(
+    `UPDATE tc_print_templates SET styling = $3, updated_by = $4, updated_at = now()
+      WHERE office_id = $1 AND template_type = $2`,
+    [office, type, stored, actor]
+  );
+  return { prior: existing.styling != null ? 'style_set' : 'style_default' };
+}
+
+module.exports = { COLS, PG_UNIQUE_VIOLATION, prefillFor, fieldsOf, effective, stateOf, rowsFor, rowFor, saveFields, setLogo, saveStyling };
