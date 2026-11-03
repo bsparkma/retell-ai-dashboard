@@ -20,6 +20,8 @@
  *   POST   /manual            "Add patient": a card added by hand (CO-5a)
  *   GET    /:id/appointments  the patient's upcoming OD appointments (CO-4a)
  *   POST   /:id/appointment   link / change / clear a Scheduled checkout's anchor (CO-4a)
+ *   GET    /:id/print         the print dialog's starting values (CO-3, checkoutPrint.js)
+ *   POST   /:id/print         a school/work excuse or appointment card, as a PDF (CO-3)
  *   GET    /schedule-check    cards from today's schedule: the office's state, and a
  *                             refresh when it is older than its window (CO-5b)
  *
@@ -560,6 +562,11 @@ router.post(
     });
   })
 );
+
+// ── GET|POST /:id/print — excuse and appointment card (CO-3) ───────────────
+// Behind the same gate and sweep as everything here; nothing stored, nothing
+// in Open Dental, an audit row per printout. See checkoutPrint.js.
+require('./checkoutPrint').mount(router, { enter });
 
 // ── GET /:id — one handoff ──────────────────────────────────────────────────
 

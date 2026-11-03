@@ -21,6 +21,7 @@ const { beforeEach, afterEach } = test;
 const registry = require('../platform/registry');
 const userContext = require('../platform/userContext');
 const tenantUsers = require('./tenantUsers');
+const { FakeHygDb } = require('../routes/hyg/hygTestUtils');
 
 const T1 = 'tenant-one';
 const T2 = 'tenant-two';
@@ -37,6 +38,8 @@ let rows;
 let auditRows;
 let platformAdmins;
 let cacheClears;
+/** One fake practice database per tenant — where hyg_staff (signatures) lives. */
+let tenantDbs;
 
 const REGISTRY_KEYS = [
   'listTenantUsers',
@@ -65,6 +68,7 @@ beforeEach(() => {
   auditRows = [];
   platformAdmins = new Set();
   cacheClears = 0;
+  tenantDbs = { [T1]: new FakeHygDb(), [T2]: new FakeHygDb() };
 
   // Every stub filters by tenant_id, mirroring the WHERE tenant_id = $1 the
   // real SQL carries. Rule 4 is the SQL's job; these doubles must not be more
@@ -112,8 +116,8 @@ const auditInto = (tenantId) => async (entry) => {
 const tenantAdmin = { email: ADMIN_1, isSuperAdmin: false };
 const superAdmin = { email: OPERATOR, isSuperAdmin: true };
 
-const update = (tenantId, actor, email, body) =>
-  tenantUsers.updateUser({ tenantId, actor, audit: auditInto(tenantId), email, body });
+const update = (tenantId, actor, email, body, tenantPool = async () => tenantDbs[tenantId]) =>
+  tenantUsers.updateUser({ tenantId, actor, audit: auditInto(tenantId), email, body, tenantPool });
 const create = (tenantId, actor, fields) =>
   tenantUsers.createUser({ tenantId, actor, audit: auditInto(tenantId), ...fields });
 
@@ -318,4 +322,71 @@ test('update: a failed audit write propagates — fail closed', async () => {
     /audit store down/
   );
   assert.equal(cacheClears, 0);
+});
+
+// --- deactivating a user retires their signature on notes -------------------
+
+/** Seed an active hyg_staff row for `email` in `office` of this tenant's DB. */
+function seedSignature(tenantId, office, email) {
+  const db = tenantDbs[tenantId];
+  db.seq += 1;
+  const row = {
+    id: `00000000-0000-4000-8000-${String(db.seq).padStart(12, '0')}`,
+    seq: db.seq,
+    office,
+    full_name: 'Avery Example',
+    license: '9101',
+    sign_in_ids: [email],
+    active: true,
+    created_by: ADMIN_1,
+    created_at: new Date(),
+    updated_by: ADMIN_1,
+    updated_at: new Date(),
+  };
+  db.hyg_staff.push(row);
+  return row;
+}
+
+test('deactivate: retires the user’s signature row in EVERY office, audited, and only theirs', async () => {
+  const roland = seedSignature(T1, 'roland', OFFICE_1);
+  const valley = seedSignature(T1, 'valley', OFFICE_1);
+  const someoneElse = seedSignature(T1, 'roland', ADMIN_1);
+
+  const out = await update(T1, tenantAdmin, OFFICE_1, { status: 'disabled' });
+  assert.equal(out.ok, true);
+  assert.equal(roland.active, false);
+  assert.equal(valley.active, false);
+  assert.equal(someoneElse.active, true, 'another person’s signature is untouched');
+  const retired = auditRows.filter((r) => r.resourceType === 'hyg_staff');
+  assert.deepEqual(
+    retired.map((r) => [r.tenantId, r.resourceId, r.office, r.priorState, r.result]).sort(),
+    [
+      [T1, roland.id, 'roland', 'active', 'SUCCESS'],
+      [T1, valley.id, 'valley', 'active', 'SUCCESS'],
+    ].sort()
+  );
+});
+
+test('deactivate: a role change or reactivation does NOT touch the signature', async () => {
+  const row = seedSignature(T1, 'roland', OFFICE_1);
+  assert.equal((await update(T1, tenantAdmin, OFFICE_1, { role: 'tc' })).ok, true);
+  assert.equal(row.active, true);
+  assert.equal(auditRows.filter((r) => r.resourceType === 'hyg_staff').length, 0);
+});
+
+test('deactivate: a retire failure says the user WAS deactivated; sending it again finishes', async () => {
+  const row = seedSignature(T1, 'roland', OFFICE_1);
+  const failed = await update(T1, tenantAdmin, OFFICE_1, { status: 'disabled' }, async () => {
+    throw new Error('tenant db down');
+  });
+  assert.equal(failed.ok, false);
+  assert.equal(failed.status, 500);
+  assert.equal(failed.code, 'SIGNATURE_RETIRE_FAILED');
+  assert.match(failed.error, /was deactivated/);
+  assert.equal(find(T1, OFFICE_1).status, 'disabled');
+  assert.equal(row.active, true);
+
+  const retry = await update(T1, tenantAdmin, OFFICE_1, { status: 'disabled' });
+  assert.equal(retry.ok, true);
+  assert.equal(row.active, false);
 });

@@ -37,6 +37,7 @@ const registry = require('../platform/registry');
 const userContext = require('../platform/userContext');
 const { TENANT_ROLES } = require('../config/permissions');
 const { getAllOfficeConfigs, UNMAPPED_OFFICE } = require('../config/officeAgents');
+const userSignature = require('./userSignature');
 
 /**
  * @typedef {{ email: string, isSuperAdmin: boolean }} Actor
@@ -232,11 +233,18 @@ async function createUser({ tenantId, audit, email: rawEmail, role: rawRole, hom
 /**
  * Change a user's role, status and/or home office.
  *
+ * DEACTIVATING a user also retires their "Signature on notes" (their hyg_staff
+ * row, in every office) — see services/userSignature.js. That lives in the
+ * practice's own database, so the door hands over `tenantPool`, the way to
+ * reach it. Retiring is idempotent, so if it fails the answer says the user
+ * WAS deactivated and that sending the same change again finishes the job.
+ *
  * @param {{ tenantId: string, actor: Actor, audit: AuditWriter,
- *           email: unknown, body: Record<string, unknown> }} input
+ *           email: unknown, body: Record<string, unknown>,
+ *           tenantPool: () => Promise<{ query: Function }> }} input
  * @returns {Promise<Outcome>}
  */
-async function updateUser({ tenantId, actor, audit, email: rawEmail, body }) {
+async function updateUser({ tenantId, actor, audit, email: rawEmail, body, tenantPool }) {
   const target = String(rawEmail || '').trim().toLowerCase();
 
   /** @type {{ role?: string, status?: string, home_office?: string|null }} */
@@ -311,6 +319,20 @@ async function updateUser({ tenantId, actor, audit, email: rawEmail, body }) {
   // old role from the TTL cache. The UI still says "within a minute" because
   // OTHER replicas keep their own caches until their TTL expires.
   userContext.clearCache();
+
+  if (updated.status === 'disabled') {
+    try {
+      const pool = await tenantPool();
+      await userSignature.retireSignatures({ pool, audit, email: updated.email, actor: actor.email });
+    } catch (err) {
+      console.error('[tenantUsers] signature retire failed:', err && err.message ? err.message : err);
+      return refuse(
+        500,
+        'The user was deactivated, but their signature on notes could not be retired. Disable them again to finish.',
+        'SIGNATURE_RETIRE_FAILED'
+      );
+    }
+  }
 
   return { ok: true, status: 200, user: toDto(updated) };
 }

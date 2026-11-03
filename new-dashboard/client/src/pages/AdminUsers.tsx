@@ -27,6 +27,8 @@ const OWN_PRACTICE_DOOR: UserDoor = {
   // told not to offer one here, so nothing new is sent.
   create: ({ email, role }) => api.createUser(email, role),
   update: (email, patch) => api.updateUser(email, patch),
+  getSignature: (email) => api.getUserSignature(email),
+  saveSignature: (email, input) => api.saveUserSignature(email, input),
 };
 
 export default function AdminUsers() {

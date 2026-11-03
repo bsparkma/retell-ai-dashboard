@@ -339,6 +339,15 @@ class FakeHygDb extends FakeAuditDb {
         .map((s) => ({ ...s, sign_in_ids: [...s.sign_in_ids] }));
       return { rows, rowCount: rows.length };
     }
+    if (COLS.test(text) && /WHERE office = \$1 AND sign_in_ids \? \$2\s+ORDER BY active DESC, created_at\s+LIMIT 1\s*$/i.test(text)) {
+      const [office, signInId] = params;
+      const rows = this.hyg_staff
+        .filter((s) => s.office === office && s.sign_in_ids.includes(signInId))
+        .sort((a, b) => (a.active !== b.active ? (a.active ? -1 : 1) : a.seq - b.seq))
+        .slice(0, 1)
+        .map((s) => ({ ...s, sign_in_ids: [...s.sign_in_ids] }));
+      return { rows, rowCount: rows.length };
+    }
     if (/^\s*SELECT sign_in_ids\s+FROM hyg_staff\s+WHERE office = \$1 AND id IS DISTINCT FROM \$2::uuid AND sign_in_ids \?\| \$3::text\[\]\s*$/i.test(text)) {
       const [office, exceptId, ids] = params;
       const rows = this.hyg_staff

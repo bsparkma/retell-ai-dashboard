@@ -349,10 +349,19 @@ describe("the work moves on by itself", () => {
     fireEvent.click(screen.getByTestId(`rcm-confirm-yes-${ANCHOR}`));
 
     // The anchor is first in the server's order, so the claim total is next.
-    await waitFor(() =>
-      expect(screen.getByTestId(`rcm-confirm-field-${CLAIM_TOTAL}`).dataset.focused).toBe("true"),
-    );
-    expect(document.activeElement).toBe(screen.getByTestId(`rcm-confirm-yes-${CLAIM_TOTAL}`));
+    /*
+     * RULING (flake-fix): BOTH expectations inside the one wait. The highlight
+     * (`data-focused`) is rendered in the commit; the focus is moved by the row's
+     * effect, which React runs after that commit. Under CPU load the wait could
+     * resolve between the two, with focus still on <body> — never on any other
+     * control (probed: 1 run in 40 under contention read <body> at this point,
+     * and every one then reached this same button). Same elements, same
+     * expectations; they are now awaited together.
+     */
+    await waitFor(() => {
+      expect(screen.getByTestId(`rcm-confirm-field-${CLAIM_TOTAL}`).dataset.focused).toBe("true");
+      expect(document.activeElement).toBe(screen.getByTestId(`rcm-confirm-yes-${CLAIM_TOTAL}`));
+    });
   });
 
   it("walks the whole check, and stops highlighting when there is nothing left", async () => {

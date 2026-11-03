@@ -30,6 +30,8 @@ export default function PracticeUsersPanel({ practice }: { practice: Practice })
       list: () => api.listPracticeUsers(tenantId),
       create: (input) => api.createPracticeUser(tenantId, input),
       update: (email, patch) => api.updatePracticeUser(tenantId, email, patch),
+      getSignature: (email) => api.getPracticeUserSignature(tenantId, email),
+      saveSignature: (email, input) => api.savePracticeUserSignature(tenantId, email, input),
     }),
     [tenantId],
   );

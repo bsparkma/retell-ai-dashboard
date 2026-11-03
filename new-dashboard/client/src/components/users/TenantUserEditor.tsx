@@ -14,16 +14,24 @@
  *
  * Adding a user is PRE-PROVISIONING. It creates the row that says what they may
  * do; Microsoft Entra still decides whether they are who they say.
+ *
+ * SIGNATURE ON NOTES. Each row has a collapsed panel for the name and licence a
+ * hygiene note prints for that person — any role, since anyone may author a
+ * note. It replaced the free-typed /admin/staff page: the sign-in the note
+ * matches on is the person's own app_user email, taken by the server, so a
+ * licence entered here cannot miss on a typo. The panel sends a name and a
+ * licence and nothing else.
  */
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { AlertTriangle, Check, Loader2, ShieldAlert, UserPlus } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2, PenLine, ShieldAlert, UserPlus } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ApiError } from "@/lib/api";
 import type { TenantUser, TenantUserPatch, TenantUserRole, TenantUsersResponse } from "@/lib/api";
+import type { UserSignatureInput, UserSignatureResponse } from "@shared/hyg/staff";
 
 export type TenantOffice = TenantUsersResponse["offices"][number];
 
@@ -32,6 +40,9 @@ export interface UserDoor {
   list: () => Promise<TenantUsersResponse>;
   create: (input: { email: string; role: TenantUserRole; homeOffice?: string | null }) => Promise<TenantUser>;
   update: (email: string, patch: TenantUserPatch) => Promise<TenantUser>;
+  /** The person's signature on notes. The server picks the sign-in and office. */
+  getSignature: (email: string) => Promise<UserSignatureResponse>;
+  saveSignature: (email: string, input: UserSignatureInput) => Promise<UserSignatureResponse>;
 }
 
 /** What each role means, in the words an office manager would use. */
@@ -62,6 +73,11 @@ const REFUSAL_HEADLINE: Record<string, string> = {
   INVALID_EMAIL: "Check the address",
   INVALID_ROLE: "Unknown role",
   INVALID_HOME_OFFICE: "Unknown office",
+  INVALID_BODY: "Check the signature",
+  SIGNATURE_RETIRE_FAILED: "Signature not retired",
+  SAVE_NOT_CONFIRMED: "Not confirmed",
+  SAVED_AUDIT_FAILED: "Saved, audit failed",
+  USER_DISABLED: "Account disabled",
 };
 
 /** A refusal the editor shows inline: which rule, and the server's own words. */
@@ -277,6 +293,167 @@ function AddUserForm({
   );
 }
 
+/**
+ * "Signature on notes" for one person. Loads when opened, never before — the
+ * roster itself stays one control-plane read.
+ *
+ * Blank licence means the name prints alone; the page never invents a
+ * placeholder. Removing it (both fields blank) deactivates the stored row.
+ */
+function SignaturePanel({
+  door,
+  user,
+  offices,
+}: {
+  door: UserDoor;
+  user: TenantUser;
+  offices: TenantOffice[];
+}) {
+  const [loaded, setLoaded] = useState<UserSignatureResponse | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [fullName, setFullName] = useState("");
+  const [license, setLicense] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [refusal, setRefusal] = useState<Refusal | null>(null);
+
+  const apply = useCallback((data: UserSignatureResponse) => {
+    setLoaded(data);
+    setFullName(data.signature?.fullName ?? "");
+    setLicense(data.signature?.license ?? "");
+  }, []);
+
+  useEffect(() => {
+    let live = true;
+    door
+      .getSignature(user.email)
+      .then((data) => {
+        if (live) apply(data);
+      })
+      .catch((e: unknown) => {
+        if (live) setLoadError(toRefusal(e).message);
+      });
+    return () => {
+      live = false;
+    };
+  }, [door, user.email, apply]);
+
+  const save = async (input: UserSignatureInput) => {
+    setBusy(true);
+    setRefusal(null);
+    try {
+      const data = await door.saveSignature(user.email, input);
+      apply(data);
+      toast.success(data.signature ? "Signature saved" : "Signature removed");
+    } catch (e) {
+      const r = toRefusal(e);
+      setRefusal(r);
+      toast.error(r.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (loadError) {
+    return <RefusalNote refusal={{ code: null, message: loadError }} testId={`signature-error-${user.email}`} />;
+  }
+  if (!loaded) {
+    return (
+      <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading signature…
+      </div>
+    );
+  }
+
+  const officeName = offices.find((o) => o.officeId === loaded.office)?.officeName ?? loaded.office;
+  const disabled = user.status === "disabled";
+  const name = fullName.replace(/\s+/g, " ").trim();
+  const lic = license.trim();
+  const unchanged = name === (loaded.signature?.fullName ?? "") && lic === (loaded.signature?.license ?? "");
+  const orphanLicence = !name && lic !== "";
+
+  let hint: ReactNode;
+  if (disabled) hint = "This account is disabled, so nothing prints for it.";
+  else if (orphanLicence) hint = "Enter the name this licence belongs to.";
+  else if (name) {
+    hint = (
+      <>
+        Prints as <span className="font-medium text-foreground">{name}</span>
+        {lic ? <> with licence #{lic}</> : <> — no licence on file, so the name prints alone</>}.
+      </>
+    );
+  } else hint = "Nothing set — notes print the name they signed in with.";
+
+  return (
+    <div className="space-y-2 py-1" data-testid={`signature-panel-${user.email}`}>
+      <p className="text-xs text-muted-foreground">
+        For {officeName} notes written while signed in as <span className="font-mono">{user.email}</span>.
+      </p>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <Input
+          className="sm:max-w-xs"
+          placeholder="Full name, as it prints"
+          value={fullName}
+          disabled={busy || disabled}
+          onChange={(e) => {
+            setFullName(e.target.value);
+            setRefusal(null);
+          }}
+          aria-label={`Prints on notes as, for ${user.email}`}
+          data-testid={`signature-name-${user.email}`}
+        />
+        <Input
+          className="sm:max-w-[10rem]"
+          placeholder="Licence # (optional)"
+          value={license}
+          disabled={busy || disabled}
+          onChange={(e) => {
+            setLicense(e.target.value);
+            setRefusal(null);
+          }}
+          aria-label={`Licence number for ${user.email}`}
+          data-testid={`signature-license-${user.email}`}
+        />
+        <Button
+          size="sm"
+          disabled={busy || disabled || unchanged || orphanLicence}
+          onClick={() => void save({ fullName: name || null, license: lic || null })}
+          data-testid={`signature-save-${user.email}`}
+        >
+          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save"}
+        </Button>
+        {loaded.signature && (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={busy || disabled}
+            onClick={() => void save({ fullName: null, license: null })}
+            data-testid={`signature-remove-${user.email}`}
+          >
+            Remove
+          </Button>
+        )}
+      </div>
+      <p className="text-xs text-muted-foreground" data-testid={`signature-hint-${user.email}`}>
+        {hint}
+      </p>
+      {loaded.usingBuiltInList && !disabled && (
+        <p
+          className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-300"
+          data-testid={`signature-builtin-warning-${user.email}`}
+        >
+          <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
+          <span>
+            {officeName} notes still take licence numbers from the built-in list. Saving the first signature here
+            switches {officeName} to this page — anyone not entered here will then print their name without a
+            licence. Enter everyone who writes notes.
+          </span>
+        </p>
+      )}
+      {refusal && <RefusalNote refusal={refusal} testId={`signature-refusal-${user.email}`} />}
+    </div>
+  );
+}
+
 function UserRow({
   door,
   user,
@@ -294,6 +471,8 @@ function UserRow({
 }) {
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<Refusal | null>(null);
+  // Collapsed by default; opening it is what loads the signature.
+  const [signatureOpen, setSignatureOpen] = useState(false);
 
   const patch = async (body: TenantUserPatch) => {
     setBusy(true);
@@ -316,6 +495,7 @@ function UserRow({
   const disabled = user.status === "disabled";
 
   return (
+    <Fragment>
     <tr className={disabled ? "opacity-60" : undefined} data-testid={`user-row-${user.email}`}>
       <td className="px-3 py-2.5 align-middle">
         <div className="flex items-center gap-2">
@@ -327,6 +507,16 @@ function UserRow({
           )}
         </div>
         <p className="mt-0.5 text-xs text-muted-foreground">{ROLE_BLURB[user.role]}</p>
+        <button
+          type="button"
+          className="mt-1 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+          aria-expanded={signatureOpen}
+          onClick={() => setSignatureOpen((v) => !v)}
+          data-testid={`signature-toggle-${user.email}`}
+        >
+          {signatureOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          <PenLine className="h-3 w-3" /> Signature on notes
+        </button>
         {refusal && <RefusalNote refusal={refusal} testId={`refusal-${user.email}`} />}
       </td>
 
@@ -398,6 +588,14 @@ function UserRow({
         </Button>
       </td>
     </tr>
+    {signatureOpen && (
+      <tr className="bg-muted/30" data-testid={`signature-row-${user.email}`}>
+        <td colSpan={6} className="px-3 pb-3 pt-1">
+          <SignaturePanel door={door} user={user} offices={offices} />
+        </td>
+      </tr>
+    )}
+    </Fragment>
   );
 }
 

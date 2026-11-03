@@ -205,6 +205,18 @@ test('server.js: /api/platform/hyg-staff carries the Users page gate, no module 
   );
 });
 
+// RULING (CO-3): a new mount, added to this test's coverage as CLAUDE.md asks.
+test('server.js: /api/platform/print-templates carries the Users page gate, no module guard, ABOVE /api/platform', () => {
+  const line = mountLine('/api/platform/print-templates');
+  // The office manager edits the print templates (admin.all), not the super-admin console.
+  assert.ok(/requirePermission\('admin\.all'\)/.test(line), `must be behind requirePermission('admin.all'): ${line}`);
+  assert.ok(!/requireModule|voiceModule/.test(line), `no module guard: ${line}`);
+  assert.ok(
+    serverSrc.indexOf(line) < serverSrc.indexOf(mountLine('/api/platform')),
+    '/api/platform/print-templates must be mounted above /api/platform'
+  );
+});
+
 test("server.js: /api/mango guard exempts the tenant-exempt dev seeder", () => {
   const line = mountLine('/api/mango');
   assert.ok(

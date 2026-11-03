@@ -49,6 +49,12 @@ export * from "../../new-dashboard/shared/tc/emailIdentity";
 // The provider directory (referring provider / pre-auth doctor) and the
 // pre-auth "Start case" body.
 export * from "../../new-dashboard/shared/tc/providers";
+// Print templates (CO-3): the excuse and appointment card, their closed
+// placeholder menu and the one composer the preview and the PDF share.
+export * from "../../new-dashboard/shared/tc/printTemplates";
+// Print template styling (CO-3b): the closed styling schema and the ONE layout
+// engine the PDF and the Settings preview both draw from.
+export * from "../../new-dashboard/shared/tc/printStyling";
 // The routes compose small request shapes (status-transition bodies, complete/
 // reschedule payloads) from contract pieces; export the SAME zod instance so
 // those shapes and the contract schemas share one library version.
