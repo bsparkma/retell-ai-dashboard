@@ -7,7 +7,13 @@
  * from the stored record, never from here. Three values are the desk's to set
  * before generating (time seen, next appointment date and time), pre-filled
  * where the card knows them (the schedule appointment's start; the Scheduled
- * anchor). Generate opens the PDF for printing.
+ * anchor).
+ *
+ * CO-3b — ONE CLICK FROM DIALOG TO PAPER: "Print" generates the PDF, loads it
+ * into a hidden frame and opens the browser's own print dialog on it, which is
+ * the printer surface (no printer management in the app). "Download PDF" is
+ * the secondary action. Each one is its own printout, so each is audited. If
+ * the browser will not print from the frame, a link to the PDF is offered.
  *
  * Nothing is stored on the patient and nothing goes to Open Dental. Each
  * printout is recorded in the audit trail, and the server sends no PDF when it
@@ -15,7 +21,7 @@
  */
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { ExternalLink, Loader2, Printer } from "lucide-react";
+import { Download, ExternalLink, Loader2, Printer } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -30,8 +36,62 @@ import {
 } from "@shared/tc/printTemplates";
 import type { OfficeId } from "@shared/tc/contract";
 
-/** How long a printout's object URL lives once opened. */
+/** How long a printout's object URL (and its print frame) lives. */
 const URL_LIFETIME_MS = 5 * 60 * 1000;
+/** How long to wait for the PDF to load into the frame before offering a link. */
+const FRAME_LOAD_TIMEOUT_MS = 15 * 1000;
+
+/**
+ * Open the browser's print dialog on a PDF: load it into a hidden, same-origin
+ * frame (an object URL), then call the frame's print(). Resolves true once the
+ * dialog has been asked for, false when the browser would not (the caller then
+ * offers a link). The frame is removed when the URL is revoked.
+ */
+export function printPdfInFrame(url: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    // One print frame at a time: a new printout replaces the last one's.
+    document.querySelectorAll('iframe[data-testid="print-frame"]').forEach((f) => f.remove());
+    const frame = document.createElement("iframe");
+    frame.setAttribute("aria-hidden", "true");
+    frame.setAttribute("tabindex", "-1");
+    frame.dataset.testid = "print-frame";
+    // Off-screen rather than display:none — a hidden frame will not print in some browsers.
+    frame.style.cssText = "position:fixed;right:0;bottom:0;width:1px;height:1px;border:0;opacity:0;pointer-events:none;";
+    let settled = false;
+    const done = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve(ok);
+    };
+    const timer = window.setTimeout(() => done(false), FRAME_LOAD_TIMEOUT_MS);
+    frame.addEventListener("load", () => {
+      try {
+        const win = frame.contentWindow;
+        if (!win) return done(false);
+        win.focus();
+        win.print();
+        done(true);
+      } catch {
+        done(false);
+      }
+    });
+    frame.src = url;
+    document.body.appendChild(frame);
+    window.setTimeout(() => frame.remove(), URL_LIFETIME_MS);
+  });
+}
+
+/** Save the PDF through the browser's download, named for the template. */
+function downloadPdf(url: string, type: PrintTemplateType) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${type}.pdf`;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
 
 function PrintDialog({
   office,
@@ -47,7 +107,7 @@ function PrintDialog({
   const [defaults, setDefaults] = useState<TcCheckoutPrintDefaults | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [values, setValues] = useState({ timeSeenRange: "", nextAppointmentDate: "", nextAppointmentTime: "" });
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"print" | "download" | null>(null);
   const [opened, setOpened] = useState<string | null>(null);
 
   useEffect(() => {
@@ -68,22 +128,26 @@ function PrintDialog({
     };
   }, [office, handoffId, type]);
 
-  const generate = async () => {
+  const generate = async (mode: "print" | "download") => {
     if (type === null) return;
-    setBusy(true);
+    setBusy(mode);
     setError(null);
+    setOpened(null);
     try {
       const out = await printCheckout(office, handoffId, { templateType: type, ...values });
       window.setTimeout(() => URL.revokeObjectURL(out.url), URL_LIFETIME_MS);
       if (out.logo === "omitted") toast.info("Printed without the logo: it could not be loaded.");
-      // No "noopener": with it, window.open answers null even when the tab opened.
-      const win = window.open(out.url, "_blank");
-      if (win) onClose();
+      if (mode === "download") {
+        downloadPdf(out.url, type);
+        onClose();
+        return;
+      }
+      if (await printPdfInFrame(out.url)) onClose();
       else setOpened(out.url);
     } catch (e) {
       setError(tcErrorMessage(e));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
 
@@ -142,7 +206,7 @@ function PrintDialog({
         ) : null}
         {opened ? (
           <p className="text-sm" data-testid="print-opened">
-            Your browser kept the printout from opening a new tab.{" "}
+            Your browser would not open its print dialog here.{" "}
             <a href={opened} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 underline">
               Open the printout <ExternalLink className="h-3.5 w-3.5" />
             </a>
@@ -152,8 +216,17 @@ function PrintDialog({
           <Button variant="outline" onClick={onClose}>
             Close
           </Button>
-          <Button disabled={!defaults || busy} onClick={() => void generate()} className="gap-1.5" data-testid="print-generate">
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Printer className="h-4 w-4" />} Generate PDF
+          <Button
+            variant="outline"
+            disabled={!defaults || busy !== null}
+            onClick={() => void generate("download")}
+            className="gap-1.5"
+            data-testid="print-download"
+          >
+            {busy === "download" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />} Download PDF
+          </Button>
+          <Button disabled={!defaults || busy !== null} onClick={() => void generate("print")} className="gap-1.5" data-testid="print-generate">
+            {busy === "print" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Printer className="h-4 w-4" />} Print
           </Button>
         </DialogFooter>
       </DialogContent>

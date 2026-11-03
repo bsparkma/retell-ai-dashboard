@@ -15,6 +15,7 @@ import {
   type PrintTemplateType,
   type TcCheckoutPrintRequest,
 } from "@shared/tc/printTemplates";
+import type { PrintStyling } from "@shared/tc/printStyling";
 import type { OfficeId } from "@shared/tc/contract";
 
 function parse<T>(schema: z.ZodType<T>, raw: unknown): T {
@@ -47,6 +48,20 @@ export async function uploadPrintLogo(office: OfficeId, type: PrintTemplateType,
 /** Print without a logo again. */
 export async function removePrintLogo(office: OfficeId, type: PrintTemplateType): Promise<PrintTemplateState> {
   return parse(PrintTemplateSaveResponse, await tcRequest<unknown>(`${SETTINGS}/${type}/logo/remove`, { office, method: "POST" })).template;
+}
+
+/**
+ * CO-3b: save one template's styling — null goes back to the defaults (today's
+ * printout). Refused by name when it is not on the curated list or the accent
+ * is too light to read; answers the template as read back.
+ */
+export async function savePrintStyling(office: OfficeId, type: PrintTemplateType, styling: PrintStyling | null): Promise<PrintTemplateState> {
+  return parse(PrintTemplateSaveResponse, await tcRequest<unknown>(`${SETTINGS}/${type}/styling`, { office, method: "PUT", body: { styling } })).template;
+}
+
+/** CO-3b: a bundled print font's bytes as an object URL — the very file the PDF embeds. */
+export function fetchPrintFontUrl(office: OfficeId, file: string): Promise<string> {
+  return tcFetchObjectUrl(`${SETTINGS}/fonts/${encodeURIComponent(file)}`, office);
 }
 
 /** The logo's bytes as an object URL, for the preview. The caller revokes it. */

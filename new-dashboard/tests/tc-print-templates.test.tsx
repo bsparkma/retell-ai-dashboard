@@ -116,6 +116,9 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  // RULING (CO-3b): Print leaves its hidden print frame on the page for the
+  // object URL's lifetime; one test's frame must not be found by the next.
+  document.querySelectorAll('iframe[data-testid="print-frame"]').forEach((f) => f.remove());
   vi.restoreAllMocks();
 });
 
@@ -250,7 +253,9 @@ describe("Print from the checkout workup", () => {
     expect(api.getCheckoutPrintDefaults).toHaveBeenCalledWith("roland", HANDOFF);
   });
 
-  it("Generate sends exactly the template and the three values, and opens the PDF", async () => {
+  // RULING (CO-3b): Print opens the browser's print dialog directly on the PDF
+  // (a hidden frame), instead of opening the PDF in a new tab.
+  it("Print sends exactly the template and the three values, and opens the print dialog on the PDF", async () => {
     api.printCheckout.mockResolvedValue({ url: "blob:printout", logo: "none" });
     const open = vi.spyOn(window, "open").mockReturnValue({} as Window);
     render(<CheckoutPrint office="roland" handoffId={HANDOFF} />);
@@ -266,21 +271,64 @@ describe("Print from the checkout workup", () => {
       nextAppointmentDate: "Wednesday, November 4, 2026",
       nextAppointmentTime: "1:30 PM",
     });
-    expect(open).toHaveBeenCalledWith("blob:printout", "_blank");
+    const frame = (await waitFor(() => {
+      const f = document.querySelector('iframe[data-testid="print-frame"]');
+      expect(f).not.toBeNull();
+      return f;
+    })) as HTMLIFrameElement;
+    expect(frame.getAttribute("src")).toBe("blob:printout");
+    const print = vi.spyOn(frame.contentWindow as Window, "print").mockImplementation(() => undefined);
+    fireEvent.load(frame);
+    expect(print).toHaveBeenCalledTimes(1);
+    expect(open).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByTestId("print-dialog")).toBeNull());
+    expect(api.printCheckout).toHaveBeenCalledTimes(1);
   });
 
-  it("a blocked tab leaves a link; a logo that could not load is said", async () => {
+  // RULING (CO-3b): the fallback is no longer a blocked tab but a frame the
+  // browser will not print from; the link to the PDF is still offered.
+  it("a browser that will not print from the frame leaves a link; a logo that could not load is said", async () => {
     api.printCheckout.mockResolvedValue({ url: "blob:printout", logo: "omitted" });
-    vi.spyOn(window, "open").mockReturnValue(null);
     render(<CheckoutPrint office="roland" handoffId={HANDOFF} />);
     fireEvent.click(screen.getByTestId("print-open-excuse"));
     await screen.findByTestId("print-fixed");
     await act(async () => {
       fireEvent.click(screen.getByTestId("print-generate"));
     });
+    const frame = (await waitFor(() => {
+      const f = document.querySelector('iframe[data-testid="print-frame"]');
+      expect(f).not.toBeNull();
+      return f;
+    })) as HTMLIFrameElement;
+    vi.spyOn(frame.contentWindow as Window, "print").mockImplementation(() => {
+      throw new Error("printing is blocked here");
+    });
+    fireEvent.load(frame);
     expect((await screen.findByTestId("print-opened")).querySelector("a")?.getAttribute("href")).toBe("blob:printout");
     expect(toastMock.info).toHaveBeenCalledWith(expect.stringContaining("without the logo"));
+  });
+
+  it("Download PDF is the secondary action: the same request, saved as a file, no print dialog", async () => {
+    api.printCheckout.mockResolvedValue({ url: "blob:printout", logo: "none" });
+    const clicks: Array<{ href: string; download: string }> = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      clicks.push({ href: this.getAttribute("href") ?? "", download: this.download });
+    });
+    render(<CheckoutPrint office="roland" handoffId={HANDOFF} />);
+    fireEvent.click(screen.getByTestId("print-open-appointment_card"));
+    await screen.findByTestId("print-fixed");
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("print-download"));
+    });
+    expect(api.printCheckout).toHaveBeenCalledWith("roland", HANDOFF, {
+      templateType: "appointment_card",
+      timeSeenRange: "9:00 AM",
+      nextAppointmentDate: "Wednesday, November 4, 2026",
+      nextAppointmentTime: "1:30 PM",
+    });
+    expect(clicks).toEqual([{ href: "blob:printout", download: "appointment_card.pdf" }]);
+    expect(document.querySelector('iframe[data-testid="print-frame"]')).toBeNull();
+    await waitFor(() => expect(screen.queryByTestId("print-dialog")).toBeNull());
   });
 
   it("when the server refuses (the print could not be audited), the reason shows and nothing opens", async () => {
@@ -296,6 +344,7 @@ describe("Print from the checkout workup", () => {
     });
     expect((await screen.findByTestId("print-error")).textContent).toContain("nothing was printed");
     expect(open).not.toHaveBeenCalled();
+    expect(document.querySelector('iframe[data-testid="print-frame"]')).toBeNull();
   });
 });
 
