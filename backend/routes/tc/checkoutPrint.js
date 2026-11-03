@@ -158,7 +158,8 @@ function mount(router, { enter }) {
           logoState = 'omitted';
         }
       }
-      const pdf = renderPrintPdf(doc, { logo });
+      // CO-3b: the template's saved styling; NULL (never styled) prints as before.
+      const pdf = renderPrintPdf(doc, { logo, styling: saved ? saved.styling ?? null : null });
 
       // A printout is a disclosure: no trail, no printout.
       try {

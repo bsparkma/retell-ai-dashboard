@@ -17,6 +17,14 @@
  *
  * A THIRD TYPE is a registry entry (shared/tc/printTemplates.ts): the tabs are
  * the server's list.
+ *
+ * STYLE (CO-3b; Beau's ruling 2026-11-02: curated options only, no free-form
+ * designer): accent colour, font pair, logo placement and size, and one of
+ * three layouts, per office per template. The editor runs the server's own
+ * validator as you choose (an accent too light to read on white is named and
+ * Save is off), and the preview is drawn from the same layout engine as the
+ * PDF, in the same font files. "Standard" is today's printout, and a template
+ * left on it prints exactly as before.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ImagePlus, Loader2, Printer, RefreshCw, RotateCcw, Save, Trash2 } from "lucide-react";
@@ -27,14 +35,33 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ALL_OFFICES, useOffice } from "@/contexts/OfficeContext";
 import { tcErrorMessage } from "@/features/tc/api";
-import { PrintPreview } from "@/features/tc/print/PrintPreview";
+import { PrintPreview, type PreviewLogo } from "@/features/tc/print/PrintPreview";
+import { usePrintFonts, type PrintFontStatus } from "@/features/tc/print/usePrintFonts";
 import {
   fetchPrintLogoUrl,
   getPrintTemplates,
   removePrintLogo,
+  savePrintStyling,
   savePrintTemplate,
   uploadPrintLogo,
 } from "@/features/tc/print/printApi";
+import {
+  ACCENT_MIN_CONTRAST,
+  PRINT_FONT_PAIRS,
+  PRINT_LAYOUTS,
+  PRINT_LOGO_PLACEMENTS,
+  PRINT_LOGO_SIZES,
+  PRINT_STYLING_DEFAULTS,
+  effectivePrintStyling,
+  isDefaultStyling,
+  validatePrintStyling,
+  type PrintFontPair,
+  type PrintLayout,
+  type PrintLogoPlacement,
+  type PrintLogoSize,
+  type PrintStyling,
+  type PrintStylingProblem,
+} from "@shared/tc/printStyling";
 import {
   PRINT_PLACEHOLDERS,
   PRINT_PLACEHOLDER_LABELS,
@@ -59,6 +86,181 @@ function sameFields(a: PrintTemplateFields, b: PrintTemplateFields): boolean {
   return (Object.keys(a) as Array<keyof PrintTemplateFields>).every((k) => a[k] === b[k]);
 }
 
+function sameStyling(a: PrintStyling, b: PrintStyling): boolean {
+  return (Object.keys(PRINT_STYLING_DEFAULTS) as Array<keyof PrintStyling>).every((k) => a[k] === b[k]);
+}
+
+/** A row of curated choices; the chosen one is pressed. */
+function Choice<K extends string>({
+  name,
+  options,
+  value,
+  onChange,
+  hint,
+}: {
+  name: string;
+  options: Record<K, string>;
+  value: K;
+  onChange: (v: K) => void;
+  hint?: Partial<Record<K, string>>;
+}) {
+  return (
+    <div className="flex flex-wrap gap-1.5" role="group" aria-label={name}>
+      {(Object.keys(options) as K[]).map((k) => (
+        <button
+          key={k}
+          type="button"
+          aria-pressed={value === k}
+          title={hint?.[k]}
+          onClick={() => onChange(k)}
+          className={`rounded-md border px-2.5 py-1 text-xs font-medium ${
+            value === k ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background hover:bg-muted"
+          }`}
+          data-testid={`print-style-${name}-${k}`}
+        >
+          {options[k]}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function labelsOf<K extends string>(o: Record<K, { label: string }>): Record<K, string> {
+  return Object.fromEntries(Object.entries<{ label: string }>(o).map(([k, v]) => [k, v.label])) as Record<K, string>;
+}
+
+/** CO-3b: the curated style options. */
+function StyleControls({
+  style,
+  onChange,
+  problems,
+  hasLogo,
+  fontStatus,
+}: {
+  style: PrintStyling;
+  onChange: (next: PrintStyling) => void;
+  problems: PrintStylingProblem[];
+  hasLogo: boolean;
+  fontStatus: PrintFontStatus;
+}) {
+  const set = <K extends keyof PrintStyling>(k: K, v: PrintStyling[K]) => onChange({ ...style, [k]: v });
+  const [hexDraft, setHexDraft] = useState(style.accentColor);
+  useEffect(() => setHexDraft(style.accentColor), [style.accentColor]);
+  const colorProblem = problems.find((p) => p.field === "accentColor");
+  const layoutHints = Object.fromEntries(Object.entries(PRINT_LAYOUTS).map(([k, v]) => [k, v.hint])) as Record<PrintLayout, string>;
+  return (
+    <fieldset className="space-y-3 rounded-lg border border-border p-3" data-testid="print-style">
+      <legend className="px-1 text-xs font-medium text-muted-foreground">Style</legend>
+
+      <div className="space-y-1">
+        <div className="text-xs font-medium text-muted-foreground">Layout</div>
+        <Choice<PrintLayout>
+          name="layout"
+          options={labelsOf<PrintLayout>(PRINT_LAYOUTS)}
+          hint={layoutHints}
+          value={style.layout}
+          onChange={(v) => set("layout", v)}
+        />
+        <p className="text-xs text-muted-foreground">{PRINT_LAYOUTS[style.layout].hint}. A layout moves things; it never changes the wording.</p>
+      </div>
+
+      <label className="block space-y-1 text-xs font-medium text-muted-foreground">
+        Fonts (heading and text)
+        <select
+          value={style.fontPair}
+          onChange={(e) => set("fontPair", e.target.value as PrintFontPair)}
+          className="block w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
+          data-testid="print-style-fontPair"
+        >
+          {(Object.keys(PRINT_FONT_PAIRS) as PrintFontPair[]).map((k) => (
+            <option key={k} value={k}>
+              {PRINT_FONT_PAIRS[k].label}
+            </option>
+          ))}
+        </select>
+        {fontStatus === "loading" ? <span className="block font-normal">Loading the font for the preview…</span> : null}
+        {fontStatus === "unavailable" ? (
+          <span className="block font-normal text-amber-800 dark:text-amber-300" data-testid="print-style-font-unavailable">
+            This browser could not show the font in the preview. Positions are exact; the printout embeds the font.
+          </span>
+        ) : null}
+      </label>
+
+      <div className="space-y-1">
+        <div className="text-xs font-medium text-muted-foreground">
+          Accent colour (the letterhead and the rule under it; the letter&apos;s text stays black)
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="color"
+            value={/^#[0-9a-f]{6}$/i.test(style.accentColor) ? style.accentColor.toLowerCase() : "#000000"}
+            onChange={(e) => set("accentColor", e.target.value.toLowerCase())}
+            className="h-8 w-10 cursor-pointer rounded border border-border bg-background p-0.5"
+            aria-label="Accent colour"
+            data-testid="print-style-accent"
+          />
+          <Input
+            value={hexDraft}
+            maxLength={7}
+            onChange={(e) => {
+              setHexDraft(e.target.value);
+              // Lower-cased as the server stores it, so "#1F4E79" is not a change from "#1f4e79".
+              set("accentColor", e.target.value.trim().toLowerCase());
+            }}
+            className="h-8 w-28 font-mono text-xs"
+            aria-label="Accent colour as a hex code"
+            data-testid="print-style-accent-hex"
+          />
+          <Button size="sm" variant="ghost" className="text-xs" onClick={() => set("accentColor", PRINT_STYLING_DEFAULTS.accentColor)}>
+            Black
+          </Button>
+        </div>
+        {colorProblem ? (
+          <p role="alert" className="text-xs text-red-700 dark:text-red-300" data-testid="print-style-problem">
+            {colorProblem.message}
+          </p>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Colours with less than {ACCENT_MIN_CONTRAST} : 1 contrast against white paper are refused, so the letterhead stays readable.
+          </p>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="space-y-1">
+          <div className="text-xs font-medium text-muted-foreground">Logo placement</div>
+          <Choice<PrintLogoPlacement>
+            name="logoPlacement"
+            options={PRINT_LOGO_PLACEMENTS}
+            value={style.logoPlacement}
+            onChange={(v) => set("logoPlacement", v)}
+          />
+        </div>
+        <div className="space-y-1">
+          <div className="text-xs font-medium text-muted-foreground">Logo size</div>
+          <Choice<PrintLogoSize> name="logoSize" options={labelsOf<PrintLogoSize>(PRINT_LOGO_SIZES)} value={style.logoSize} onChange={(v) => set("logoSize", v)} />
+        </div>
+      </div>
+      {!hasLogo ? (
+        <p className="text-xs text-muted-foreground" data-testid="print-style-no-logo">
+          No logo uploaded: the printout simply has no logo, wherever it is placed.
+        </p>
+      ) : null}
+
+      <Button
+        size="sm"
+        variant="ghost"
+        className="gap-1.5 text-xs"
+        disabled={isDefaultStyling(style)}
+        onClick={() => onChange({ ...PRINT_STYLING_DEFAULTS })}
+        data-testid="print-style-reset"
+      >
+        <RotateCcw className="h-3.5 w-3.5" /> Back to the standard style (as printed today)
+      </Button>
+    </fieldset>
+  );
+}
+
 function TemplateEditor({
   office,
   state,
@@ -79,6 +281,11 @@ function TemplateEditor({
   const [logoBusy, setLogoBusy] = useState(false);
   const [logoError, setLogoError] = useState<string | null>(null);
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  const [logoSize, setLogoSize] = useState<{ width: number; height: number } | null>(null);
+  const savedStyle = useMemo(() => effectivePrintStyling(state.styling), [state.styling]);
+  const [style, setStyle] = useState<PrintStyling>(savedStyle);
+  const savedStyleRef = useRef(savedStyle);
+  const fontStatus = usePrintFonts(office, style.fontPair);
   const target = useRef<PlaceholderField>("body");
   const bodyRef = useRef<HTMLTextAreaElement | null>(null);
   const sigRef = useRef<HTMLInputElement | null>(null);
@@ -92,7 +299,27 @@ function TemplateEditor({
   useEffect(() => {
     if (!sameFields(savedFields.current, state.fields)) setDraft(state.fields);
     savedFields.current = state.fields;
+    // The same for the style: a wording save must not undo an unsaved style.
+    const nextStyle = effectivePrintStyling(state.styling);
+    if (!sameStyling(savedStyleRef.current, nextStyle)) setStyle(nextStyle);
+    savedStyleRef.current = nextStyle;
   }, [state]);
+
+  // The logo's pixel size, so the preview lays it out as the PDF does. Until it
+  // is known the logo is laid out square.
+  useEffect(() => {
+    setLogoSize(null);
+    if (!logoUrl || typeof Image === "undefined") return undefined;
+    let live = true;
+    const img = new Image();
+    img.onload = () => {
+      if (live && img.naturalWidth > 0 && img.naturalHeight > 0) setLogoSize({ width: img.naturalWidth, height: img.naturalHeight });
+    };
+    img.src = logoUrl;
+    return () => {
+      live = false;
+    };
+  }, [logoUrl]);
 
   // The stored logo, for the preview. Revoked when it changes or the editor goes.
   useEffect(() => {
@@ -118,6 +345,20 @@ function TemplateEditor({
   const problems = useMemo(() => validatePrintTemplate(draft), [draft]);
   const doc = useMemo(() => composePrintDocument(draft, samplePrintValues(draft)), [draft]);
   const dirty = !sameFields(draft, state.fields);
+  const styleCheck = useMemo(() => validatePrintStyling(style), [style]);
+  const styleProblems = styleCheck.ok ? [] : styleCheck.problems;
+  const styleDirty = !sameStyling(style, savedStyle);
+  // What the preview draws: the style as chosen, or — while a colour is half
+  // typed — the last one that validated.
+  const lastValidStyle = useRef(savedStyle);
+  useEffect(() => {
+    if (styleCheck.ok) lastValidStyle.current = styleCheck.styling;
+  }, [styleCheck]);
+  const previewStyle = styleCheck.ok ? styleCheck.styling : lastValidStyle.current;
+  const previewLogo = useMemo<PreviewLogo | null>(
+    () => (logoUrl ? { url: logoUrl, width: logoSize?.width ?? 1, height: logoSize?.height ?? 1 } : null),
+    [logoUrl, logoSize],
+  );
 
   const set = (k: keyof PrintTemplateFields) => (v: string) => {
     setSavedNote(null);
@@ -146,8 +387,11 @@ function TemplateEditor({
     setSaving(true);
     setError(null);
     try {
-      const next = await savePrintTemplate(office, state.type, draft);
-      onSaved(next);
+      if (dirty) onSaved(await savePrintTemplate(office, state.type, draft));
+      // CO-3b: the standard style is stored as "no styling" — it prints as before.
+      if (styleDirty && styleCheck.ok) {
+        onSaved(await savePrintStyling(office, state.type, isDefaultStyling(styleCheck.styling) ? null : styleCheck.styling));
+      }
       setSavedNote("Saved.");
     } catch (e) {
       setError(tcErrorMessage(e));
@@ -192,7 +436,12 @@ function TemplateEditor({
               Shipped wording
             </Badge>
           )}
-          {dirty ? <Badge variant="outline">Unsaved changes</Badge> : null}
+          {dirty || styleDirty ? <Badge variant="outline">Unsaved changes</Badge> : null}
+          {!isDefaultStyling(savedStyle) ? (
+            <Badge variant="outline" data-testid="print-styled-badge">
+              Custom style
+            </Badge>
+          ) : null}
         </div>
 
         <fieldset className="space-y-2 rounded-lg border border-border p-3">
@@ -247,6 +496,17 @@ function TemplateEditor({
             ) : null}
           </div>
         </fieldset>
+
+        <StyleControls
+          style={style}
+          onChange={(next) => {
+            setSavedNote(null);
+            setStyle(next);
+          }}
+          problems={styleProblems}
+          hasLogo={state.logo.present}
+          fontStatus={fontStatus}
+        />
 
         <label className="block text-xs font-medium text-muted-foreground">
           Heading
@@ -312,7 +572,12 @@ function TemplateEditor({
         ) : null}
 
         <div className="flex flex-wrap items-center gap-2">
-          <Button onClick={() => void save()} disabled={saving || problems.length > 0 || !dirty} className="gap-1.5" data-testid="print-save">
+          <Button
+            onClick={() => void save()}
+            disabled={saving || problems.length > 0 || styleProblems.length > 0 || !(dirty || styleDirty)}
+            className="gap-1.5"
+            data-testid="print-save"
+          >
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save
           </Button>
           <Button
@@ -336,7 +601,7 @@ function TemplateEditor({
 
       <div className="space-y-2">
         <div className="text-xs font-medium text-muted-foreground">Preview — sample patient, not a real one</div>
-        <PrintPreview doc={doc} logoUrl={logoUrl} />
+        <PrintPreview doc={doc} styling={previewStyle} logo={previewLogo} />
       </div>
     </div>
   );

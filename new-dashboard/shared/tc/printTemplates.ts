@@ -22,6 +22,8 @@
  */
 import { z } from "zod";
 
+import { PRINT_STYLING_DEFAULTS, PrintStyling } from "./printStyling";
+
 /** The closed placeholder menu, in the order the picker shows it. */
 export const PRINT_PLACEHOLDERS = [
   "patient_first_name",
@@ -265,6 +267,10 @@ export const PrintTemplateState = z.object({
   stored: z.boolean(),
   fields: PrintTemplateFields,
   logo: z.object({ present: z.boolean(), contentType: z.string().nullable() }),
+  /** CO-3b: how it prints — the saved styling, or the defaults (today's printout). */
+  styling: PrintStyling.default({ ...PRINT_STYLING_DEFAULTS }),
+  /** CO-3b: false — no styling saved; it prints exactly as before CO-3b. */
+  styled: z.boolean().default(false),
   updatedBy: z.string().nullable(),
   updatedAt: z.string().nullable(),
 });

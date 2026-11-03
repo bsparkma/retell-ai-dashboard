@@ -14,6 +14,20 @@
  *                                         JPEG, ≤ 2 MB)
  *   POST /:type/logo/remove?office=       print without a logo again
  *   GET  /:type/logo?office=              the logo's bytes, for the preview
+ *   PUT  /:type/styling?office=           CO-3b: save one template's styling
+ *                                         { styling: {accentColor, fontPair,
+ *                                         logoPlacement, logoSize, layout} | null }
+ *   GET  /fonts/:file?office=             CO-3b: a bundled print font's bytes, so
+ *                                         the preview draws with the very file the
+ *                                         PDF embeds (allow-listed names only)
+ *
+ * STYLING (CO-3b) is validated against the CLOSED schema
+ * (shared/tc/printStyling.ts): an unknown key, a colour that is not #rrggbb, a
+ * colour too light to read on white (below 4.5 : 1), or an option not on the
+ * curated list is refused 400 BY NAME (PRINT_STYLE_UNKNOWN_KEY /
+ * _INVALID_COLOR / _ACCENT_TOO_LIGHT / _UNKNOWN_OPTION / _MISSING_KEY /
+ * _NOT_AN_OBJECT), and nothing is stored. Audited like a wording save, inside
+ * the transaction, prior_state `style_default` | `style_set`.
  *
  * THE GATE is the Practice staff page's: `requirePermission('admin.all')` at
  * the mount in server.js, ABOVE the /api/platform super_admin mount — the
@@ -56,6 +70,7 @@ const { audit, AuditError } = require('../platform/audit');
 const store = require('../services/tc/printTemplateStore');
 const assets = require('../services/tc/printAssetStore');
 const { prepareLogo, sniffLogoType, LogoImageError } = require('../services/tc/printImage');
+const { fontFileFor } = require('../services/tc/printFonts');
 
 /** A logo is a letterhead mark, not a document: 2 MB is plenty. */
 const LOGO_MAX_BYTES = 2 * 1024 * 1024;
@@ -111,6 +126,21 @@ async function readAll(req, office) {
   };
 }
 
+// ── GET /fonts/:file — a bundled print font, for the preview (CO-3b) ───────
+
+router.get(
+  '/fonts/:file',
+  h(async (req, res) => {
+    // The allow-list is the contract's list of bundled files: a request names
+    // one of those or nothing — never a path.
+    const file = fontFileFor(req.params.file);
+    if (!file) return fail(res, 404, 'No such print font', 'PRINT_FONT_NOT_FOUND');
+    res.set('Content-Type', 'font/ttf');
+    res.set('Cache-Control', 'private, max-age=86400');
+    return res.sendFile(file);
+  })
+);
+
 // ── GET / ─────────────────────────────────────────────────────────────────
 
 router.get(
@@ -155,6 +185,46 @@ router.put(
     const same = state && JSON.stringify(state.fields) === JSON.stringify(fields);
     if (!same) {
       return fail(res, 500, 'The template could not be read back as saved. Reload before trusting it.', 'SAVE_NOT_CONFIRMED');
+    }
+    return res.json({ success: true, template: state });
+  })
+);
+
+// ── PUT /:type/styling — save the styling (CO-3b) ─────────────────────────
+
+router.put(
+  '/:type/styling',
+  h(async (req, res) => {
+    const type = typeFrom(req, res);
+    if (!type) return undefined;
+    const office = req.tcOffice;
+    const envelope = contract.PrintStylingSaveRequest.safeParse(req.body ?? {});
+    if (!envelope.success || !Object.prototype.hasOwnProperty.call(req.body ?? {}, 'styling')) {
+      return fail(res, 400, 'Send { "styling": { ... } } (or null for the defaults), and nothing else.', 'INVALID_BODY');
+    }
+    let styling = null;
+    if (envelope.data.styling !== null) {
+      const checked = contract.validatePrintStyling(envelope.data.styling);
+      if (!checked.ok) {
+        const first = checked.problems[0];
+        return fail(res, 400, first.message, first.code, { field: first.field, problems: checked.problems });
+      }
+      styling = checked.styling;
+    }
+    const actor = String(actorEmail(req)).trim().toLowerCase();
+    const prefill = await store.prefillFor(office);
+
+    await withTenantTx(req, async (client) => {
+      const { prior, unchanged } = await store.saveStyling(client, { office, type, styling, actor, prefill });
+      // Inside the transaction: no trail, no save. Nothing written, nothing to record.
+      if (!unchanged) await auditTemplate(req, office, type, prior);
+    });
+
+    const row = await tenantDb.withTenantDb(req, (pool) => store.rowFor(pool, office, type));
+    const state = store.stateOf(type, row, prefill);
+    const wanted = styling || contract.PRINT_STYLING_DEFAULTS;
+    if (!state || JSON.stringify(state.styling) !== JSON.stringify({ ...contract.PRINT_STYLING_DEFAULTS, ...wanted })) {
+      return fail(res, 500, 'The styling could not be read back as saved. Reload before trusting it.', 'SAVE_NOT_CONFIRMED');
     }
     return res.json({ success: true, template: state });
   })
