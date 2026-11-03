@@ -197,7 +197,14 @@ It raised five findings, all fixed in `6807b4b`:
 
 ## CI
 
-<!-- CI -->
+PR #307, run 41565957835, **passed on the first push.** It ran on `refs/pull/307/merge`, checked out as `391c36f Merge b9affd6… into bb7398f…`. That base is develop *after* PR #306 (the shard runner fix) merged.
+- **Dashboard:** `pnpm run check` is clean, and vitest ran 206 files with 0 failures.
+- **Backend:** the shard runner reported `TOTAL: 4634 tests · 4631 pass · 0 fail · 3 skipped` with all 4 shards green.
+
+The migration number was re-checked against `origin/develop` after #306 merged. The newest tenant migration there is still `1794100000000`, so `1794200000000` stands.
+
+**Not merged.** It is waiting for Beau to lift the develop merge hold.
+
 
 ## Not in this change
 
