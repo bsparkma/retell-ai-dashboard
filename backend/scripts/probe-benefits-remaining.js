@@ -47,14 +47,17 @@
  *
  * HOW TO RUN (inside the staging container — secrets come from Key Vault via
  * loadSecrets(), never a .env):
- *   env PROBE_OFFICES=roland,valley PROBE_APP_ROOT=/app node /tmp/probe-benefits-remaining.js
+ *   env PROBE_OFFICES=roland,valley PROBE_APP_ROOT=/app \
+ *       PROBE_CHECKPOINT=/data/probe-benefits-results.json node /tmp/probe-benefits-remaining.js
+ * PROBE_CHECKPOINT is REQUIRED: results are checkpointed there after every
+ * phase and every patient, and a relaunch with the same settings RESUMES from
+ * it (see "checkpointing" below). Point it at durable storage — never /tmp.
  * Optional: PROBE_DAYS (7), PROBE_MAX_PATIENTS (250), PROBE_MIN_INTERVAL_MS
- * (1200, floor 1000), PROBE_OUT_DIR (os.tmpdir()).
+ * (1200, floor 1000), PROBE_NOT_BEFORE (HH:MM CT).
  */
 
 const path = require('node:path');
 const fs = require('node:fs');
-const os = require('node:os');
 
 const TZ = 'America/Chicago';
 /** Designated test patients — the ONLY PatNums this file may print. */
@@ -286,19 +289,113 @@ async function waitUntilNotBefore(hhmm, log) {
   }
 }
 
-async function probeOffice(office, deps, cfg, log) {
+// ── checkpointing ────────────────────────────────────────────────────────────
+//
+// Results are checkpointed to ONE durable file (PROBE_CHECKPOINT — on staging,
+// the /data AzureFile volume) after Q1, after EVERY patient, after each later
+// phase and at the end of each office, so a container replacement loses at most
+// one patient's reads. On relaunch the file is read back and the run RESUMES.
+//
+// The file holds aggregates, anonymous per-patient counts, and field names —
+// never a cohort PatNum. That is why resume cannot store the cohort: it
+// re-reads the appointments for the SAME pinned window, rebuilds the cohort by
+// the same rule, and continues from the saved patient index. If the schedule
+// changed in between, the drift is recorded in `resumes`, not hidden.
+
+const CHECKPOINT_VERSION = 1;
+
+/** A fresh per-office checkpoint. Everything in it is PHI-free by construction. */
+function newOfficeState() {
+  return {
+    phase: 'q1', // q1 → patients → datecp → precomputed → done
+    window: null,
+    cohortSource: null, // 'range' | 'perday' — which read Q1 built the cohort from
+    cohortSize: null,
+    patientsDone: 0,
+    resumes: [],
+    report: { q1: {}, q2: {}, q3: {}, q4: {}, errors: {} },
+    acc: {
+      calls: [], // { b: bucket (no PatNum), ep, s: status, ms }
+      elapsedMs: 0,
+      perPatient: [],
+      shapes: {},
+      audits: [],
+      monthRenew: [],
+      remainBucketsA: {},
+      remainBucketsB: {},
+      plansWithKnownMax: 0,
+      deltaAB: [],
+      precomputedHits: [],
+      biggest: { rows: 0, idx: null, start: null }, // an INDEX into the cohort, never a PatNum
+      tpFullPage: { count: 0, trueRowsOver100: [] },
+      tpStatus: {},
+      cpStatus: {},
+      fieldsByEp: {},
+    },
+  };
+}
+
+/** Atomic where the filesystem allows (tmp + rename); a plain write where it does not. */
+function writeCheckpoint(file, doc) {
+  const text = JSON.stringify(doc, null, 1);
+  const tmp = `${file}.tmp`;
+  try {
+    fs.writeFileSync(tmp, text);
+    fs.renameSync(tmp, file);
+  } catch (_e) {
+    fs.writeFileSync(file, text);
+  }
+}
+
+function readCheckpoint(file) {
+  if (!fs.existsSync(file)) return null;
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
+/** The window as reported: the pinned `today` stays in the checkpoint only. */
+function publicWindow(w) {
+  return w ? { dateStart: w.dateStart, dateEnd: w.dateEnd, days: w.days } : null;
+}
+
+/** Q1's cohort rule, shared by the first pass and by a resume. */
+function buildCohort(appts, odDayMod, maxPatients) {
+  const sched = appts.filter((r) => String(r.AptStatus) === 'Scheduled');
+  // The HYG module's rule: the appointment's own IsHygiene, unknown is served.
+  const hygPats = [...new Set(sched.filter((r) => odDayMod.odBool(r.IsHygiene) !== false).map((r) => Number(r.PatNum)))].filter(
+    (n) => n > 0
+  );
+  const strictPats = new Set(sched.filter((r) => odDayMod.odBool(r.IsHygiene) === true).map((r) => Number(r.PatNum)));
+  return { sched, hygPats, strictPats, cohort: hygPats.slice(0, maxPatients) };
+}
+
+/**
+ * @param {string} office
+ * @param {{odOffices:any, odReads:any, odDayMod:any}} deps
+ * @param {{days:number, maxPatients:number, minIntervalMs:number, clock?:Function}} cfg
+ * @param {(s:string)=>void} log
+ * @param {{state?: ReturnType<typeof newOfficeState>, save?: ()=>void}} [ck]
+ *   state is mutated in place; save() is called at every checkpoint.
+ */
+async function probeOffice(office, deps, cfg, log, ck = {}) {
   const { odOffices, odReads, odDayMod } = deps;
+  const st = ck.state || newOfficeState();
+  const acc = st.acc;
+  const report = st.report;
+  let segStart = Date.now();
+  const save = () => {
+    const now = Date.now();
+    acc.elapsedMs += now - segStart;
+    segStart = now;
+    if (ck.save) ck.save();
+  };
+  if (st.phase === 'done') return { office, window: publicWindow(st.window), ...report };
+
   const od = odOffices.assertOfficeMatch(office, odOffices.getOdOffice(office));
 
   // ── the counting wrapper: every request this office makes goes through here ─
-  const calls = [];
   let bucket = 'setup';
-  /** @type {Record<string, any[]>} rows captured from ok responses, by endpoint */
+  /** rows captured from ok responses, by endpoint — this patient only, in memory only */
   let captured = {};
-  /** @type {Record<string, Set<string>>} field NAMES per endpoint, whole run */
-  const fieldsByEp = {};
-  /** @type {Record<string, number>} claimproc Status across every cohort row */
-  const cpStatus = {};
   const get = async (p, params = {}, opts = {}) => {
     await waitForWindow(log, cfg.clock);
     const t0 = Date.now();
@@ -309,284 +406,327 @@ async function probeOffice(office, deps, cfg, log) {
       quiet: true,
     });
     const ep = endpointKey(p);
-    calls.push({ bucket, ep, status: res.status, ms: Date.now() - t0 });
+    acc.calls.push({ b: bucket, ep, s: res.status, ms: Date.now() - t0 });
     if (res.ok) {
       const rows = rowsOf(res.data);
       (captured[ep] = captured[ep] || []).push(...rows);
-      const f = (fieldsByEp[ep] = fieldsByEp[ep] || new Set());
+      const f = new Set(acc.fieldsByEp[ep] || []);
       for (const k of keysSeen(rows)) f.add(k);
+      acc.fieldsByEp[ep] = [...f].sort();
     }
     return res;
   };
-  const started = Date.now();
-  const report = { office, window: null, q1: {}, q2: {}, q3: {}, q4: {}, errors: {} };
 
-  // ── Q1: appointments ───────────────────────────────────────────────────────
-  const today = (cfg.clock || ctClock)().ymd;
-  const dateStart = addDays(today, 1);
-  const dateEnd = addDays(today, cfg.days);
-  report.window = { dateStart, dateEnd, days: cfg.days };
-  log(`\n[${office}] window ${dateStart} → ${dateEnd}`);
+  // The window is pinned on the first pass, so a resume reads the same days.
+  if (!st.window) {
+    const today = (cfg.clock || ctClock)().ymd;
+    st.window = { today, dateStart: addDays(today, 1), dateEnd: addDays(today, cfg.days), days: cfg.days };
+  }
+  const { today, dateStart, dateEnd } = st.window;
+  log(`\n[${office}] window ${dateStart} → ${dateEnd} (phase ${st.phase}, patients done ${st.patientsDone})`);
 
-  bucket = 'config';
-  const ops = await odDayMod.pagedList(get, '/operatories');
-  const provs = await odDayMod.pagedList(get, '/providers');
-  const types = await odDayMod.pagedList(get, '/appointmenttypes');
-  const opHyg = new Map(ops.rows.map((o) => [Number(o.OperatoryNum), odDayMod.odBool(o.IsHygiene)]));
-  const provSecondary = new Map(provs.rows.map((p) => [Number(p.ProvNum), odDayMod.odBool(p.IsSecondary)]));
-  const typeName = new Map(
-    types.rows.map((t) => [Number(t.AppointmentTypeNum), String(t.AppointmentTypeName || t.ItemName || t.Name || '?')])
-  );
-  report.q1.config = {
-    operatories: { rows: ops.rows.length, pages: ops.pages, IsHygiene: countBy(ops.rows.map((o) => String(odDayMod.odBool(o.IsHygiene)))) },
-    providers: {
-      rows: provs.rows.length,
-      pages: provs.pages,
-      IsSecondary: countBy(provs.rows.map((p) => String(odDayMod.odBool(p.IsSecondary)))),
-      IsHidden: countBy(provs.rows.map((p) => String(odDayMod.odBool(p.IsHidden)))),
-    },
-    appointmenttypes: { rows: types.rows.length, pages: types.pages, error: types.error },
-  };
+  let cohort;
+  if (st.phase === 'q1') {
+    // ── Q1: appointments ─────────────────────────────────────────────────────
+    bucket = 'config';
+    const ops = await odDayMod.pagedList(get, '/operatories');
+    const provs = await odDayMod.pagedList(get, '/providers');
+    const types = await odDayMod.pagedList(get, '/appointmenttypes');
+    const opHyg = new Map(ops.rows.map((o) => [Number(o.OperatoryNum), odDayMod.odBool(o.IsHygiene)]));
+    const provSecondary = new Map(provs.rows.map((p) => [Number(p.ProvNum), odDayMod.odBool(p.IsSecondary)]));
+    const typeName = new Map(
+      types.rows.map((t) => [Number(t.AppointmentTypeNum), String(t.AppointmentTypeName || t.ItemName || t.Name || '?')])
+    );
+    report.q1.config = {
+      operatories: { rows: ops.rows.length, pages: ops.pages, IsHygiene: countBy(ops.rows.map((o) => String(odDayMod.odBool(o.IsHygiene)))) },
+      providers: {
+        rows: provs.rows.length,
+        pages: provs.pages,
+        IsSecondary: countBy(provs.rows.map((p) => String(odDayMod.odBool(p.IsSecondary)))),
+        IsHidden: countBy(provs.rows.map((p) => String(odDayMod.odBool(p.IsHidden)))),
+      },
+      appointmenttypes: { rows: types.rows.length, pages: types.pages, error: types.error },
+    };
 
-  bucket = 'appointments-range';
-  const range = await odDayMod.pagedList(get, '/appointments', { dateStart, dateEnd });
-  bucket = 'appointments-perday';
-  const perDay = [];
-  for (let i = 1; i <= cfg.days; i += 1) perDay.push(await odDayMod.pagedList(get, '/appointments', { date: addDays(today, i) }));
-  const perDayRows = perDay.flatMap((d) => d.rows);
-  const rangeIds = new Set(range.rows.map((r) => Number(r.AptNum)));
-  const dayIds = new Set(perDayRows.map((r) => Number(r.AptNum)));
-  const outside = range.rows.filter((r) => {
-    const d = odDay(r.AptDateTime);
-    return !d || d < dateStart || d > dateEnd;
-  }).length;
+    bucket = 'appointments-range';
+    const range = await odDayMod.pagedList(get, '/appointments', { dateStart, dateEnd });
+    bucket = 'appointments-perday';
+    const perDay = [];
+    for (let i = 1; i <= cfg.days; i += 1) perDay.push(await odDayMod.pagedList(get, '/appointments', { date: addDays(today, i) }));
+    const perDayRows = perDay.flatMap((d) => d.rows);
+    const rangeIds = new Set(range.rows.map((r) => Number(r.AptNum)));
+    const dayIds = new Set(perDayRows.map((r) => Number(r.AptNum)));
+    const outside = range.rows.filter((r) => {
+      const d = odDay(r.AptDateTime);
+      return !d || d < dateStart || d > dateEnd;
+    }).length;
 
-  report.q1.rangeRead = {
-    params: 'dateStart,dateEnd',
-    pages: range.pages,
-    rows: range.rows.length,
-    truncated: range.truncated,
-    error: range.error,
-    rowsOutsideWindow: outside,
-  };
-  report.q1.perDayReads = {
-    params: 'date',
-    pagesTotal: perDay.reduce((a, d) => a + d.pages, 0),
-    pagesPerDay: perDay.map((d) => d.pages),
-    rowsPerDay: perDay.map((d) => d.rows.length),
-    rows: perDayRows.length,
-    inRangeNotPerDay: [...rangeIds].filter((x) => !dayIds.has(x)).length,
-    inPerDayNotRange: [...dayIds].filter((x) => !rangeIds.has(x)).length,
-  };
-  report.q1.fields = keysSeen(range.rows);
+    report.q1.rangeRead = {
+      params: 'dateStart,dateEnd',
+      pages: range.pages,
+      rows: range.rows.length,
+      truncated: range.truncated,
+      error: range.error,
+      rowsOutsideWindow: outside,
+    };
+    report.q1.perDayReads = {
+      params: 'date',
+      pagesTotal: perDay.reduce((a, d) => a + d.pages, 0),
+      pagesPerDay: perDay.map((d) => d.pages),
+      rowsPerDay: perDay.map((d) => d.rows.length),
+      rows: perDayRows.length,
+      inRangeNotPerDay: [...rangeIds].filter((x) => !dayIds.has(x)).length,
+      inPerDayNotRange: [...dayIds].filter((x) => !rangeIds.has(x)).length,
+    };
+    report.q1.fields = keysSeen(range.rows);
 
-  const appts = range.rows.length >= perDayRows.length ? range.rows : perDayRows;
-  report.q1.AptStatus = countBy(appts.map((r) => String(r.AptStatus)));
-  report.q1.ClinicNum = countBy(appts.map((r) => String(r.ClinicNum)));
-  const sched = appts.filter((r) => String(r.AptStatus) === 'Scheduled');
-  report.q1.scheduled = {
-    rows: sched.length,
-    IsHygiene: countBy(sched.map((r) => String(odDayMod.odBool(r.IsHygiene)))),
-    ProvHygSet: sched.filter((r) => Number(r.ProvHyg) > 0).length,
-    AppointmentTypeSet: sched.filter((r) => Number(r.AppointmentTypeNum) > 0).length,
-    // Every hygiene signal at once: apt IsHygiene / ProvHyg>0 / chair IsHygiene / ProvNum is a hygienist.
-    signalCrossTab: countBy(
-      sched.map(
-        (r) =>
-          `apt=${odDayMod.odBool(r.IsHygiene)}|provHyg=${Number(r.ProvHyg) > 0}|op=${opHyg.get(Number(r.Op)) ?? 'unknown'}|provIsHygienist=${provSecondary.get(Number(r.ProvNum)) ?? 'unknown'}`
-      )
-    ),
-    // Appointment-type names are practice configuration, not PHI.
-    typeByIsHygiene: countBy(
-      sched.map((r) => `apt=${odDayMod.odBool(r.IsHygiene)}|type=${Number(r.AppointmentTypeNum) > 0 ? typeName.get(Number(r.AppointmentTypeNum)) || '#unlisted' : '(none)'}`)
-    ),
-  };
-
-  // The HYG module's rule: the appointment's own IsHygiene, unknown is served.
-  const hygPats = [...new Set(sched.filter((r) => odDayMod.odBool(r.IsHygiene) !== false).map((r) => Number(r.PatNum)))].filter(
-    (n) => n > 0
-  );
-  const strictPats = new Set(sched.filter((r) => odDayMod.odBool(r.IsHygiene) === true).map((r) => Number(r.PatNum)));
-  const cohort = hygPats.slice(0, cfg.maxPatients);
-  report.q1.cohort = {
-    distinctPatients_IsHygieneNotFalse: hygPats.length,
-    distinctPatients_IsHygieneTrue: strictPats.size,
-    probed: cohort.length,
-    capped: hygPats.length > cohort.length,
-  };
-  log(`[${office}] Q1 range rows=${range.rows.length} (pages ${range.pages}) per-day rows=${perDayRows.length}; hygiene cohort=${hygPats.length}`);
+    st.cohortSource = range.rows.length >= perDayRows.length ? 'range' : 'perday';
+    const appts = st.cohortSource === 'range' ? range.rows : perDayRows;
+    report.q1.AptStatus = countBy(appts.map((r) => String(r.AptStatus)));
+    report.q1.ClinicNum = countBy(appts.map((r) => String(r.ClinicNum)));
+    const built = buildCohort(appts, odDayMod, cfg.maxPatients);
+    const sched = built.sched;
+    report.q1.scheduled = {
+      rows: sched.length,
+      IsHygiene: countBy(sched.map((r) => String(odDayMod.odBool(r.IsHygiene)))),
+      ProvHygSet: sched.filter((r) => Number(r.ProvHyg) > 0).length,
+      AppointmentTypeSet: sched.filter((r) => Number(r.AppointmentTypeNum) > 0).length,
+      // Every hygiene signal at once: apt IsHygiene / ProvHyg>0 / chair IsHygiene / ProvNum is a hygienist.
+      signalCrossTab: countBy(
+        sched.map(
+          (r) =>
+            `apt=${odDayMod.odBool(r.IsHygiene)}|provHyg=${Number(r.ProvHyg) > 0}|op=${opHyg.get(Number(r.Op)) ?? 'unknown'}|provIsHygienist=${provSecondary.get(Number(r.ProvNum)) ?? 'unknown'}`
+        )
+      ),
+      // Appointment-type names are practice configuration, not PHI.
+      typeByIsHygiene: countBy(
+        sched.map((r) => `apt=${odDayMod.odBool(r.IsHygiene)}|type=${Number(r.AppointmentTypeNum) > 0 ? typeName.get(Number(r.AppointmentTypeNum)) || '#unlisted' : '(none)'}`)
+      ),
+    };
+    cohort = built.cohort;
+    report.q1.cohort = {
+      distinctPatients_IsHygieneNotFalse: built.hygPats.length,
+      distinctPatients_IsHygieneTrue: built.strictPats.size,
+      probed: cohort.length,
+      capped: built.hygPats.length > cohort.length,
+    };
+    st.cohortSize = built.hygPats.length;
+    log(`[${office}] Q1 range rows=${range.rows.length} (pages ${range.pages}) per-day rows=${perDayRows.length}; hygiene cohort=${built.hygPats.length}`);
+    st.phase = 'patients';
+    save();
+  } else if (st.phase === 'patients' || st.phase === 'datecp') {
+    // ── resume: rebuild the cohort from the same pinned window ───────────────
+    bucket = 'resume';
+    let appts;
+    if (st.cohortSource === 'perday') {
+      appts = [];
+      for (let i = 1; i <= st.window.days; i += 1) appts.push(...(await odDayMod.pagedList(get, '/appointments', { date: addDays(today, i) })).rows);
+    } else {
+      appts = (await odDayMod.pagedList(get, '/appointments', { dateStart, dateEnd })).rows;
+    }
+    const built = buildCohort(appts, odDayMod, cfg.maxPatients);
+    cohort = built.cohort;
+    st.resumes.push({
+      at: new Date().toISOString(),
+      phase: st.phase,
+      patientsDone: st.patientsDone,
+      cohortSizeBefore: st.cohortSize,
+      cohortSizeNow: built.hygPats.length,
+    });
+    log(`[${office}] resuming at patient ${st.patientsDone}/${cohort.length} (cohort was ${st.cohortSize}, now ${built.hygPats.length})`);
+    save();
+  }
 
   // ── Q2 + Q3, per patient ───────────────────────────────────────────────────
-  const perPatient = [];
-  const shapes = {};
-  const audits = [];
-  const monthRenew = [];
-  const remainA = [];
-  const remainB = [];
-  const deltaAB = [];
-  const precomputedHits = new Set();
-  let biggest = { rows: 0, patNum: null, start: null };
-  const tpFullPage = { count: 0, trueRowsOver100: [] };
-  const tpStatus = {};
+  if (st.phase === 'patients') {
+    for (let i = st.patientsDone; i < cohort.length; i += 1) {
+      const patNum = cohort[i];
+      const pp = { tpReq: 0, tpRows: 0, insReq: 0, insByEp: {}, plans: 0, err: null };
 
-  for (const patNum of cohort) {
-    const pp = { tpReq: 0, tpRows: 0, insReq: 0, insByEp: {}, plans: 0, err: null };
-
-    bucket = `tp:${patNum}`;
-    const before = calls.length;
-    try {
-      const tp = await odReads.getTpProcedureRows(get, patNum);
-      pp.tpRows = tp.rows.length;
-      for (const r of tp.rows) tpStatus[String(r.ProcStatus)] = (tpStatus[String(r.ProcStatus)] || 0) + 1;
-      if (tp.rows.length >= PAGE) {
-        // getTpProcedureRows reads ONE page. Count what it missed.
-        tpFullPage.count += 1;
-        let total = tp.rows.length;
-        for (let page = 1; page < 20; page += 1) {
-          const more = await get('/procedurelogs', { PatNum: patNum, ProcStatus: 'TP', Offset: page * PAGE });
-          const n = more.ok ? rowsOf(more.data).length : 0;
-          total += n;
-          if (n < PAGE) break;
-        }
-        tpFullPage.trueRowsOver100.push(total);
-      }
-    } catch (e) {
-      pp.err = `tp:${e.odStatus || e.message}`;
-    }
-    pp.tpReq = calls.length - before;
-
-    bucket = `ins:${patNum}`;
-    captured = {};
-    const insBefore = calls.length;
-    let snap = null;
-    try {
-      snap = await odReads.getInsuranceSnapshot(get, patNum);
-    } catch (e) {
-      pp.err = (pp.err ? pp.err + ' ' : '') + `ins:${e.odStatus || e.message}`;
-    }
-    const insCalls = calls.slice(insBefore);
-    pp.insReq = insCalls.length;
-    pp.insByEp = countBy(insCalls.map((c) => c.ep));
-
-    for (const [ep, rows] of Object.entries(captured)) {
-      for (const k of keysSeen(rows)) if (/remain|used|ytd|annualmax|benefitsleft/i.test(k)) precomputedHits.add(`${ep}.${k}`);
-    }
-    for (const b of captured['/benefits'] || []) {
-      const s = benefitShape(b);
-      shapes[s] = (shapes[s] || 0) + 1;
-    }
-
-    const cps = captured['/claimprocs'] || [];
-    for (const cp of cps) cpStatus[String(cp.Status)] = (cpStatus[String(cp.Status)] || 0) + 1;
-    if (snap) {
-      pp.plans = snap.plans.length;
-      for (const plan of snap.plans) {
-        monthRenew.push(plan.monthRenew);
-        const benRows = (captured['/benefits'] || []).filter(
-          (b) => Number(b.PlanNum) === plan.planNum || (plan.patPlanNum && Number(b.PatPlanNum) === plan.patPlanNum)
-        );
-        audits.push({ ordinal: plan.ordinal, ...benefitPickAudit(benRows) });
-
-        const start = plan.usage ? plan.usage.benefitYearStart : null;
-        if (start) {
-          const mine = cps.filter((cp) => Number(cp.InsSubNum) === plan.insSubNum || Number(cp.PlanNum) === plan.planNum);
-          const u = usageBases(mine, start);
-          if (plan.ordinal === 1 && cps.length > biggest.rows) biggest = { rows: cps.length, patNum, start };
-          if (plan.annualMax != null) {
-            const a = Math.max(0, plan.annualMax - u.paidDateCP);
-            const b = Math.max(0, plan.annualMax - (u.paidProcDate + u.pending + u.adjustment));
-            remainA.push(a);
-            remainB.push(b);
-            deltaAB.push(Math.round(Math.abs(a - b)));
+      bucket = 'tp';
+      const before = acc.calls.length;
+      try {
+        const tp = await odReads.getTpProcedureRows(get, patNum);
+        pp.tpRows = tp.rows.length;
+        for (const r of tp.rows) acc.tpStatus[String(r.ProcStatus)] = (acc.tpStatus[String(r.ProcStatus)] || 0) + 1;
+        if (tp.rows.length >= PAGE) {
+          // getTpProcedureRows reads ONE page. Count what it missed.
+          acc.tpFullPage.count += 1;
+          let total = tp.rows.length;
+          for (let page = 1; page < 20; page += 1) {
+            const more = await get('/procedurelogs', { PatNum: patNum, ProcStatus: 'TP', Offset: page * PAGE });
+            const n = more.ok ? rowsOf(more.data).length : 0;
+            total += n;
+            if (n < PAGE) break;
           }
-          pp.pendingRows = (pp.pendingRows || 0) + u.pendingRows;
-          pp.pendingField = u.pendingField || pp.pendingField || null;
+          acc.tpFullPage.trueRowsOver100.push(total);
         }
+      } catch (e) {
+        pp.err = `tp:${e.odStatus || e.message}`;
       }
-      pp.ytdAvailable = snap.ytdAvailable;
-      pp.claimprocRows = cps.length;
+      pp.tpReq = acc.calls.length - before;
+
+      bucket = 'ins';
+      captured = {};
+      const insBefore = acc.calls.length;
+      let snap = null;
+      try {
+        snap = await odReads.getInsuranceSnapshot(get, patNum);
+      } catch (e) {
+        pp.err = (pp.err ? pp.err + ' ' : '') + `ins:${e.odStatus || e.message}`;
+      }
+      const insCalls = acc.calls.slice(insBefore);
+      pp.insReq = insCalls.length;
+      pp.insByEp = countBy(insCalls.map((c) => c.ep));
+
+      const hits = new Set(acc.precomputedHits);
+      for (const [ep, rows] of Object.entries(captured)) {
+        for (const k of keysSeen(rows)) if (/remain|used|ytd|annualmax|benefitsleft/i.test(k)) hits.add(`${ep}.${k}`);
+      }
+      acc.precomputedHits = [...hits].sort();
+      for (const b of captured['/benefits'] || []) {
+        const s = benefitShape(b);
+        acc.shapes[s] = (acc.shapes[s] || 0) + 1;
+      }
+
+      const cps = captured['/claimprocs'] || [];
+      for (const cp of cps) acc.cpStatus[String(cp.Status)] = (acc.cpStatus[String(cp.Status)] || 0) + 1;
+      if (snap) {
+        pp.plans = snap.plans.length;
+        for (const plan of snap.plans) {
+          acc.monthRenew.push(plan.monthRenew);
+          const benRows = (captured['/benefits'] || []).filter(
+            (b) => Number(b.PlanNum) === plan.planNum || (plan.patPlanNum && Number(b.PatPlanNum) === plan.patPlanNum)
+          );
+          acc.audits.push({ ordinal: plan.ordinal, ...benefitPickAudit(benRows) });
+
+          const start = plan.usage ? plan.usage.benefitYearStart : null;
+          if (start) {
+            const mine = cps.filter((cp) => Number(cp.InsSubNum) === plan.insSubNum || Number(cp.PlanNum) === plan.planNum);
+            const u = usageBases(mine, start);
+            if (plan.ordinal === 1 && cps.length > acc.biggest.rows) acc.biggest = { rows: cps.length, idx: i, start };
+            if (plan.annualMax != null) {
+              const a = Math.max(0, plan.annualMax - u.paidDateCP);
+              const b = Math.max(0, plan.annualMax - (u.paidProcDate + u.pending + u.adjustment));
+              // Buckets only — a per-patient dollar figure never reaches the checkpoint.
+              acc.remainBucketsA[dollarBucket(a)] = (acc.remainBucketsA[dollarBucket(a)] || 0) + 1;
+              acc.remainBucketsB[dollarBucket(b)] = (acc.remainBucketsB[dollarBucket(b)] || 0) + 1;
+              acc.plansWithKnownMax += 1;
+              acc.deltaAB.push(Math.round(Math.abs(a - b)));
+            }
+            pp.pendingRows = (pp.pendingRows || 0) + u.pendingRows;
+            pp.pendingField = u.pendingField || pp.pendingField || null;
+          }
+        }
+        pp.ytdAvailable = snap.ytdAvailable;
+        pp.claimprocRows = cps.length;
+      }
+      if (pp.err) pp.err = pp.err.replace(/\d{4,}/g, '#');
+      acc.perPatient.push(pp);
+      st.patientsDone = i + 1;
+      save();
     }
-    perPatient.push(pp);
+    st.phase = 'datecp';
+    save();
   }
 
   // ── Q3: does /claimprocs honour DateCP? (on the cohort's heaviest history) ─
-  bucket = 'datecp-check';
-  if (biggest.patNum != null) {
-    const all = [];
-    let pagesAll = 0;
-    for (let page = 0; page < 40; page += 1) {
-      const r = await get('/claimprocs', { PatNum: biggest.patNum, Offset: page * PAGE });
-      pagesAll += 1;
-      const rows = r.ok ? rowsOf(r.data) : [];
-      all.push(...rows);
-      if (rows.length < PAGE) break;
+  if (st.phase === 'datecp') {
+    bucket = 'datecp-check';
+    const big = acc.biggest;
+    const patNum = big.idx != null && cohort && big.idx < cohort.length ? cohort[big.idx] : null;
+    if (patNum != null) {
+      const all = [];
+      let pagesAll = 0;
+      for (let page = 0; page < 40; page += 1) {
+        const r = await get('/claimprocs', { PatNum: patNum, Offset: page * PAGE });
+        pagesAll += 1;
+        const rows = r.ok ? rowsOf(r.data) : [];
+        all.push(...rows);
+        if (rows.length < PAGE) break;
+      }
+      const filtered = [];
+      let pagesFiltered = 0;
+      let status = null;
+      for (let page = 0; page < 40; page += 1) {
+        const r = await get('/claimprocs', { PatNum: patNum, DateCP: big.start, Offset: page * PAGE });
+        pagesFiltered += 1;
+        status = r.status;
+        const rows = r.ok ? rowsOf(r.data) : [];
+        filtered.push(...rows);
+        if (rows.length < PAGE) break;
+      }
+      const expected = all.filter((cp) => (odDay(cp.DateCP) || '') >= big.start).length;
+      report.q3.dateCpFilter = {
+        note: 'measured on the cohort patient with the most claimproc rows (PatNum withheld)',
+        status,
+        unfilteredRows: all.length,
+        unfilteredPages: pagesAll,
+        filteredRows: filtered.length,
+        filteredPages: pagesFiltered,
+        unfilteredRowsWithDateCPOnOrAfterStart: expected,
+        filteredRowsBeforeStart: filtered.filter((cp) => (odDay(cp.DateCP) || '0000') < big.start).length,
+        notReceivedRowsWithNullDateCP: all.filter((cp) => String(cp.Status) === 'NotReceived' && !odDay(cp.DateCP)).length,
+      };
     }
-    const filtered = [];
-    let pagesFiltered = 0;
-    let status = null;
-    for (let page = 0; page < 40; page += 1) {
-      const r = await get('/claimprocs', { PatNum: biggest.patNum, DateCP: biggest.start, Offset: page * PAGE });
-      pagesFiltered += 1;
-      status = r.status;
-      const rows = r.ok ? rowsOf(r.data) : [];
-      filtered.push(...rows);
-      if (rows.length < PAGE) break;
-    }
-    const expected = all.filter((cp) => (odDay(cp.DateCP) || '') >= biggest.start).length;
-    report.q3.dateCpFilter = {
-      note: 'measured on the cohort patient with the most claimproc rows (PatNum withheld)',
-      status,
-      unfilteredRows: all.length,
-      unfilteredPages: pagesAll,
-      filteredRows: filtered.length,
-      filteredPages: pagesFiltered,
-      unfilteredRowsWithDateCPOnOrAfterStart: expected,
-      filteredRowsBeforeStart: filtered.filter((cp) => (odDay(cp.DateCP) || '0000') < biggest.start).length,
-      notReceivedRowsWithNullDateCP: all.filter((cp) => String(cp.Status) === 'NotReceived' && !odDay(cp.DateCP)).length,
-    };
+    st.phase = 'precomputed';
+    save();
   }
 
   // ── Q3: a precomputed "remaining"? Asked of the TEST patient only ──────────
-  bucket = 'precomputed-check';
-  const test = TEST_PATNUM[office];
-  const fam = await get(`/familymodules/${test}/Insurance`);
-  report.q3.familyModulesInsurance = {
-    patNum: test,
-    status: fam.status,
-    ok: fam.ok,
-    fields: fam.ok ? keysSeen(rowsOf(fam.data)) : [],
-    error: fam.ok ? null : String(fam.error || '').slice(0, 160),
-  };
-  for (const k of report.q3.familyModulesInsurance.fields) if (/remain|used|ytd|annualmax/i.test(k)) precomputedHits.add(`/familymodules/{n}/Insurance.${k}`);
-  // The test patient's own computed numbers are printable (designated fixture).
-  try {
-    const s = await odReads.getInsuranceSnapshot(get, test);
-    report.q3.testPatientSnapshot = s.plans.map((p) => ({
-      ordinal: p.ordinal,
-      monthRenew: p.monthRenew,
-      annualMax: p.annualMax,
-      deductible: p.deductible,
-      usage: p.usage,
-      remainingMax: p.remainingMax,
-      remainingDeductible: p.remainingDeductible,
-      unreadable: p.unreadable,
-    }));
-  } catch (e) {
-    report.q3.testPatientSnapshot = { error: String(e.odStatus || e.message) };
+  if (st.phase === 'precomputed') {
+    bucket = 'precomputed-check';
+    const test = TEST_PATNUM[office];
+    const fam = await get(`/familymodules/${test}/Insurance`);
+    report.q3.familyModulesInsurance = {
+      patNum: test,
+      status: fam.status,
+      ok: fam.ok,
+      fields: fam.ok ? keysSeen(rowsOf(fam.data)) : [],
+      error: fam.ok ? null : String(fam.error || '').slice(0, 160),
+    };
+    const hits = new Set(acc.precomputedHits);
+    for (const k of report.q3.familyModulesInsurance.fields) if (/remain|used|ytd|annualmax/i.test(k)) hits.add(`/familymodules/{n}/Insurance.${k}`);
+    acc.precomputedHits = [...hits].sort();
+    // The test patient's own computed numbers are printable (designated fixture).
+    try {
+      const s = await odReads.getInsuranceSnapshot(get, test);
+      report.q3.testPatientSnapshot = s.plans.map((p) => ({
+        ordinal: p.ordinal,
+        monthRenew: p.monthRenew,
+        annualMax: p.annualMax,
+        deductible: p.deductible,
+        usage: p.usage,
+        remainingMax: p.remainingMax,
+        remainingDeductible: p.remainingDeductible,
+        unreadable: p.unreadable,
+      }));
+    } catch (e) {
+      report.q3.testPatientSnapshot = { error: String(e.odStatus || e.message) };
+    }
+    rollUp(report, acc, st);
+    st.phase = 'done';
+    save();
+    log(`[${office}] done: ${acc.calls.length} requests in ${report.q4.elapsedMinutes} min`);
   }
-  report.q3.endpointFields = Object.fromEntries(Object.entries(fieldsByEp).map(([ep, set]) => [ep, [...set].sort()]));
-  report.q3.claimprocStatusAcrossCohort = cpStatus;
+  return { office, window: publicWindow(st.window), ...report };
+}
 
-  // ── roll-ups ───────────────────────────────────────────────────────────────
+/** Every roll-up is a pure function of the checkpointed accumulators. */
+function rollUp(report, acc, st) {
+  const perPatient = acc.perPatient;
+  const calls = acc.calls;
+  report.q3.endpointFields = acc.fieldsByEp;
+  report.q3.claimprocStatusAcrossCohort = acc.cpStatus;
   const withIns = perPatient.filter((p) => p.plans > 0);
   report.q2 = {
     patients: perPatient.length,
     requestsPerPatient: stats(perPatient.map((p) => p.tpReq)),
     tpRowsPerPatient: stats(perPatient.map((p) => p.tpRows)),
     patientsWithAnyTP: perPatient.filter((p) => p.tpRows > 0).length,
-    patientsFillingOnePage: tpFullPage.count,
-    trueTpRowsForThose: tpFullPage.trueRowsOver100,
-    ProcStatusSeen: tpStatus,
+    patientsFillingOnePage: acc.tpFullPage.count,
+    trueTpRowsForThose: acc.tpFullPage.trueRowsOver100,
+    ProcStatusSeen: acc.tpStatus,
   };
   report.q3.cohort = {
     patients: perPatient.length,
@@ -598,42 +738,42 @@ async function probeOffice(office, deps, cfg, log) {
       perPatient.flatMap((p) => Object.entries(p.insByEp).flatMap(([ep, n]) => Array(n).fill(ep)))
     ),
     claimprocRowsPerInsuredPatient: stats(withIns.map((p) => p.claimprocRows || 0)),
-    errors: countBy(perPatient.filter((p) => p.err).map((p) => p.err.replace(/\d{4,}/g, '#'))),
+    errors: countBy(perPatient.filter((p) => p.err).map((p) => p.err)),
   };
   report.q3.benefits = {
-    shapes: Object.fromEntries(Object.entries(shapes).sort((a, b) => b[1] - a[1])),
-    plansAudited: audits.length,
-    maxPick: countBy(audits.map((a) => a.maxPickReason)),
-    plansWithMultipleCleanMaxCandidates: audits.filter((a) => a.maxCleanCandidates > 1).length,
-    dedPick: countBy(audits.map((a) => a.dedPickReason)),
-    dedLevelSets: countBy(audits.map((a) => a.dedLevels.join('+') || '(none)')),
+    shapes: Object.fromEntries(Object.entries(acc.shapes).sort((a, b) => b[1] - a[1])),
+    plansAudited: acc.audits.length,
+    maxPick: countBy(acc.audits.map((a) => a.maxPickReason)),
+    plansWithMultipleCleanMaxCandidates: acc.audits.filter((a) => a.maxCleanCandidates > 1).length,
+    dedPick: countBy(acc.audits.map((a) => a.dedPickReason)),
+    dedLevelSets: countBy(acc.audits.map((a) => a.dedLevels.join('+') || '(none)')),
   };
-  report.q3.benefitYear = { MonthRenew: countBy(monthRenew.map((m) => (Number(m) > 0 ? `month ${m}` : 'calendar (0)'))) };
+  report.q3.benefitYear = { MonthRenew: countBy(acc.monthRenew.map((m) => (Number(m) > 0 ? `month ${m}` : 'calendar (0)'))) };
   report.q3.remaining = {
-    plansWithKnownMax: remainA.length,
-    currentCode_DateCP_paidOnly: countBy(remainA.map(dollarBucket)),
-    procDate_plusPending_plusAdj: countBy(remainB.map(dollarBucket)),
-    absDeltaBetweenBases: stats(deltaAB),
-    plansWhereBasesDifferBy50Plus: deltaAB.filter((d) => d >= 50).length,
+    plansWithKnownMax: acc.plansWithKnownMax,
+    currentCode_DateCP_paidOnly: acc.remainBucketsA,
+    procDate_plusPending_plusAdj: acc.remainBucketsB,
+    absDeltaBetweenBases: stats(acc.deltaAB),
+    plansWhereBasesDifferBy50Plus: acc.deltaAB.filter((d) => d >= 50).length,
     patientsWithPendingClaimRows: perPatient.filter((p) => (p.pendingRows || 0) > 0).length,
     pendingEstimateField: [...new Set(perPatient.map((p) => p.pendingField).filter(Boolean))],
   };
-  report.q3.precomputedRemainingFieldsFound = [...precomputedHits].sort();
+  report.q3.precomputedRemainingFieldsFound = acc.precomputedHits;
 
   // ── Q4: cost ───────────────────────────────────────────────────────────────
-  const elapsed = Date.now() - started;
-  const fixed = calls.filter((c) => c.bucket === 'config' || c.bucket === 'appointments-range').length;
+  const fixed = calls.filter((c) => c.b === 'config' || c.b === 'appointments-range').length;
   const perPat = perPatient.map((p) => p.tpReq + p.insReq);
   const carriers = report.q3.cohort.requestsByEndpointTotal['/carriers/{n}'] || 0;
   const meanPer = perPat.length ? perPat.reduce((a, b) => a + b, 0) / perPat.length : 0;
   const trimmedMean = perPat.length ? (perPat.reduce((a, b) => a + b, 0) - carriers) / perPat.length : 0;
-  const n = hygPats.length;
+  const n = st.cohortSize || 0;
   const proj = (perPatient_, spacingMs) => Math.round(((fixed + n * perPatient_) * spacingMs) / 60000 * 10) / 10;
   report.q4 = {
     requestsTotal: calls.length,
-    elapsedMinutes: Math.round((elapsed / 60000) * 10) / 10,
-    statuses: countBy(calls.map((c) => String(c.status))),
-    rateLimited429: calls.filter((c) => c.status === 429).length,
+    elapsedMinutes: Math.round((acc.elapsedMs / 60000) * 10) / 10,
+    resumed: st.resumes.length,
+    statuses: countBy(calls.map((c) => String(c.s))),
+    rateLimited429: calls.filter((c) => c.s === 429).length,
     fixedRequests_configPlusRangeRead: fixed,
     requestsPerPatient: stats(perPat),
     sweepRequests_full: Math.round(fixed + n * meanPer),
@@ -643,8 +783,6 @@ async function probeOffice(office, deps, cfg, log) {
     sweepMinutes_noCarrierCall_at1200ms: proj(trimmedMean, 1200),
     cohortPatients: n,
   };
-  log(`[${office}] done: ${calls.length} requests in ${report.q4.elapsedMinutes} min`);
-  return report;
 }
 
 async function main({ env = process.env, log = console.log } = {}) {
@@ -665,6 +803,31 @@ async function main({ env = process.env, log = console.log } = {}) {
     }
   }
   if (offices.length === 0) throw new Error('Refusing to run: set PROBE_OFFICES=roland,valley');
+  const file = String(env.PROBE_CHECKPOINT || '').trim();
+  if (!file) throw new Error('Refusing to run: set PROBE_CHECKPOINT to a durable path (staging: /data/probe-benefits-results.json)');
+
+  // Resume when the file is this same run; refuse rather than overwrite another run's results.
+  let doc = readCheckpoint(file);
+  if (doc) {
+    const same =
+      doc.version === CHECKPOINT_VERSION &&
+      doc.cfg && doc.cfg.days === cfg.days && doc.cfg.maxPatients === cfg.maxPatients &&
+      JSON.stringify(doc.offices && Object.keys(doc.offices)) === JSON.stringify(offices);
+    if (!same) throw new Error(`Refusing to run: ${file} holds a different run (move it aside to start fresh)`);
+    log(`resuming from ${file}: ${offices.map((o) => `${o}=${doc.offices[o].phase}`).join(' ')}`);
+  } else {
+    doc = {
+      version: CHECKPOINT_VERSION,
+      startedAt: new Date().toISOString(),
+      cfg,
+      offices: Object.fromEntries(offices.map((o) => [o, newOfficeState()])),
+    };
+  }
+  const save = () => {
+    doc.updatedAt = new Date().toISOString();
+    writeCheckpoint(file, doc);
+  };
+  save(); // proves the path is writable before anything reaches Open Dental
 
   await waitUntilNotBefore(env.PROBE_NOT_BEFORE, log);
   await waitForWindow(log);
@@ -676,21 +839,36 @@ async function main({ env = process.env, log = console.log } = {}) {
   const odDayMod = require(path.join(APP_ROOT, 'services/hyg/odDay'));
   await loadSecrets();
 
-  const outDir = env.PROBE_OUT_DIR || os.tmpdir();
-  const reports = [];
   for (const office of offices) {
-    let report;
+    const state = doc.offices[office];
+    delete state.aborted;
     try {
-      report = await probeOffice(office, { odOffices, odReads, odDayMod }, cfg, log);
+      await probeOffice(office, { odOffices, odReads, odDayMod }, cfg, log, { state, save });
     } catch (e) {
-      report = { office, aborted: e instanceof WindowClosed ? 'window' : 'error', error: String(e && e.message).slice(0, 300) };
+      state.aborted = { kind: e instanceof WindowClosed ? 'window' : 'error', error: String(e && e.message).slice(0, 300).replace(/\d{4,}/g, '#'), at: new Date().toISOString() };
+      save();
+      log(`[${office}] stopped (${state.aborted.kind}) at phase ${state.phase}; relaunch to resume`);
+      break;
     }
-    reports.push(report);
-    fs.writeFileSync(path.join(outDir, `benefits-probe-${office}.json`), JSON.stringify(report, null, 2));
-    if (report.aborted) break;
   }
+  const done = offices.every((o) => doc.offices[o].phase === 'done');
+  doc.complete = done;
+  if (done) doc.completedAt = doc.completedAt || new Date().toISOString();
+  save();
   log('\n===BENEFITS-PROBE-JSON-BEGIN===');
-  log(JSON.stringify({ ranAt: new Date().toISOString(), cfg, reports }, null, 2));
+  log(
+    JSON.stringify(
+      {
+        complete: done,
+        startedAt: doc.startedAt,
+        completedAt: doc.completedAt || null,
+        cfg,
+        reports: offices.map((o) => ({ office: o, phase: doc.offices[o].phase, window: doc.offices[o].window, resumes: doc.offices[o].resumes, aborted: doc.offices[o].aborted || null, ...doc.offices[o].report })),
+      },
+      null,
+      2
+    )
+  );
   log('===BENEFITS-PROBE-JSON-END===');
 }
 
@@ -718,4 +896,7 @@ module.exports = {
   usageBases,
   endpointKey,
   TEST_PATNUM,
+  newOfficeState,
+  buildCohort,
+  CHECKPOINT_VERSION,
 };
