@@ -197,7 +197,7 @@ It raised five findings, all fixed in `6807b4b`:
 
 ## CI
 
-PR #307, run 41565957835, **passed on the first push.** It ran on `refs/pull/307/merge`, checked out as `391c36f Merge b9affd6… into bb7398f…`. That base is develop *after* PR #306 (the shard runner fix) merged.
+PR #307, run 41565957835, **passed** on the branch head `b9affd6`. That commit is the "Update branch" merge of develop, which brought in #306. It ran on `refs/pull/307/merge`, checked out as `391c36f Merge b9affd6… into bb7398f…`. That base is develop *after* PR #306 (the shard runner fix) merged.
 - **Dashboard:** `pnpm run check` is clean, and vitest ran 206 files with 0 failures.
 - **Backend:** the shard runner reported `TOTAL: 4634 tests · 4631 pass · 0 fail · 3 skipped` with all 4 shards green.
 
