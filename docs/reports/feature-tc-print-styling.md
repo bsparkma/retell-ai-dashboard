@@ -107,7 +107,31 @@ The workup's **Print** button generates the PDF, loads it into a hidden same-ori
 
 ## Tests
 
-<!-- TESTS -->
+New test files:
+
+| File | What it pins |
+| --- | --- |
+| `backend/test/printStylingDefaults.test.js` | **Byte-stable defaults:** the five pinned CO-3 hashes, with styling NULL, absent, spelled-out defaults or garbage. Also the default page's geometry op by op, and the shared transliteration equalling `asciiSafe` for every code point. |
+| `backend/test/printStylingFonts.test.js` | **The bundled files:** unmodified (upstream SHA-256), the OFL beside each, `fsType` 0, and nothing unlisted in the folder. The engine's width tables re-derived from the files. PostScript names. The subset's validity and determinism. |
+| `backend/test/printStylingMigration.test.js` | **The migration:** one nullable jsonb column, the two-valued CHECK, a clean down, numbered newest, and the store reads the column. |
+| `backend/routes/tcPrintStyling.test.js` | **Route refusals:** each code by name, with nothing stored and no audit row. |
+| | **Saves:** `admin.all` gate; read-back; the audit trail (`style_default` → `style_set`); the standard style stored as NULL; fail closed on an audit failure; old rows read as defaults. |
+| | **Office isolation:** roland's styling never reaches valley's settings or printout. |
+| | **The PDF:** every layout × font pair and every placement × size × layout, content stream equal to the engine, with geometry asserted on the PDF. NULL styling through the print route prints the unstyled bytes. |
+| | **The font route:** an exact allow-list. |
+| | **Review round-1 fixes:** a rotated JPEG refused, the racing-first-save upsert, and a no-op reset that writes nothing. |
+| `new-dashboard/tests/tc-print-styling.test.tsx` | **Schema refusals:** including the 4.5 : 1 boundary (`#767676` passes, `#777777` is refused). |
+| | **Engine geometry:** for every layout, font pair, placement and size, including no overlap of logo and letterhead, and the same words for every layout and font. |
+| | **The preview:** every SVG element equals the engine's op. |
+| | **Settings:** the controls drive the preview, a too-light colour is named with Save off, a style-only save sends exactly the styling, and the standard style is sent as null. |
+| | **Review round-1 fixes:** an uppercase hex is not a change, and a late frame load opens no dialog. |
+
+Local runs on the final tree:
+- `pnpm run check` is clean.
+- `pnpm run test`: 206 files, 3,131 passed, 253 skipped, 0 failed. This is the pre-review count; the review round adds 2 frontend tests, and the post-review totals are in CI.
+- `node --check server.js` is clean.
+- Backend shard runner: 4,631 tests, 4,628 passed, 0 failed, 3 skipped.
+
 
 Edits to existing tests, each labelled `RULING (CO-3b)`, all in `new-dashboard/tests/tc-print-templates.test.tsx`:
 - **"Generate … opens the PDF" → "Print … opens the print dialog on the PDF":** it now asserts that the hidden frame loads the PDF and `print()` is called, and that no tab opens.
@@ -138,7 +162,38 @@ The screenshots are in `docs/screenshots/tc/co3b/`, light and dark at 1280 × 18
 
 ## Review
 
-<!-- REVIEW -->
+Two rounds with a fresh-context reviewer.
+
+**Round 1** found no blockers. The reviewer verified a lot by running code:
+- **3,000 random documents** (Unicode, tabs, empty blocks, 1–40 px logos) rendered by the old CO-3 renderer and the new one: **0 byte differences**.
+- **60 generated PDFs** (all pairs, layouts and logos, up to 4 pages):
+  - pypdf in strict mode, poppler `pdftotext` and pdf.js parsed them with zero warnings;
+  - every xref offset and object reference checked;
+  - fontTools with `checkChecksums=2` passed on every subset;
+  - composite glyphs (`Å`) draw;
+  - Chrome's font sanitizer accepted every subset.
+- **Preview text widths in Chrome** are within 0.3 % of the engine's measurement on kerning-heavy strings.
+- **The print frame** loads and `print()` is callable in headless Chrome and Edge.
+
+It raised five findings, all fixed in `6807b4b`:
+
+| Severity | Finding | Fix |
+| --- | --- | --- |
+| should-fix | Typing the saved colour in capitals left the editor stuck on "Unsaved changes" | The typed hex is lower-cased; tested |
+| should-fix | A phone JPEG with an EXIF rotation tag would lay out with width and height swapped in the preview (the browser rotates it) versus the PDF (stored pixels) | Such JPEGs are refused at upload, `LOGO_JPEG_ROTATED` ("stored sideways … save it upright or as a PNG"). No logo is stored in any environment yet, so nothing is stranded; tested |
+| nit | A frame loading after the 15 s fallback could still open a dialog behind the link | The load handler returns once settled; tested with fake timers |
+| nit | Two first saves racing could 500 on the primary key | One atomic `ON CONFLICT … DO UPDATE SET styling, updated_by, updated_at`, like `saveFields`; tested |
+| nit | A reset to the defaults with nothing saved created a row | Nothing is written and nothing audited; tested |
+
+**Round 2** confirmed all five fixes and found no regressions. On the EXIF parser specifically:
+- **Byte order and segment order:** big- and little-endian TIFF, and EXIF after JFIF and XMP segments, all read correctly.
+- **Robustness:** truncation at every length and 200,000 random corruptions gave 0 crashes and no hangs.
+- **Failure direction:** a corrupt tag can only cause a named refusal, never a bad accept.
+
+**Untested, no Firefox or Safari available:**
+- **Firefox:** if its PDF viewer frame isn't scriptable, `print()` throws and the user gets the link.
+- **iPad Safari:** it is known to print the page instead of the frame. That matters only if the desk prints from an iPad.
+
 
 ## CI
 
