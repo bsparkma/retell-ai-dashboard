@@ -43,6 +43,45 @@ function sniffLogoType(buf) {
 }
 
 /**
+ * A JPEG's EXIF orientation (1..8), or 1 when it carries none. CO-3b: a phone
+ * photo is often stored sideways with an orientation tag. A browser rotates it
+ * (and reports the rotated size); a PDF draws the stored pixels. So the preview
+ * and the printout would disagree about the logo's shape — such a JPEG is
+ * refused at upload, by name, instead of being drawn wrong.
+ * @param {Buffer} buf
+ * @returns {number}
+ */
+function jpegOrientation(buf) {
+  let i = 2;
+  while (i + 4 < buf.length && buf[i] === 0xff) {
+    const marker = buf[i + 1];
+    if (marker === 0xda || marker === 0xd9) break;
+    const len = buf.readUInt16BE(i + 2);
+    if (marker === 0xe1 && buf.toString('latin1', i + 4, i + 10) === 'Exif\0\0') {
+      const tiff = i + 10;
+      if (tiff + 8 > buf.length) return 1;
+      const le = buf.toString('latin1', tiff, tiff + 2) === 'II';
+      const u16 = (o) => (le ? buf.readUInt16LE(o) : buf.readUInt16BE(o));
+      const u32 = (o) => (le ? buf.readUInt32LE(o) : buf.readUInt32BE(o));
+      const ifd = tiff + u32(tiff + 4);
+      if (ifd + 2 > buf.length) return 1;
+      const count = u16(ifd);
+      for (let e = 0; e < count; e += 1) {
+        const entry = ifd + 2 + e * 12;
+        if (entry + 12 > buf.length) return 1;
+        if (u16(entry) === 0x0112) {
+          const v = u16(entry + 8);
+          return v >= 1 && v <= 8 ? v : 1;
+        }
+      }
+      return 1;
+    }
+    i += 2 + len;
+  }
+  return 1;
+}
+
+/**
  * A JPEG's size and components, from its first SOF marker.
  * @param {Buffer} buf
  */
@@ -242,6 +281,12 @@ function prepareUncached(buf) {
   const type = sniffLogoType(buf);
   if (type === 'image/jpeg') {
     const { width, height, components } = readJpeg(buf);
+    if (jpegOrientation(buf) !== 1) {
+      throw new LogoImageError(
+        'LOGO_JPEG_ROTATED',
+        'This JPEG is stored sideways with a rotation tag, so it would not print the way it looks. Save it upright (or as a PNG) and upload it again.'
+      );
+    }
     const space = components === 1 ? '/DeviceGray' : components === 4 ? '/DeviceCMYK' : '/DeviceRGB';
     // Adobe CMYK JPEGs are stored inverted; the Decode array puts them right.
     const decode = components === 4 ? ' /Decode [1 0 1 0 1 0 1 0]' : '';
@@ -274,4 +319,4 @@ function prepareUncached(buf) {
   throw new LogoImageError('LOGO_TYPE_NOT_ALLOWED', 'A logo must be a PNG or JPEG image.');
 }
 
-module.exports = { prepareLogo, sniffLogoType, decodePng, LogoImageError, MAX_SIDE };
+module.exports = { prepareLogo, sniffLogoType, decodePng, jpegOrientation, LogoImageError, MAX_SIDE };

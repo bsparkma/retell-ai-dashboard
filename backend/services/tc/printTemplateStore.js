@@ -185,11 +185,14 @@ async function saveStyling(q, { office, type, styling, actor, prefill }) {
   const stored = styling && !contract.isDefaultStyling(styling) ? styling : null;
   const existing = await rowFor(q, office, type, { lock: true });
   if (!existing) {
+    // Going back to the defaults with nothing saved: already so. Write nothing —
+    // a row here would freeze the shipped wording at today's prefill.
+    if (stored === null) return { prior: 'style_default', unchanged: true };
     const f = contract.defaultPrintTemplate(type, prefill);
+    // ONE atomic upsert, as saveFields: two FIRST saves racing (a wording save,
+    // a logo, this) end as an update of the other's row, never a primary-key 500.
     await q.query(
-      `INSERT INTO tc_print_templates (office_id, template_type, heading, letterhead_name, letterhead_address,
-         letterhead_phone, body, signature_line, styling, updated_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      'INSERT INTO tc_print_templates (office_id, template_type, heading, letterhead_name, letterhead_address, letterhead_phone, body, signature_line, styling, updated_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (office_id, template_type) DO UPDATE SET styling = EXCLUDED.styling, updated_by = EXCLUDED.updated_by, updated_at = now()',
       [office, type, f.heading, f.letterheadName, f.letterheadAddress, f.letterheadPhone, f.body, f.signatureLine, stored, actor]
     );
     return { prior: 'style_default' };

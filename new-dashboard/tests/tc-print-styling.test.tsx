@@ -93,6 +93,7 @@ vi.mock("@/contexts/OfficeContext", () => ({
 import AdminPrintTemplates from "@/pages/AdminPrintTemplates";
 import { PrintPreview } from "@/features/tc/print/PrintPreview";
 import { TcApiError } from "@/features/tc/api";
+import { printPdfInFrame } from "@/features/tc/checkout/CheckoutPrint";
 
 const PREFILL = { name: "Synthetic Roland Dental", address: "1 Example Way\nRoland, OK 74954", phone: "(555) 010-0001" };
 const { width: W, height: H, margin: M } = PRINT_PAGE;
@@ -456,6 +457,40 @@ describe("Settings → Print templates → Style", () => {
     fireEvent.click(await screen.findByTestId("print-style-layout-centered_formal"));
     fireEvent.click(screen.getByTestId("print-save"));
     expect((await screen.findByTestId("print-save-error")).textContent).toContain("too light");
+  });
+});
+
+// ── review round 1 ──────────────────────────────────────────────────────────
+
+describe("REVIEW round 1", () => {
+  beforeEach(() => {
+    for (const fn of Object.values(api)) fn.mockReset();
+    api.fetchPrintFontUrl.mockResolvedValue("blob:font");
+  });
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+    document.querySelectorAll('iframe[data-testid="print-frame"]').forEach((f) => f.remove());
+  });
+
+  it("typing the saved colour in capitals is not a change: no badge, Save stays off", async () => {
+    const saved: PrintStyling = { ...PRINT_STYLING_DEFAULTS, accentColor: "#1f4e79" };
+    api.getPrintTemplates.mockResolvedValue({ ...templates(), templates: [stateOf({ stored: true, styling: saved, styled: true })] });
+    renderSettings();
+    fireEvent.change(await screen.findByTestId("print-style-accent-hex"), { target: { value: "#1F4E79" } });
+    expect(screen.queryByText("Unsaved changes")).toBeNull();
+    expect((screen.getByTestId("print-save") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("a frame that loads after the 15 s fallback opens no print dialog behind the link", async () => {
+    vi.useFakeTimers();
+    const result = printPdfInFrame("blob:late");
+    const frame = document.querySelector('iframe[data-testid="print-frame"]') as HTMLIFrameElement;
+    const print = vi.spyOn(frame.contentWindow as Window, "print").mockImplementation(() => undefined);
+    vi.advanceTimersByTime(15_000);
+    await expect(result).resolves.toBe(false);
+    fireEvent.load(frame);
+    expect(print).not.toHaveBeenCalled();
   });
 });
 

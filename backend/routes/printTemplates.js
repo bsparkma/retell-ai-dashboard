@@ -215,13 +215,13 @@ router.put(
     const prefill = await store.prefillFor(office);
 
     await withTenantTx(req, async (client) => {
-      const { prior } = await store.saveStyling(client, { office, type, styling, actor, prefill });
-      // Inside the transaction: no trail, no save.
-      await auditTemplate(req, office, type, prior);
+      const { prior, unchanged } = await store.saveStyling(client, { office, type, styling, actor, prefill });
+      // Inside the transaction: no trail, no save. Nothing written, nothing to record.
+      if (!unchanged) await auditTemplate(req, office, type, prior);
     });
 
     const row = await tenantDb.withTenantDb(req, (pool) => store.rowFor(pool, office, type));
-    const state = row ? store.stateOf(type, row, prefill) : null;
+    const state = store.stateOf(type, row, prefill);
     const wanted = styling || contract.PRINT_STYLING_DEFAULTS;
     if (!state || JSON.stringify(state.styling) !== JSON.stringify({ ...contract.PRINT_STYLING_DEFAULTS, ...wanted })) {
       return fail(res, 500, 'The styling could not be read back as saved. Reload before trusting it.', 'SAVE_NOT_CONFIRMED');

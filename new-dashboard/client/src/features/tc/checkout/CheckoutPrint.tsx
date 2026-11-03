@@ -66,6 +66,8 @@ export function printPdfInFrame(url: string): Promise<boolean> {
     };
     const timer = window.setTimeout(() => done(false), FRAME_LOAD_TIMEOUT_MS);
     frame.addEventListener("load", () => {
+      // Already given up (the link is showing): a late load must not open a dialog too.
+      if (settled) return;
       try {
         const win = frame.contentWindow;
         if (!win) return done(false);

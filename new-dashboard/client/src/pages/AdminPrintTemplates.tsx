@@ -204,7 +204,8 @@ function StyleControls({
             maxLength={7}
             onChange={(e) => {
               setHexDraft(e.target.value);
-              set("accentColor", e.target.value.trim());
+              // Lower-cased as the server stores it, so "#1F4E79" is not a change from "#1f4e79".
+              set("accentColor", e.target.value.trim().toLowerCase());
             }}
             className="h-8 w-28 font-mono text-xs"
             aria-label="Accent colour as a hex code"

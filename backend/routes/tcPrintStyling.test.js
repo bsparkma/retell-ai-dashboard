@@ -522,3 +522,84 @@ test('the font route serves the allow-listed bundled files, byte for byte, and n
     assert.equal(res.status, 404, bad);
   }
 });
+
+// ── review round 1 ──────────────────────────────────────────────────────────
+
+/** A minimal baseline JPEG header: SOI, an optional EXIF APP1 with an orientation, SOF0 (4×2, RGB), EOI. */
+function jpeg(orientation) {
+  const parts = [Buffer.from([0xff, 0xd8])];
+  if (orientation !== undefined) {
+    // TIFF, big-endian: header, IFD0 at 8 with one entry (0x0112 SHORT 1 = orientation).
+    const tiff = Buffer.alloc(8 + 2 + 12 + 4);
+    tiff.write('MM', 0, 'latin1');
+    tiff.writeUInt16BE(42, 2);
+    tiff.writeUInt32BE(8, 4);
+    tiff.writeUInt16BE(1, 8);
+    tiff.writeUInt16BE(0x0112, 10);
+    tiff.writeUInt16BE(3, 12);
+    tiff.writeUInt32BE(1, 14);
+    tiff.writeUInt16BE(orientation, 18);
+    const body = Buffer.concat([Buffer.from('Exif\0\0', 'latin1'), tiff]);
+    const len = Buffer.alloc(2);
+    len.writeUInt16BE(body.length + 2);
+    parts.push(Buffer.from([0xff, 0xe1]), len, body);
+  }
+  parts.push(Buffer.from([0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x02, 0x00, 0x04, 0x03, 1, 0x11, 0, 2, 0x11, 1, 3, 0x11, 1]));
+  parts.push(Buffer.from([0xff, 0xd9]));
+  return Buffer.concat(parts);
+}
+
+test('REVIEW: a JPEG stored sideways with an EXIF rotation is refused at upload, by name — the preview and the PDF would disagree about its shape', async (t) => {
+  const { prepareLogo, jpegOrientation, LogoImageError } = require('../services/tc/printImage');
+  assert.equal(jpegOrientation(jpeg()), 1);
+  assert.equal(jpegOrientation(jpeg(1)), 1);
+  assert.equal(jpegOrientation(jpeg(6)), 6);
+  assert.equal(prepareLogo(jpeg(1)).width, 4, 'an upright JPEG is fine');
+  assert.throws(() => prepareLogo(jpeg(6)), (e) => e instanceof LogoImageError && e.code === 'LOGO_JPEG_ROTATED');
+
+  process.env.TC_BLOB_ACCOUNT_URL = 'https://example.invalid';
+  const blobs = new Map();
+  assets.setContainerClientForTests({ getBlockBlobClient: (key) => ({ uploadData: async (d) => blobs.set(key, d) }) });
+  const { baseUrl, db } = await bootSettings(t);
+  const form = new FormData();
+  form.append('file', new Blob([jpeg(8)]), 'phone.jpg');
+  const res = await fetch(`${baseUrl}${SETTINGS}/excuse/logo?office=roland`, { method: 'POST', body: form });
+  const body = await res.json();
+  assert.equal(res.status, 415);
+  assert.equal(body.code, 'LOGO_JPEG_ROTATED');
+  assert.match(body.error, /stored sideways/);
+  assert.equal(blobs.size, 0, 'nothing stored');
+  assert.equal(db.table('tc_print_templates').length, 0);
+});
+
+test('REVIEW: two FIRST saves racing — a styling save that loses applies as an update, not a 500', async () => {
+  const store = require('../services/tc/printTemplateStore');
+  const db = new FakeTenantDb();
+  // Another first save's row is already there, but this save's lock read ran first and saw none.
+  db.table('tc_print_templates').push({ office_id: 'roland', template_type: 'excuse', heading: 'theirs', styling: null, updated_by: 'other@carein.ai' });
+  db.onQuery(/FROM tc_print_templates WHERE office_id = \$1 AND template_type = \$2 FOR UPDATE$/, () => ({ rows: [] }));
+  const chosen = style({ layout: 'compact_card' });
+  const out = await store.saveStyling(db, { office: 'roland', type: 'excuse', styling: chosen, actor: 'om@carein.ai', prefill: { name: 'x', address: '', phone: '' } });
+  assert.equal(out.prior, 'style_default');
+  assert.equal(db.table('tc_print_templates').length, 1, 'one row, never a second');
+  const [row] = db.table('tc_print_templates');
+  assert.deepEqual(row.styling, chosen);
+  // The SQL updates only `styling, updated_by, updated_at` on conflict, so on
+  // Postgres the other save keeps its wording. FakeTenantDb's upsert copies every
+  // inserted column regardless of the SET list, so that half is pinned on the
+  // statement instead.
+  const upsert = db.log.find((l) => /^INSERT INTO tc_print_templates/.test(l.sql));
+  assert.match(upsert.sql, /ON CONFLICT \(office_id, template_type\) DO UPDATE SET styling = EXCLUDED\.styling, updated_by = EXCLUDED\.updated_by, updated_at = now\(\)$/);
+});
+
+test('REVIEW: going back to the defaults with nothing saved writes nothing and audits nothing', async (t) => {
+  const { baseUrl, db } = await bootSettings(t);
+  for (const styling of [null, style()]) {
+    const r = await putStyling(baseUrl, { styling });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.template.stored, false, 'still the shipped default');
+    assert.deepEqual(r.body.template.styling, contract.PRINT_STYLING_DEFAULTS);
+  }
+  assert.equal(db.table('tc_print_templates').length, 0);
+  assert.equal(styleAudits(db).length, 0);
+});
