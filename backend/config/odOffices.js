@@ -562,6 +562,30 @@ function resetOdOfficeCache() {
   clientCache.clear();
 }
 
+// ── Office registry parity tripwire (MT-1a) ──────────────────────────────────
+// Same as officeAgents' check, over the Open Dental fields this module owns.
+// DARK: it logs a divergence and changes nothing. getOdOffice() and every
+// readiness check above keep answering from OFFICE_OD_SETTINGS and process.env.
+// Compares the code DEFAULT DefNums: an env override is a deploy-time choice,
+// not something the registry is meant to mirror. Only secret NAMES are compared
+// or logged, never a value.
+const officeRegistry = require('../platform/officeRegistry');
+
+const registryParity = officeRegistry.createParityCheck({
+  label: 'odOffices',
+  fields: [
+    'odCustomerKeySecret',
+    'odCustomerKeyEnv',
+    'commTypeDefNums.call',
+    'commTypeDefNums.referral',
+    'odEnabled',
+    'hygOdEnabled',
+  ],
+});
+officeRegistry.onRefresh((offices, tenantSlug) => {
+  if (tenantSlug === officeRegistry.CODE_MAP_TENANT_SLUG) registryParity.check(offices);
+});
+
 module.exports = {
   OdOfficeError,
   OFFICE_OD_SETTINGS,
@@ -577,6 +601,10 @@ module.exports = {
   getOdOffice,
   assertOfficeMatch,
   resetOdOfficeCache,
+  /** Parity tripwire (MT-1a). Logs only; returns the divergences it found. */
+  checkRegistryParity: registryParity.check,
+  /** TESTS ONLY: forget which divergences were already warned about. */
+  resetRegistryParityForTests: registryParity.resetForTests,
   /** Exposed for diagnostics — secret NAMES only, never values. */
   secretNames: Object.values(OFFICE_OD_SETTINGS).map((s) => s.customerKeySecret),
 };
