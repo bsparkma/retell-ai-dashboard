@@ -68,6 +68,7 @@ async function bootstrap() {
   const tcSms = require('./config/tcSms');
   const tcEmail = require('./config/tcEmail');
   const emailIdentity = require('./config/emailIdentity');
+  const officeRegistry = require('./platform/officeRegistry');
   const { requireDashboardAuth, socketAuth } = require('./middleware/auth');
   const { tenantContext, requireModule } = require('./middleware/tenantContext');
   const { requirePermission, requireReadWrite, requireSuperAdmin } = require('./config/permissions');
@@ -591,6 +592,14 @@ async function bootstrap() {
     await retentionConfig.refreshFromDb();
     retentionScheduler.start();
 
+    //    The office registry (MT-1a). DARK: read once so the parity tripwire in
+    //    config/officeAgents.js and config/odOffices.js can compare the control
+    //    plane's `office` rows with the code maps and warn on any drift. Every
+    //    consumer keeps answering from the code maps whatever this finds.
+    //    refreshFromDb never throws; an unreachable control plane just logs.
+    await officeRegistry.refreshFromDb();
+    officeRegistry.startRefreshTimer();
+
     // 5. Start the per-office Open Dental health check (default every 5 min).
     //    This is the DELIBERATE replacement for the 3-minute self-polling loop
     //    that used to live inside the OD client — a loop that made ~25,000 OD
@@ -688,6 +697,7 @@ async function bootstrap() {
     hygPilot.stopRefreshTimer();
     tcSms.stopRefreshTimer();
     tcEmail.stopRefreshTimer();
+    officeRegistry.stopRefreshTimer();
     await unifiedCallStore.shutdown();
     process.exit(0);
   });
@@ -702,6 +712,7 @@ async function bootstrap() {
     hygPilot.stopRefreshTimer();
     tcSms.stopRefreshTimer();
     tcEmail.stopRefreshTimer();
+    officeRegistry.stopRefreshTimer();
     await unifiedCallStore.shutdown();
     process.exit(0);
   });

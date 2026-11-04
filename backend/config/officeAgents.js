@@ -246,6 +246,26 @@ const filterCallsForOffice = (calls, officeId) => {
   return calls.filter((call) => getOfficeForCall(call) === officeId);
 };
 
+// ── Office registry parity tripwire (MT-1a) ──────────────────────────────────
+// The control-plane `office` table (platform/officeRegistry.js) will one day be
+// where these maps live. Until then it is DARK: on every successful registry
+// read this compares the fields THIS module owns with the maps above and
+// console.warns once per divergent field. It changes nothing. Every function
+// above keeps answering from the maps in this file. odOffices runs the same
+// check over the Open Dental fields.
+//
+// Required here, below the maps, and officeRegistry reads these maps lazily, so
+// there is no load-order cycle.
+const officeRegistry = require('../platform/officeRegistry');
+
+const registryParity = officeRegistry.createParityCheck({
+  label: 'officeAgents',
+  fields: ['row', 'displayName', 'sortOrder', 'retellAgentIds', 'mangoDids', 'status'],
+});
+officeRegistry.onRefresh((offices, tenantSlug) => {
+  if (tenantSlug === officeRegistry.CODE_MAP_TENANT_SLUG) registryParity.check(offices);
+});
+
 module.exports = {
   OFFICES,
   FALLBACK_OFFICE,
@@ -260,4 +280,8 @@ module.exports = {
   isAgentAllowedForOffice,
   filterAgentsForOffice,
   filterCallsForOffice,
+  /** Parity tripwire (MT-1a). Logs only; returns the divergences it found. */
+  checkRegistryParity: registryParity.check,
+  /** TESTS ONLY: forget which divergences were already warned about. */
+  resetRegistryParityForTests: registryParity.resetForTests,
 };

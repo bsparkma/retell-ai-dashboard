@@ -93,7 +93,7 @@ beforeEach(() => {
   checkoutRoute.setClockForTests(() => NOW);
   odCalls = [];
   patched = [];
-  // No Open Dental call at all, anywhere in this module.
+  // No Open Dental call in this module but a print's provider-name READ.
   for (const office of ['roland', 'valley']) {
     const { client } = odOffices.getOdOffice(office);
     patched.push({ client, original: client.apiGetRaw });
@@ -397,7 +397,9 @@ test("office isolation: roland's styling never reaches valley's settings or vall
   const vs = v.buf.toString('latin1');
   assert.ok(!/FontFile2|Lato| rg | RG /.test(vs), 'valley prints the standard style');
   assert.match(vs, /\/BaseFont \/Helvetica /);
-  assert.deepEqual(odCalls, []);
+  // Each print's only Open Dental call is its OWN office's provider-list READ
+  // (services/tc/printProviderName.js) — never the other office's.
+  assert.deepEqual(odCalls, [{ office: 'roland', path: '/providers' }, { office: 'valley', path: '/providers' }]);
 });
 
 // ── the PDF: every option, geometry asserted on the PDF itself ──────────────

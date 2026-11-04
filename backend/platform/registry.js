@@ -303,6 +303,39 @@ async function listTenantsWithUserCounts() {
   return rows.map((r) => ({ ...r, user_count: Number(r.user_count) }));
 }
 
+// --- office registry (MT-1a) ------------------------------------------------
+
+/**
+ * Every office row a tenant has, in display order. Looked up by tenant SLUG
+ * because that is what the one running practice is known by in this process
+ * today; there is no request in hand at boot to read a tenant id from.
+ *
+ * Raw rows: platform/officeRegistry.js maps them to its domain shape and is the
+ * only caller. An unknown slug is an empty list, not an error.
+ *
+ * MT-1a is DARK: nothing serves these values yet. They are read only so the
+ * parity tripwire can compare them with the code maps.
+ *
+ * @param {string} tenantSlug
+ * @returns {Promise<Array<{ office_key: string, display_name: string, sort_order: number,
+ *   retell_agent_ids: unknown, mango_dids: unknown, od_customer_key_secret: string|null,
+ *   od_customer_key_env: string|null, commtype_defnums: unknown, od_enabled: boolean,
+ *   hyg_od_enabled: boolean, status: string, updated_at: Date, updated_by: string|null }>>}
+ */
+async function listTenantOffices(tenantSlug) {
+  const { rows } = await query(
+    `SELECT o.office_key, o.display_name, o.sort_order, o.retell_agent_ids, o.mango_dids,
+            o.od_customer_key_secret, o.od_customer_key_env, o.commtype_defnums,
+            o.od_enabled, o.hyg_od_enabled, o.status, o.updated_at, o.updated_by
+       FROM office o
+       JOIN tenant t ON t.tenant_id = o.tenant_id
+      WHERE t.slug = $1
+      ORDER BY o.sort_order, o.office_key`,
+    [tenantSlug]
+  );
+  return rows;
+}
+
 // --- platform settings (Platform Console, PR C) -----------------------------
 
 /**
@@ -874,6 +907,7 @@ module.exports = {
   getEnabledModules,
   listTenantModules,
   setTenantModule,
+  listTenantOffices,
   getPlatformSetting,
   setPlatformSetting,
   getTenantDbRef,
