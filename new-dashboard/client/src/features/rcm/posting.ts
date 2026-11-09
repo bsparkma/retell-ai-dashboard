@@ -365,15 +365,17 @@ export const SHADOW_MODE_COPY = {
   /**
    * The banner's body — what to do about it, for somebody who wants it on.
    *
-   * "Admin → Office" NAMES TWO REAL LABELS: the nav item in
-   * `DashboardLayout.tsx` and the tab in `Admin.tsx`. It read "Offices" until
+   * "Admin → Revenue Cycle" NAMES TWO REAL LABELS: the nav item in
+   * `DashboardLayout.tsx` and the RCM sub-heading on the Admin hub
+   * (`Admin.tsx`). SC-1 moved the switch there from the old Office tab, so the
+   * string changed with it. Before that, it read "Offices" until
    * 2026-08-29, when the tab was already labelled "Office" — a sentence sending
    * a biller to a tab that does not exist under the name it gives.
    * `rcm-labels.test.ts` now reads both files and fails if either label is
    * renamed without this string.
    */
   fix:
-    "An administrator switches posting on for a practice under Admin → Office. " +
+    "An administrator switches posting on for a practice under Admin → Revenue Cycle. " +
     "Until then nothing here reaches Open Dental.",
   /**
    * S5 (artboard M). The banner's own opening, on the check's page.
@@ -390,7 +392,7 @@ export const SHADOW_MODE_COPY = {
    * The answer inside the "Who can switch this on?" disclosure. Names the same
    * two labels `fix` does, and `rcm-labels.test.ts` holds both to them.
    */
-  who: "An administrator, under Admin → Office.",
+  who: "An administrator, under Admin → Revenue Cycle.",
 } as const;
 
 /**
