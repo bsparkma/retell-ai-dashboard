@@ -225,7 +225,9 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
         { path: "/tc/reports", label: "Reports", icon: BarChart3 },
         { path: "/tc/cob", label: "COB Calculator", icon: Calculator },
         { path: "/tc/library", label: "Library", icon: LibraryBig },
-        { path: "/tc/settings", label: "Settings", icon: Settings },
+        // SC-1: "Settings" left this nav. The page lives at /admin/tc/settings
+        // and is reached from the /admin settings hub. No nav tab replaces it
+        // (the "no new nav tabs" ruling).
       ],
     },
   ],
