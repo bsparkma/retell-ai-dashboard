@@ -71,7 +71,7 @@ export function NewHubReferral({
       </Button>
 
       <Dialog open={picking && !patient} onOpenChange={(o) => (!o ? close() : undefined)}>
-        <DialogContent className="max-w-lg" data-testid="tc-hub-new-referral-pick">
+        <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto" data-testid="tc-hub-new-referral-pick">
           <DialogHeader>
             <DialogTitle>New referral</DialogTitle>
             <DialogDescription>

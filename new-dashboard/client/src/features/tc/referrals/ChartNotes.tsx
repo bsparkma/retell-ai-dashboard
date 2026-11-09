@@ -24,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { tcErrorMessage } from "@/features/tc/api";
+import { REFERRAL_LONG_TEXT_CLASS, REFERRAL_LONG_TEXT_ECHO_CLASS } from "@/features/tc/referrals/longText";
 import { writeReferralChartNote } from "@/features/tc/referrals/referralsApi";
 import type { OfficeId } from "@shared/tc/contract";
 import {
@@ -126,11 +127,12 @@ function OpenRow({
             value={text}
             onChange={(e) => setText(e.target.value)}
             rows={3}
+            className={REFERRAL_LONG_TEXT_CLASS}
             data-testid={`${id}-text`}
           />
           <p className="text-xs text-muted-foreground">This exact text will be written to the patient's Open Dental chart:</p>
           <pre
-            className="whitespace-pre-wrap rounded bg-muted px-2 py-1.5 text-xs font-sans"
+            className={`whitespace-pre-wrap rounded bg-muted px-2 py-1.5 text-xs font-sans ${REFERRAL_LONG_TEXT_ECHO_CLASS}`}
             data-testid={`${id}-final`}
           >
             {final || "—"}
