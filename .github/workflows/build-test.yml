@@ -185,6 +185,18 @@ jobs:
           MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
         run: node scripts/od-sync-verify-queries.js
 
+      # AT-0: the note-history CHECKs, the write-once letter snapshot trigger,
+      # the append-only pre-auth history grants and the funnel ignoring
+      # notes_updated (one transaction, rolled back) — then this migration's
+      # REAL down() and up() with history rows present, so a down that would
+      # strand a row against the narrowed CHECK fails here. Leaves the schema
+      # as it found it.
+      - name: at0 note history verification (real CHECKs, real down/up)
+        working-directory: backend
+        env:
+          MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
+        run: node scripts/at0-note-history-verify-queries.js
+
       - name: spine smoke test (registry / tenantDb / append-only audit / entitlement)
         working-directory: backend
         env:
