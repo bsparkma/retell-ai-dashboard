@@ -24,6 +24,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { tcErrorMessage } from "@/features/tc/api";
 import { logReferralCorrespondence, uploadReferralAttachment } from "@/features/tc/referrals/referralsApi";
 import { AttachmentZone } from "@/features/tc/referrals/AttachmentZone";
+import { REFERRAL_LONG_TEXT_CLASS } from "@/features/tc/referrals/longText";
 import { uploadAll } from "@/features/tc/referrals/ReferralsPanel";
 import { HUB_STAFF_ATTACHABLE_STATUSES } from "@/features/tc/referrals/hubActions";
 import type { OfficeId } from "@shared/tc/contract";
@@ -170,7 +171,7 @@ export function LogCorrespondence({
         A record of a contact that happened outside the app. It goes in the history; it does not change where the referral stands
         and contacts no one.
       </p>
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         <div className="space-y-1">
           <Label htmlFor="corr-who" className="text-xs">
             Who
@@ -215,6 +216,7 @@ export function LogCorrespondence({
         <Textarea
           id="corr-note"
           rows={3}
+          className={REFERRAL_LONG_TEXT_CLASS}
           maxLength={TC_REFERRAL_CORRESPONDENCE_NOTE_MAX}
           value={note}
           onChange={(e) => setNote(e.target.value)}
@@ -235,7 +237,7 @@ export function LogCorrespondence({
           {error}
         </p>
       )}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2" data-testid="tc-hub-correspondence-actions">
         <Button size="sm" onClick={() => void save()} disabled={busy || !note.trim()} data-testid="tc-hub-correspondence-save">
           {busy && <Loader2 className="w-4 h-4 animate-spin" />} Log it
         </Button>

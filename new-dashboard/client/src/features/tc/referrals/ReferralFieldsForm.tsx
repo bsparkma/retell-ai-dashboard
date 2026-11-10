@@ -32,6 +32,7 @@ import {
 } from "@shared/tc/referrals";
 import type { TcProviderEntry } from "@shared/tc/providers";
 import { ProviderPicker } from "@/features/tc/providers/ProviderPicker";
+import { REFERRAL_LONG_TEXT_CLASS } from "@/features/tc/referrals/longText";
 
 export type ReferralFieldsChange = TcReferralDoctorEdit;
 
@@ -271,6 +272,7 @@ export function ReferralFieldsForm({
             <Textarea
               id="rff-dnote"
               rows={3}
+              className={REFERRAL_LONG_TEXT_CLASS}
               maxLength={TC_REFERRAL_DOCTOR_NOTE_MAX}
               value={s.doctorNote}
               disabled={saving}
