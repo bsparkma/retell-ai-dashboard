@@ -121,12 +121,7 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
       title: "Insights",
       items: [
         { path: "/analytics", label: "Analytics", icon: BarChart3 },
-        { path: "/admin", label: "Admin", icon: Settings },
-        // Tenant user management. Sits under /admin so it inherits admin.all
-        // from ROUTE_PERMISSIONS' prefix match — one place decides.
-        // Also where each person's "Signature on notes" (name + licence) is
-        // entered — the retired /admin/staff page's job, one door per person.
-        { path: "/admin/users", label: "Users", icon: Users },
+        // Admin and Users moved to ADMIN_GROUP, which every module's nav gets.
       ],
     },
   ],
@@ -230,6 +225,33 @@ const NAV_BY_MODULE: Partial<Record<ModuleId, NavGroup[]>> = {
         // (the "no new nav tabs" ruling).
       ],
     },
+  ],
+};
+
+/**
+ * The Administration nav group — shared by EVERY module.
+ *
+ * NOT in NAV_BY_MODULE, for the same reason PLATFORM_GROUP isn't: the /admin
+ * settings hub belongs to no module. It used to sit in Voice's "Insights"
+ * group, so an admin working in TC, Hygiene, or RCM had no nav path to it —
+ * and since SC-1 removed TC's own Settings tab, /admin is the only door.
+ *
+ * Unlike PLATFORM_GROUP it DOES go through `visibleNav`: both paths resolve to
+ * admin.all via ROUTE_PERMISSIONS' prefix match, so a user without admin.all
+ * sees no Administration group at all. One place decides.
+ *
+ * Kept out of `switchableModules` on purpose (that reads NAV_BY_MODULE only):
+ * holding admin.all must not make every module look openable.
+ */
+const ADMIN_GROUP: NavGroup = {
+  title: "Administration",
+  items: [
+    { path: "/admin", label: "Admin", icon: Settings },
+    // Tenant user management. Sits under /admin so it inherits admin.all
+    // from ROUTE_PERMISSIONS' prefix match — one place decides.
+    // Also where each person's "Signature on notes" (name + licence) is
+    // entered — the retired /admin/staff page's job, one door per person.
+    { path: "/admin/users", label: "Users", icon: Users },
   ],
 };
 
@@ -521,6 +543,9 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
       // Referrals ships dark per office too: no office on ⇒ no Referrals item.
       .map((g) => ({ ...g, items: g.items.filter((i) => i.path !== "/tc/referrals" || referralsOn || signoff.enabled) }))
       .filter((g) => g.items.length > 0),
+    // After the module's own groups, for every module — see ADMIN_GROUP.
+    ...visibleNav([ADMIN_GROUP], permissions),
+    // Below Administration, for every module — see PLATFORM_GROUP.
     ...(isSuperAdmin ? [PLATFORM_GROUP] : []),
   ];
   // wouter's `location` is the pathname only, so the query — which is what
