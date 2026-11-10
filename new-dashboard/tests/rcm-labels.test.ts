@@ -451,10 +451,11 @@ describe("the shadow gate's words", () => {
     );
     expect(navLabel, "the /admin nav item moved — update this test and the copy").toBeTruthy();
 
+    // SC-1: the switch moved from the Office tab to the hub's RCM sub-heading.
     const tabLabel = read("pages/Admin.tsx").match(
-      /\{\s*id:\s*"offices",\s*label:\s*"([^"]+)"/,
+      /data-testid="admin-module-rcm"[\s\S]*?<SubHeading>([^<]+)<\/SubHeading>/,
     );
-    expect(tabLabel, "the offices tab moved — update this test and the copy").toBeTruthy();
+    expect(tabLabel, "the RCM sub-heading moved — update this test and the copy").toBeTruthy();
 
     /*
      * A WORD BOUNDARY, not `toContain`. "Admin → Offices" CONTAINS

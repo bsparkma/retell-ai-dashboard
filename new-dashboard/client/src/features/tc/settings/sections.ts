@@ -1,5 +1,5 @@
 /**
- * /tc/settings — section registry and hash deep-link helpers.
+ * /admin/tc/settings (was /tc/settings) — section registry and hash deep-link helpers.
  *
  * The order, labels, and icons mirror the legacy DentaFlow Settings shell so
  * the arrangement is familiar. What each section CONTAINS is platform reality:

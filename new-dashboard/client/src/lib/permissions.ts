@@ -110,6 +110,12 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionAction | readonly Permi
   "/scheduling": "voice.read",
   "/analytics": "voice.read",
   "/admin": "admin.all",
+  // SC-1: the TC settings page moved here from /tc/settings, where it inherited
+  // tc.full from "/tc". It keeps EXACTLY that grant through its own entry
+  // (longest prefix beats "/admin"), so everyone who could open it before still
+  // can, and nobody else. Never widen admin.all to cover it, and never gate it
+  // behind admin.all.
+  "/admin/tc/settings": "tc.full",
   "/tc": "tc.full",
   // The TC Inbox: the ONE /tc page a hygienist may see (read-only — Claim and
   // the case page are tc.full). It moved here from /tc/hygiene/inbox in CO-2

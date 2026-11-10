@@ -1,5 +1,6 @@
 /**
- * Admin → Offices → "Shadow-mode comparison" — the evidence behind the switch.
+ * Admin → Revenue Cycle → "Shadow-mode comparison" — the evidence behind the
+ * switch. (On the old Office tab until SC-1.)
  *
  * ═════════════════════════════════════════════════════════════════════════════
  * WHY IT IS ON THIS PAGE AND NOT ON A PAGE OF ITS OWN

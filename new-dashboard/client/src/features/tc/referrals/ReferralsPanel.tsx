@@ -46,6 +46,11 @@ import {
   uploadReferralAttachment,
 } from "@/features/tc/referrals/referralsApi";
 import { AttachmentZone } from "@/features/tc/referrals/AttachmentZone";
+import {
+  REFERRAL_DIALOG_BODY_CLASS,
+  REFERRAL_DIALOG_CONTENT_CLASS,
+  REFERRAL_LONG_TEXT_CLASS,
+} from "@/features/tc/referrals/longText";
 import { ProviderPicker } from "@/features/tc/providers/ProviderPicker";
 import { listActiveProviders } from "@/features/tc/providers/providersApi";
 import type { OfficeId } from "@shared/tc/contract";
@@ -380,88 +385,98 @@ export function ReferralDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => (!o ? onClose() : undefined)}>
-      <DialogContent className="max-w-xl" data-testid="tc-referral-dialog">
-        <DialogHeader>
+      {/* Header / scrolling body / action row: a long note scrolls the body, never pushes the buttons off screen. */}
+      <DialogContent className={`${REFERRAL_DIALOG_CONTENT_CLASS} sm:max-w-xl`} data-testid="tc-referral-dialog">
+        <DialogHeader className="shrink-0 px-6 pt-6 pb-4 pr-12">
           <DialogTitle>{editing ? "Edit referral" : "New referral"}</DialogTitle>
           <DialogDescription>
             The patient comes from {sourceLabel ?? (editing?.sourceKind === "checkout" ? "this checkout" : "this record")}. Nothing
             is sent to the specialist from here.
           </DialogDescription>
         </DialogHeader>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div className="sm:col-span-2 space-y-1">
-            <Label htmlFor="rf-entry">Specialist</Label>
-            <select
-              id="rf-entry"
-              className="w-full h-9 rounded-md border border-input bg-background px-2 text-sm"
-              value={d.directoryEntryId}
-              onChange={(e) => pickEntry(e.target.value)}
-            >
-              <option value="">Choose later</option>
-              {entries.map((e) => (
-                <option key={e.entryId} value={e.entryId}>
-                  {e.practiceName}
-                  {e.specialty ? ` — ${e.specialty}` : ""}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="rf-specialty">Specialty</Label>
-            <Input id="rf-specialty" value={d.specialty} onChange={(e) => set("specialty", e.target.value)} />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="rf-urgency">How soon</Label>
-            <select
-              id="rf-urgency"
-              className="w-full h-9 rounded-md border border-input bg-background px-2 text-sm"
-              value={d.urgency}
-              onChange={(e) => set("urgency", e.target.value as TcReferralUrgency)}
-            >
-              {TcReferralUrgency.options.map((u) => (
-                <option key={u} value={u}>
-                  {TC_REFERRAL_URGENCY_LABELS[u]}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="sm:col-span-2 space-y-1">
-            <Label htmlFor="rf-reason">Reason *</Label>
-            <Input id="rf-reason" value={d.reason} onChange={(e) => set("reason", e.target.value)} placeholder="e.g. Possible cracked tooth, endo evaluation" />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="rf-teeth">Teeth</Label>
-            <Input id="rf-teeth" value={d.teeth} disabled={d.wholeMouth} onChange={(e) => set("teeth", e.target.value)} placeholder="3, 14" />
-          </div>
-          <div className="flex items-end gap-2 pb-2">
-            <input
-              id="rf-mouth"
-              type="checkbox"
-              checked={d.wholeMouth}
-              onChange={(e) => set("wholeMouth", e.target.checked)}
-            />
-            <Label htmlFor="rf-mouth">Whole mouth</Label>
-          </div>
-          <div className="sm:col-span-2 space-y-1">
-            <Label htmlFor="rf-provider">Referring provider</Label>
-            <ProviderPicker
-              id="rf-provider"
-              value={d.referringProvider}
-              onChange={(v) => set("referringProvider", v)}
-              providers={providers}
-            />
-          </div>
-          <div className="sm:col-span-2 space-y-1">
-            <Label htmlFor="rf-narrative">Notes for the specialist</Label>
-            <Textarea id="rf-narrative" rows={3} value={d.narrative} onChange={(e) => set("narrative", e.target.value)} />
-          </div>
-          <div className="sm:col-span-2 space-y-1">
-            <Label>X-rays and files</Label>
-            <AttachmentZone files={files} onChange={setFiles} alreadyAttached={alreadyAttached} disabled={saving} />
+        <div className={REFERRAL_DIALOG_BODY_CLASS} data-testid="tc-referral-dialog-body">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="sm:col-span-2 space-y-1">
+              <Label htmlFor="rf-entry">Specialist</Label>
+              <select
+                id="rf-entry"
+                className="w-full h-9 rounded-md border border-input bg-background px-2 text-sm"
+                value={d.directoryEntryId}
+                onChange={(e) => pickEntry(e.target.value)}
+              >
+                <option value="">Choose later</option>
+                {entries.map((e) => (
+                  <option key={e.entryId} value={e.entryId}>
+                    {e.practiceName}
+                    {e.specialty ? ` — ${e.specialty}` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="rf-specialty">Specialty</Label>
+              <Input id="rf-specialty" value={d.specialty} onChange={(e) => set("specialty", e.target.value)} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="rf-urgency">How soon</Label>
+              <select
+                id="rf-urgency"
+                className="w-full h-9 rounded-md border border-input bg-background px-2 text-sm"
+                value={d.urgency}
+                onChange={(e) => set("urgency", e.target.value as TcReferralUrgency)}
+              >
+                {TcReferralUrgency.options.map((u) => (
+                  <option key={u} value={u}>
+                    {TC_REFERRAL_URGENCY_LABELS[u]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="sm:col-span-2 space-y-1">
+              <Label htmlFor="rf-reason">Reason *</Label>
+              <Input id="rf-reason" value={d.reason} onChange={(e) => set("reason", e.target.value)} placeholder="e.g. Possible cracked tooth, endo evaluation" />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="rf-teeth">Teeth</Label>
+              <Input id="rf-teeth" value={d.teeth} disabled={d.wholeMouth} onChange={(e) => set("teeth", e.target.value)} placeholder="3, 14" />
+            </div>
+            <div className="flex items-end gap-2 pb-2">
+              <input
+                id="rf-mouth"
+                type="checkbox"
+                checked={d.wholeMouth}
+                onChange={(e) => set("wholeMouth", e.target.checked)}
+              />
+              <Label htmlFor="rf-mouth">Whole mouth</Label>
+            </div>
+            <div className="sm:col-span-2 space-y-1">
+              <Label htmlFor="rf-provider">Referring provider</Label>
+              <ProviderPicker
+                id="rf-provider"
+                value={d.referringProvider}
+                onChange={(v) => set("referringProvider", v)}
+                providers={providers}
+              />
+            </div>
+            <div className="sm:col-span-2 space-y-1">
+              <Label htmlFor="rf-narrative">Notes for the specialist</Label>
+              <Textarea
+                id="rf-narrative"
+                rows={3}
+                className={REFERRAL_LONG_TEXT_CLASS}
+                value={d.narrative}
+                onChange={(e) => set("narrative", e.target.value)}
+              />
+            </div>
+            <div className="sm:col-span-2 space-y-1">
+              <Label>X-rays and files</Label>
+              <AttachmentZone files={files} onChange={setFiles} alreadyAttached={alreadyAttached} disabled={saving} />
+            </div>
           </div>
         </div>
-        {error && <p className="text-sm text-destructive">{error}</p>}
-        <DialogFooter className="gap-2">
+        {/* Outside the scroll region, so a refusal is seen next to the buttons. */}
+        {error && <p className="shrink-0 px-6 pb-2 text-sm text-destructive">{error}</p>}
+        <DialogFooter className="shrink-0 gap-2 border-t px-6 py-4" data-testid="tc-referral-dialog-actions">
           <Button variant="outline" onClick={onClose} disabled={saving}>
             Cancel
           </Button>

@@ -40,6 +40,7 @@ import {
   uploadReferralAttachment,
 } from "@/features/tc/referrals/referralsApi";
 import { AddAttachments } from "@/features/tc/referrals/AddAttachments";
+import { REFERRAL_LONG_TEXT_CLASS } from "@/features/tc/referrals/longText";
 import { ReferralFieldsForm, type ReferralFieldsChange } from "@/features/tc/referrals/ReferralFieldsForm";
 import type { HubSignoffVerb } from "@/features/tc/referrals/hubActions";
 import type { OfficeId } from "@shared/tc/contract";
@@ -214,7 +215,13 @@ export function SignoffActions({
       {mode === "declining" && (
         <div className="space-y-1">
           <Label htmlFor="so-reason">Why decline?</Label>
-          <Textarea id="so-reason" rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />
+          <Textarea
+            id="so-reason"
+            rows={2}
+            className={REFERRAL_LONG_TEXT_CLASS}
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+          />
         </div>
       )}
       {mode === "returning" && (
@@ -223,6 +230,7 @@ export function SignoffActions({
           <Textarea
             id="so-question"
             rows={2}
+            className={REFERRAL_LONG_TEXT_CLASS}
             maxLength={1000}
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
