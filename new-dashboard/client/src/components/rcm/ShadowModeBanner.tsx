@@ -14,7 +14,7 @@
  *   1. WHAT IS TRUE      posting is off; nothing here reaches a chart.
  *   2. WHAT IS SAFE      every decision is saved, and it will still be there.
  *   3. WHAT CHANGES      when it is switched on, the same button posts them.
- *   4. WHO CAN SWITCH IT an administrator, under Admin → Office. She is not
+ *   4. WHO CAN SWITCH IT an administrator, under Admin → Revenue Cycle. She is not
  *                        being asked to fix this and should not go looking.
  *
  * ─────────────────────────────────────────────────────────────────────────────

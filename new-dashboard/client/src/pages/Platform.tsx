@@ -17,13 +17,17 @@
  * practice would imply a per-practice policy the code cannot honour — the tab
  * boundary is the scoping, made visible.
  *
+ * OPERATIONS (SC-1) is the voice pipeline's operational readout and controls
+ * (service health, Mango sync, config, costs, queues, errors), moved here from
+ * /admin, which is now the practice's own settings. Same /api/admin/* endpoints.
+ *
  * The hygiene tab still SHOWS each practice's `hyg` entitlement, because a
  * hygienist needs both that and the per-office switch. It shows it read-only and
  * points at the Practices tab: a second place to flip entitlement would be a
  * second place for that decision to be made by accident.
  */
 import { useEffect, useState } from "react";
-import { ShieldAlert, Building2, Database, Stethoscope, DoorOpen, Send } from "lucide-react";
+import { ShieldAlert, Building2, Database, Stethoscope, DoorOpen, Send, Activity } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/contexts/AuthContext";
@@ -32,6 +36,7 @@ import type { Practice } from "@/lib/api";
 import PracticesPanel from "./platform/PracticesPanel";
 import RetentionPanel from "./platform/RetentionPanel";
 import HygienePanel from "./platform/HygienePanel";
+import OperationsPanel from "./platform/OperationsPanel";
 import { TcCheckoutPanel } from "./platform/TcCheckoutPanel";
 import {
   TcAutoCheckoutPanel,
@@ -136,6 +141,10 @@ export default function Platform() {
             <Send className="mr-1.5 h-3.5 w-3.5" />
             TC referrals
           </TabsTrigger>
+          <TabsTrigger value="operations" data-testid="tab-operations">
+            <Activity className="mr-1.5 h-3.5 w-3.5" />
+            Operations
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="practices" className="mt-4">
@@ -171,6 +180,14 @@ export default function Platform() {
           <TcReferralEmailPanel />
           {/* R5b: the patient's email after a send has its own switch, beside it. */}
           <TcReferralPatientEmailPanel />
+        </TabsContent>
+
+        <TabsContent value="operations" className="mt-4">
+          {/* SC-1: the voice operations widgets that used to be /admin's tabs.
+              Mounted only when this tab is open (Radix unmounts inactive
+              content), so opening the console does not fire the six
+              /api/admin/* reads until someone asks for them. */}
+          <OperationsPanel />
         </TabsContent>
       </Tabs>
     </div>

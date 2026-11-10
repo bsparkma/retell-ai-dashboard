@@ -1,5 +1,6 @@
 /**
- * Admin → Offices → "RCM posting" — the shadow gate's switch.
+ * Admin → Revenue Cycle → "RCM posting" — the shadow gate's switch. (On the
+ * old Office tab until SC-1.)
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * WHAT THIS SWITCH IS
