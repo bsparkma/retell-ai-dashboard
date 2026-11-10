@@ -735,14 +735,47 @@ async function finishSend(q, { office, referralId, attemptId, to, actor, at }) {
  * A history row for an email: `send` and `send_conflict` carry which email
  * (ACS id), to whom, and its unsubscribe link's hash; `send_failed` carries
  * none of them (the database pins this).
+ *
+ * (AT-0) `letterSnapshot` is what the recipient read — { audience, subject,
+ * text, after? } — frozen onto the row that records the email going out. It
+ * never holds a link token or the unsubscribe URL (see the migration
+ * 1794300000000_at0_note_history.js). Write-once: set here, at INSERT, and a
+ * trigger refuses any later change. Only referralSend.js passes one.
  */
 async function insertSendEvent(
   q,
-  { office, referralId, from, to, actor, at, note, verb, acsMessageId = null, recipientAddress = null, unsubscribeTokenHash = null }
+  {
+    office,
+    referralId,
+    from,
+    to,
+    actor,
+    at,
+    note,
+    verb,
+    acsMessageId = null,
+    recipientAddress = null,
+    unsubscribeTokenHash = null,
+    letterSnapshot = null,
+  }
 ) {
   await q.query(
-    'INSERT INTO tc_referral_events (event_id, office_id, referral_id, from_status, to_status, actor, at, note, verb, acs_message_id, recipient_address, unsubscribe_token_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)',
-    [randomUUID(), office, referralId, from, to, actor, at, note || '', verb, acsMessageId, recipientAddress, unsubscribeTokenHash]
+    'INSERT INTO tc_referral_events (event_id, office_id, referral_id, from_status, to_status, actor, at, note, verb, acs_message_id, recipient_address, unsubscribe_token_hash, letter_snapshot) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)',
+    [
+      randomUUID(),
+      office,
+      referralId,
+      from,
+      to,
+      actor,
+      at,
+      note || '',
+      verb,
+      acsMessageId,
+      recipientAddress,
+      unsubscribeTokenHash,
+      letterSnapshot == null ? null : JSON.stringify(letterSnapshot),
+    ]
   );
 }
 

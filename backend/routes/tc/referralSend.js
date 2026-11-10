@@ -250,7 +250,16 @@ function composeAndPack({ office, row, entry, files, attemptId, recipient, unsub
       bccAddress: bcc,
     });
     if (referralLetter.requestBytes(message, office) <= PACKING_BUDGET_BYTES) {
-      return { message, attached: attached.length, onRequest: onRequest.length };
+      return {
+        message,
+        attached: attached.length,
+        onRequest: onRequest.length,
+        // (AT-0) The letter as THIS packing worded it (its attached / on-request
+        // lists), for the send row. The composed text, not the render: the
+        // render adds the link buttons and the unsubscribe footer, whose URLs
+        // carry live tokens that are stored nowhere but the email.
+        letterSnapshot: specialistSnapshot(composed, { contact, insurance }),
+      };
     }
   }
   throw new MessagingError('SEND_FAILED', 'The referral letter is larger than the email service accepts, so it was not sent.', {
@@ -269,6 +278,62 @@ function composeAndPack({ office, row, entry, files, attemptId, recipient, unsub
 function copyPhrase(bcc, outcome) {
   if (!bcc) return '';
   return outcome === 'sent' ? ` A blind copy (BCC) to ${bcc} was on the same message.` : ' No blind copy went out either.';
+}
+
+/** (AT-0) What stands in the snapshot where a block read from Open Dental was. */
+const WITHHELD_DOB = '[Date of birth from Open Dental: in the letter as sent, not kept in this history]';
+const WITHHELD_CONTACT = '[Patient contact from Open Dental: in the letter as sent, not kept in this history]';
+const WITHHELD_INSURANCE = '[Dental plan details from Open Dental: in the letter as sent, not kept in this history]';
+
+/**
+ * (AT-0) The write-once record of what the specialist read: the subject and
+ * the composed letter text. No link, no token, no unsubscribe URL.
+ *
+ * THE THREE BLOCKS READ FROM OPEN DENTAL AT SEND TIME ARE WITHHELD — the date
+ * of birth, the Patient contact section and the Insurance on file section. The
+ * R5c / insurance rule (pinned by tcReferralLetterEnrichment.test.js and
+ * tcReferralLetterInsurance.test.js) is that those values go into the letter
+ * and NOWHERE else: never an event row, never an audit row. So each is swapped
+ * for a marker that says it was there, and `withheld` lists which. Everything
+ * CareIN itself holds (the referral's words, the specialist, the files list)
+ * is verbatim. A block that was NOT read (the "available on request" /
+ * "not available" fallbacks) holds no Open Dental value and stays verbatim.
+ * @param {{ subject: string, text: string }} composed
+ * @param {{ contact?: { status: string }|null, insurance?: { status: string }|null }} reads
+ */
+function specialistSnapshot(composed, { contact = null, insurance = null } = {}) {
+  let text = String(composed.text);
+  /** @type {string[]} */
+  const withheld = [];
+  const swap = (exact, marker, what) => {
+    if (exact && text.includes(exact)) {
+      text = text.split(exact).join(marker);
+      withheld.push(what);
+    }
+  };
+  if (contact && contact.status === 'found') {
+    const { dobLine, section } = letterText.contactLines(contact);
+    swap(dobLine, WITHHELD_DOB, 'date_of_birth');
+    swap(section, WITHHELD_CONTACT, 'patient_contact');
+  }
+  if (insurance && insurance.status === 'found') {
+    swap(letterText.insuranceSection(insurance), WITHHELD_INSURANCE, 'insurance');
+  }
+  return { audience: 'specialist', subject: String(composed.subject), text, withheld };
+}
+
+/**
+ * (AT-0) The same for the patient notice: subject, text and the closing words
+ * the renderer puts after the button. No link, no token, no unsubscribe URL.
+ * @param {{ subject: string, text: string, after?: string }} composed
+ */
+function patientSnapshot(composed) {
+  return {
+    audience: 'patient',
+    subject: String(composed.subject),
+    text: String(composed.text),
+    after: composed.after == null ? '' : String(composed.after),
+  };
 }
 
 /** "2 files attached; 1 listed as available on request" */
@@ -337,7 +402,7 @@ async function recordFailure(req, { office, referralId, attemptId, auto, failure
  * record: release the claim and write `send_conflict` with the same ACS id,
  * recipient and unsubscribe hash a `send` row would carry.
  */
-async function recordConflict(req, { office, referralId, attemptId, accepted, recipient, unsubscribeHash, why, bcc = null }) {
+async function recordConflict(req, { office, referralId, attemptId, accepted, recipient, unsubscribeHash, why, bcc = null, letterSnapshot = null }) {
   try {
     await tenantDb.withTenantDb(req, async (pool) => {
       await store.releaseSendClaim(pool, { office, referralId, attemptId });
@@ -355,6 +420,8 @@ async function recordConflict(req, { office, referralId, attemptId, accepted, re
         acsMessageId: accepted.providerMessageId,
         recipientAddress: recipient,
         unsubscribeTokenHash: unsubscribeHash,
+        // (AT-0) The email IS out; what it said is on the record too.
+        letterSnapshot,
       });
     });
     await audit(req, {
@@ -535,6 +602,8 @@ async function sendReferral(req, { office, referralId, trigger }) {
         acsMessageId: accepted.providerMessageId,
         recipientAddress: recipient,
         unsubscribeTokenHash: unsubscribe.hash,
+        // (AT-0) What the specialist read, frozen with the record of sending it.
+        letterSnapshot: packed.letterSnapshot,
       });
       // (R5b) The letter's links, by hash only, with this email's record.
       await store.insertLinkTokens(client, {
@@ -569,6 +638,7 @@ async function sendReferral(req, { office, referralId, trigger }) {
       unsubscribeHash: unsubscribe.hash,
       why,
       bcc,
+      letterSnapshot: packed.letterSnapshot,
     });
     const message = `The email went out (the email service accepted it), but the referral could not be marked sent: ${why} It is in the history; check with the specialist's office, then mark it sent.`;
     return {
@@ -773,6 +843,8 @@ async function notifyPatient(req, { office, row, entry, withFiles, contact: lett
   let unsubscribe;
   let link;
   let accepted;
+  /** (AT-0) What the patient read, for the row that records it went out. */
+  let noticeSnapshot = null;
   try {
     if (mayEmail !== true) throw new MessagingError('SEND_FAILED', 'Whether the patient may be emailed could not be checked.');
     unsubscribe = referralLetter.mintUnsubscribe();
@@ -788,6 +860,7 @@ async function notifyPatient(req, { office, row, entry, withFiles, contact: lett
       // The reason in plain words, or the generic phrase. Never `reason`.
       patientReason: row.patient_reason == null ? null : String(row.patient_reason),
     });
+    noticeSnapshot = patientSnapshot(composed);
     const rendered = referralLetter.renderPatientNotice({
       office,
       subject: composed.subject,
@@ -834,6 +907,7 @@ async function notifyPatient(req, { office, row, entry, withFiles, contact: lett
         acsMessageId: accepted.providerMessageId,
         recipientAddress: address,
         unsubscribeTokenHash: unsubscribe.hash,
+        letterSnapshot: noticeSnapshot,
       });
       await store.insertLinkTokens(client, {
         office,
@@ -871,6 +945,7 @@ async function notifyPatient(req, { office, row, entry, withFiles, contact: lett
           acsMessageId: accepted.providerMessageId,
           recipientAddress: address,
           unsubscribeTokenHash: unsubscribe.hash,
+          letterSnapshot: noticeSnapshot,
         })
       );
     } catch {
