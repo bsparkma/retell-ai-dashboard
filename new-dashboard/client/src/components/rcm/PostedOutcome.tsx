@@ -954,7 +954,7 @@ function FixSteps({
         ) : (
           <>
             , of the type this practice books its own write-offs under. An administrator can see its
-            name under Admin → Office.
+            name under Admin → Revenue Cycle.
           </>
         )}
       </>

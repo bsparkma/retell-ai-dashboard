@@ -1,9 +1,10 @@
 /**
- * /tc/settings — the Settings shell.
+ * /admin/tc/settings — the TC Settings shell. (Was /tc/settings until SC-1;
+ * that address now redirects here. Gate unchanged: tc.full.)
  *
  * This is DentaFlow's Settings ARRANGEMENT over the platform's existing
  * capabilities: a sticky left section nav with hash deep links
- * (/tc/settings#pricing), the same eight sections in the same order — plus
+ * (/admin/tc/settings#pricing), the same eight sections in the same order — plus
  * Notifications (item 51), which DentaFlow never had, Email identity (R5c),
  * shown to admin and office only, and Referrals (item 52), which appears only
  * while referrals is switched on for the office.
@@ -105,7 +106,7 @@ function SettingsInner({ office }: { office: OfficeId }) {
   );
   const shown: TcSettingsSectionKey = sections.some((s) => s.key === active) ? active : DEFAULT_TC_SETTINGS_SECTION;
 
-  // Deep links: /tc/settings#pricing opens Pricing, and Back/Forward between
+  // Deep links: /admin/tc/settings#pricing opens Pricing, and Back/Forward between
   // sections works because picking one writes the hash.
   useEffect(() => {
     function onHash() {

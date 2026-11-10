@@ -59,6 +59,7 @@ import TcLibrary from "./pages/tc/TcLibrary";
 import TcCobCalculator from "./pages/tc/TcCobCalculator";
 import TcFinancing from "./pages/tc/TcFinancing";
 import TcSettings from "./pages/tc/TcSettings";
+import TcSettingsRedirect from "./pages/tc/TcSettingsRedirect";
 import TcDashboard from "./pages/tc/TcDashboard";
 import TcPrepConsult from "./pages/tc/TcPrepConsult";
 import TcPostConsult from "./pages/tc/TcPostConsult";
@@ -134,6 +135,11 @@ export function Router() {
         {/* Print templates (CO-3): the excuse and appointment card wording, per
             office. Under /admin: admin.all, a card on the hub, no nav tab. */}
         <Route path="/admin/print-templates" component={AdminPrintTemplates} />
+        {/* SC-1: the TC settings page, moved here from /tc/settings so /admin
+            is the practice's one settings hub. Gated by its OWN
+            ROUTE_PERMISSIONS entry carrying tc.full, exactly what /tc/settings
+            needed, not by /admin's admin.all. Reached from the /admin cards. */}
+        <Route path="/admin/tc/settings" component={TcSettings} />
         {/* Platform console. Deliberately absent from ROUTE_PERMISSIONS: the
             platform tier is not a permission action, and leaving it unlisted
             means the courtesy redirect above lets a non-super_admin ARRIVE, so
@@ -260,7 +266,9 @@ export function Router() {
         <Route path="/tc/library" component={TcLibrary} />
         <Route path="/tc/cob" component={TcCobCalculator} />
         <Route path="/tc/financing" component={TcFinancing} />
-        <Route path="/tc/settings" component={TcSettings} />
+        {/* SC-1: the old address of the TC settings page. A redirect, keeping a
+            section hash (/tc/settings#pricing → /admin/tc/settings#pricing). */}
+        <Route path="/tc/settings" component={TcSettingsRedirect} />
         <Route path="/voicelab">
           <Suspense fallback={null}>
             <VoiceLab />

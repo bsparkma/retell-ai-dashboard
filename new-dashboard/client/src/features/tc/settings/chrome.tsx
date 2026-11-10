@@ -1,5 +1,5 @@
 /**
- * Presentational chrome for the /tc/settings sections that are read-only or
+ * Presentational chrome for the TC settings (/admin/tc/settings) sections that are read-only or
  * explanatory. Everything here is inert on purpose: no section built from
  * these pieces may render an enabled control, because none of them have a
  * write path on the platform today.

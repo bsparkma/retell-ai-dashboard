@@ -543,7 +543,7 @@ describe("W-16 · MEASURED: green first, then the compare, then the steps", () =
     expect(fix).toContain("$30.00");
     expect(fix).toContain("D0274");
     // A biller cannot read the office settings, so the step POINTS at the name.
-    expect(fix).toContain("An administrator can see its name under Admin → Office.");
+    expect(fix).toContain("An administrator can see its name under Admin → Revenue Cycle.");
     expect(state.calls).not.toContain("getRcmOfficeSettings");
 
     expect(screen.getByTestId("stuck-post-again").textContent).toBe(

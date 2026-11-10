@@ -69,7 +69,7 @@ describe.skipIf(!SHOTS)("admin hub shots", () => {
     renderAdmin();
     await screen.findByTestId("admin-link-users");
     // Wait for the load to settle so the shot is the page, not its spinner.
-    await screen.findByText("Integrations");
+    await screen.findByText("Practice settings");
     await new Promise((r) => setTimeout(r, 50));
     const file = resolve(OUT, "staff-04-admin-hub@1280x700.html");
     mkdirSync(dirname(file), { recursive: true });

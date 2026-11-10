@@ -823,7 +823,7 @@ describe("shadow mode explains itself and carries the worksheet", () => {
     expect(who.tagName).toBe("DETAILS");
     expect(who.textContent).toContain("Who can switch this on?");
     expect(screen.getByTestId("shadow-who-can-answer").textContent).toContain(
-      "An administrator, under Admin → Office.",
+      "An administrator, under Admin → Revenue Cycle.",
     );
   });
 
