@@ -7,7 +7,7 @@
  * full-screen WORKUP view (/tc/checkout/:id, CO-1), where the front desk works
  * the patient and records Scheduled / Not scheduled / Nothing needed; each
  * waiting card says how far that workup has got ("2 of 4 sections done").
- * "Quick look" — and the arrival toast, which links here with `?handoff=` —
+ * "Quick look" — and the arrival banner, which links here with `?handoff=` —
  * opens the patient SIDEBAR instead, the same exit in a narrow sheet. An
  * answered checkout leaves the Waiting tab and shows under Done today.
  *
@@ -50,6 +50,7 @@ import { claimCheckout, dismissCheckout } from "@/features/tc/checkout/checkoutA
 import { CHECKOUT_TABS, useCheckoutList } from "@/features/tc/checkout/useCheckoutList";
 import { AddCheckoutPatient, useCanAddCheckoutPatient } from "@/features/tc/checkout/AddCheckoutPatient";
 import { ReopenedBadge } from "@/features/tc/checkout/ReopenedNotice";
+import { OpenQuestionsChip } from "@/features/tc/checkout/CheckoutQuestions";
 import { ScheduleCheckLine, useScheduleCheck } from "@/features/tc/checkout/ScheduleCheck";
 import {
   CheckoutSidebar,
@@ -120,6 +121,7 @@ function DismissDialog({
 
 function Row({
   row,
+  openQuestions,
   showOfficeBadges,
   busy,
   onOpen,
@@ -128,6 +130,8 @@ function Row({
   onDismiss,
 }: {
   row: TcCheckoutHandoff;
+  /** CO-7: this card's open ask-hygiene questions. */
+  openQuestions: number;
   showOfficeBadges: boolean;
   busy: boolean;
   onOpen: () => void;
@@ -166,6 +170,7 @@ function Row({
             </Badge>
           )}
           {row.reopenedFrom && <ReopenedBadge />}
+          <OpenQuestionsChip count={openQuestions} />
           {hygieneData && <PriorityChip priority={row.snapshot.priority} />}
           {row.snapshot.notesPending && <Badge variant="outline">Notes pending</Badge>}
           {!waiting || row.status === "claimed" ? (
@@ -220,7 +225,7 @@ export function CheckoutInbox({ offices, showOfficeBadges }: { offices: OfficeId
   const search = useSearch();
   const [, navigate] = useLocation();
   const query = useMemo(() => new URLSearchParams(search), [search]);
-  const { tab, setTab, rows, loading, error, notice, enabledOffices, load, replace } = useCheckoutList(offices);
+  const { tab, setTab, rows, loading, error, notice, enabledOffices, load, replace, openQuestions } = useCheckoutList(offices);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [dismissing, setDismissing] = useState<TcCheckoutHandoff | null>(null);
   const [opened, setOpened] = useState<{ office: OfficeId; handoffId: string } | null>(null);
@@ -228,7 +233,7 @@ export function CheckoutInbox({ offices, showOfficeBadges }: { offices: OfficeId
   // CO-5b: keeps the server's read of today's schedule fresh while this page is open.
   const scheduleStates = useScheduleCheck(enabledOffices ?? [], () => void load());
 
-  // The arrival toast links here with ?handoff=&office= — open the same sidebar.
+  // The arrival banner links here with ?handoff=&office= — open the same sidebar.
   useEffect(() => {
     const handoffId = query.get("handoff");
     const office = query.get("office");
@@ -305,6 +310,7 @@ export function CheckoutInbox({ offices, showOfficeBadges }: { offices: OfficeId
             <Row
               key={r.handoffId}
               row={r}
+              openQuestions={openQuestions[r.handoffId] ?? 0}
               showOfficeBadges={showOfficeBadges}
               busy={busyId === r.handoffId}
               onOpen={() => navigate(checkoutWorkupHref(r.officeId, r.handoffId))}
