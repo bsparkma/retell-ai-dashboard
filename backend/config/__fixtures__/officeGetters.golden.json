@@ -1,0 +1,4155 @@
+{
+  "bare": {
+    "getAllOfficeConfigs": [
+      {
+        "officeId": "roland",
+        "officeName": "Roland"
+      },
+      {
+        "officeId": "valley",
+        "officeName": "Valley Fort Smith"
+      }
+    ],
+    "getOfficeConfig": {
+      "roland": {
+        "officeId": "roland",
+        "officeName": "Roland"
+      },
+      "valley": {
+        "officeId": "valley",
+        "officeName": "Valley Fort Smith"
+      },
+      "unknown": {
+        "officeId": "unknown",
+        "officeName": "Unmapped"
+      },
+      "all": null,
+      "default": null,
+      "": null,
+      "nope": null
+    },
+    "getOfficeForCall": [
+      [
+        {
+          "source": "mango",
+          "called_number": "+19189134595"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(918) 913-4595"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+19185036262"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(918) 503-6262"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+19183930353"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(918) 393-0353"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+14797854390"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(479) 785-4390"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+14793166111"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(479) 316-6111"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+14797851419"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(479) 785-1419"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+14792263500"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(479) 226-3500"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+14797633344"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(479) 763-3344"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+15555550100"
+        },
+        "unknown"
+      ],
+      [
+        {
+          "source": "mango"
+        },
+        "unknown"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_89e8a68788e925aa506475393e"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_3007741dd93381f51675417edb"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_ace28f92effcafe7254c004713"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_synthetic_unmapped"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell"
+        },
+        "roland"
+      ],
+      [
+        {
+          "record_kind": "stub",
+          "office": "valley",
+          "source": "mango"
+        },
+        "valley"
+      ],
+      [
+        {
+          "record_kind": "stub",
+          "source": "retell"
+        },
+        "unknown"
+      ]
+    ],
+    "isAgentAllowedForOffice": {
+      "roland": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "valley": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "unknown": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "all": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "default": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "nope": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    "filterAgentsForOffice": {
+      "roland": [
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_synthetic_unmapped"
+        },
+        {
+          "id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {}
+      ],
+      "valley": [],
+      "unknown": [],
+      "all": [
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_synthetic_unmapped"
+        },
+        {
+          "id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {}
+      ],
+      "default": [
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_synthetic_unmapped"
+        },
+        {
+          "id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {}
+      ],
+      "": [
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_synthetic_unmapped"
+        },
+        {
+          "id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {}
+      ],
+      "nope": []
+    },
+    "filterCallsForOffice": {
+      "roland": [
+        {
+          "source": "mango",
+          "called_number": "+19189134595"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 913-4595"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19185036262"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 503-6262"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19183930353"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 393-0353"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_synthetic_unmapped"
+        },
+        {
+          "source": "retell"
+        }
+      ],
+      "valley": [
+        {
+          "source": "mango",
+          "called_number": "+14797854390"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-4390"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14793166111"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 316-6111"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797851419"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-1419"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14792263500"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 226-3500"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797633344"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 763-3344"
+        },
+        {
+          "record_kind": "stub",
+          "office": "valley",
+          "source": "mango"
+        }
+      ],
+      "unknown": [
+        {
+          "source": "mango",
+          "called_number": "+15555550100"
+        },
+        {
+          "source": "mango"
+        },
+        {
+          "record_kind": "stub",
+          "source": "retell"
+        }
+      ],
+      "all": [
+        {
+          "source": "mango",
+          "called_number": "+19189134595"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 913-4595"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19185036262"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 503-6262"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19183930353"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 393-0353"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797854390"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-4390"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14793166111"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 316-6111"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797851419"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-1419"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14792263500"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 226-3500"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797633344"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 763-3344"
+        },
+        {
+          "source": "mango",
+          "called_number": "+15555550100"
+        },
+        {
+          "source": "mango"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_synthetic_unmapped"
+        },
+        {
+          "source": "retell"
+        },
+        {
+          "record_kind": "stub",
+          "office": "valley",
+          "source": "mango"
+        },
+        {
+          "record_kind": "stub",
+          "source": "retell"
+        }
+      ],
+      "default": [
+        {
+          "source": "mango",
+          "called_number": "+19189134595"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 913-4595"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19185036262"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 503-6262"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19183930353"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 393-0353"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797854390"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-4390"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14793166111"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 316-6111"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797851419"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-1419"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14792263500"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 226-3500"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797633344"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 763-3344"
+        },
+        {
+          "source": "mango",
+          "called_number": "+15555550100"
+        },
+        {
+          "source": "mango"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_synthetic_unmapped"
+        },
+        {
+          "source": "retell"
+        },
+        {
+          "record_kind": "stub",
+          "office": "valley",
+          "source": "mango"
+        },
+        {
+          "record_kind": "stub",
+          "source": "retell"
+        }
+      ],
+      "": [
+        {
+          "source": "mango",
+          "called_number": "+19189134595"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 913-4595"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19185036262"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 503-6262"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19183930353"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 393-0353"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797854390"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-4390"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14793166111"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 316-6111"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797851419"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-1419"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14792263500"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 226-3500"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797633344"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 763-3344"
+        },
+        {
+          "source": "mango",
+          "called_number": "+15555550100"
+        },
+        {
+          "source": "mango"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_synthetic_unmapped"
+        },
+        {
+          "source": "retell"
+        },
+        {
+          "record_kind": "stub",
+          "office": "valley",
+          "source": "mango"
+        },
+        {
+          "record_kind": "stub",
+          "source": "retell"
+        }
+      ],
+      "nope": []
+    },
+    "odBlockReason": {
+      "roland": {
+        "code": "OFFICE_OD_KEY_MISSING",
+        "message": "Open Dental credentials are not configured for Roland"
+      },
+      "valley": {
+        "code": "OFFICE_OD_KEY_MISSING",
+        "message": "Open Dental credentials are not configured for Valley Fort Smith"
+      },
+      "unknown": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "all": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "default": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "nope": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      }
+    },
+    "isOdReady": {
+      "roland": false,
+      "valley": false,
+      "unknown": false,
+      "all": false,
+      "default": false,
+      "": false,
+      "nope": false
+    },
+    "hygOdBlockReason": {
+      "roland": {
+        "code": "OFFICE_OD_KEY_MISSING",
+        "message": "Open Dental credentials are not configured for Roland"
+      },
+      "valley": {
+        "code": "OFFICE_OD_KEY_MISSING",
+        "message": "Open Dental credentials are not configured for Valley Fort Smith"
+      },
+      "unknown": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "all": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "default": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "nope": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      }
+    },
+    "isHygOdReady": {
+      "roland": false,
+      "valley": false,
+      "unknown": false,
+      "all": false,
+      "default": false,
+      "": false,
+      "nope": false
+    },
+    "hygSwitchState": [
+      {
+        "officeKey": "roland",
+        "enabled": false,
+        "source": "default",
+        "db": null,
+        "inRow": null,
+        "env": null,
+        "envVar": "HYG_OD_ENABLED_ROLAND",
+        "envRaw": null,
+        "envEffect": null,
+        "hardcoded": false,
+        "disagreesWithEnv": false,
+        "officeName": "Roland",
+        "ready": false,
+        "blockedBy": {
+          "code": "OFFICE_OD_KEY_MISSING",
+          "message": "Open Dental credentials are not configured for Roland"
+        }
+      },
+      {
+        "officeKey": "valley",
+        "enabled": false,
+        "source": "default",
+        "db": null,
+        "inRow": null,
+        "env": null,
+        "envVar": "HYG_OD_ENABLED_VALLEY",
+        "envRaw": null,
+        "envEffect": null,
+        "hardcoded": false,
+        "disagreesWithEnv": false,
+        "officeName": "Valley Fort Smith",
+        "ready": false,
+        "blockedBy": {
+          "code": "OFFICE_OD_KEY_MISSING",
+          "message": "Open Dental credentials are not configured for Valley Fort Smith"
+        }
+      }
+    ],
+    "isChartTargetOffice": {
+      "roland": true,
+      "valley": true,
+      "unknown": false,
+      "all": false,
+      "default": false,
+      "": false,
+      "nope": false
+    },
+    "referralChartNoteBlockReason": {
+      "roland": {
+        "code": "OFFICE_OD_KEY_MISSING",
+        "message": "Open Dental credentials are not configured for Roland"
+      },
+      "valley": {
+        "code": "OFFICE_OD_KEY_MISSING",
+        "message": "Open Dental credentials are not configured for Valley Fort Smith"
+      },
+      "unknown": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "all": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "default": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "nope": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      }
+    },
+    "describeOffice": {
+      "roland": {
+        "officeId": "roland",
+        "officeName": "Roland",
+        "odConnected": false,
+        "odBlockedReason": "Open Dental credentials are not configured for Roland"
+      },
+      "valley": {
+        "officeId": "valley",
+        "officeName": "Valley Fort Smith",
+        "odConnected": false,
+        "odBlockedReason": "Open Dental credentials are not configured for Valley Fort Smith"
+      },
+      "unknown": {
+        "officeId": "unknown",
+        "officeName": "Unmapped",
+        "odConnected": false,
+        "odBlockedReason": "Can't connect this call to a chart — its office is unknown"
+      },
+      "all": {
+        "officeId": "all",
+        "officeName": "Unmapped",
+        "odConnected": false,
+        "odBlockedReason": "Can't connect this call to a chart — its office is unknown"
+      },
+      "default": {
+        "officeId": "default",
+        "officeName": "Unmapped",
+        "odConnected": false,
+        "odBlockedReason": "Can't connect this call to a chart — its office is unknown"
+      },
+      "": {
+        "officeId": "",
+        "officeName": "Unmapped",
+        "odConnected": false,
+        "odBlockedReason": "Can't connect this call to a chart — its office is unknown"
+      },
+      "nope": {
+        "officeId": "nope",
+        "officeName": "Unmapped",
+        "odConnected": false,
+        "odBlockedReason": "Can't connect this call to a chart — its office is unknown"
+      }
+    },
+    "getOdOffice": {
+      "roland": {
+        "threw": "OFFICE_OD_KEY_MISSING"
+      },
+      "valley": {
+        "threw": "OFFICE_OD_KEY_MISSING"
+      },
+      "unknown": {
+        "threw": "OFFICE_UNKNOWN"
+      },
+      "all": {
+        "threw": "OFFICE_UNKNOWN"
+      },
+      "default": {
+        "threw": "OFFICE_UNKNOWN"
+      },
+      "": {
+        "threw": "OFFICE_UNKNOWN"
+      },
+      "nope": {
+        "threw": "OFFICE_UNKNOWN"
+      }
+    },
+    "secretNames": [
+      "opendental-customer-key",
+      "opendental-customer-key-valley"
+    ]
+  },
+  "keys": {
+    "getAllOfficeConfigs": [
+      {
+        "officeId": "roland",
+        "officeName": "Roland"
+      },
+      {
+        "officeId": "valley",
+        "officeName": "Valley Fort Smith"
+      }
+    ],
+    "getOfficeConfig": {
+      "roland": {
+        "officeId": "roland",
+        "officeName": "Roland"
+      },
+      "valley": {
+        "officeId": "valley",
+        "officeName": "Valley Fort Smith"
+      },
+      "unknown": {
+        "officeId": "unknown",
+        "officeName": "Unmapped"
+      },
+      "all": null,
+      "default": null,
+      "": null,
+      "nope": null
+    },
+    "getOfficeForCall": [
+      [
+        {
+          "source": "mango",
+          "called_number": "+19189134595"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(918) 913-4595"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+19185036262"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(918) 503-6262"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+19183930353"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(918) 393-0353"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+14797854390"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(479) 785-4390"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+14793166111"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(479) 316-6111"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+14797851419"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(479) 785-1419"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+14792263500"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(479) 226-3500"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+14797633344"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(479) 763-3344"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+15555550100"
+        },
+        "unknown"
+      ],
+      [
+        {
+          "source": "mango"
+        },
+        "unknown"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_89e8a68788e925aa506475393e"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_3007741dd93381f51675417edb"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_ace28f92effcafe7254c004713"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_synthetic_unmapped"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell"
+        },
+        "roland"
+      ],
+      [
+        {
+          "record_kind": "stub",
+          "office": "valley",
+          "source": "mango"
+        },
+        "valley"
+      ],
+      [
+        {
+          "record_kind": "stub",
+          "source": "retell"
+        },
+        "unknown"
+      ]
+    ],
+    "isAgentAllowedForOffice": {
+      "roland": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "valley": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "unknown": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "all": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "default": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "nope": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    "filterAgentsForOffice": {
+      "roland": [
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_synthetic_unmapped"
+        },
+        {
+          "id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {}
+      ],
+      "valley": [],
+      "unknown": [],
+      "all": [
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_synthetic_unmapped"
+        },
+        {
+          "id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {}
+      ],
+      "default": [
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_synthetic_unmapped"
+        },
+        {
+          "id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {}
+      ],
+      "": [
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_synthetic_unmapped"
+        },
+        {
+          "id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {}
+      ],
+      "nope": []
+    },
+    "filterCallsForOffice": {
+      "roland": [
+        {
+          "source": "mango",
+          "called_number": "+19189134595"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 913-4595"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19185036262"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 503-6262"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19183930353"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 393-0353"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_synthetic_unmapped"
+        },
+        {
+          "source": "retell"
+        }
+      ],
+      "valley": [
+        {
+          "source": "mango",
+          "called_number": "+14797854390"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-4390"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14793166111"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 316-6111"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797851419"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-1419"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14792263500"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 226-3500"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797633344"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 763-3344"
+        },
+        {
+          "record_kind": "stub",
+          "office": "valley",
+          "source": "mango"
+        }
+      ],
+      "unknown": [
+        {
+          "source": "mango",
+          "called_number": "+15555550100"
+        },
+        {
+          "source": "mango"
+        },
+        {
+          "record_kind": "stub",
+          "source": "retell"
+        }
+      ],
+      "all": [
+        {
+          "source": "mango",
+          "called_number": "+19189134595"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 913-4595"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19185036262"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 503-6262"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19183930353"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 393-0353"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797854390"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-4390"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14793166111"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 316-6111"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797851419"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-1419"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14792263500"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 226-3500"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797633344"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 763-3344"
+        },
+        {
+          "source": "mango",
+          "called_number": "+15555550100"
+        },
+        {
+          "source": "mango"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_synthetic_unmapped"
+        },
+        {
+          "source": "retell"
+        },
+        {
+          "record_kind": "stub",
+          "office": "valley",
+          "source": "mango"
+        },
+        {
+          "record_kind": "stub",
+          "source": "retell"
+        }
+      ],
+      "default": [
+        {
+          "source": "mango",
+          "called_number": "+19189134595"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 913-4595"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19185036262"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 503-6262"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19183930353"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 393-0353"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797854390"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-4390"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14793166111"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 316-6111"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797851419"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-1419"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14792263500"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 226-3500"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797633344"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 763-3344"
+        },
+        {
+          "source": "mango",
+          "called_number": "+15555550100"
+        },
+        {
+          "source": "mango"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_synthetic_unmapped"
+        },
+        {
+          "source": "retell"
+        },
+        {
+          "record_kind": "stub",
+          "office": "valley",
+          "source": "mango"
+        },
+        {
+          "record_kind": "stub",
+          "source": "retell"
+        }
+      ],
+      "": [
+        {
+          "source": "mango",
+          "called_number": "+19189134595"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 913-4595"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19185036262"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 503-6262"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19183930353"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 393-0353"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797854390"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-4390"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14793166111"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 316-6111"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797851419"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-1419"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14792263500"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 226-3500"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797633344"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 763-3344"
+        },
+        {
+          "source": "mango",
+          "called_number": "+15555550100"
+        },
+        {
+          "source": "mango"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_synthetic_unmapped"
+        },
+        {
+          "source": "retell"
+        },
+        {
+          "record_kind": "stub",
+          "office": "valley",
+          "source": "mango"
+        },
+        {
+          "record_kind": "stub",
+          "source": "retell"
+        }
+      ],
+      "nope": []
+    },
+    "odBlockReason": {
+      "roland": null,
+      "valley": null,
+      "unknown": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "all": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "default": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "nope": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      }
+    },
+    "isOdReady": {
+      "roland": true,
+      "valley": true,
+      "unknown": false,
+      "all": false,
+      "default": false,
+      "": false,
+      "nope": false
+    },
+    "hygOdBlockReason": {
+      "roland": {
+        "code": "OFFICE_HYG_NOT_ENABLED",
+        "message": "The hygiene module is not switched on for Roland yet"
+      },
+      "valley": {
+        "code": "OFFICE_HYG_NOT_ENABLED",
+        "message": "The hygiene module is not switched on for Valley Fort Smith yet"
+      },
+      "unknown": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "all": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "default": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "nope": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      }
+    },
+    "isHygOdReady": {
+      "roland": false,
+      "valley": false,
+      "unknown": false,
+      "all": false,
+      "default": false,
+      "": false,
+      "nope": false
+    },
+    "hygSwitchState": [
+      {
+        "officeKey": "roland",
+        "enabled": false,
+        "source": "default",
+        "db": null,
+        "inRow": null,
+        "env": null,
+        "envVar": "HYG_OD_ENABLED_ROLAND",
+        "envRaw": null,
+        "envEffect": null,
+        "hardcoded": false,
+        "disagreesWithEnv": false,
+        "officeName": "Roland",
+        "ready": false,
+        "blockedBy": null
+      },
+      {
+        "officeKey": "valley",
+        "enabled": false,
+        "source": "default",
+        "db": null,
+        "inRow": null,
+        "env": null,
+        "envVar": "HYG_OD_ENABLED_VALLEY",
+        "envRaw": null,
+        "envEffect": null,
+        "hardcoded": false,
+        "disagreesWithEnv": false,
+        "officeName": "Valley Fort Smith",
+        "ready": false,
+        "blockedBy": null
+      }
+    ],
+    "isChartTargetOffice": {
+      "roland": true,
+      "valley": true,
+      "unknown": false,
+      "all": false,
+      "default": false,
+      "": false,
+      "nope": false
+    },
+    "referralChartNoteBlockReason": {
+      "roland": null,
+      "valley": null,
+      "unknown": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "all": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "default": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "nope": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      }
+    },
+    "describeOffice": {
+      "roland": {
+        "officeId": "roland",
+        "officeName": "Roland",
+        "odConnected": true,
+        "odBlockedReason": null
+      },
+      "valley": {
+        "officeId": "valley",
+        "officeName": "Valley Fort Smith",
+        "odConnected": true,
+        "odBlockedReason": null
+      },
+      "unknown": {
+        "officeId": "unknown",
+        "officeName": "Unmapped",
+        "odConnected": false,
+        "odBlockedReason": "Can't connect this call to a chart — its office is unknown"
+      },
+      "all": {
+        "officeId": "all",
+        "officeName": "Unmapped",
+        "odConnected": false,
+        "odBlockedReason": "Can't connect this call to a chart — its office is unknown"
+      },
+      "default": {
+        "officeId": "default",
+        "officeName": "Unmapped",
+        "odConnected": false,
+        "odBlockedReason": "Can't connect this call to a chart — its office is unknown"
+      },
+      "": {
+        "officeId": "",
+        "officeName": "Unmapped",
+        "odConnected": false,
+        "odBlockedReason": "Can't connect this call to a chart — its office is unknown"
+      },
+      "nope": {
+        "officeId": "nope",
+        "officeName": "Unmapped",
+        "odConnected": false,
+        "odBlockedReason": "Can't connect this call to a chart — its office is unknown"
+      }
+    },
+    "getOdOffice": {
+      "roland": {
+        "ok": {
+          "officeKey": "roland",
+          "officeName": "Roland",
+          "commTypeDefNum": 486,
+          "referralCommTypeDefNum": 491,
+          "hasClient": true,
+          "frozen": true
+        }
+      },
+      "valley": {
+        "ok": {
+          "officeKey": "valley",
+          "officeName": "Valley Fort Smith",
+          "commTypeDefNum": 451,
+          "referralCommTypeDefNum": 452,
+          "hasClient": true,
+          "frozen": true
+        }
+      },
+      "unknown": {
+        "threw": "OFFICE_UNKNOWN"
+      },
+      "all": {
+        "threw": "OFFICE_UNKNOWN"
+      },
+      "default": {
+        "threw": "OFFICE_UNKNOWN"
+      },
+      "": {
+        "threw": "OFFICE_UNKNOWN"
+      },
+      "nope": {
+        "threw": "OFFICE_UNKNOWN"
+      }
+    },
+    "secretNames": [
+      "opendental-customer-key",
+      "opendental-customer-key-valley"
+    ]
+  },
+  "overrides": {
+    "getAllOfficeConfigs": [
+      {
+        "officeId": "roland",
+        "officeName": "Roland"
+      },
+      {
+        "officeId": "valley",
+        "officeName": "Valley Fort Smith"
+      }
+    ],
+    "getOfficeConfig": {
+      "roland": {
+        "officeId": "roland",
+        "officeName": "Roland"
+      },
+      "valley": {
+        "officeId": "valley",
+        "officeName": "Valley Fort Smith"
+      },
+      "unknown": {
+        "officeId": "unknown",
+        "officeName": "Unmapped"
+      },
+      "all": null,
+      "default": null,
+      "": null,
+      "nope": null
+    },
+    "getOfficeForCall": [
+      [
+        {
+          "source": "mango",
+          "called_number": "+19189134595"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(918) 913-4595"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+19185036262"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(918) 503-6262"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+19183930353"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(918) 393-0353"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+14797854390"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(479) 785-4390"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+14793166111"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(479) 316-6111"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+14797851419"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(479) 785-1419"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+14792263500"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(479) 226-3500"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+14797633344"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "(479) 763-3344"
+        },
+        "valley"
+      ],
+      [
+        {
+          "source": "mango",
+          "called_number": "+15555550100"
+        },
+        "unknown"
+      ],
+      [
+        {
+          "source": "mango"
+        },
+        "unknown"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_89e8a68788e925aa506475393e"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_3007741dd93381f51675417edb"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_ace28f92effcafe7254c004713"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        "roland"
+      ],
+      [
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell",
+          "handler_id": "agent_synthetic_unmapped"
+        },
+        "roland"
+      ],
+      [
+        {
+          "source": "retell"
+        },
+        "roland"
+      ],
+      [
+        {
+          "record_kind": "stub",
+          "office": "valley",
+          "source": "mango"
+        },
+        "valley"
+      ],
+      [
+        {
+          "record_kind": "stub",
+          "source": "retell"
+        },
+        "unknown"
+      ]
+    ],
+    "isAgentAllowedForOffice": {
+      "roland": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "valley": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "unknown": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "all": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "default": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "nope": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    "filterAgentsForOffice": {
+      "roland": [
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_synthetic_unmapped"
+        },
+        {
+          "id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {}
+      ],
+      "valley": [],
+      "unknown": [],
+      "all": [
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_synthetic_unmapped"
+        },
+        {
+          "id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {}
+      ],
+      "default": [
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_synthetic_unmapped"
+        },
+        {
+          "id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {}
+      ],
+      "": [
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_synthetic_unmapped"
+        },
+        {
+          "id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {}
+      ],
+      "nope": []
+    },
+    "filterCallsForOffice": {
+      "roland": [
+        {
+          "source": "mango",
+          "called_number": "+19189134595"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 913-4595"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19185036262"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 503-6262"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19183930353"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 393-0353"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_synthetic_unmapped"
+        },
+        {
+          "source": "retell"
+        }
+      ],
+      "valley": [
+        {
+          "source": "mango",
+          "called_number": "+14797854390"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-4390"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14793166111"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 316-6111"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797851419"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-1419"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14792263500"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 226-3500"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797633344"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 763-3344"
+        },
+        {
+          "record_kind": "stub",
+          "office": "valley",
+          "source": "mango"
+        }
+      ],
+      "unknown": [
+        {
+          "source": "mango",
+          "called_number": "+15555550100"
+        },
+        {
+          "source": "mango"
+        },
+        {
+          "record_kind": "stub",
+          "source": "retell"
+        }
+      ],
+      "all": [
+        {
+          "source": "mango",
+          "called_number": "+19189134595"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 913-4595"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19185036262"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 503-6262"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19183930353"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 393-0353"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797854390"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-4390"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14793166111"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 316-6111"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797851419"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-1419"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14792263500"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 226-3500"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797633344"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 763-3344"
+        },
+        {
+          "source": "mango",
+          "called_number": "+15555550100"
+        },
+        {
+          "source": "mango"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_synthetic_unmapped"
+        },
+        {
+          "source": "retell"
+        },
+        {
+          "record_kind": "stub",
+          "office": "valley",
+          "source": "mango"
+        },
+        {
+          "record_kind": "stub",
+          "source": "retell"
+        }
+      ],
+      "default": [
+        {
+          "source": "mango",
+          "called_number": "+19189134595"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 913-4595"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19185036262"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 503-6262"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19183930353"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 393-0353"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797854390"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-4390"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14793166111"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 316-6111"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797851419"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-1419"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14792263500"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 226-3500"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797633344"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 763-3344"
+        },
+        {
+          "source": "mango",
+          "called_number": "+15555550100"
+        },
+        {
+          "source": "mango"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_synthetic_unmapped"
+        },
+        {
+          "source": "retell"
+        },
+        {
+          "record_kind": "stub",
+          "office": "valley",
+          "source": "mango"
+        },
+        {
+          "record_kind": "stub",
+          "source": "retell"
+        }
+      ],
+      "": [
+        {
+          "source": "mango",
+          "called_number": "+19189134595"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 913-4595"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19185036262"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 503-6262"
+        },
+        {
+          "source": "mango",
+          "called_number": "+19183930353"
+        },
+        {
+          "source": "mango",
+          "called_number": "(918) 393-0353"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797854390"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-4390"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14793166111"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 316-6111"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797851419"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 785-1419"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14792263500"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 226-3500"
+        },
+        {
+          "source": "mango",
+          "called_number": "+14797633344"
+        },
+        {
+          "source": "mango",
+          "called_number": "(479) 763-3344"
+        },
+        {
+          "source": "mango",
+          "called_number": "+15555550100"
+        },
+        {
+          "source": "mango"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "agent_id": "agent_3a7042b50e7c4775cd350f02b4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "agent_id": "agent_d1f762efc57db01475ad0579e8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "agent_id": "agent_063d7e3077f6dc708c54a19d20"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "agent_id": "agent_89e8a68788e925aa506475393e"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "agent_id": "agent_3007741dd93381f51675417edb"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "agent_id": "agent_fab86b38f60a3561b16831bea8"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "agent_id": "agent_4a553eece68d214e364e85d4d4"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "agent_id": "agent_ace28f92effcafe7254c004713"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "agent_id": "agent_8494abf7556bfd9a4cf231a1a1"
+        },
+        {
+          "source": "retell",
+          "handler_id": "agent_synthetic_unmapped"
+        },
+        {
+          "source": "retell"
+        },
+        {
+          "record_kind": "stub",
+          "office": "valley",
+          "source": "mango"
+        },
+        {
+          "record_kind": "stub",
+          "source": "retell"
+        }
+      ],
+      "nope": []
+    },
+    "odBlockReason": {
+      "roland": null,
+      "valley": null,
+      "unknown": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "all": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "default": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "nope": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      }
+    },
+    "isOdReady": {
+      "roland": true,
+      "valley": true,
+      "unknown": false,
+      "all": false,
+      "default": false,
+      "": false,
+      "nope": false
+    },
+    "hygOdBlockReason": {
+      "roland": {
+        "code": "OFFICE_HYG_NOT_ENABLED",
+        "message": "The hygiene module is not switched on for Roland yet"
+      },
+      "valley": {
+        "code": "OFFICE_HYG_NOT_ENABLED",
+        "message": "The hygiene module is not switched on for Valley Fort Smith yet"
+      },
+      "unknown": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "all": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "default": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "nope": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      }
+    },
+    "isHygOdReady": {
+      "roland": false,
+      "valley": false,
+      "unknown": false,
+      "all": false,
+      "default": false,
+      "": false,
+      "nope": false
+    },
+    "hygSwitchState": [
+      {
+        "officeKey": "roland",
+        "enabled": false,
+        "source": "default",
+        "db": null,
+        "inRow": null,
+        "env": null,
+        "envVar": "HYG_OD_ENABLED_ROLAND",
+        "envRaw": null,
+        "envEffect": null,
+        "hardcoded": false,
+        "disagreesWithEnv": false,
+        "officeName": "Roland",
+        "ready": false,
+        "blockedBy": null
+      },
+      {
+        "officeKey": "valley",
+        "enabled": false,
+        "source": "env",
+        "db": null,
+        "inRow": null,
+        "env": false,
+        "envVar": "HYG_OD_ENABLED_VALLEY",
+        "envRaw": "false",
+        "envEffect": "disables",
+        "hardcoded": false,
+        "disagreesWithEnv": false,
+        "officeName": "Valley Fort Smith",
+        "ready": false,
+        "blockedBy": null
+      }
+    ],
+    "isChartTargetOffice": {
+      "roland": true,
+      "valley": true,
+      "unknown": false,
+      "all": false,
+      "default": false,
+      "": false,
+      "nope": false
+    },
+    "referralChartNoteBlockReason": {
+      "roland": null,
+      "valley": null,
+      "unknown": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "all": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "default": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      },
+      "nope": {
+        "code": "OFFICE_UNKNOWN",
+        "message": "Can't connect this call to a chart — its office is unknown"
+      }
+    },
+    "describeOffice": {
+      "roland": {
+        "officeId": "roland",
+        "officeName": "Roland",
+        "odConnected": true,
+        "odBlockedReason": null
+      },
+      "valley": {
+        "officeId": "valley",
+        "officeName": "Valley Fort Smith",
+        "odConnected": true,
+        "odBlockedReason": null
+      },
+      "unknown": {
+        "officeId": "unknown",
+        "officeName": "Unmapped",
+        "odConnected": false,
+        "odBlockedReason": "Can't connect this call to a chart — its office is unknown"
+      },
+      "all": {
+        "officeId": "all",
+        "officeName": "Unmapped",
+        "odConnected": false,
+        "odBlockedReason": "Can't connect this call to a chart — its office is unknown"
+      },
+      "default": {
+        "officeId": "default",
+        "officeName": "Unmapped",
+        "odConnected": false,
+        "odBlockedReason": "Can't connect this call to a chart — its office is unknown"
+      },
+      "": {
+        "officeId": "",
+        "officeName": "Unmapped",
+        "odConnected": false,
+        "odBlockedReason": "Can't connect this call to a chart — its office is unknown"
+      },
+      "nope": {
+        "officeId": "nope",
+        "officeName": "Unmapped",
+        "odConnected": false,
+        "odBlockedReason": "Can't connect this call to a chart — its office is unknown"
+      }
+    },
+    "getOdOffice": {
+      "roland": {
+        "ok": {
+          "officeKey": "roland",
+          "officeName": "Roland",
+          "commTypeDefNum": 9001,
+          "referralCommTypeDefNum": 491,
+          "hasClient": true,
+          "frozen": true
+        }
+      },
+      "valley": {
+        "ok": {
+          "officeKey": "valley",
+          "officeName": "Valley Fort Smith",
+          "commTypeDefNum": 451,
+          "referralCommTypeDefNum": 9002,
+          "hasClient": true,
+          "frozen": true
+        }
+      },
+      "unknown": {
+        "threw": "OFFICE_UNKNOWN"
+      },
+      "all": {
+        "threw": "OFFICE_UNKNOWN"
+      },
+      "default": {
+        "threw": "OFFICE_UNKNOWN"
+      },
+      "": {
+        "threw": "OFFICE_UNKNOWN"
+      },
+      "nope": {
+        "threw": "OFFICE_UNKNOWN"
+      }
+    },
+    "secretNames": [
+      "opendental-customer-key",
+      "opendental-customer-key-valley"
+    ]
+  }
+}
