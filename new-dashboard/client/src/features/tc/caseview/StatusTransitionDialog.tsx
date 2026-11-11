@@ -80,7 +80,15 @@ export function StatusTransitionDialog({
     setInlineError(null);
   };
 
+  // Same status selected: the only thing Save can do is keep the note, so the
+  // button says so — and with no note there is nothing to save at all.
+  const sameStatus = status === tcCase.status;
+  const hasNote = note.trim() !== "";
+  const nothingToSave = sameStatus && !hasNote;
+  const saveLabel = sameStatus && hasNote ? "Save note" : "Save";
+
   const submit = async () => {
+    if (nothingToSave) return;
     const effectiveReason = status === "lost" ? lostReason : null;
     const check = validateTransition(status, effectiveReason);
     if (!check.ok) {
@@ -96,7 +104,9 @@ export function StatusTransitionDialog({
         note: note.trim(),
       });
       // changed:false is still success — the server case is authoritative.
-      toast.success(result.changed ? "Status updated" : "Status unchanged");
+      toast.success(
+        result.changed ? "Status updated" : result.noteAdded ? "Note saved" : "Status unchanged",
+      );
       // Celebrate only a real, server-confirmed move into the accepted family.
       if (result.changed && isAcceptedStatus(result.case.status)) {
         celebrateWin(
@@ -196,9 +206,9 @@ export function StatusTransitionDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
             Cancel
           </Button>
-          <Button onClick={() => void submit()} disabled={submitting}>
+          <Button onClick={() => void submit()} disabled={submitting || nothingToSave}>
             {submitting && <Loader2 className="animate-spin" />}
-            Save
+            {saveLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

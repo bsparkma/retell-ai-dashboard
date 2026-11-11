@@ -410,6 +410,17 @@ export function patchCase(
 }
 
 /** THE status transition path (mirrors backend guards in status.ts). */
+/**
+ * `changed` is whether the STATUS moved. `noteAdded` is true when the status
+ * was unchanged but a note was submitted: the server kept it as a note_added
+ * event. Optional so an older server that omits it reads as "no note kept".
+ */
+export interface TransitionResult {
+  changed: boolean;
+  noteAdded?: boolean;
+  case: TcCase;
+}
+
 export function transitionCase(
   office: OfficeId,
   caseId: string,
@@ -418,8 +429,8 @@ export function transitionCase(
     lostReason?: z.infer<typeof LostReason> | null;
     note?: string;
   },
-): Promise<{ changed: boolean; case: TcCase }> {
-  return tcRequest<{ changed: boolean; case: TcCase }>(`/tc/cases/${caseId}/status`, {
+): Promise<TransitionResult> {
+  return tcRequest<TransitionResult>(`/tc/cases/${caseId}/status`, {
     method: "POST",
     office,
     body: { lostReason: null, note: "", ...input },

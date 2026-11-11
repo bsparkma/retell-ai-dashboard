@@ -548,7 +548,31 @@ router.post(
       const header = await store.getCaseHeader(client, req.tcOffice, caseId);
       if (!header) return { missing: true };
       if (header.status === input.status) {
-        return { unchanged: true, aggregate: await store.loadCaseAggregate(client, req.tcOffice, caseId) };
+        // Same status. A note typed in the Change-status dialog used to be
+        // dropped here without a word. Keep it as an ordinary note_added event
+        // in THIS transaction (an existing type, so no vocabulary change). With
+        // no note, this stays a pure no-op.
+        const note = input.note.trim();
+        let noteEventId = null;
+        if (note) {
+          noteEventId = randomUUID();
+          await store.insertEventRow(client, {
+            event_id: noteEventId,
+            case_id: caseId,
+            office_id: req.tcOffice,
+            ts: now,
+            type: 'note_added',
+            description: note,
+            actor,
+            detail: null,
+            legacy_id: null,
+          });
+        }
+        return {
+          unchanged: true,
+          noteEventId,
+          aggregate: await store.loadCaseAggregate(client, req.tcOffice, caseId),
+        };
       }
 
       const enrollingInNurture = input.status === 'nurture' && !header.nurture_enrolled_at;
@@ -606,10 +630,16 @@ router.post(
 
     if (result.missing) return notFound(res, 'case');
     if (!result.unchanged) await auditTc(req, 'UPDATE', 'tc_case', caseId);
+    if (result.noteEventId) await auditTc(req, 'CREATE', 'tc_case_event', result.noteEventId);
     for (const id of result.stoppedEnrollments || []) {
       await auditTc(req, 'UPDATE', 'tc_nurture_enrollment.stopped', id, { office: req.tcOffice });
     }
-    res.json({ success: true, changed: !result.unchanged, case: result.aggregate });
+    res.json({
+      success: true,
+      changed: !result.unchanged,
+      noteAdded: Boolean(result.noteEventId),
+      case: result.aggregate,
+    });
   })
 );
 
