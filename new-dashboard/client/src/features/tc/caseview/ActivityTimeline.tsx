@@ -8,9 +8,13 @@
  * the voice side prunes the call row — so the link is rendered as a
  * best-effort affordance under the text that carries the meaning, never as the
  * only way to read what the call was about.
+ *
+ * notes_updated (AT-0) is one save of the long-form notes box; its detail is
+ * the FULL text after that save, so each row reads as that version on its own.
  */
 import {
   isContactAttemptDetail,
+  isNotesRevisionDetail,
   isVoiceHandoffDetail,
   type TcCaseEvent,
 } from "@shared/tc/contract";
@@ -18,6 +22,7 @@ import { Badge } from "@/components/ui/badge";
 import {
   ArrowRightLeft,
   CheckCircle2,
+  FilePenLine,
   FilePlus2,
   Headphones,
   MessageSquareWarning,
@@ -48,6 +53,8 @@ const EVENT_META: Record<EventType, { label: string; icon: typeof StickyNote; ic
   nurture_stopped: { label: "Nurture stopped", icon: StopCircle, iconClass: "text-slate-500 dark:text-slate-400" },
   nurture_completed: { label: "Nurture completed", icon: Sprout, iconClass: "text-emerald-600 dark:text-emerald-400" },
   nurture_touch_queued: { label: "Nurture draft queued", icon: Send, iconClass: "text-violet-600 dark:text-violet-400" },
+  // AT-0: a saved revision of the case notes box.
+  notes_updated: { label: "Case notes edited", icon: FilePenLine, iconClass: "text-slate-500 dark:text-slate-400" },
 };
 
 const ATTEMPT_CHANNEL_LABEL = { call: "Call", text: "Text", email: "Email" } as const;
@@ -77,6 +84,9 @@ export function ActivityTimeline({ events }: ActivityTimelineProps) {
           ? event.detail
           : null;
         const handoff = event.type === "voice_handoff" && isVoiceHandoffDetail(event.detail)
+          ? event.detail
+          : null;
+        const revision = event.type === "notes_updated" && isNotesRevisionDetail(event.detail)
           ? event.detail
           : null;
         return (
@@ -115,6 +125,15 @@ export function ActivityTimeline({ events }: ActivityTimelineProps) {
                 <p className="text-sm text-foreground mt-1 whitespace-pre-line">
                   {handoff.callSummary}
                 </p>
+              )}
+              {revision && (
+                revision.notes === "" ? (
+                  <p className="text-sm text-muted-foreground italic mt-1">Notes cleared</p>
+                ) : (
+                  <p className="text-sm text-foreground mt-1 whitespace-pre-line break-words">
+                    {revision.notes}
+                  </p>
+                )
               )}
               {handoff?.callUrl && (
                 <a

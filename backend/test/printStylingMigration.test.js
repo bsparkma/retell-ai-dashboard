@@ -61,7 +61,8 @@ test("numbered above CO-3's 1794100000000 and is the newest; uniform width; uniq
   const numbers = files.map((f) => Number(f.split('_')[0]));
   assert.equal(new Set(numbers).size, numbers.length);
   assert.ok(files.every((f) => f.split('_')[0].length === 13));
-  assert.equal(Math.max(...numbers), 1794200000000);
+  // AT-0 (1794300000000) now sorts after it; pinned as present and above CO-3.
+  assert.ok(numbers.includes(1794200000000) && 1794200000000 > 1794100000000);
 });
 
 test('the store reads the column once every tenant migration has run', () => {

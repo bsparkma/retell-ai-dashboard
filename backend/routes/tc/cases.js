@@ -472,12 +472,41 @@ router.put(
     }
     sets.push('updated_at = now()');
 
+    const patchesNotes = Object.prototype.hasOwnProperty.call(patch, 'notes');
+
     const aggregate = await withTenantTx(req, async (client) => {
+      // AT-0: the notes box's prior value, read under the row lock so two
+      // saves racing each other each record the value they really replaced.
+      let priorNotes = null;
+      if (patchesNotes) {
+        const prior = await client.query(
+          'SELECT notes FROM tc_cases WHERE office_id = $1 AND case_id = $2 FOR UPDATE',
+          [req.tcOffice, caseId]
+        );
+        if (prior.rows.length === 0) return null;
+        priorNotes = prior.rows[0].notes == null ? '' : String(prior.rows[0].notes);
+      }
       const updated = await client.query(
         `UPDATE tc_cases SET ${sets.join(', ')} WHERE office_id = $1 AND case_id = $2 RETURNING case_id`,
         values
       );
       if (updated.rows.length === 0) return null;
+      // The column stays the CURRENT value; this append-only row is its
+      // history — the full new text and who saved it, in the same transaction
+      // as the overwrite. A save that changes nothing writes no row.
+      if (patchesNotes && patch.notes !== priorNotes) {
+        await store.insertEventRow(client, {
+          event_id: randomUUID(),
+          case_id: caseId,
+          office_id: req.tcOffice,
+          ts: new Date().toISOString(),
+          type: 'notes_updated',
+          description: patch.notes === '' ? 'Case notes cleared' : 'Case notes edited',
+          actor: actorEmail(req),
+          detail: { notes: patch.notes },
+          legacy_id: null,
+        });
+      }
       return store.loadCaseAggregate(client, req.tcOffice, caseId);
     });
     if (!aggregate) return notFound(res, 'case');

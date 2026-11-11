@@ -17,6 +17,12 @@
  * route does, in the same transaction as the write. Another office's case and
  * an unknown id both answer 404 'Case not found' with nothing saved — the
  * referral routes' shape, so the refusal says nothing about the other office.
+ *
+ * HISTORY (AT-0). Every mutation — create, PUT, status, start-case's link and
+ * DELETE — appends one tc_preauth_events row IN ITS OWN TRANSACTION: who, when,
+ * and { field: { from, to } } with prior values. The prior snapshot is read
+ * under a row lock, so the `from` side is what was really replaced. A delete
+ * writes its row before the pre-auth is gone, holding everything it held.
  */
 
 const express = require('express');
@@ -152,10 +158,10 @@ function parseId(res, raw) {
   return parsed.data;
 }
 
-async function loadOne(q, office, preauthId) {
+async function loadOne(q, office, preauthId, { forUpdate = false } = {}) {
   const res = await q.query(
     `SELECT ${COLS.join(', ')}, created_at FROM tc_preauth_cases
-      WHERE office_id = $1 AND preauth_id = $2`,
+      WHERE office_id = $1 AND preauth_id = $2${forUpdate ? ' FOR UPDATE' : ''}`,
     [office, preauthId]
   );
   return res.rows.length ? toContract(res.rows[0]) : null;
@@ -228,7 +234,15 @@ router.post(
           input.notes ?? '',
         ]
       );
-      return loadOne(client, req.tcOffice, preauthId);
+      const created = await loadOne(client, req.tcOffice, preauthId);
+      await preauthStore.insertPreauthEvent(client, {
+        office: req.tcOffice,
+        preauthId,
+        actor: actorEmail(req),
+        type: 'created',
+        changes: preauthStore.preauthChanges(null, created),
+      });
+      return created;
     });
     if (persisted === CASE_NOT_IN_OFFICE) return caseNotFound(res);
 
@@ -285,13 +299,24 @@ router.put(
       if (patch.caseId && !(await preauthStore.caseInOffice(client, req.tcOffice, patch.caseId))) {
         return CASE_NOT_IN_OFFICE;
       }
+      const before = await loadOne(client, req.tcOffice, preauthId, { forUpdate: true });
+      if (!before) return null;
       const updated = await client.query(
         `UPDATE tc_preauth_cases SET ${sets.join(', ')}
           WHERE office_id = $1 AND preauth_id = $2 RETURNING preauth_id`,
         values
       );
       if (updated.rows.length === 0) return null;
-      return loadOne(client, req.tcOffice, preauthId);
+      const after = await loadOne(client, req.tcOffice, preauthId);
+      // Recorded even when nothing differed ({}): a save happened.
+      await preauthStore.insertPreauthEvent(client, {
+        office: req.tcOffice,
+        preauthId,
+        actor: actorEmail(req),
+        type: 'updated',
+        changes: preauthStore.preauthChanges(before, after),
+      });
+      return after;
     });
     if (persisted === CASE_NOT_IN_OFFICE) return caseNotFound(res);
     if (!persisted) return notFound(res, 'preauth case');
@@ -313,6 +338,8 @@ router.post(
     if (!input) return;
 
     const persisted = await withTenantTx(req, async (client) => {
+      const before = await loadOne(client, req.tcOffice, preauthId, { forUpdate: true });
+      if (!before) return null;
       const updated = await client.query(
         `UPDATE tc_preauth_cases
             SET status = $3,
@@ -330,7 +357,16 @@ router.post(
         ]
       );
       if (updated.rows.length === 0) return null;
-      return loadOne(client, req.tcOffice, preauthId);
+      const after = await loadOne(client, req.tcOffice, preauthId);
+      // The status and any date it stamped, from → to.
+      await preauthStore.insertPreauthEvent(client, {
+        office: req.tcOffice,
+        preauthId,
+        actor: actorEmail(req),
+        type: 'status_change',
+        changes: preauthStore.preauthChanges(before, after),
+      });
+      return after;
     });
     if (!persisted) return notFound(res, 'preauth case');
 
@@ -499,6 +535,15 @@ router.post(
         err.code = 'START_CASE_RACE';
         throw err;
       }
+      // The link is a field change on the pre-auth; it rolls back with the rest.
+      await preauthStore.insertPreauthEvent(client, {
+        office,
+        preauthId,
+        actor,
+        type: 'updated',
+        changes: { caseId: { from: null, to: caseId } },
+        at: now,
+      });
       return { kind: 'ok', caseId, attached };
     }).catch(async (err) => {
       if (!err || err.code !== 'START_CASE_RACE') throw err;
@@ -541,13 +586,26 @@ router.delete(
     const preauthId = parseId(res, req.params.id);
     if (!preauthId) return;
 
-    const deleted = await tenantDb.withTenantDb(req, (pool) =>
-      pool.query(
+    // AT-0: one transaction — the delete and its history row (everything the
+    // pre-auth held, as `from`) commit together or not at all.
+    const deleted = await withTenantTx(req, async (client) => {
+      const before = await loadOne(client, req.tcOffice, preauthId, { forUpdate: true });
+      if (!before) return false;
+      const gone = await client.query(
         'DELETE FROM tc_preauth_cases WHERE office_id = $1 AND preauth_id = $2 RETURNING preauth_id',
         [req.tcOffice, preauthId]
-      )
-    );
-    if (deleted.rows.length === 0) return notFound(res, 'preauth case');
+      );
+      if (gone.rows.length === 0) return false;
+      await preauthStore.insertPreauthEvent(client, {
+        office: req.tcOffice,
+        preauthId,
+        actor: actorEmail(req),
+        type: 'deleted',
+        changes: preauthStore.preauthChanges(before, null),
+      });
+      return true;
+    });
+    if (!deleted) return notFound(res, 'preauth case');
 
     await auditTc(req, 'DELETE', 'tc_preauth', preauthId);
     res.json({ success: true });
