@@ -80,7 +80,13 @@ test('enrollment CHECKs equal the shared contract enums', () => {
 test('the three widened shared CHECKs equal the WHOLE current contract vocabulary', () => {
   const calls = capture();
   assert.deepEqual(checkList(calls, 'tc_messages', 'tc_messages_status_check'), contract.MessageStatus.options);
-  assert.deepEqual(checkList(calls, 'tc_case_events', 'tc_case_events_type_check'), contract.CaseEventType.options);
+  // AT-0 (1794300000000) widened this CHECK again with 'notes_updated' and now
+  // pins the WHOLE vocabulary (at0NoteHistoryMigration.test.js); this one is
+  // the whole vocabulary as of item 47.
+  assert.deepEqual(
+    checkList(calls, 'tc_case_events', 'tc_case_events_type_check'),
+    contract.CaseEventType.options.filter((t) => t !== 'notes_updated')
+  );
   assert.deepEqual(
     checkList(calls, 'tc_library_config', 'tc_library_config_section_check'),
     Object.keys(contract.LibrarySectionSchemas)

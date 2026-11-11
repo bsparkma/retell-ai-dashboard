@@ -38,6 +38,10 @@ const tcCheckout = require('../../config/tcCheckout');
 const nurtureHooks = require('../../services/tcNurture/hooks');
 // CO-4b: the card's Open Dental sync badge / flag.
 const odPipelineSync = require('../../services/tc/odPipelineSync');
+// AT-1: the Activity tab's merged, paged feed (read-only).
+const activityFeed = require('./activityFeed');
+const { isEntitledModule } = require('../../middleware/tenantContext');
+const unifiedCallStore = require('../../services/unifiedCallStore');
 
 const { z, TcCase, TcCasePhase, TcCaseItem, TcObjection, ContactAttemptDetail, CaseStatus, LostReason, Uuid, caseToRows } = contract;
 
@@ -441,6 +445,68 @@ router.get(
   })
 );
 
+// ── GET /:caseId/activity — AT-1 merged activity feed (read-only) ──────────
+//
+// Every note / communication source for the case, newest first, keyset-paged.
+// The case header is loaded in req.tcOffice FIRST: no header ⇒ 404 and no
+// source is queried. Every source then keys on that header's office and its
+// case id / PatNum — nothing about which patient or office comes from the
+// request beyond the existing ?office= assertion. One READ audit row per page;
+// a failed audit write propagates (500) like every other PHI read here.
+
+const ActivityQuery = z
+  .object({
+    office: z.string().optional(),
+    before: z.string().max(512).optional(),
+    limit: z.coerce.number().int().min(1).max(activityFeed.MAX_LIMIT).default(activityFeed.DEFAULT_LIMIT),
+    scope: z.enum(['case', 'patient']).default('case'),
+  })
+  .strict();
+
+router.get(
+  '/:caseId/activity',
+  h(async (req, res) => {
+    const caseId = parseId(res, req.params.caseId, 'case');
+    if (!caseId) return;
+
+    const parsed = ActivityQuery.safeParse(req.query);
+    if (!parsed.success) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid activity query',
+        code: 'VALIDATION_ERROR',
+        issues: parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+      });
+    }
+    const cursor = activityFeed.decodeCursor(parsed.data.before);
+    if (cursor === undefined) {
+      return res.status(400).json({ success: false, error: 'Invalid activity cursor', code: 'INVALID_CURSOR' });
+    }
+
+    const page = await tenantDb.withTenantDb(req, async (pool) => {
+      const head = await pool.query(
+        `SELECT case_id, office_id, phone, email, od_patient_id, notes, updated_at
+           FROM tc_cases WHERE office_id = $1 AND case_id = $2`,
+        [req.tcOffice, caseId]
+      );
+      if (head.rows.length === 0) return null;
+      const header = head.rows[0];
+      return activityFeed.buildActivityPage(pool, {
+        office: header.office_id,
+        header,
+        scope: parsed.data.scope,
+        cursor,
+        limit: parsed.data.limit,
+        voice: { entitled: isEntitledModule(req, 'voice'), store: unifiedCallStore },
+      });
+    });
+    if (!page) return notFound(res, 'case');
+
+    await auditTc(req, 'READ', 'tc_case_activity', caseId, { office: req.tcOffice });
+    res.json({ success: true, items: page.items, nextCursor: page.nextCursor });
+  })
+);
+
 // ── PUT /:caseId — scalar patch (never status) ──────────────────────────────
 
 router.put(
@@ -472,12 +538,41 @@ router.put(
     }
     sets.push('updated_at = now()');
 
+    const patchesNotes = Object.prototype.hasOwnProperty.call(patch, 'notes');
+
     const aggregate = await withTenantTx(req, async (client) => {
+      // AT-0: the notes box's prior value, read under the row lock so two
+      // saves racing each other each record the value they really replaced.
+      let priorNotes = null;
+      if (patchesNotes) {
+        const prior = await client.query(
+          'SELECT notes FROM tc_cases WHERE office_id = $1 AND case_id = $2 FOR UPDATE',
+          [req.tcOffice, caseId]
+        );
+        if (prior.rows.length === 0) return null;
+        priorNotes = prior.rows[0].notes == null ? '' : String(prior.rows[0].notes);
+      }
       const updated = await client.query(
         `UPDATE tc_cases SET ${sets.join(', ')} WHERE office_id = $1 AND case_id = $2 RETURNING case_id`,
         values
       );
       if (updated.rows.length === 0) return null;
+      // The column stays the CURRENT value; this append-only row is its
+      // history — the full new text and who saved it, in the same transaction
+      // as the overwrite. A save that changes nothing writes no row.
+      if (patchesNotes && patch.notes !== priorNotes) {
+        await store.insertEventRow(client, {
+          event_id: randomUUID(),
+          case_id: caseId,
+          office_id: req.tcOffice,
+          ts: new Date().toISOString(),
+          type: 'notes_updated',
+          description: patch.notes === '' ? 'Case notes cleared' : 'Case notes edited',
+          actor: actorEmail(req),
+          detail: { notes: patch.notes },
+          legacy_id: null,
+        });
+      }
       return store.loadCaseAggregate(client, req.tcOffice, caseId);
     });
     if (!aggregate) return notFound(res, 'case');
@@ -519,7 +614,31 @@ router.post(
       const header = await store.getCaseHeader(client, req.tcOffice, caseId);
       if (!header) return { missing: true };
       if (header.status === input.status) {
-        return { unchanged: true, aggregate: await store.loadCaseAggregate(client, req.tcOffice, caseId) };
+        // Same status. A note typed in the Change-status dialog used to be
+        // dropped here without a word. Keep it as an ordinary note_added event
+        // in THIS transaction (an existing type, so no vocabulary change). With
+        // no note, this stays a pure no-op.
+        const note = input.note.trim();
+        let noteEventId = null;
+        if (note) {
+          noteEventId = randomUUID();
+          await store.insertEventRow(client, {
+            event_id: noteEventId,
+            case_id: caseId,
+            office_id: req.tcOffice,
+            ts: now,
+            type: 'note_added',
+            description: note,
+            actor,
+            detail: null,
+            legacy_id: null,
+          });
+        }
+        return {
+          unchanged: true,
+          noteEventId,
+          aggregate: await store.loadCaseAggregate(client, req.tcOffice, caseId),
+        };
       }
 
       const enrollingInNurture = input.status === 'nurture' && !header.nurture_enrolled_at;
@@ -577,10 +696,16 @@ router.post(
 
     if (result.missing) return notFound(res, 'case');
     if (!result.unchanged) await auditTc(req, 'UPDATE', 'tc_case', caseId);
+    if (result.noteEventId) await auditTc(req, 'CREATE', 'tc_case_event', result.noteEventId);
     for (const id of result.stoppedEnrollments || []) {
       await auditTc(req, 'UPDATE', 'tc_nurture_enrollment.stopped', id, { office: req.tcOffice });
     }
-    res.json({ success: true, changed: !result.unchanged, case: result.aggregate });
+    res.json({
+      success: true,
+      changed: !result.unchanged,
+      noteAdded: Boolean(result.noteEventId),
+      case: result.aggregate,
+    });
   })
 );
 

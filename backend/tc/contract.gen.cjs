@@ -14884,6 +14884,7 @@ __export(contract_entry_exports, {
   NURTURE_STOP_CASE_TERMINAL: () => NURTURE_STOP_CASE_TERMINAL,
   NURTURE_STOP_OPTED_OUT: () => NURTURE_STOP_OPTED_OUT,
   NURTURE_TRACKS: () => NURTURE_TRACKS,
+  NotesRevisionDetail: () => NotesRevisionDetail,
   NurtureCadence: () => NurtureCadence,
   NurtureCaseResponse: () => NurtureCaseResponse,
   NurtureChannelState: () => NurtureChannelState,
@@ -14923,6 +14924,7 @@ __export(contract_entry_exports, {
   PRINT_TEMPLATE_TYPE_KEYS: () => PRINT_TEMPLATE_TYPE_KEYS,
   PatientInterestLevel: () => PatientInterestLevel,
   PerioStatus: () => PerioStatus,
+  PreauthEventType: () => PreauthEventType,
   PreauthStatus: () => PreauthStatus,
   PreauthType: () => PreauthType,
   PrintEditableValues: () => PrintEditableValues,
@@ -15148,6 +15150,7 @@ __export(contract_entry_exports, {
   intensityFor: () => intensityFor,
   isContactAttemptDetail: () => isContactAttemptDetail,
   isDefaultStyling: () => isDefaultStyling,
+  isNotesRevisionDetail: () => isNotesRevisionDetail,
   isPrimaryTooth: () => isPrimaryTooth,
   isPrintTemplateType: () => isPrintTemplateType,
   isVoiceHandoffDetail: () => isVoiceHandoffDetail,
@@ -15654,8 +15657,17 @@ var CaseEventType = import_zod4.z.enum([
   "nurture_resumed",
   "nurture_stopped",
   "nurture_completed",
-  "nurture_touch_queued"
+  "nurture_touch_queued",
+  /**
+   * AT-0: the long-form case notes box was saved with a different value.
+   * Server-written only, by PUT /api/tc/cases/:id — the client-loggable event
+   * endpoint cannot emit it. `detail` carries the FULL new text
+   * (NotesRevisionDetail): tc_cases.notes stays the current value, these rows
+   * are its history. Never a status change — the funnel does not read it.
+   */
+  "notes_updated"
 ]);
+var PreauthEventType = import_zod4.z.enum(["created", "updated", "status_change", "deleted"]);
 var OPEN_CASE_STATUSES = [
   "hygiene_review",
   "diagnosed",
@@ -15766,12 +15778,18 @@ var VoiceHandoffDetail = import_zod4.z.object({
   /** True if the handoff attached to an existing open case, false if it created one. */
   attached: import_zod4.z.boolean()
 });
-var TcCaseEventDetail = import_zod4.z.union([ContactAttemptDetail, VoiceHandoffDetail]);
+var NotesRevisionDetail = import_zod4.z.object({
+  notes: LongText
+});
+var TcCaseEventDetail = import_zod4.z.union([ContactAttemptDetail, VoiceHandoffDetail, NotesRevisionDetail]);
 function isContactAttemptDetail(detail) {
   return detail != null && "channel" in detail;
 }
 function isVoiceHandoffDetail(detail) {
   return detail != null && "attached" in detail;
+}
+function isNotesRevisionDetail(detail) {
+  return detail != null && "notes" in detail;
 }
 var TcCaseEvent = import_zod4.z.object({
   eventId: Uuid,
@@ -20338,6 +20356,7 @@ function odToothText(tooth) {
   NURTURE_STOP_CASE_TERMINAL,
   NURTURE_STOP_OPTED_OUT,
   NURTURE_TRACKS,
+  NotesRevisionDetail,
   NurtureCadence,
   NurtureCaseResponse,
   NurtureChannelState,
@@ -20377,6 +20396,7 @@ function odToothText(tooth) {
   PRINT_TEMPLATE_TYPE_KEYS,
   PatientInterestLevel,
   PerioStatus,
+  PreauthEventType,
   PreauthStatus,
   PreauthType,
   PrintEditableValues,
@@ -20602,6 +20622,7 @@ function odToothText(tooth) {
   intensityFor,
   isContactAttemptDetail,
   isDefaultStyling,
+  isNotesRevisionDetail,
   isPrimaryTooth,
   isPrintTemplateType,
   isVoiceHandoffDetail,

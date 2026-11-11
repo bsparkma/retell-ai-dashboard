@@ -1,5 +1,7 @@
 'use strict';
 
+const { randomUUID } = require('node:crypto');
+
 /**
  * Pre-auth data access that crosses into tc_cases. Every query is
  * office-scoped; every column is named; every value is a parameter.
@@ -45,4 +47,78 @@ async function countCrossOfficeCaseLinks(q) {
   return { total: pairs.reduce((s, p) => s + p.count, 0), pairs };
 }
 
-module.exports = { caseInOffice, countCrossOfficeCaseLinks, CROSS_OFFICE_LINKS_SQL };
+// ── AT-0: the pre-auth history (tc_preauth_events) ──────────────────────────
+
+/**
+ * The fields a history row describes — the contract entity minus the ids and
+ * the server clock. Contract (camelCase) names, so a row reads like the API.
+ */
+const HISTORY_FIELDS = Object.freeze([
+  'caseId',
+  'patientName',
+  'phone',
+  'email',
+  'odPatientId',
+  'preauthType',
+  'description',
+  'insuranceCarrier',
+  'status',
+  'doctorName',
+  'submittedDate',
+  'decisionDate',
+  'referenceNumber',
+  'notes',
+]);
+
+/** null and undefined are the same absence; everything else compares by value. */
+function sameValue(a, b) {
+  const x = a === undefined ? null : a;
+  const y = b === undefined ? null : b;
+  return x === y;
+}
+
+/**
+ * What changed between two snapshots of a pre-auth, as
+ * { field: { from, to } } — PRIOR VALUES INCLUDED. `before` null = it was just
+ * created (every set field, from null); `after` null = it was deleted (every
+ * field it held, to null). Unchanged fields are left out.
+ * @param {Record<string, unknown> | null} before
+ * @param {Record<string, unknown> | null} after
+ * @returns {Record<string, { from: unknown, to: unknown }>}
+ */
+function preauthChanges(before, after) {
+  /** @type {Record<string, { from: unknown, to: unknown }>} */
+  const out = {};
+  for (const f of HISTORY_FIELDS) {
+    const from = before ? (before[f] === undefined ? null : before[f]) : null;
+    const to = after ? (after[f] === undefined ? null : after[f]) : null;
+    if (!sameValue(from, to)) out[f] = { from, to };
+  }
+  return out;
+}
+
+/**
+ * Append one history row. Call it with the SAME transaction client as the
+ * mutation it describes, so the row exists exactly when the change does. The
+ * table is append-only (carein_app has SELECT + INSERT only); there is no
+ * update or delete helper, on purpose.
+ * @param {{ query: Function }} q
+ * @param {{ office: string, preauthId: string, actor: string|null,
+ *           type: 'created'|'updated'|'status_change'|'deleted',
+ *           changes: Record<string, { from: unknown, to: unknown }>, at?: string }} input
+ */
+async function insertPreauthEvent(q, { office, preauthId, actor, type, changes, at }) {
+  await q.query(
+    'INSERT INTO tc_preauth_events (event_id, office_id, preauth_id, ts, actor, type, changes) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+    [randomUUID(), office, preauthId, at || new Date().toISOString(), actor, type, JSON.stringify(changes)]
+  );
+}
+
+module.exports = {
+  caseInOffice,
+  countCrossOfficeCaseLinks,
+  CROSS_OFFICE_LINKS_SQL,
+  HISTORY_FIELDS,
+  preauthChanges,
+  insertPreauthEvent,
+};

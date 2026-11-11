@@ -49,6 +49,7 @@ import type {
   Urgency,
 } from "@shared/tc/contract";
 import { parseServedFunnel } from "./reports/funnel";
+import { TcActivityPage, type ActivityScope } from "@shared/tc/activity";
 // Type-only: the card state the case list carries (CO-4b).
 import type { OdSyncCardState } from "./odSync/odSyncApi";
 import type { ServedFunnel } from "./reports/funnel";
@@ -393,6 +394,28 @@ export function createCase(office: OfficeId, input: TcCaseCreate): Promise<TcCas
   }).then((r) => r.case);
 }
 
+/**
+ * AT-1: one page of the case's merged activity feed, newest first. `before` is
+ * the previous page's nextCursor (keyset paging, never an offset). scope
+ * "patient" adds the same patient's other cases in this office. Validated
+ * against the shared schema so a drifted server is an error, not a blank row.
+ */
+export async function getCaseActivity(
+  office: OfficeId,
+  caseId: string,
+  opts: { before?: string | null; limit?: number; scope?: ActivityScope } = {},
+): Promise<TcActivityPage> {
+  const body = await tcRequest<unknown>(`/tc/cases/${caseId}/activity`, {
+    office,
+    params: {
+      before: opts.before ?? undefined,
+      limit: opts.limit,
+      scope: opts.scope ?? "case",
+    },
+  });
+  return TcActivityPage.parse(body);
+}
+
 export function getCase(office: OfficeId, caseId: string): Promise<TcCase> {
   return tcRequest<{ case: TcCase }>(`/tc/cases/${caseId}`, { office }).then((r) => r.case);
 }
@@ -410,6 +433,17 @@ export function patchCase(
 }
 
 /** THE status transition path (mirrors backend guards in status.ts). */
+/**
+ * `changed` is whether the STATUS moved. `noteAdded` is true when the status
+ * was unchanged but a note was submitted: the server kept it as a note_added
+ * event. Optional so an older server that omits it reads as "no note kept".
+ */
+export interface TransitionResult {
+  changed: boolean;
+  noteAdded?: boolean;
+  case: TcCase;
+}
+
 export function transitionCase(
   office: OfficeId,
   caseId: string,
@@ -418,8 +452,8 @@ export function transitionCase(
     lostReason?: z.infer<typeof LostReason> | null;
     note?: string;
   },
-): Promise<{ changed: boolean; case: TcCase }> {
-  return tcRequest<{ changed: boolean; case: TcCase }>(`/tc/cases/${caseId}/status`, {
+): Promise<TransitionResult> {
+  return tcRequest<TransitionResult>(`/tc/cases/${caseId}/status`, {
     method: "POST",
     office,
     body: { lostReason: null, note: "", ...input },

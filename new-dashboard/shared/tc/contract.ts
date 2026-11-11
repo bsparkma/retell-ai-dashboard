@@ -122,7 +122,21 @@ export const CaseEventType = z.enum([
   "nurture_stopped",
   "nurture_completed",
   "nurture_touch_queued",
+  /**
+   * AT-0: the long-form case notes box was saved with a different value.
+   * Server-written only, by PUT /api/tc/cases/:id — the client-loggable event
+   * endpoint cannot emit it. `detail` carries the FULL new text
+   * (NotesRevisionDetail): tc_cases.notes stays the current value, these rows
+   * are its history. Never a status change — the funnel does not read it.
+   */
+  "notes_updated",
 ]);
+
+/**
+ * AT-0: what happened to a pre-authorization, one row per mutation
+ * (tc_preauth_events). `deleted` outlives the row it describes.
+ */
+export const PreauthEventType = z.enum(["created", "updated", "status_change", "deleted"]);
 
 /**
  * Which statuses mean "this case is still open TC work".
@@ -298,7 +312,17 @@ export type VoiceHandoffDetail = z.infer<typeof VoiceHandoffDetail>;
  * is the event's own `type`, and the two member shapes have no overlapping
  * required keys, so parse order is unambiguous. Narrow with the guards below.
  */
-export const TcCaseEventDetail = z.union([ContactAttemptDetail, VoiceHandoffDetail]);
+/**
+ * AT-0: structured payload for notes_updated events — the FULL text the notes
+ * box held after the save (not a diff), so any past version reads on its own.
+ * "" means the notes were cleared.
+ */
+export const NotesRevisionDetail = z.object({
+  notes: LongText,
+});
+export type NotesRevisionDetail = z.infer<typeof NotesRevisionDetail>;
+
+export const TcCaseEventDetail = z.union([ContactAttemptDetail, VoiceHandoffDetail, NotesRevisionDetail]);
 export type TcCaseEventDetail = z.infer<typeof TcCaseEventDetail>;
 
 export function isContactAttemptDetail(
@@ -311,6 +335,12 @@ export function isVoiceHandoffDetail(
   detail: TcCaseEventDetail | null | undefined,
 ): detail is VoiceHandoffDetail {
   return detail != null && "attached" in detail;
+}
+
+export function isNotesRevisionDetail(
+  detail: TcCaseEventDetail | null | undefined,
+): detail is NotesRevisionDetail {
+  return detail != null && "notes" in detail;
 }
 
 export const TcCaseEvent = z.object({
