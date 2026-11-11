@@ -3,7 +3,7 @@
 /**
  * The ask-hygiene thread, hygiene side (CO-7): which checkout card is a visit's,
  * and the day's badges. The routes are where the module keeps its routes —
- * GET /api/hyg/day/checkout-questions (day.js, read-only) and GET + POST
+ * GET /api/hyg/day/checkout-questions (dayCheckoutQuestions.js, read-only) and GET + POST
  * /api/hyg/visit/:aptNum/checkout-questions[/reply] (visit.js, the module's one
  * mutating route file) — and the front desk's side is routes/tc/checkoutQuestions.js.
  * Same table (tc_checkout_questions), same store.
