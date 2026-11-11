@@ -24,6 +24,10 @@
  *   POST   /:id/print         a school/work excuse or appointment card, as a PDF (CO-3)
  *   GET    /schedule-check    cards from today's schedule: the office's state, and a
  *                             refresh when it is older than its window (CO-5b)
+ *   POST   /:id/route         "Route to…": Pre-auth | Pipeline | Follow-up | TC Inbox (CO-6,
+ *                             checkoutRouting.js)
+ *   GET|POST /:id/questions   the ask-hygiene thread; POST /:id/questions/resolve (CO-7,
+ *                             checkoutQuestions.js)
  *
  * THE WORKUP CHECKLIST (CO-1). The full-screen workup view's boxes — each
  * staged item "Worked up", each existing-treatment group "Ready to present",
@@ -120,6 +124,7 @@ const { withTenantTx } = require('./tx');
 const tenantDb = require('../../platform/tenantDb');
 const store = require('./caseStore');
 const checkoutStore = require('./checkoutStore');
+const questionStore = require('./checkoutQuestionStore');
 const { findOpenCase } = require('./intakeFromCall');
 const nurtureHooks = require('../../services/tcNurture/hooks');
 const { localDayKey } = require('../../services/localDayClock');
@@ -382,10 +387,24 @@ router.get(
     const today = await enter(req, res);
     if (today === null) return undefined;
     const statuses = view.data === 'done' ? DONE_STATUSES : checkoutStore.WAITING_STATUSES;
-    const rows = await tenantDb.withTenantDb(req, (pool) =>
-      checkoutStore.listForDay(pool, req.tcOffice, today, statuses)
-    );
-    return res.json({ success: true, today, view: view.data, handoffs: rows.map(checkoutStore.toHandoff) });
+    const { rows, questions } = await tenantDb.withTenantDb(req, async (pool) => {
+      const found = await checkoutStore.listForDay(pool, req.tcOffice, today, statuses);
+      // CO-7: each card's open ask-hygiene questions, for the card's chip.
+      // Counts only — the thread itself is read (and audited) on its own.
+      const qs = await questionStore.listForHandoffs(
+        pool,
+        req.tcOffice,
+        found.map((r) => String(r.handoff_id))
+      );
+      return { rows: found, questions: qs };
+    });
+    return res.json({
+      success: true,
+      today,
+      view: view.data,
+      handoffs: rows.map(checkoutStore.toHandoff),
+      openQuestions: questionStore.openCounts(questions),
+    });
   })
 );
 
@@ -567,6 +586,22 @@ router.post(
 // Behind the same gate and sweep as everything here; nothing stored, nothing
 // in Open Dental, an audit row per printout. See checkoutPrint.js.
 require('./checkoutPrint').mount(router, { enter });
+
+// ── POST /:id/route — "Route to…" (CO-6) ───────────────────────────────────
+// Pre-auth, Pipeline, Follow-up or the TC Inbox, from a waiting card. Behind
+// the same gate and sweep; see checkoutRouting.js. The shared case defaults and
+// the procedure lines are this file's, passed in rather than copied.
+const routeDeps = {
+  enter,
+  clock: () => clock(),
+  CHECKOUT_CASE_DEFAULTS,
+  URGENCY_BY_PRIORITY,
+  procedureLines,
+};
+require('./checkoutRouting').mount(router, routeDeps);
+
+// ── /:id/questions — the ask-hygiene thread (CO-7) ─────────────────────────
+require('./checkoutQuestions').mount(router, { enter, clock: () => clock() });
 
 // ── GET /:id — one handoff ──────────────────────────────────────────────────
 
@@ -1471,3 +1506,5 @@ module.exports.kickScheduleSweep = kickScheduleSweep;
 // Exported for the tests: TC's own text for a hygiene procedure (feedback round 1
 // pins that a primary tooth prints as its letter here too).
 module.exports.procedureLines = procedureLines;
+// CO-6: what the routing module is mounted with (its real-schema verifier uses it).
+module.exports.routeDeps = routeDeps;

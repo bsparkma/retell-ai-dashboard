@@ -199,6 +199,54 @@ router.get(
 
 // ── POST / — create (status always starts 'pending') ────────────────────────
 
+/**
+ * The create itself, inside the caller's transaction: the office check on a
+ * linked case, the INSERT (status always 'pending'), and the AT-0 `created`
+ * history row. Shared by POST / and the checkout card's Route to → Pre-auth
+ * (CO-6, routes/tc/checkoutRouting.js), so a pre-auth made from a checkout is
+ * written by exactly this code. `input` is a parsed PreauthCreate.
+ *
+ * @returns {Promise<object | typeof CASE_NOT_IN_OFFICE>} the pre-auth read back
+ */
+async function createPreauthInTx(client, { office, actor, preauthId, input }) {
+  if (input.caseId && !(await preauthStore.caseInOffice(client, office, input.caseId))) {
+    return CASE_NOT_IN_OFFICE;
+  }
+  await client.query(
+    `INSERT INTO tc_preauth_cases
+        (${COLS.join(', ')})
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+    [
+      preauthId,
+      null,
+      office,
+      input.caseId ?? null,
+      input.patientName,
+      input.phone ?? null,
+      input.email ?? null,
+      input.odPatientId ?? null,
+      input.preauthType,
+      input.description ?? '',
+      input.insuranceCarrier ?? '',
+      'pending',
+      input.doctorName ?? '',
+      null,
+      null,
+      input.referenceNumber ?? '',
+      input.notes ?? '',
+    ]
+  );
+  const created = await loadOne(client, office, preauthId);
+  await preauthStore.insertPreauthEvent(client, {
+    office,
+    preauthId,
+    actor,
+    type: 'created',
+    changes: preauthStore.preauthChanges(null, created),
+  });
+  return created;
+}
+
 router.post(
   '/',
   h(async (req, res) => {
@@ -206,44 +254,9 @@ router.post(
     if (!input) return;
 
     const preauthId = randomUUID();
-    const persisted = await withTenantTx(req, async (client) => {
-      if (input.caseId && !(await preauthStore.caseInOffice(client, req.tcOffice, input.caseId))) {
-        return CASE_NOT_IN_OFFICE;
-      }
-      await client.query(
-        `INSERT INTO tc_preauth_cases
-            (${COLS.join(', ')})
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
-        [
-          preauthId,
-          null,
-          req.tcOffice,
-          input.caseId ?? null,
-          input.patientName,
-          input.phone ?? null,
-          input.email ?? null,
-          input.odPatientId ?? null,
-          input.preauthType,
-          input.description ?? '',
-          input.insuranceCarrier ?? '',
-          'pending',
-          input.doctorName ?? '',
-          null,
-          null,
-          input.referenceNumber ?? '',
-          input.notes ?? '',
-        ]
-      );
-      const created = await loadOne(client, req.tcOffice, preauthId);
-      await preauthStore.insertPreauthEvent(client, {
-        office: req.tcOffice,
-        preauthId,
-        actor: actorEmail(req),
-        type: 'created',
-        changes: preauthStore.preauthChanges(null, created),
-      });
-      return created;
-    });
+    const persisted = await withTenantTx(req, (client) =>
+      createPreauthInTx(client, { office: req.tcOffice, actor: actorEmail(req), preauthId, input })
+    );
     if (persisted === CASE_NOT_IN_OFFICE) return caseNotFound(res);
 
     await auditTc(req, 'CREATE', 'tc_preauth', preauthId);
@@ -613,3 +626,6 @@ router.delete(
 );
 
 module.exports = router;
+module.exports.createPreauthInTx = createPreauthInTx;
+module.exports.PreauthCreate = PreauthCreate;
+module.exports.CASE_NOT_IN_OFFICE = CASE_NOT_IN_OFFICE;

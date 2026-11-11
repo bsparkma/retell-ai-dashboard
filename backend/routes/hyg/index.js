@@ -64,6 +64,9 @@ const router = express.Router();
 /** Office scoping is router-wide. See note 1 above before adding a mount. */
 router.use(requireOffice);
 
+// CO-7: the ask-hygiene badges (GET only, counts per AptNum). Above /day so
+// day.js stays the day, the names and the progress pill.
+router.use('/day/checkout-questions', require('./dayCheckoutQuestions'));
 router.use('/day', require('./day'));
 router.use('/visit', require('./visit'));
 // Perio voice entry (item 35): one bodyless token route, answered only while
