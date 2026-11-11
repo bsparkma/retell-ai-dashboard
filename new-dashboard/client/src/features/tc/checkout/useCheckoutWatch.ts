@@ -15,7 +15,8 @@
  * PROMINENCE (Beau's ruling): an arrival is no longer a toast that times out.
  * It is held in `arrivals` until the person ACKNOWLEDGES it (or opens it), and
  * the layout draws it as a persistent high-contrast banner, app-wide
- * (features/tc/checkout/CheckoutArrivalBanner.tsx). NO SOUND, at any level.
+ * (features/tc/checkout/CheckoutArrivalBanner.tsx). Sound stays OPT-IN: only
+ * `sound_banner` chimes; the default and `banner` are silent.
  * Held in this tab's memory only — never in browser storage, because it
  * carries a patient's name — so a reload clears it; the badge still counts.
  *
@@ -23,8 +24,7 @@
  * `checkout_handoff`, read each tick from /api/tc/notification-prefs:
  *   silent        the badge updates; no banner
  *   banner        the banner (the default)
- *   sound_banner  the banner — the same as `banner`: checkout arrivals never
- *                 make a sound (the stored preference value is untouched)
+ *   sound_banner  the banner plus a short chime (the person opted in)
  * A preference that cannot be read falls back to `banner` — the alert is
  * never lost because the preference was.
  *
@@ -36,6 +36,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { usePolling } from "@/hooks/usePolling";
 import { getCheckoutSummary } from "@/features/tc/checkout/checkoutApi";
 import { getNotificationPrefs } from "@/features/tc/notifications/notificationsApi";
+import { playChime } from "@/features/tc/notifications/chime";
 import { DEFAULT_NOTIFICATION_LEVEL, type TcNotificationLevel } from "@shared/tc/notifications";
 import type { OfficeId } from "@shared/tc/contract";
 
@@ -97,6 +98,7 @@ export function useCheckoutWatch(offices: readonly OfficeId[]): CheckoutWatch {
       const fresh: CheckoutArrival[] = [];
       let enabled = false;
       let waiting = 0;
+      let chime = false;
       results.forEach((r, i) => {
         if (r.status !== "fulfilled") return;
         const office = offices[i] as OfficeId;
@@ -116,7 +118,7 @@ export function useCheckoutWatch(offices: readonly OfficeId[]): CheckoutWatch {
               ? (p.value.events.find((e) => e.event === "checkout_handoff")?.level ?? DEFAULT_NOTIFICATION_LEVEL)
               : DEFAULT_NOTIFICATION_LEVEL;
           if (level === "silent") return; // the badge below still updates
-          // banner and sound_banner alike: a banner, never a sound.
+          if (level === "sound_banner") chime = true;
           fresh.push({
             office,
             handoffId: s.newest.handoffId,
@@ -126,6 +128,8 @@ export function useCheckoutWatch(offices: readonly OfficeId[]): CheckoutWatch {
           });
         }
       });
+      // One chime per tick, however many offices had an arrival.
+      if (chime) playChime();
       if (fresh.length > 0) {
         setArrivals((prev) => [...prev, ...fresh.filter((f) => !prev.some((p) => p.handoffId === f.handoffId))]);
       }

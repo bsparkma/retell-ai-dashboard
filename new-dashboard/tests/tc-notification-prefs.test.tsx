@@ -5,9 +5,8 @@
  *     through the api ("Use the office default" clears it); the office default
  *     is editable only when the server says you may.
  *   - The checkout arrival obeys the level: silent ⇒ badge only, no banner, no
- *     sound; banner ⇒ banner; sound_banner ⇒ banner and NO chime (Beau's
- *     prominence ruling: checkout arrivals never make a sound); a preference
- *     that cannot be read ⇒ banner (never lost). The banner is the persistent
+ *     sound; banner ⇒ banner; sound_banner ⇒ banner + chime (opt-in sound);
+ *     a preference that cannot be read ⇒ banner (never lost). The banner is the persistent
  *     CheckoutArrivalBanner, no longer a toast.
  *
  * NO NETWORK, NO BACKEND, NO PHI.
@@ -203,11 +202,11 @@ describe("the checkout arrival obeys the preference", () => {
     expect(chime).not.toHaveBeenCalled();
   });
 
-  it("sound + banner: the banner, and NO chime — checkout arrivals never make a sound", async () => {
+  it("sound + banner: a banner AND the chime", async () => {
     state.prefs = prefs("sound_banner");
     await arrive();
     expect(screen.getAllByTestId("checkout-arrival")).toHaveLength(1);
-    expect(chime).not.toHaveBeenCalled();
+    expect(chime).toHaveBeenCalledTimes(1);
   });
 
   it("a preference that cannot be read falls back to a banner — the alert is never lost", async () => {

@@ -117,7 +117,7 @@ export function NotificationsSection({ office }: { office: OfficeId }) {
               </p>
               {e.event === "checkout_handoff" && (
                 <p className="text-xs text-muted-foreground" data-testid="tc-notify-checkout_handoff-nosound">
-                  Checkout arrivals never play a sound: they show a banner that stays until you acknowledge it.
+                  Checkout arrivals show a banner that stays until you acknowledge it. Only Sound + banner adds a chime.
                 </p>
               )}
             </div>

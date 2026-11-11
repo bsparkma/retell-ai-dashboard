@@ -6,7 +6,8 @@
  *   - Acknowledge removes THAT arrival; the same newest on a later tick does
  *     not bring it back; a genuinely newer arrival shows again.
  *   - Two arrivals (two offices) stack; "Acknowledge all" clears both.
- *   - No sound, at any preference level.
+ *   - No sound at `banner` (the default); `sound_banner` is the only level that
+ *     chimes (covered in tc-notification-prefs.test.tsx).
  *   - The marker's pulse is motion-safe (reduced motion: no animation).
  *
  * NO NETWORK, NO BACKEND. Synthetic names only.
@@ -78,7 +79,7 @@ async function tick() {
 
 beforeEach(() => {
   state.summaries = new Map();
-  state.level = "sound_banner";
+  state.level = "banner";
   chime.mockClear();
   vi.useFakeTimers({ shouldAdvanceTime: true });
 });
