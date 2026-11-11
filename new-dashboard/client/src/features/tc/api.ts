@@ -49,6 +49,7 @@ import type {
   Urgency,
 } from "@shared/tc/contract";
 import { parseServedFunnel } from "./reports/funnel";
+import { TcActivityPage, type ActivityScope } from "@shared/tc/activity";
 // Type-only: the card state the case list carries (CO-4b).
 import type { OdSyncCardState } from "./odSync/odSyncApi";
 import type { ServedFunnel } from "./reports/funnel";
@@ -391,6 +392,28 @@ export function createCase(office: OfficeId, input: TcCaseCreate): Promise<TcCas
     office,
     body: input,
   }).then((r) => r.case);
+}
+
+/**
+ * AT-1: one page of the case's merged activity feed, newest first. `before` is
+ * the previous page's nextCursor (keyset paging, never an offset). scope
+ * "patient" adds the same patient's other cases in this office. Validated
+ * against the shared schema so a drifted server is an error, not a blank row.
+ */
+export async function getCaseActivity(
+  office: OfficeId,
+  caseId: string,
+  opts: { before?: string | null; limit?: number; scope?: ActivityScope } = {},
+): Promise<TcActivityPage> {
+  const body = await tcRequest<unknown>(`/tc/cases/${caseId}/activity`, {
+    office,
+    params: {
+      before: opts.before ?? undefined,
+      limit: opts.limit,
+      scope: opts.scope ?? "case",
+    },
+  });
+  return TcActivityPage.parse(body);
 }
 
 export function getCase(office: OfficeId, caseId: string): Promise<TcCase> {
