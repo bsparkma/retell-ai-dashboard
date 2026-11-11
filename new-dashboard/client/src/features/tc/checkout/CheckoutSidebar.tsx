@@ -29,6 +29,8 @@ import { OfficeBadge } from "@/features/tc/components/OfficeBadge";
 import { tcErrorMessage } from "@/features/tc/api";
 import { getCheckoutHandoff } from "@/features/tc/checkout/checkoutApi";
 import { CheckoutOutcome, checkoutClock } from "@/features/tc/checkout/CheckoutOutcome";
+import { CheckoutRouteTo } from "@/features/tc/checkout/CheckoutRouteTo";
+import { CheckoutQuestions } from "@/features/tc/checkout/CheckoutQuestions";
 import { checkoutOriginText } from "@/features/tc/checkout/checkoutOrigin";
 import { ReopenedNotice } from "@/features/tc/checkout/ReopenedNotice";
 import {
@@ -329,6 +331,14 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
                   Dr. sign-off / Approved) with Start referral beside it. It
                   reads "None" exactly as before while referrals is off. */}
               <ReferralsPanel compact office={handoff.officeId} source={{ handoffId: handoff.handoffId }} />
+
+              {/* CO-7: ask the hygienist; CO-6: route the patient elsewhere in TC. */}
+              {office && <CheckoutQuestions key={`q-${handoff.handoffId}`} office={office} handoffId={handoff.handoffId} />}
+              {office && (
+                <div className="border-t border-border pt-4">
+                  <CheckoutRouteTo office={office} handoff={handoff} onAdopt={adopt} onReload={load} />
+                </div>
+              )}
 
               {office && (
                 <CheckoutOutcome key={handoff.handoffId} office={office} handoff={handoff} onAdopt={adopt} onReload={load} />

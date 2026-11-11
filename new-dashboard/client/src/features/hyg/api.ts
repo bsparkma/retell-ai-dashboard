@@ -31,6 +31,12 @@ import {
 } from "@shared/tc/referrals";
 import { TcProviderEntry } from "@shared/tc/providers";
 import {
+  HygCheckoutQuestionBadgesResponse,
+  HygCheckoutThreadResponse,
+  type HygCheckoutQuestionBadge,
+  type TcCheckoutQuestionThread,
+} from "@shared/tc/checkoutRouting";
+import {
   type HygDayScope,
   FlagSourceSchema,
   HandoffCategorySchema,
@@ -1120,4 +1126,49 @@ export async function uploadVisitReferralAttachment(
   if (!res.ok) throw await toError(res);
   return parseWith(z.object({ success: z.literal(true), attachment: TcReferralAttachment }))((await res.json()) as unknown)
     .attachment;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CO-7 — the front desk's questions on a visit's checkout card
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Parse with a named failure (the referral helper's message is about referrals). */
+function parseQuestions<T>(schema: z.ZodType<T>): (raw: unknown) => T {
+  return (raw) => {
+    const parsed = schema.safeParse(raw);
+    if (!parsed.success) throw new HygApiError("CareIN returned checkout questions this page could not read", 0, "CONTRACT_MISMATCH");
+    return parsed.data;
+  };
+}
+
+/**
+ * The day's badges: per AptNum, the open and total question counts on that
+ * visit's checkout card. Counts only — no names, no text. Like the progress
+ * pill, a failure is the BADGE's problem, never the day's.
+ */
+export async function fetchCheckoutQuestionBadges(
+  office: OfficeId,
+  date: string,
+  aptNums: readonly number[],
+  signal?: AbortSignal,
+): Promise<{ enabled: boolean; badges: HygCheckoutQuestionBadge[] }> {
+  const res = await get(
+    "/day/checkout-questions",
+    { office, date, apt: aptNums.join(",") },
+    parseQuestions(HygCheckoutQuestionBadgesResponse),
+    signal,
+  );
+  return { enabled: res.enabled, badges: res.badges };
+}
+
+/** One visit's thread (the front desk's questions and the replies). */
+export async function fetchCheckoutThread(office: OfficeId, aptNum: number): Promise<TcCheckoutQuestionThread> {
+  return (await get(`/visit/${aptNum}/checkout-questions`, { office }, parseQuestions(HygCheckoutThreadResponse))).thread;
+}
+
+/** Reply to the open question(s). The answer is the thread read back. */
+export async function replyCheckoutQuestion(office: OfficeId, aptNum: number, body: string): Promise<TcCheckoutQuestionThread> {
+  return (
+    await mutate("POST", `/visit/${aptNum}/checkout-questions/reply`, { office }, parseQuestions(HygCheckoutThreadResponse), { body })
+  ).thread;
 }

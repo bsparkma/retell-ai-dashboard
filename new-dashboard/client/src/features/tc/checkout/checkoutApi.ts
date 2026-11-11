@@ -17,6 +17,12 @@ import {
   type TcCheckoutOutcome,
   type TcCheckoutWorkupRequest,
 } from "@shared/tc/checkout";
+import {
+  TcCheckoutRouteResponse,
+  TcCheckoutQuestionThreadResponse,
+  type TcCheckoutRouteRequest,
+  type TcCheckoutQuestionThread,
+} from "@shared/tc/checkoutRouting";
 import type { OfficeId } from "@shared/tc/contract";
 
 export type CheckoutView = "waiting" | "done";
@@ -26,6 +32,8 @@ const ListResponse = z.object({
   today: z.string(),
   view: z.enum(["waiting", "done"]),
   handoffs: z.array(TcCheckoutHandoff),
+  /** CO-7: handoffId → open ask-hygiene questions, for the cards that have any. */
+  openQuestions: z.record(z.string(), z.number().int().min(0)).default({}),
 });
 
 const OneResponse = z.object({ success: z.literal(true), handoff: TcCheckoutHandoff });
@@ -238,4 +246,55 @@ export async function setCheckoutWorkup(
     await tcRequest<unknown>(`/tc/checkout/${handoffId}/workup`, { office, method: "POST", body }),
   );
   return res.handoff;
+}
+
+// ── CO-6: "Route to…" ───────────────────────────────────────────────────────
+
+/**
+ * Send the card's patient to a Pre-auth, the Pipeline, a Follow-up or the TC
+ * Inbox. The body names only the destination and the person's words; the
+ * server takes the patient, PatNum and office from the stored card. The answer
+ * is the card read back, and what was made or touched.
+ */
+export async function routeCheckout(
+  office: OfficeId,
+  handoffId: string,
+  body: TcCheckoutRouteRequest,
+): Promise<TcCheckoutRouteResponse> {
+  return parse(
+    TcCheckoutRouteResponse,
+    await tcRequest<unknown>(`/tc/checkout/${handoffId}/route`, { office, method: "POST", body }),
+  );
+}
+
+// ── CO-7: the ask-hygiene thread ────────────────────────────────────────────
+
+export async function getCheckoutQuestions(office: OfficeId, handoffId: string): Promise<TcCheckoutQuestionThread> {
+  const res = parse(
+    TcCheckoutQuestionThreadResponse,
+    await tcRequest<unknown>(`/tc/checkout/${handoffId}/questions`, { office }),
+  );
+  return res.thread;
+}
+
+/** Ask the hygienist a question on this card. The answer is the thread read back. */
+export async function askCheckoutQuestion(
+  office: OfficeId,
+  handoffId: string,
+  body: string,
+): Promise<TcCheckoutQuestionThread> {
+  const res = parse(
+    TcCheckoutQuestionThreadResponse,
+    await tcRequest<unknown>(`/tc/checkout/${handoffId}/questions`, { office, method: "POST", body: { body } }),
+  );
+  return res.thread;
+}
+
+/** Mark every open question on this card resolved. */
+export async function resolveCheckoutQuestions(office: OfficeId, handoffId: string): Promise<TcCheckoutQuestionThread> {
+  const res = parse(
+    TcCheckoutQuestionThreadResponse,
+    await tcRequest<unknown>(`/tc/checkout/${handoffId}/questions/resolve`, { office, method: "POST", body: {} }),
+  );
+  return res.thread;
 }
