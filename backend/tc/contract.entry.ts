@@ -40,6 +40,8 @@ export * from "../../new-dashboard/shared/tc/emailRender";
 export * from "../../new-dashboard/shared/tc/nurture";
 // The checkout handoff and the intake-kind / source-key vocabulary (item 49).
 export * from "../../new-dashboard/shared/tc/checkout";
+// CO-6 / CO-7: "Route to…" from a checkout card, and the ask-hygiene thread.
+export * from "../../new-dashboard/shared/tc/checkoutRouting";
 // In-app alert preferences (item 51).
 export * from "../../new-dashboard/shared/tc/notifications";
 // Referrals (items 52-55): status/urgency vocabulary, directory, settings.
