@@ -204,10 +204,20 @@ test('A: the contact goes ONLY into the letter — not the patient email, an eve
   const { baseUrl, db, acsCalls } = await boot(t);
   const { id, notice } = await sendIt(baseUrl, db, acsCalls);
   assert.ok(notice, 'the patient was emailed');
-  for (const leak of [PHONE, '555-0142', DOB, DOB_TEXT, '1980']) {
+  // Full formatted values only. A bare year ('1980') used to be in this list
+  // and could false-positive on the random hex in UUIDs and token hashes.
+  for (const leak of [PHONE, '555-0142', DOB, DOB_TEXT]) {
     assert.ok(!whole(notice).includes(leak), `the patient email never carries ${leak}`);
-    assert.ok(!trailOf(db, id).includes(leak), `no note, audit row or token carries ${leak}`);
+    assert.ok(!trailOf(db, id).includes(leak), `no note, audit row, token or letter snapshot carries ${leak}`);
   }
+  // The trail searched above includes the send event's letter_snapshot; prove
+  // it is there, with the withheld markers in place of the Open Dental blocks.
+  const sendEvent = eventsOf(db, id).find((e) => e.verb === 'send');
+  assert.ok(sendEvent && sendEvent.letter_snapshot, 'the send event carries a letter snapshot');
+  const snap = typeof sendEvent.letter_snapshot === 'string' ? JSON.parse(sendEvent.letter_snapshot) : sendEvent.letter_snapshot;
+  assert.ok(snap.withheld.includes('date_of_birth') && snap.withheld.includes('patient_contact'), JSON.stringify(snap.withheld));
+  assert.ok(snap.text.includes('[Date of birth from Open Dental: in the letter as sent, not kept in this history]'));
+  assert.ok(snap.text.includes('[Patient contact from Open Dental: in the letter as sent, not kept in this history]'));
 });
 
 test('A: a field Open Dental has no value for reads "not on file" — never invented', async (t) => {
