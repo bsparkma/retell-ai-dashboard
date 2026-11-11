@@ -60,6 +60,7 @@ import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
 import { isTcSharedRoute, resolveTcOfficeScope } from "@/features/tc/officeScope";
 import { getUnseenTotal } from "@/features/tc/messaging/messagingApi";
 import { useCheckoutWatch } from "@/features/tc/checkout/useCheckoutWatch";
+import { CheckoutArrivalBanner } from "@/features/tc/checkout/CheckoutArrivalBanner";
 import { useSignoffWatch } from "@/features/tc/referrals/useSignoffWatch";
 import { useReferralsOn } from "@/features/tc/referrals/useReferralsOn";
 import type { OfficeId } from "@shared/tc/contract";
@@ -480,7 +481,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
       : [];
 
   /**
-   * Item 50: the Checkout nav item, its badge and the arrival toast, for
+   * Item 50: the Checkout nav item, its badge and the arrival banner, for
    * someone holding tc.full (F4: on any route). An office with checkout
    * switched off contributes nothing; with none on, the nav item is not drawn
    * at all. The arrival alert still obeys the checkout_handoff preference.
@@ -565,8 +566,19 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   // Patient-facing presentation mode renders chrome-free (legacy /present).
   // The module hub is also chrome-free — the sidebar nav belongs to a module,
   // and on /home none is chosen yet (the page brings its own header).
-  if (location.startsWith("/tc/present") || location === "/home") {
+  // The checkout arrival banner (prominence ruling): app-wide like the toast
+  // it replaced, but never on the patient-facing presentation screen.
+  const arrivalBanner = <CheckoutArrivalBanner arrivals={checkout.arrivals} onAcknowledge={checkout.acknowledge} />;
+  if (location.startsWith("/tc/present")) {
     return <>{children}</>;
+  }
+  if (location === "/home") {
+    return (
+      <>
+        {arrivalBanner}
+        {children}
+      </>
+    );
   }
 
   return (
@@ -960,6 +972,8 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             <span>Busy — the dashboard is retrying. Nothing is lost.</span>
           </div>
         ) : null}
+
+        {arrivalBanner}
 
         {/* Page content */}
         <main className="flex-1 overflow-y-auto">

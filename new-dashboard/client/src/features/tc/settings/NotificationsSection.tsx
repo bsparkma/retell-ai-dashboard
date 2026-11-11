@@ -115,6 +115,11 @@ export function NotificationsSection({ office }: { office: OfficeId }) {
                 You get: {TC_NOTIFICATION_LEVEL_LABELS[e.level]}
                 {e.source === "user" ? " (your choice)" : e.source === "office" ? " (office default)" : " (built-in default)"}
               </p>
+              {e.event === "checkout_handoff" && (
+                <p className="text-xs text-muted-foreground" data-testid="tc-notify-checkout_handoff-nosound">
+                  Checkout arrivals never play a sound: they show a banner that stays until you acknowledge it.
+                </p>
+              )}
             </div>
             <label className="text-xs text-muted-foreground space-y-1">
               <span>Your alerts</span>

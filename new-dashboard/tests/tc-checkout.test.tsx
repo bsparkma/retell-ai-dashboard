@@ -137,6 +137,7 @@ vi.mock("@/features/tc/checkout/checkoutApi", async () => {
 
 import { CheckoutInbox } from "@/pages/tc/TcCheckout";
 import { useCheckoutWatch } from "@/features/tc/checkout/useCheckoutWatch";
+import { CheckoutArrivalBanner } from "@/features/tc/checkout/CheckoutArrivalBanner";
 
 beforeEach(() => {
   state.rows = [];
@@ -286,7 +287,12 @@ describe("the Checkout inbox", () => {
 
 function Probe({ offices }: { offices: ("roland" | "valley")[] }) {
   const w = useCheckoutWatch(offices);
-  return <div data-testid="probe">{`${w.enabled}:${w.waiting}`}</div>;
+  return (
+    <>
+      <div data-testid="probe">{`${w.enabled}:${w.waiting}`}</div>
+      <CheckoutArrivalBanner arrivals={w.arrivals} onAcknowledge={w.acknowledge} />
+    </>
+  );
 }
 
 function summary(over: Partial<TcCheckoutSummary> = {}): TcCheckoutSummary {
@@ -332,7 +338,8 @@ describe("useCheckoutWatch", () => {
     expect(toastMock).not.toHaveBeenCalled();
   });
 
-  it("the first answer never toasts a backlog; a NEW newest handoff does, with an Open link", async () => {
+  // Prominence ruling (CO-6/CO-7 PR): a banner that stays until acknowledged, not a toast.
+  it("the first answer never announces a backlog; a NEW newest handoff shows the banner, with an Open link", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       const first = { handoffId: "5d2a7e10-0000-4000-8000-000000000001", patientName: "Older, Pat", createdAt: "2026-09-08T13:00:00.000Z" };
@@ -345,18 +352,19 @@ describe("useCheckoutWatch", () => {
         </WouterRouter>,
       );
       await waitFor(() => expect(screen.getByTestId("probe").textContent).toBe("true:1"));
-      expect(toastMock).not.toHaveBeenCalled();
+      expect(screen.queryByTestId("checkout-arrival-banner")).toBeNull();
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(60_000);
       });
       await waitFor(() => expect(screen.getByTestId("probe").textContent).toBe("true:2"));
-      expect(toastMock).toHaveBeenCalledTimes(1);
-      const [message, opts] = toastMock.mock.calls[0] as [string, { action: { label: string; onClick: () => void } }];
-      expect(message).toBe("Newer, Pat is headed to checkout");
-      expect(opts.action.label).toBe("Open");
-      act(() => opts.action.onClick());
+      expect(toastMock).not.toHaveBeenCalled();
+      expect(screen.getAllByTestId("checkout-arrival")).toHaveLength(1);
+      expect(screen.getByTestId("checkout-arrival-banner").textContent).toContain("Newer, Pat is headed to checkout");
+      act(() => screen.getByTestId("checkout-arrival-open").click());
       expect(memory.history?.at(-1)).toBe(`/tc/checkout?office=roland&handoff=${second.handoffId}`);
+      // Opening it acknowledges it.
+      expect(screen.queryByTestId("checkout-arrival-banner")).toBeNull();
     } finally {
       vi.useRealTimers();
     }

@@ -5,8 +5,10 @@
  *     through the api ("Use the office default" clears it); the office default
  *     is editable only when the server says you may.
  *   - The checkout arrival obeys the level: silent ⇒ badge only, no banner, no
- *     sound; banner ⇒ banner; sound_banner ⇒ banner + chime; a preference that
- *     cannot be read ⇒ banner (never lost).
+ *     sound; banner ⇒ banner; sound_banner ⇒ banner and NO chime (Beau's
+ *     prominence ruling: checkout arrivals never make a sound); a preference
+ *     that cannot be read ⇒ banner (never lost). The banner is the persistent
+ *     CheckoutArrivalBanner, no longer a toast.
  *
  * NO NETWORK, NO BACKEND, NO PHI.
  */
@@ -82,6 +84,7 @@ vi.mock("@/features/tc/checkout/checkoutApi", () => ({
 
 import { NotificationsSection } from "@/features/tc/settings/NotificationsSection";
 import { useCheckoutWatch } from "@/features/tc/checkout/useCheckoutWatch";
+import { CheckoutArrivalBanner } from "@/features/tc/checkout/CheckoutArrivalBanner";
 
 beforeEach(() => {
   state.prefs = prefs("banner");
@@ -141,7 +144,12 @@ describe("Settings → Notifications", () => {
 
 function Probe() {
   const w = useCheckoutWatch(["roland"]);
-  return <div data-testid="probe">{`${w.enabled}:${w.waiting}`}</div>;
+  return (
+    <>
+      <div data-testid="probe">{`${w.enabled}:${w.waiting}`}</div>
+      <CheckoutArrivalBanner arrivals={w.arrivals} onAcknowledge={w.acknowledge} />
+    </>
+  );
 }
 
 function summary(waiting: number, n: number | null): TcCheckoutSummary {
@@ -184,27 +192,28 @@ describe("the checkout arrival obeys the preference", () => {
     state.prefs = prefs("silent");
     await arrive();
     expect(toastMock).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("checkout-arrival-banner")).toBeNull();
     expect(chime).not.toHaveBeenCalled();
   });
 
   it("banner: a banner, no sound", async () => {
     state.prefs = prefs("banner");
     await arrive();
-    expect(toastMock).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByTestId("checkout-arrival")).toHaveLength(1);
     expect(chime).not.toHaveBeenCalled();
   });
 
-  it("sound + banner: a banner AND the chime", async () => {
+  it("sound + banner: the banner, and NO chime — checkout arrivals never make a sound", async () => {
     state.prefs = prefs("sound_banner");
     await arrive();
-    expect(toastMock).toHaveBeenCalledTimes(1);
-    expect(chime).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByTestId("checkout-arrival")).toHaveLength(1);
+    expect(chime).not.toHaveBeenCalled();
   });
 
   it("a preference that cannot be read falls back to a banner — the alert is never lost", async () => {
     state.prefsFail = true;
     await arrive();
-    expect(toastMock).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByTestId("checkout-arrival")).toHaveLength(1);
     expect(chime).not.toHaveBeenCalled();
   });
 });
