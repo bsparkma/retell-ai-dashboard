@@ -20,7 +20,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ArrowLeft, ClipboardCheck, Presentation, SearchX } from "lucide-react";
 import { getCase, TcApiError, tcErrorMessage } from "@/features/tc/api";
 import { TcOfficeGate, useTcOffice } from "@/features/tc/components/TcShell";
-import { ActivityTimeline } from "@/features/tc/caseview/ActivityTimeline";
+import { ActivityFeed } from "@/features/tc/caseview/ActivityFeed";
 import { CaseCommandBar } from "@/features/tc/caseview/CaseCommandBar";
 import { FinancingTab } from "@/features/tc/caseview/FinancingTab";
 import { FollowupsTab } from "@/features/tc/caseview/FollowupsTab";
@@ -241,7 +241,13 @@ function CaseViewInner({ office }: { office: OfficeId }) {
           <NotesTab office={office} tcCase={tcCase} onCaseUpdate={setTcCase} />
         </TabsContent>
         <TabsContent value="activity" className="pt-2">
-          <ActivityTimeline events={tcCase.events} />
+          {/* AT-1: every note / communication source, merged and paged (read-only).
+              Re-reads when this page changes the case. */}
+          <ActivityFeed
+            office={office}
+            caseId={tcCase.caseId}
+            refreshKey={`${tcCase.status}:${tcCase.events.length}:${tcCase.notes.length}`}
+          />
         </TabsContent>
       </Tabs>
     </div>

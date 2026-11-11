@@ -38,6 +38,10 @@ const tcCheckout = require('../../config/tcCheckout');
 const nurtureHooks = require('../../services/tcNurture/hooks');
 // CO-4b: the card's Open Dental sync badge / flag.
 const odPipelineSync = require('../../services/tc/odPipelineSync');
+// AT-1: the Activity tab's merged, paged feed (read-only).
+const activityFeed = require('./activityFeed');
+const { isEntitledModule } = require('../../middleware/tenantContext');
+const unifiedCallStore = require('../../services/unifiedCallStore');
 
 const { z, TcCase, TcCasePhase, TcCaseItem, TcObjection, ContactAttemptDetail, CaseStatus, LostReason, Uuid, caseToRows } = contract;
 
@@ -438,6 +442,68 @@ router.get(
 
     await auditTc(req, 'READ', 'tc_case', caseId);
     res.json({ success: true, case: aggregate });
+  })
+);
+
+// ── GET /:caseId/activity — AT-1 merged activity feed (read-only) ──────────
+//
+// Every note / communication source for the case, newest first, keyset-paged.
+// The case header is loaded in req.tcOffice FIRST: no header ⇒ 404 and no
+// source is queried. Every source then keys on that header's office and its
+// case id / PatNum — nothing about which patient or office comes from the
+// request beyond the existing ?office= assertion. One READ audit row per page;
+// a failed audit write propagates (500) like every other PHI read here.
+
+const ActivityQuery = z
+  .object({
+    office: z.string().optional(),
+    before: z.string().max(512).optional(),
+    limit: z.coerce.number().int().min(1).max(activityFeed.MAX_LIMIT).default(activityFeed.DEFAULT_LIMIT),
+    scope: z.enum(['case', 'patient']).default('case'),
+  })
+  .strict();
+
+router.get(
+  '/:caseId/activity',
+  h(async (req, res) => {
+    const caseId = parseId(res, req.params.caseId, 'case');
+    if (!caseId) return;
+
+    const parsed = ActivityQuery.safeParse(req.query);
+    if (!parsed.success) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid activity query',
+        code: 'VALIDATION_ERROR',
+        issues: parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+      });
+    }
+    const cursor = activityFeed.decodeCursor(parsed.data.before);
+    if (cursor === undefined) {
+      return res.status(400).json({ success: false, error: 'Invalid activity cursor', code: 'INVALID_CURSOR' });
+    }
+
+    const page = await tenantDb.withTenantDb(req, async (pool) => {
+      const head = await pool.query(
+        `SELECT case_id, office_id, phone, email, od_patient_id, notes, updated_at
+           FROM tc_cases WHERE office_id = $1 AND case_id = $2`,
+        [req.tcOffice, caseId]
+      );
+      if (head.rows.length === 0) return null;
+      const header = head.rows[0];
+      return activityFeed.buildActivityPage(pool, {
+        office: header.office_id,
+        header,
+        scope: parsed.data.scope,
+        cursor,
+        limit: parsed.data.limit,
+        voice: { entitled: isEntitledModule(req, 'voice'), store: unifiedCallStore },
+      });
+    });
+    if (!page) return notFound(res, 'case');
+
+    await auditTc(req, 'READ', 'tc_case_activity', caseId, { office: req.tcOffice });
+    res.json({ success: true, items: page.items, nextCursor: page.nextCursor });
   })
 );
 

@@ -197,6 +197,16 @@ jobs:
           MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
         run: node scripts/at0-note-history-verify-queries.js
 
+      # AT-1: the Activity feed's source queries, EXECUTED against the real
+      # schema with a synthetic row in every source, paged through for both
+      # scopes — the unit suite's Map database accepts any column name and any
+      # parameter type. One transaction, always rolled back.
+      - name: at1 activity feed verification (real statements, real rows, real schema)
+        working-directory: backend
+        env:
+          MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
+        run: node scripts/at1-activity-verify-queries.js
+
       - name: spine smoke test (registry / tenantDb / append-only audit / entitlement)
         working-directory: backend
         env:
