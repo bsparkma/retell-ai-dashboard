@@ -32,10 +32,10 @@ const {
 const { withTenantTx } = require('./tx');
 const tenantDb = require('../../platform/tenantDb');
 const store = require('./caseStore');
+const caseStatus = require('./caseStatus');
 const checkoutStore = require('./checkoutStore');
 const tcCheckout = require('../../config/tcCheckout');
-// (item 47) A case leaving TC work stops its nurture enrollment.
-const nurtureHooks = require('../../services/tcNurture/hooks');
+// (item 47) A case leaving TC work stops its nurture enrollment: routes/tc/caseStatus.js.
 // CO-4b: the card's Open Dental sync badge / flag.
 const odPipelineSync = require('../../services/tc/odPipelineSync');
 // AT-1: the Activity tab's merged, paged feed (read-only).
@@ -610,88 +610,20 @@ router.post(
     const actor = actorEmail(req);
     const now = new Date().toISOString();
 
+    // The transition itself is routes/tc/caseStatus.js (extracted unchanged so
+    // the checkout card's Route to → Pipeline, CO-6, runs the same code).
     const result = await withTenantTx(req, async (client) => {
-      const header = await store.getCaseHeader(client, req.tcOffice, caseId);
-      if (!header) return { missing: true };
-      if (header.status === input.status) {
-        // Same status. A note typed in the Change-status dialog used to be
-        // dropped here without a word. Keep it as an ordinary note_added event
-        // in THIS transaction (an existing type, so no vocabulary change). With
-        // no note, this stays a pure no-op.
-        const note = input.note.trim();
-        let noteEventId = null;
-        if (note) {
-          noteEventId = randomUUID();
-          await store.insertEventRow(client, {
-            event_id: noteEventId,
-            case_id: caseId,
-            office_id: req.tcOffice,
-            ts: now,
-            type: 'note_added',
-            description: note,
-            actor,
-            detail: null,
-            legacy_id: null,
-          });
-        }
-        return {
-          unchanged: true,
-          noteEventId,
-          aggregate: await store.loadCaseAggregate(client, req.tcOffice, caseId),
-        };
-      }
-
-      const enrollingInNurture = input.status === 'nurture' && !header.nurture_enrolled_at;
-      await client.query(
-        `UPDATE tc_cases
-            SET status = $3,
-                lost_reason = $4,
-                status_changed_at = $5,
-                nurture_enrolled_at = CASE WHEN $6 THEN $5::timestamptz ELSE nurture_enrolled_at END,
-                updated_at = now()
-          WHERE office_id = $1 AND case_id = $2`,
-        [req.tcOffice, caseId, input.status, input.lostReason, now, enrollingInNurture]
-      );
-
-      await store.insertEventRow(client, {
-        event_id: randomUUID(),
-        case_id: caseId,
-        office_id: req.tcOffice,
-        ts: now,
-        type: 'status_change',
-        description: input.note
-          ? `${header.status} → ${input.status}: ${input.note}`
-          : `${header.status} → ${input.status}`,
-        actor,
-        detail: null,
-        legacy_id: null,
-      });
-      if (enrollingInNurture) {
-        await store.insertEventRow(client, {
-          event_id: randomUUID(),
-          case_id: caseId,
-          office_id: req.tcOffice,
-          ts: now,
-          type: 'nurture_enrolled',
-          description: 'Enrolled in nurture campaign',
-          actor,
-          detail: null,
-          legacy_id: null,
-        });
-      }
-
-      // (item 47) Into a TERMINAL status ⇒ any running nurture enrollment on
-      // this case stops (stop_reason 'case_terminal'), in this transaction, so
-      // the status and the stop commit together.
-      const stoppedEnrollments = await nurtureHooks.stopForTerminalCase(client, {
+      const applied = await caseStatus.applyStatusChange(client, {
         office: req.tcOffice,
         caseId,
-        newStatus: input.status,
+        status: input.status,
+        lostReason: input.lostReason,
+        note: input.note,
         actor,
-        now: new Date(now),
+        now,
       });
-
-      return { aggregate: await store.loadCaseAggregate(client, req.tcOffice, caseId), stoppedEnrollments };
+      if (applied.missing) return applied;
+      return { ...applied, aggregate: await store.loadCaseAggregate(client, req.tcOffice, caseId) };
     });
 
     if (result.missing) return notFound(res, 'case');
