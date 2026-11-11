@@ -97,6 +97,8 @@ const referralStore = require('../tc/referralStore');
 const providerStore = require('../tc/providerStore');
 const referralAttachments = require('../tc/referralAttachments');
 const transitions = require('../tc/referralTransitions');
+const checkoutQuestionStore = require('../tc/checkoutQuestionStore');
+const checkoutQuestions = require('../../services/hyg/checkoutQuestions');
 
 const router = express.Router();
 
@@ -2999,6 +3001,102 @@ router.post(
       },
     })
   )
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CO-7 — the ask-hygiene thread: the front desk's questions on this visit's
+// checkout card, and the hygienist's reply. CareIN tables only (no Open Dental,
+// no email, no SMS); which card is this visit's is services/hyg/
+// checkoutQuestions.js. The day view's badges are GET /api/hyg/day/
+// checkout-questions (counts only).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The visit's card and its thread, or the refusal answered and null. */
+async function checkoutThreadFor(req, res, office, aptNum) {
+  if (!(await tcCheckout.isEnabled(office))) {
+    res.status(403).json({
+      success: false,
+      error: 'The checkout handoff is not switched on for this office',
+      code: 'CHECKOUT_DISABLED',
+      office,
+    });
+    return null;
+  }
+  const found = await tenantDb.withTenantDb(req, (pool) => checkoutQuestions.threadForApt(pool, office, aptNum));
+  if (!found) {
+    res.status(404).json({ success: false, error: 'This visit has no checkout card to ask about', code: 'NOT_FOUND', office });
+    return null;
+  }
+  return found;
+}
+
+/** GET /api/hyg/visit/:aptNum/checkout-questions — the thread (free text about a patient: audited). */
+router.get(
+  '/:aptNum/checkout-questions',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) return badAptNum(res, office);
+    const found = await checkoutThreadFor(req, res, office, aptNum);
+    if (!found) return undefined;
+    await auditHygRead(req, 'tc_checkout_question', { office, resourceId: null });
+    return res.json({ success: true, office, aptNum, thread: found.thread });
+  })
+);
+
+/**
+ * POST /api/hyg/visit/:aptNum/checkout-questions/reply — { body }, a hygienist
+ * REPLY. The role is this route's; the author is the SSO identity; the card is
+ * the visit's, in this office. A reply needs an open question to answer. The
+ * answer is the thread READ BACK.
+ */
+router.post(
+  '/:aptNum/checkout-questions/reply',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) return badAptNum(res, office);
+    const body = parseBody(res, tcContract.TcCheckoutQuestionPost, req.body ?? {});
+    if (body === null) return undefined;
+    const found = await checkoutThreadFor(req, res, office, aptNum);
+    if (!found) return undefined;
+    if (found.thread.open === 0) {
+      return res.status(409).json({
+        success: false,
+        error: 'There is no open question on this checkout to answer',
+        code: 'NO_OPEN_QUESTION',
+        office,
+      });
+    }
+    const questionId = await tenantDb.withTenantDb(req, (pool) =>
+      checkoutQuestionStore.insertQuestion(pool, {
+        office,
+        handoffId: found.handoffId,
+        authorEmail: actorEmail(req),
+        authorRole: 'hygienist',
+        body: body.body,
+        at: new Date().toISOString(),
+      })
+    );
+    await audit(req, {
+      action: 'CREATE',
+      resourceType: 'tc_checkout_question',
+      resourceId: questionId,
+      result: 'SUCCESS',
+      office,
+      sourceRef: `hyg_visit:${aptNum}`,
+    });
+    const now = await tenantDb.withTenantDb(req, (pool) => checkoutQuestions.threadForApt(pool, office, aptNum));
+    if (!now || !now.thread.messages.some((m) => m.questionId === questionId)) {
+      return res.status(500).json({
+        success: false,
+        error: 'The reply could not be read back. Reload before trusting it.',
+        code: 'QUESTION_NOT_PERSISTED',
+        office,
+      });
+    }
+    return res.status(201).json({ success: true, office, aptNum, thread: now.thread });
+  })
 );
 
 module.exports = router;
