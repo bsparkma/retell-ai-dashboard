@@ -1,18 +1,35 @@
 'use strict';
 
 /**
- * The office registry, read from the control plane (MT-1a). DARK.
+ * The office registry, read from the control plane (MT-1a, SERVING since MT-1b).
  *
  * WHAT IT IS. A cached read of one tenant's rows in the control-plane `office`
  * table (migrations/1789400000000_office_registry.js), mapped to a domain
- * shape. Those rows will one day replace the hardcoded maps in
- * config/officeAgents.js and config/odOffices.js.
+ * shape. Since MT-1b, config/officeAgents.js and config/odOffices.js ANSWER
+ * from these rows, field by field, with their own code maps as the fallback.
  *
- * WHAT IT IS NOT, YET. A source of truth. In MT-1a NOTHING answers from these
- * rows. The only reader is the PARITY TRIPWIRE: officeAgents and odOffices
- * register a listener here, compare every successful read with their own code
- * maps, console.warn once per divergent field, and keep serving the CODE value.
- * No consumer sees a different answer because this module exists.
+ * WHAT IS SERVED, AND WHEN (MT-1b). servedOffices() is the only door the
+ * getters use. It is synchronous and never reads the database: a request never
+ * waits on the control plane. It hands out the cached rows only while ALL of
+ * these hold, and otherwise says why not, so the getters serve the CODE maps:
+ *   - a read has succeeded at least once (absence -> code);
+ *   - the MOST RECENT read succeeded (error -> code, immediately; the previous
+ *     rows are not served on after a failed read);
+ *   - that success is younger than 3 x the refresh window, 15 minutes by
+ *     default (staleness -> code);
+ *   - and only rows with status 'active' are handed out. A 'disabled' row is as
+ *     good as absent, so that office serves the code maps.
+ * The 'unknown' bucket can never come from here (the schema's CHECK refuses the
+ * row, and this module drops one regardless). Office KEYS never come from here
+ * at all: the getters only look up keys their own code maps already define.
+ *
+ * cachedOffices() and getOffices() keep their MT-1a meaning (the last good read,
+ * kept through a failure). They are not what the getters serve from.
+ *
+ * THE PARITY TRIPWIRE STAYS. officeAgents and odOffices still compare every
+ * successful read with their code maps and console.warn once per divergent
+ * field. The warning now says which side is SERVED and, when it is the code,
+ * why.
  *
  * CACHE RULES (copied from config/tcOfficeSwitch.js):
  *   - A read stays fresh for 5 minutes (OFFICE_REGISTRY_REFRESH_MINUTES).
@@ -64,6 +81,16 @@ const CODE_MAP_TENANT_SLUG = 'carein';
 function refreshMinutes() {
   const raw = Number(String(process.env.OFFICE_REGISTRY_REFRESH_MINUTES ?? '').trim());
   return Number.isFinite(raw) && raw > 0 ? raw : 5;
+}
+
+/**
+ * How old the last SUCCESSFUL read may be and still be served (MT-1b): three
+ * refresh windows, so one slow timer tick does not flap the source, but a
+ * control plane that has not answered for 15 minutes no longer does.
+ * @returns {number} ms
+ */
+function maxServedAgeMs() {
+  return 3 * refreshMinutes() * 60 * 1000;
 }
 
 // --- mapping ----------------------------------------------------------------
@@ -230,13 +257,16 @@ function diffOffices(code, reg, fields) {
  * per process, report clean ONCE, and return what it found. Never throws: a
  * tripwire that could crash the process would be worse than no tripwire.
  *
- * It only ever LOGS. The caller keeps serving its code values whatever this
- * returns.
+ * It only ever LOGS. Which value a consumer is served is decided by the
+ * caller's getters, not here; `servedCode` only lets the warning SAY which side
+ * won: it returns null when the registry value is served, or a short reason
+ * when the code value is (MT-1b). Without it the warning says CODE, as in MT-1a.
  *
- * @param {{ label: string, fields: ReadonlyArray<ParityField> }} spec
+ * @param {{ label: string, fields: ReadonlyArray<ParityField>,
+ *           servedCode?: (d: Divergence) => string|null }} spec
  * @returns {{ check: (offices: RegistryOffice[]) => Divergence[], resetForTests: () => void }}
  */
-function createParityCheck({ label, fields }) {
+function createParityCheck({ label, fields, servedCode }) {
   const warned = new Set();
   let reportedClean = false;
 
@@ -248,10 +278,13 @@ function createParityCheck({ label, fields }) {
         const key = `${d.officeKey}.${d.field}`;
         if (warned.has(key)) continue;
         warned.add(key);
+        const reason = servedCode ? servedCode(d) : 'MT-1a: the registry is dark';
         console.warn(
           `[${label}] office registry parity: '${d.officeKey}' ${d.field} differs — ` +
             `code=${JSON.stringify(d.code)} registry=${JSON.stringify(d.registry)}. ` +
-            'Serving the CODE value (MT-1a: the registry is dark).'
+            (reason === null
+              ? 'Serving the REGISTRY value (MT-1b).'
+              : `Serving the CODE value (${reason}).`)
         );
       }
       if (divergences.length === 0 && !reportedClean) {
@@ -288,6 +321,10 @@ function createParityCheck({ label, fields }) {
  * @property {number} loadedAt          last ATTEMPT (success or failure), ms
  * @property {Promise<unknown>|null} inFlight
  * @property {string|null} lastLoggedError
+ * @property {boolean} lastOk           the MOST RECENT read succeeded (MT-1b)
+ * @property {number} lastSuccessAt     last SUCCESSFUL read, ms (MT-1b)
+ * @property {Map<string, RegistryOffice>|null} servedByKey  active rows by key; a new Map per successful read
+ * @property {string|null|undefined} lastServedReason  what servedOffices() last answered (transition log)
  */
 
 /** @type {Map<string, TenantCache>} */
@@ -303,7 +340,17 @@ let refreshTimer = null;
 function cacheFor(tenantSlug) {
   let c = caches.get(tenantSlug);
   if (!c) {
-    c = { loaded: false, offices: [], loadedAt: 0, inFlight: null, lastLoggedError: null };
+    c = {
+      loaded: false,
+      offices: [],
+      loadedAt: 0,
+      inFlight: null,
+      lastLoggedError: null,
+      lastOk: false,
+      lastSuccessAt: 0,
+      servedByKey: null,
+      lastServedReason: undefined,
+    };
     caches.set(tenantSlug, c);
   }
   return c;
@@ -336,6 +383,14 @@ async function refreshFromDb(tenantSlug = CODE_MAP_TENANT_SLUG) {
     c.offices = offices;
     c.loadedAt = Date.now();
     c.lastLoggedError = null;
+    c.lastOk = true;
+    c.lastSuccessAt = c.loadedAt;
+    // A NEW Map per successful read: consumers memoize derived maps on its identity.
+    c.servedByKey = new Map(
+      offices
+        .filter((o) => o.status === 'active' && o.officeKey !== 'unknown')
+        .map((o) => [o.officeKey, o])
+    );
     for (const listener of listeners) {
       try {
         listener(offices, tenantSlug);
@@ -354,6 +409,7 @@ async function refreshFromDb(tenantSlug = CODE_MAP_TENANT_SLUG) {
       c.lastLoggedError = message;
     }
     c.loadedAt = Date.now();
+    c.lastOk = false;
     return { ok: false, error: message };
   }
 }
@@ -384,6 +440,47 @@ function cachedOffices(tenantSlug = CODE_MAP_TENANT_SLUG) {
   const c = cacheFor(tenantSlug);
   if (c.loaded) return { source: 'registry', offices: c.offices };
   return { source: 'code', offices: codeOffices() };
+}
+
+/**
+ * @typedef {Object} ServedOffices
+ * @property {Map<string, RegistryOffice>|null} byKey  active rows by office key; null = serve the code maps
+ * @property {string|null} reason   why byKey is null; null when it is not
+ */
+
+/**
+ * What the getters may serve from the registry RIGHT NOW (MT-1b). Synchronous,
+ * never reads, never throws. See "WHAT IS SERVED, AND WHEN" in the header.
+ *
+ * Logs once per TRANSITION (to the registry, to the code maps, or a new
+ * reason), never per call: this sits on every attribution and chart-path
+ * lookup. The boot state ("never read") is not logged.
+ *
+ * @param {string} [tenantSlug]
+ * @returns {ServedOffices}
+ */
+function servedOffices(tenantSlug = CODE_MAP_TENANT_SLUG) {
+  try {
+    const c = cacheFor(tenantSlug);
+    /** @type {string|null} */
+    let reason = null;
+    if (!c.loaded) reason = 'the registry has never been read';
+    else if (!c.lastOk) reason = 'the last registry read failed';
+    else if (Date.now() - c.lastSuccessAt > maxServedAgeMs()) reason = 'the last good registry read is stale';
+    else if (!c.servedByKey) reason = 'no registry rows are cached';
+
+    if (reason !== c.lastServedReason && c.loaded) {
+      if (reason === null) {
+        console.log(`[officeRegistry] '${tenantSlug}' office config is served from the registry`);
+      } else {
+        console.warn(`[officeRegistry] '${tenantSlug}' office config is served from the CODE maps: ${reason}`);
+      }
+    }
+    c.lastServedReason = reason;
+    return reason === null ? { byKey: c.servedByKey, reason: null } : { byKey: null, reason };
+  } catch (err) {
+    return { byKey: null, reason: `registry lookup failed: ${err && err.message ? err.message : String(err)}` };
+  }
 }
 
 /**
@@ -428,8 +525,10 @@ module.exports = {
   createParityCheck,
   onRefresh,
   refreshFromDb,
+  maxServedAgeMs,
   ensureFresh,
   cachedOffices,
+  servedOffices,
   getOffices,
   startRefreshTimer,
   stopRefreshTimer,
