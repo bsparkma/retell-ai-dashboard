@@ -100,6 +100,11 @@ import {
 } from "@/features/hyg/day";
 import { AppointmentCard } from "@/features/hyg/AppointmentCard";
 import { type CardProgress, cardProgressFor, progressAptNums } from "@/features/hyg/progress";
+import {
+  type CheckoutQuestionBadges,
+  VisitCheckoutQuestions,
+  useCheckoutQuestionBadges,
+} from "@/features/hyg/checkoutQuestions";
 import { cn } from "@/lib/utils";
 
 /** A control big enough to hit standing up. 44px is the floor, not the target. */
@@ -542,10 +547,13 @@ function DayList({
   appointments,
   day,
   progressFor,
+  questions,
 }: {
   appointments: HygAppointment[];
   day: HygDayResponse;
   progressFor: ProgressFor;
+  /** CO-7: the front desk's questions, by AptNum. */
+  questions?: CheckoutQuestionBadges;
 }) {
   const rows = useMemo(() => byStartTime(appointments), [appointments]);
   return (
@@ -565,6 +573,14 @@ function DayList({
               date={day.date}
               progress={progressFor(appt.aptNum)}
             />
+            {questions && (
+              <VisitCheckoutQuestions
+                office={day.office}
+                aptNum={appt.aptNum}
+                badge={questions.badgeFor(appt.aptNum)}
+                onChanged={questions.refresh}
+              />
+            )}
           </div>
         </div>
       ))}
@@ -576,10 +592,13 @@ function DayColumns({
   day,
   appointments,
   progressFor,
+  questions,
 }: {
   day: HygDayResponse;
   appointments: HygAppointment[];
   progressFor: ProgressFor;
+  /** CO-7: the front desk's questions, by AptNum. */
+  questions?: CheckoutQuestionBadges;
 }) {
   const columns = useMemo(
     () => groupByOperatory(appointments, day.operatories),
@@ -602,13 +621,22 @@ function DayColumns({
           </header>
           <div className="mt-2 space-y-3">
             {column.appointments.map((appt) => (
-              <AppointmentCard
-                key={String(appt.aptNum ?? appt.start)}
-                appointment={appt}
-                office={day.office}
-                date={day.date}
-                progress={progressFor(appt.aptNum)}
-              />
+              <div key={String(appt.aptNum ?? appt.start)}>
+                <AppointmentCard
+                  appointment={appt}
+                  office={day.office}
+                  date={day.date}
+                  progress={progressFor(appt.aptNum)}
+                />
+                {questions && (
+                  <VisitCheckoutQuestions
+                    office={day.office}
+                    aptNum={appt.aptNum}
+                    badge={questions.badgeFor(appt.aptNum)}
+                    onChanged={questions.refresh}
+                  />
+                )}
+              </div>
             ))}
           </div>
         </section>
@@ -902,6 +930,14 @@ export default function HygDay() {
     };
   }, [progressKey]);
 
+  // CO-7: the front desk's questions on each visit's checkout card — counts
+  // per AptNum, read like the progress pill. A failed read says so once.
+  const questions = useCheckoutQuestionBadges(
+    progressQuery?.office ?? null,
+    state.kind === "ready" ? state.day.date : null,
+    progressQuery?.aptNums ?? [],
+  );
+
   const progressFor = useCallback<ProgressFor>(
     (aptNum) =>
       // An answer for a different day is no answer for this one.
@@ -1105,9 +1141,14 @@ export default function HygDay() {
               the day.
             </p>
           ) : prefs.view === "list" ? (
-            <DayList appointments={visible} day={state.day} progressFor={progressFor} />
+            <DayList appointments={visible} day={state.day} progressFor={progressFor} questions={questions} />
           ) : (
-            <DayColumns day={state.day} appointments={visible} progressFor={progressFor} />
+            <DayColumns day={state.day} appointments={visible} progressFor={progressFor} questions={questions} />
+          )}
+          {questions.failed && (
+            <p className="mt-2 text-xs text-amber-800 dark:text-amber-300" data-testid="hyg-checkout-questions-failed">
+              Front-desk questions could not be checked just now. Trying again shortly.
+            </p>
           )}
         </>
       )}
