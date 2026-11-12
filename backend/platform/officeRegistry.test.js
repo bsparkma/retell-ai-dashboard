@@ -22,7 +22,12 @@ const registry = require('./registry');
 const officeRegistry = require('./officeRegistry');
 const officeAgents = require('../config/officeAgents');
 const odOffices = require('../config/odOffices');
-const { SEED_OFFICES, TENANT_SLUG } = require('../migrations/1789500000000_seed_office_registry');
+// AT-2 EDIT (disclosed): the registry now holds the seed AS PATCHED by control
+// migration 1789700000000 (commtype_defnums gains `tc`), so that is what the
+// code maps are pinned against. The v1 seed literal itself is unchanged.
+const { SEED_OFFICES: SEED_OFFICES_V1, TENANT_SLUG } = require('../migrations/1789500000000_seed_office_registry');
+const { applyToSeed } = require('../migrations/1789700000000_office_commtype_tc');
+const SEED_OFFICES = applyToSeed(SEED_OFFICES_V1);
 
 /** Every field either parity check owns. */
 const ALL_FIELDS = /** @type {const} */ ([
@@ -36,6 +41,7 @@ const ALL_FIELDS = /** @type {const} */ ([
   'odCustomerKeyEnv',
   'commTypeDefNums.call',
   'commTypeDefNums.referral',
+  'commTypeDefNums.tc', // AT-2
   'odEnabled',
   'hygOdEnabled',
 ]);
@@ -108,9 +114,9 @@ test('seed carries the verified per-practice values and nothing else', () => {
   assert.deepEqual(Object.keys(byKey), ['roland', 'valley']);
   // The unknown bucket is code-only.
   assert.equal(byKey.unknown, undefined);
-  // DefNums never cross: 486/491 Roland, 451/452 Riley (valley).
-  assert.deepEqual(byKey.roland.commtype_defnums, { call: 486, referral: 491 });
-  assert.deepEqual(byKey.valley.commtype_defnums, { call: 451, referral: 452 });
+  // DefNums never cross: 486/491/492 Roland, 451/452/453 Riley (valley). (AT-2 EDIT: + tc)
+  assert.deepEqual(byKey.roland.commtype_defnums, { call: 486, referral: 491, tc: 492 });
+  assert.deepEqual(byKey.valley.commtype_defnums, { call: 451, referral: 452, tc: 453 });
   // All 8 DIDs, each E.164, each on exactly one office.
   const dids = SEED_OFFICES.flatMap((o) => o.mango_dids);
   assert.equal(dids.length, 8);
@@ -222,7 +228,7 @@ test('parity warns once per divergent field, and says which side it serves', asy
   const rows = seedRows();
   rows[1].display_name = 'Riley';                       // officeAgents field
   rows[1].mango_dids = rows[1].mango_dids.slice(1);     // officeAgents field
-  rows[0].commtype_defnums = { call: 451, referral: 491 }; // odOffices field: a crossed DefNum
+  rows[0].commtype_defnums = { call: 451, referral: 491, tc: 492 }; // odOffices field: a crossed DefNum (AT-2 EDIT: tc kept equal)
   rows[1].od_enabled = false;                           // odOffices field
   rows.push({ ...seedRows()[0], office_key: 'fortsmith2', display_name: 'Extra' }); // extra row
 
@@ -328,8 +334,8 @@ test('id lists compare as sets: order is not a divergence', () => {
 });
 
 test('mapRow: a malformed DefNum reads as UNCONFIGURED (null), never a guess', () => {
-  const row = { ...seedRows()[0], commtype_defnums: { call: '486', referral: -1 } };
-  assert.deepEqual(officeRegistry.mapRow(row).commTypeDefNums, { call: null, referral: null });
+  const row = { ...seedRows()[0], commtype_defnums: { call: '486', referral: -1, tc: 4.5 } }; // AT-2 EDIT: + tc
+  assert.deepEqual(officeRegistry.mapRow(row).commTypeDefNums, { call: null, referral: null, tc: null });
 });
 
 test('no secret VALUE can reach the registry shape or the parity log', async () => {

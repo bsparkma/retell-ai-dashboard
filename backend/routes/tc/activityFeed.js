@@ -30,6 +30,8 @@
 const { getOfficeForCall } = require('../../config/officeAgents');
 const retention = require('../../services/callRetention');
 const { normalizePhone, normalizeEmail } = require('../../services/messaging/address');
+// AT-2: the one rule for which items "Log to chart" applies to.
+const { chartEligibility } = require('./activityChartable');
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -121,6 +123,7 @@ function finalize(it) {
   const out = { ...it };
   delete out.rowId;
   delete out.alwaysShow;
+  delete out.pending;
   if (out.direction === undefined) delete out.direction;
   return out;
 }
@@ -317,6 +320,152 @@ function objectionOrphanFilter(objectionRows) {
   };
 }
 
+// ── single-row mappers (AT-2 re-maps one row with these, see activityChart.js) ─
+
+function mapObjectionRow(r, scope) {
+  return item({
+    source: 'objection',
+    rowId: String(r.objection_id),
+    kind: 'objection',
+    at: isoAt(r.logged_at),
+    actor: { display: 'Not recorded', email: null, system: false },
+    audience: 'internal',
+    title: `Objection: ${r.category}`,
+    body: [text(r.note), text(r.patient_words) ? `Patient said: “${r.patient_words}”` : null].filter(Boolean).join('\n') || null,
+    scope,
+  });
+}
+
+function mapFollowupSkippedRow(r, scope) {
+  return item({
+    source: 'followup',
+    rowId: String(r.followup_id),
+    kind: 'followup_skipped',
+    at: isoAt(r.completed_at),
+    actor: actorOf(r.completed_by),
+    audience: 'internal',
+    title: 'Follow-up skipped',
+    body: text(r.outcome_note) ?? text(r.talking_point),
+    scope,
+  });
+}
+
+/** One checkout handoff row → its 0–3 feed items. `checkoutScope(caseId)` names the scope. */
+function mapCheckoutRow(r, checkoutScope) {
+  const items = [];
+  const links = { handoffId: String(r.handoff_id) };
+  if (r.status === 'nothing_needed') {
+    items.push(
+      item({
+        source: 'checkout',
+        rowId: `${r.handoff_id}:outcome`,
+        kind: 'checkout_outcome',
+        at: isoAt(r.outcome_at),
+        actor: actorOf(r.outcome_by),
+        audience: 'internal',
+        title: 'Checkout: nothing needed',
+        body: text(r.appointment_note),
+        scope: checkoutScope(r.case_id),
+        links,
+      })
+    );
+  }
+  if (r.status === 'dismissed') {
+    items.push(
+      item({
+        source: 'checkout',
+        rowId: `${r.handoff_id}:dismissed`,
+        kind: 'checkout_dismissed',
+        at: isoAt(r.dismissed_at),
+        actor: actorOf(r.dismissed_by),
+        audience: 'internal',
+        title: 'Checkout card dismissed',
+        body: text(r.dismissed_reason),
+        scope: checkoutScope(r.case_id),
+        links,
+      })
+    );
+  }
+  const prior = json(r.reopened_from);
+  if (isObject(prior) && typeof prior.outcome === 'string') {
+    items.push(
+      item({
+        source: 'checkout',
+        rowId: `${r.handoff_id}:reopened`,
+        kind: 'checkout_reopened',
+        at: isoAt(prior.reopenedAt) ?? isoAt(prior.outcomeAt),
+        actor: { display: 'CareIN', email: null, system: true },
+        audience: 'internal',
+        title: `Checkout reopened by a later hygiene visit (was: ${String(prior.outcome).replace(/_/g, ' ')})`,
+        body: text(prior.appointmentNote),
+        scope: checkoutScope(prior.caseId ?? r.case_id),
+        links,
+      })
+    );
+  }
+  return items;
+}
+
+/** Outbound statuses that mean the message actually went out. */
+const SENT_STATUSES = Object.freeze(['sent', 'delivered']);
+
+/**
+ * tc_messages row → feed item. `pending` (stripped by finalize) marks a message
+ * that is not communication that happened yet — an outbound one not sent, or
+ * an inbound one not 'received' — so AT-2 never charts it.
+ */
+const mapMessage = (scopeFor, unlinked) => (r) =>
+  item({
+    source: 'message',
+    rowId: String(r.message_id),
+    kind: `${r.channel === 'email' ? 'email' : 'sms'}_${r.direction === 'inbound' ? 'in' : 'out'}`,
+    at: isoAt(r.direction === 'outbound' && r.sent_at ? r.sent_at : r.created_at),
+    actor:
+      r.direction === 'inbound'
+        ? { display: 'Patient', email: null, system: false }
+        : actorOf(r.sent_by || r.created_by, { system: !(r.sent_by || r.created_by) }),
+    audience: 'patient_facing',
+    direction: r.direction === 'inbound' ? 'inbound' : 'outbound',
+    title: unlinked
+      ? `${r.channel === 'email' ? 'Email' : 'Text'} from this number — not linked to this case`
+      : r.channel === 'email'
+        ? text(r.subject) ?? (r.direction === 'inbound' ? 'Email received' : 'Email sent')
+        : r.direction === 'inbound'
+          ? 'Text received'
+          : r.status === 'queued' || r.status === 'sending'
+            ? 'Text sending'
+            : 'Text sent',
+    body: r.body == null ? null : String(r.body),
+    scope: scopeFor(r),
+    links: { messageId: String(r.message_id) },
+    pending: r.direction === 'inbound' ? r.status !== 'received' : !SENT_STATUSES.includes(String(r.status)),
+  });
+
+const MSG_COLS = 'message_id, case_id, direction, channel, body, subject, status, created_by, sent_by, created_at, sent_at';
+
+// ── AT-2: the chart overlay ─────────────────────────────────────────────────
+
+/**
+ * Mark the page's items already charted from TC ("On chart", with the
+ * CommlogNum), and say for every item whether "Log to chart" applies. Runs on
+ * PRE-finalize items, so the classifier sees the helper flags.
+ */
+async function overlayChart(q, office, items) {
+  const ids = items.map((it) => it.id);
+  const written = new Map();
+  if (ids.length) {
+    const res = await q.query(
+      'SELECT feed_item_id, commlog_num FROM tc_chart_writes WHERE office_id = $1 AND feed_item_id = ANY($2)',
+      [office, ids]
+    );
+    for (const r of res.rows) written.set(String(r.feed_item_id), Number(r.commlog_num));
+  }
+  return items.map((it) => {
+    const charted = written.has(it.id) ? { ...it, chart: { onChart: true, via: 'tc', commLogNum: written.get(it.id) } } : it;
+    return { ...charted, chartable: chartEligibility(charted) };
+  });
+}
+
 // ── the page ────────────────────────────────────────────────────────────────
 
 /**
@@ -412,20 +561,7 @@ async function buildActivityPage(q, { office, header, scope, cursor, limit, voic
         );
         return res.rows;
       },
-      (rows) =>
-        rows.map((r) =>
-          item({
-            source: 'objection',
-            rowId: String(r.objection_id),
-            kind: 'objection',
-            at: isoAt(r.logged_at),
-            actor: { display: 'Not recorded', email: null, system: false },
-            audience: 'internal',
-            title: `Objection: ${r.category}`,
-            body: [text(r.note), text(r.patient_words) ? `Patient said: “${r.patient_words}”` : null].filter(Boolean).join('\n') || null,
-            scope: ctx.scopeOfCase(r.case_id),
-          })
-        ),
+      (rows) => rows.map((r) => mapObjectionRow(r, ctx.scopeOfCase(r.case_id))),
       cursor,
       need
     )
@@ -443,20 +579,7 @@ async function buildActivityPage(q, { office, header, scope, cursor, limit, voic
         );
         return res.rows;
       },
-      (rows) =>
-        rows.map((r) =>
-          item({
-            source: 'followup',
-            rowId: String(r.followup_id),
-            kind: 'followup_skipped',
-            at: isoAt(r.completed_at),
-            actor: actorOf(r.completed_by),
-            audience: 'internal',
-            title: 'Follow-up skipped',
-            body: text(r.outcome_note) ?? text(r.talking_point),
-            scope: ctx.scopeOfCase(r.case_id),
-          })
-        ),
+      (rows) => rows.map((r) => mapFollowupSkippedRow(r, ctx.scopeOfCase(r.case_id))),
       cursor,
       need
     )
@@ -529,92 +652,14 @@ async function buildActivityPage(q, { office, header, scope, cursor, limit, voic
       [office, patNum]
     );
     const checkoutScope = (cid) => (cid == null || String(cid) === caseId ? 'case' : 'patient');
-    const items = [];
-    for (const r of res.rows) {
-      const links = { handoffId: String(r.handoff_id) };
-      if (r.status === 'nothing_needed') {
-        items.push(
-          item({
-            source: 'checkout',
-            rowId: `${r.handoff_id}:outcome`,
-            kind: 'checkout_outcome',
-            at: isoAt(r.outcome_at),
-            actor: actorOf(r.outcome_by),
-            audience: 'internal',
-            title: 'Checkout: nothing needed',
-            body: text(r.appointment_note),
-            scope: checkoutScope(r.case_id),
-            links,
-          })
-        );
-      }
-      if (r.status === 'dismissed') {
-        items.push(
-          item({
-            source: 'checkout',
-            rowId: `${r.handoff_id}:dismissed`,
-            kind: 'checkout_dismissed',
-            at: isoAt(r.dismissed_at),
-            actor: actorOf(r.dismissed_by),
-            audience: 'internal',
-            title: 'Checkout card dismissed',
-            body: text(r.dismissed_reason),
-            scope: checkoutScope(r.case_id),
-            links,
-          })
-        );
-      }
-      const prior = json(r.reopened_from);
-      if (isObject(prior) && typeof prior.outcome === 'string') {
-        items.push(
-          item({
-            source: 'checkout',
-            rowId: `${r.handoff_id}:reopened`,
-            kind: 'checkout_reopened',
-            at: isoAt(prior.reopenedAt) ?? isoAt(prior.outcomeAt),
-            actor: { display: 'CareIN', email: null, system: true },
-            audience: 'internal',
-            title: `Checkout reopened by a later hygiene visit (was: ${String(prior.outcome).replace(/_/g, ' ')})`,
-            body: text(prior.appointmentNote),
-            scope: checkoutScope(prior.caseId ?? r.case_id),
-            links,
-          })
-        );
-      }
-    }
+    const items = res.rows.flatMap((r) => mapCheckoutRow(r, checkoutScope));
     take(items.filter((it) => it.at && afterCursor(it, cursor)));
   }
 
   // tc_messages — bodies verbatim. Drafts, failed and skipped sends are not
   // communication that happened, so they are excluded. Three keyed reads so
   // each item's `at` is the column its query pages on.
-  const mapMessage = (scopeFor, unlinked) => (r) =>
-    item({
-      source: 'message',
-      rowId: String(r.message_id),
-      kind: `${r.channel === 'email' ? 'email' : 'sms'}_${r.direction === 'inbound' ? 'in' : 'out'}`,
-      at: isoAt(r.direction === 'outbound' && r.sent_at ? r.sent_at : r.created_at),
-      actor:
-        r.direction === 'inbound'
-          ? { display: 'Patient', email: null, system: false }
-          : actorOf(r.sent_by || r.created_by, { system: !(r.sent_by || r.created_by) }),
-      audience: 'patient_facing',
-      direction: r.direction === 'inbound' ? 'inbound' : 'outbound',
-      title: unlinked
-        ? `${r.channel === 'email' ? 'Email' : 'Text'} from this number — not linked to this case`
-        : r.channel === 'email'
-          ? text(r.subject) ?? (r.direction === 'inbound' ? 'Email received' : 'Email sent')
-          : r.direction === 'inbound'
-            ? 'Text received'
-            : r.status === 'queued' || r.status === 'sending'
-              ? 'Text sending'
-              : 'Text sent',
-      body: r.body == null ? null : String(r.body),
-      scope: scopeFor(r),
-      links: { messageId: String(r.message_id) },
-    });
-  const MSG_COLS =
-    'message_id, case_id, direction, channel, body, subject, status, created_by, sent_by, created_at, sent_at';
+  // mapMessage / MSG_COLS are module-level (AT-2 maps one row with them).
   const byCaseScope = (r) => ctx.scopeOfCase(r.case_id);
   // (a) outbound that went out: paged on sent_at
   take(
@@ -867,8 +912,10 @@ async function buildActivityPage(q, { office, header, scope, cursor, limit, voic
   merged.sort(compareDesc);
   const page = merged.slice(0, limit);
   const hasMore = merged.length > limit;
+  // AT-2: "On chart" for items charted from TC, and whether "Log to chart" applies.
+  const charted = await overlayChart(q, office, page);
   return {
-    items: page.map(finalize),
+    items: charted.map(finalize),
     nextCursor: hasMore && page.length ? encodeCursor(page[page.length - 1]) : null,
   };
 }
@@ -1105,4 +1152,15 @@ module.exports = {
   encodeCursor,
   decodeCursor,
   splitStatusDescription,
+  // AT-2: the single-row mappers and helpers the chart writer re-maps a row with.
+  mapCaseEvent,
+  mapObjectionRow,
+  mapFollowupSkippedRow,
+  mapCheckoutRow,
+  mapMessage,
+  MSG_COLS,
+  isoAt,
+  json,
+  isObject,
+  text,
 };

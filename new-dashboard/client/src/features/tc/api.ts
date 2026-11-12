@@ -49,7 +49,12 @@ import type {
   Urgency,
 } from "@shared/tc/contract";
 import { parseServedFunnel } from "./reports/funnel";
-import { TcActivityPage, type ActivityScope } from "@shared/tc/activity";
+import {
+  TcActivityChartPreview,
+  TcActivityChartWritten,
+  TcActivityPage,
+  type ActivityScope,
+} from "@shared/tc/activity";
 // Type-only: the card state the case list carries (CO-4b).
 import type { OdSyncCardState } from "./odSync/odSyncApi";
 import type { NextTouchInput } from "@shared/tc/nextTouch";
@@ -430,6 +435,40 @@ export async function getCaseActivity(
     },
   });
   return TcActivityPage.parse(body);
+}
+
+/**
+ * AT-2: the "Log to chart" preview for one feed item — may it be charted, the
+ * server-composed default text, the office and the commlog type. Read-only.
+ */
+export async function getActivityChartPreview(
+  office: OfficeId,
+  caseId: string,
+  itemId: string,
+): Promise<TcActivityChartPreview> {
+  const body = await tcRequest<unknown>(
+    `/tc/cases/${caseId}/activity/${encodeURIComponent(itemId)}/chart`,
+    { office },
+  );
+  return TcActivityChartPreview.parse(body);
+}
+
+/**
+ * AT-2: write ONE feed item to the patient's Open Dental chart. The body is the
+ * exact text the person approved and an optional conversation date — nothing
+ * else; the server derives the office, the PatNum and the commlog type.
+ */
+export async function logActivityToChart(
+  office: OfficeId,
+  caseId: string,
+  itemId: string,
+  body: { text: string; conversationDate?: string },
+): Promise<TcActivityChartWritten> {
+  const res = await tcRequest<unknown>(
+    `/tc/cases/${caseId}/activity/${encodeURIComponent(itemId)}/chart`,
+    { office, method: "POST", body },
+  );
+  return TcActivityChartWritten.parse(res);
 }
 
 export function getCase(office: OfficeId, caseId: string): Promise<TcCase> {

@@ -28,7 +28,12 @@ const officeAgents = require('./officeAgents');
 const odOffices = require('./odOffices');
 const { buildSnapshot, ENV_KEYS } = require('./officeGetterSnapshot');
 const golden = require('./__fixtures__/officeGetters.golden.json');
-const { SEED_OFFICES, TENANT_SLUG } = require('../migrations/1789500000000_seed_office_registry');
+// AT-2 EDIT (disclosed): the registry now holds the seed AS PATCHED by control
+// migration 1789700000000 (commtype_defnums gains `tc`), so that is what the
+// code maps are pinned against. The v1 seed literal itself is unchanged.
+const { SEED_OFFICES: SEED_OFFICES_V1, TENANT_SLUG } = require('../migrations/1789500000000_seed_office_registry');
+const { applyToSeed } = require('../migrations/1789700000000_office_commtype_tc');
+const SEED_OFFICES = applyToSeed(SEED_OFFICES_V1);
 
 const SYNTHETIC_KEYS = {
   OPENDENTAL_CUSTOMER_KEY: 'synthetic-roland-customer-key',
