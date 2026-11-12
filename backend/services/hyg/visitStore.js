@@ -88,7 +88,7 @@ const VISIT_COLUMNS = `
 `;
 
 /**
- * "Prescriptions needed" + "Pharmacy" (1794500000000) — IN-APP ONLY.
+ * "Prescriptions needed" + "Pharmacy" (1794600000000) — IN-APP ONLY.
  *
  * Read from the row here and NEVER put on the contract's HygVisit (`toVisit`
  * does not name them): the visit object is what the staged-write composer and

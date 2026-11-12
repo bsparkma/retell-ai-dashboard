@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * 1794500000000_ref_templates_hyg_rx — ONE tenant migration for two parts:
+ * 1794600000000_ref_templates_hyg_rx — ONE tenant migration for two parts:
  *
  *   Part 1  tc_referral_templates: keyed by (office, kind), office CHECK
  *           ('roland','valley'), the two kinds, body ≤ 2000, SELECT / INSERT /
@@ -18,13 +18,13 @@ const test = require('node:test');
 const fs = require('node:fs');
 
 const { buildTenantSchema, MIGRATIONS_DIR } = require('../scripts/lib/tenantSchemaReplay');
-const migration = require('../migrations-tenant/1794500000000_ref_templates_hyg_rx.js');
+const migration = require('../migrations-tenant/1794600000000_ref_templates_hyg_rx.js');
 const templateStore = require('../routes/tc/referralTemplateStore');
 const visitStore = require('../services/hyg/visitStore');
 const tcContract = require('../tc/contract.gen.cjs');
 const hygContract = require('../hyg/contract.gen.cjs');
 
-const SELF = 1794500000000;
+const SELF = 1794600000000;
 
 function capture(direction = 'up') {
   const calls = [];
@@ -124,6 +124,9 @@ test('numbered above every earlier tenant migration; numeric order == filename o
   assert.deepEqual(byName, byNumber);
   assert.ok(numbers.includes(SELF));
   assert.ok(SELF > 1794400000000, "above develop's newest when this was written (CO-7 checkout questions)");
+  // And above 1794500000000, which a parallel branch (feature/next-touch) had
+  // already claimed at push time — two migrations may never share a number.
+  assert.ok(SELF > 1794500000000);
 });
 
 test('every column the stores read exists once every tenant migration has run', () => {

@@ -71,7 +71,7 @@ class RxDb extends FakeHygDb {
     if (/^UPDATE hyg_visit SET rx_needed = \$3, pharmacy = \$4, updated_by = \$5, updated_at = now\(\) WHERE office = \$1 AND apt_num = \$2 RETURNING/i.test(text)) {
       this.statements.push(text);
       const [office, aptNum, rxNeeded, pharmacy, actor] = params;
-      // As the CHECKs (1794500000000) would refuse.
+      // As the CHECKs (1794600000000) would refuse.
       if (rxNeeded.length > 1000 || pharmacy.length > 200 || /[\r\n]/.test(pharmacy)) {
         throw new Error('hyg_visit rx CHECK violated');
       }

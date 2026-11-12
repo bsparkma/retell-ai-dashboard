@@ -14,7 +14,7 @@
  */
 import { z } from "zod";
 
-/** Caps, in characters. The DB CHECKs (1794500000000) carry the same. */
+/** Caps, in characters. The DB CHECKs (1794600000000) carry the same. */
 export const HYG_RX_NEEDED_MAX = 1000;
 export const HYG_PHARMACY_MAX = 200;
 

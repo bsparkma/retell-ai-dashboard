@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * 1794500000000_ref_templates_hyg_rx and its two stores, EXECUTED against a
+ * 1794600000000_ref_templates_hyg_rx and its two stores, EXECUTED against a
  * real migrated tenant schema with synthetic data. The unit suites' databases
  * are fakes that accept any row, so they cannot prove a CHECK, a grant or a
  * real down().
@@ -44,7 +44,7 @@ const { Client } = require('pg');
 const templateStore = require('../routes/tc/referralTemplateStore');
 const visitStore = require('../services/hyg/visitStore');
 
-const SELF = '1794500000000_ref_templates_hyg_rx';
+const SELF = '1794600000000_ref_templates_hyg_rx';
 const ACTOR = 'verify@fixture.invalid';
 const APP_ROLE = (process.env.AUDIT_APP_ROLE || 'carein_app').trim();
 const APT = 990045001; // synthetic appointment number

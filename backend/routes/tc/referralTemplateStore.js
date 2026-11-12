@@ -2,7 +2,7 @@
 
 /**
  * tc_referral_templates — every statement the referral-template feature owns
- * (migration 1794500000000). Office is in every WHERE; a caller passes the
+ * (migration 1794600000000). Office is in every WHERE; a caller passes the
  * server-derived office (requireOffice / the hygiene visit's), never a body's.
  *
  * Nothing here is patient data: a template is an office's own wording. No
