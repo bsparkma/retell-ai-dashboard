@@ -36,9 +36,13 @@ import {
   hasPerioChartLine,
   NOTE_CONTROLS,
   DRAFT_VISIT_TYPES,
+  SRP_QUAD_LABELS,
+  SRP_QUADS,
+  srpQuadsProblem,
   VISIT_TYPE_LABELS,
-  VISIT_TYPES,
+  visitTypeChoices,
   type NoteControlId,
+  type SrpQuad,
   type NoteField,
   type VisitType,
 } from "@shared/hyg/noteTemplates";
@@ -254,11 +258,21 @@ export function VisitNoteFields({
     // Tapping is always a DECISION, even when it lands on what was suggested:
     // the note then carries a type somebody chose rather than one nothing
     // disagreed with.
+    //
+    // Leaving SRP clears its quads: the server refuses quads on any other type,
+    // and a pick the new note never prints must not ride along on the slip.
     onChange(
       slip.visitType === type
-        ? { ...slip, visitType: null, visitTypeSource: null }
-        : { ...slip, visitType: type, visitTypeSource: "manual" },
+        ? { ...slip, visitType: null, visitTypeSource: null, srpQuads: [] }
+        : { ...slip, visitType: type, visitTypeSource: "manual", srpQuads: type === "srp" ? slip.srpQuads : [] },
     );
+  };
+
+  /** Toggle one SRP quad; the stored list stays unique and ascending, as the schema requires. */
+  const toggleQuad = (quad: SrpQuad) => {
+    const has = slip.srpQuads.includes(quad);
+    const next = has ? slip.srpQuads.filter((q) => q !== quad) : [...slip.srpQuads, quad];
+    set("srpQuads", [...next].sort((a, b) => a - b));
   };
 
   const setField = (id: NoteControlId, next: NoteField) =>
@@ -277,7 +291,8 @@ export function VisitNoteFields({
           Visit type
         </div>
         <div className="flex flex-wrap gap-1.5">
-          {VISIT_TYPES.map((type) => (
+          {/* Retired types (the per-quad SRPs) appear only on a slip that holds one. */}
+          {visitTypeChoices(visitType).map((type) => (
             <Chip
               key={type}
               // A draft template says so on its chip: its wording is not yet the
@@ -301,6 +316,30 @@ export function VisitNoteFields({
           </p>
         ) : null}
       </div>
+
+      {visitType === "srp" ? (
+        <div className="space-y-1.5" data-testid="hyg-note-srp-quads">
+          <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Quads scaled
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {SRP_QUADS.map((quad) => (
+              <Chip
+                key={quad}
+                label={SRP_QUAD_LABELS[quad]}
+                active={slip.srpQuads.includes(quad)}
+                onClick={() => toggleQuad(quad)}
+                testId={`hyg-note-srp-quad-${quad}`}
+              />
+            ))}
+          </div>
+          {srpQuadsProblem(visitType, slip.srpQuads) ? (
+            <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="hyg-note-srp-quads-needed">
+              Pick at least one quad. Changes are held on this screen and saved as soon as one is picked.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* Checkout v2: directly after the visit type, whichever type it is —
           the note prints it right after the type's opening line. */}

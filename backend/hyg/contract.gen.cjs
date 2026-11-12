@@ -15012,10 +15012,15 @@ __export(contract_entry_exports, {
   PerioUnreadablePositionSchema: () => PerioUnreadablePositionSchema,
   RECORDS_MATRIX: () => RECORDS_MATRIX,
   RECORD_STATUS_LABELS: () => RECORD_STATUS_LABELS,
+  RETIRED_VISIT_TYPES: () => RETIRED_VISIT_TYPES,
   RecordStatusSchema: () => RecordStatusSchema,
+  SRP_QUADS: () => SRP_QUADS,
+  SRP_QUAD_LABELS: () => SRP_QUAD_LABELS,
   SendConfirmationSchema: () => SendConfirmationSchema,
   SendOutcomeSchema: () => SendOutcomeSchema,
   SendVisitRequestSchema: () => SendVisitRequestSchema,
+  SrpQuadSchema: () => SrpQuadSchema,
+  SrpQuadsSchema: () => SrpQuadsSchema,
   StagedWriteCreateRequestSchema: () => StagedWriteCreateRequestSchema,
   StagedWriteKindSchema: () => StagedWriteKindSchema,
   StagedWriteSchema: () => StagedWriteSchema,
@@ -15114,6 +15119,7 @@ __export(contract_entry_exports, {
   screenSites: () => screenSites,
   segmentOrder: () => segmentOrder,
   slipNoteField: () => slipNoteField,
+  srpQuadsProblem: () => srpQuadsProblem,
   stepPerioCursor: () => stepPerioCursor,
   suggestVisitType: () => suggestVisitType,
   teethText: () => teethText,
@@ -15121,6 +15127,7 @@ __export(contract_entry_exports, {
   toggleMany: () => toggleMany,
   toothLabel: () => toothLabel,
   toothText: () => toothText,
+  visitTypeChoices: () => visitTypeChoices,
   withPerioMobility: () => withPerioMobility,
   withPerioSite: () => withPerioSite,
   withPerioSkipped: () => withPerioSkipped,
@@ -15139,6 +15146,12 @@ var VisitTypeSchema = import_zod.z.enum([
   "child_prophy_np",
   "child_prophy_recall",
   "perio_maint",
+  // ONE SRP type with a multi-quad pick (srpQuads on the slip). Placed where
+  // the four quad entries used to sit, so the picker reads in the same order.
+  "srp",
+  // RETIRED — hidden from the picker unless a slip already holds one. See
+  // RETIRED_VISIT_TYPES. Kept as values so a slip saved with one still loads,
+  // composes byte-identically, prints and re-saves unchanged.
   "srp_quad_1",
   "srp_quad_2",
   "srp_quad_3",
@@ -15156,6 +15169,7 @@ var VISIT_TYPE_LABELS = {
   child_prophy_np: "Child Prophy NP",
   child_prophy_recall: "Child Prophy Recall",
   perio_maint: "Perio Maint",
+  srp: "SRP",
   srp_quad_1: "SRP Quad 1",
   srp_quad_2: "SRP Quad 2",
   srp_quad_3: "SRP Quad 3",
@@ -15167,6 +15181,7 @@ var VISIT_TYPE_LABELS = {
   fl2: "Fl2"
 };
 var DRAFT_VISIT_TYPES = /* @__PURE__ */ new Set([
+  "srp",
   "srp_quad_1",
   "srp_quad_2",
   "srp_quad_3",
@@ -15177,6 +15192,31 @@ var DRAFT_VISIT_TYPES = /* @__PURE__ */ new Set([
   "d4346",
   "fl2"
 ]);
+var RETIRED_VISIT_TYPES = /* @__PURE__ */ new Set([
+  "srp_quad_1",
+  "srp_quad_2",
+  "srp_quad_3",
+  "srp_quad_4"
+]);
+function visitTypeChoices(current) {
+  return VISIT_TYPES.filter((t) => !RETIRED_VISIT_TYPES.has(t) || t === current);
+}
+var SrpQuadSchema = import_zod.z.number().int().min(1).max(4);
+var SRP_QUADS = [1, 2, 3, 4];
+var SRP_QUAD_LABELS = {
+  1: "Quad 1 (UR)",
+  2: "Quad 2 (UL)",
+  3: "Quad 3 (LL)",
+  4: "Quad 4 (LR)"
+};
+var SrpQuadsSchema = import_zod.z.array(SrpQuadSchema).max(4).refine((qs) => qs.every((q, i) => i === 0 || q > qs[i - 1]), {
+  message: "SRP quads must be unique and in ascending order"
+});
+function srpQuadsProblem(visitType, srpQuads) {
+  if (visitType === "srp" && srpQuads.length === 0) return "Pick at least one quad for an SRP visit";
+  if (visitType !== "srp" && srpQuads.length > 0) return "SRP quads are only recorded on an SRP visit";
+  return null;
+}
 var VISIT_TYPE_AUTONOTE = {
   adult_prophy_np: "Adult Prophy NP",
   adult_prophy_recall: "Adult Prophy Recall",
@@ -15185,6 +15225,14 @@ var VISIT_TYPE_AUTONOTE = {
   perio_maint: "Perio Maint",
   // Drafts: the nearest auto note each was written from. The quadrant notes
   // share the upper and lower SRP notes; FMD and 4346 share one note.
+  //
+  // `srp` is written from BOTH `SRP Upper` and `SRP Lower` — it prints the
+  // upper sites, the lower sites, or both, by the quads picked. This record
+  // holds one name, so it names `SRP Upper`; the two exports have the same
+  // holes in the same order and differ only in the sites sentence, and
+  // `hygSrpMultiQuad.test.js` checks the `srp` template against `SRP Lower`
+  // too, so neither source goes unchecked.
+  srp: "SRP Upper",
   srp_quad_1: "SRP Upper",
   srp_quad_2: "SRP Upper",
   srp_quad_3: "SRP Lower",
@@ -15356,39 +15404,49 @@ function assessment(exam, fluoride, findings = true) {
   return { t: "assessment", exam, fluoride, findings };
 }
 var PROPHY_PROCEDURE = "Polished, flossed, scaled as needed";
+var SRP_UPPER_SITES = "Anesthetic sites: PSA, MSA, ASA, 30 short. Topical anesthetic gel benzocaine 20%.";
+var SRP_LOWER_SITES = "Anesthetic sites: IA, LB, Mental, Anterior Infiltration, 30 short. Topical anesthetic gel benzocaine 20%.";
+function srpLines(sites, scaled) {
+  return [
+    { t: "subjective", text: "Patient presents for SRP appointment.", ccLabel: "CC" },
+    { t: "blank" },
+    { t: "objective", same: true },
+    { t: "control", id: "boneLoss", label: "SRP needed due to bone loss" },
+    { t: "blank" },
+    { t: "assessment", exam: null, fluoride: false, findings: false, procedure: null },
+    { t: "blank" },
+    { t: "control", id: "perioClass", label: "Perio class" },
+    { t: "perioChart" },
+    sites,
+    { t: "control", id: "anesthetic" },
+    { t: "control", id: "carps" },
+    scaled,
+    { t: "control", id: "calculus" },
+    { t: "control", id: "plaque" },
+    { t: "control", id: "bleeding" },
+    { t: "control", id: "inflammation" },
+    { t: "blank" },
+    { t: "plan" },
+    { t: "blank" },
+    { t: "free", field: "rtc", label: "RTC" }
+  ];
+}
 function srpQuad(quad) {
   const upper = quad <= 2;
   return {
     visitType: `srp_quad_${quad}`,
     autoNote: upper ? "SRP Upper" : "SRP Lower",
-    lines: [
-      { t: "subjective", text: "Patient presents for SRP appointment.", ccLabel: "CC" },
-      { t: "blank" },
-      { t: "objective", same: true },
-      { t: "control", id: "boneLoss", label: "SRP needed due to bone loss" },
-      { t: "blank" },
-      { t: "assessment", exam: null, fluoride: false, findings: false, procedure: null },
-      { t: "blank" },
-      { t: "control", id: "perioClass", label: "Perio class" },
-      { t: "perioChart" },
-      {
-        t: "text",
-        text: upper ? "Anesthetic sites: PSA, MSA, ASA, 30 short. Topical anesthetic gel benzocaine 20%." : "Anesthetic sites: IA, LB, Mental, Anterior Infiltration, 30 short. Topical anesthetic gel benzocaine 20%."
-      },
-      { t: "control", id: "anesthetic" },
-      { t: "control", id: "carps" },
-      { t: "text", text: `Cavitron and hand scaled Quad ${quad}` },
-      { t: "control", id: "calculus" },
-      { t: "control", id: "plaque" },
-      { t: "control", id: "bleeding" },
-      { t: "control", id: "inflammation" },
-      { t: "blank" },
-      { t: "plan" },
-      { t: "blank" },
-      { t: "free", field: "rtc", label: "RTC" }
-    ]
+    lines: srpLines(
+      { t: "text", text: upper ? SRP_UPPER_SITES : SRP_LOWER_SITES },
+      { t: "text", text: `Cavitron and hand scaled Quad ${quad}` }
+    )
   };
 }
+var SRP_TEMPLATE = {
+  visitType: "srp",
+  autoNote: "SRP Upper",
+  lines: srpLines({ t: "srpSites" }, { t: "srpScaled" })
+};
 function fmdLike(visitType, code) {
   return {
     visitType,
@@ -15569,6 +15627,8 @@ var NOTE_TEMPLATES = {
     ]
   },
   // ── DRAFTS, feedback round 1 — pending the practice hygienist's approval ──
+  srp: SRP_TEMPLATE,
+  // Retired (RETIRED_VISIT_TYPES): still render, for the slips that hold them.
   srp_quad_1: srpQuad(1),
   srp_quad_2: srpQuad(2),
   srp_quad_3: srpQuad(3),
@@ -15752,6 +15812,17 @@ function renderVisitNote(input) {
       case "free":
         out.push(labelled(l.label, FREE_FIELD_READERS[l.field](input).trim()));
         break;
+      case "srpSites": {
+        const quads = input.srpQuads ?? [];
+        if (quads.some((q) => q === 1 || q === 2)) out.push(SRP_UPPER_SITES);
+        if (quads.some((q) => q === 3 || q === 4)) out.push(SRP_LOWER_SITES);
+        break;
+      }
+      case "srpScaled": {
+        const quads = (input.srpQuads ?? []).filter((q, i, all) => all.indexOf(q) === i).sort((a, b) => a - b);
+        out.push(`Cavitron and hand scaled Quad ${quads.join(", ")}`);
+        break;
+      }
     }
   }
   return out;
@@ -16609,6 +16680,14 @@ var DONE_TODAY_OPTIONS = [
   { id: "sealants", label: "Sealants" },
   { id: "irrigation", label: "Irrigation" },
   { id: "ofi", label: "OFI" },
+  // Plain chips (practice request, 2026-11): they print on the Router and the
+  // note like every chip here, and do nothing else — no procedure, no staged
+  // write, no Open Dental call. Their ids match no prefix a reader keys on
+  // (`srp-` in tcHandoffClient's recall type, `srp-` / `laser-` in the note's
+  // doneAreas lines), which hygSrpMultiQuad.test.js pins.
+  { id: "d4346", label: "4346" },
+  { id: "fmd", label: "FMD" },
+  { id: "fine-scale", label: "Fine Scale" },
   { id: "polish", label: "Polish", retired: true }
 ];
 function doneTodayChoices(picked) {
@@ -16743,8 +16822,20 @@ var HygSlipSchema = import_zod4.z.object({
   /** The medical-history update. `null` = not answered; the note prints no line. */
   medicalHistory: MedicalHistorySchema.nullable().default(null),
   /** What to take payment for at the desk. Rides the checkout alert and the TC handoff. */
-  collectAtCheckout: CollectAtCheckoutSchema.default({ items: [], other: "" })
-}).strict();
+  collectAtCheckout: CollectAtCheckoutSchema.default({ items: [], other: "" }),
+  /**
+   * The quads scaled on an `srp` visit, unique and ascending. Defaulted for
+   * the same load-bearing reason as above — a slip saved before this field
+   * (including one holding a retired `srp_quad_N`) parses and gains `[]`.
+   * Required non-empty on `srp` and empty on every other type: the
+   * superRefine below, so the SERVER refuses a bad pair (400), never only
+   * the form.
+   */
+  srpQuads: SrpQuadsSchema.default([])
+}).strict().superRefine((slip, ctx) => {
+  const problem = srpQuadsProblem(slip.visitType, slip.srpQuads);
+  if (problem) ctx.addIssue({ code: "custom", path: ["srpQuads"], message: problem });
+});
 function emptySlip() {
   return {
     doneToday: [],
@@ -16769,7 +16860,8 @@ function emptySlip() {
     perioChartUpdated: null,
     orthoScreening: null,
     medicalHistory: null,
-    collectAtCheckout: emptyCollectAtCheckout()
+    collectAtCheckout: emptyCollectAtCheckout(),
+    srpQuads: []
   };
 }
 function slipNoteField(slip, id) {
@@ -18633,10 +18725,15 @@ function odToothText(tooth) {
   PerioUnreadablePositionSchema,
   RECORDS_MATRIX,
   RECORD_STATUS_LABELS,
+  RETIRED_VISIT_TYPES,
   RecordStatusSchema,
+  SRP_QUADS,
+  SRP_QUAD_LABELS,
   SendConfirmationSchema,
   SendOutcomeSchema,
   SendVisitRequestSchema,
+  SrpQuadSchema,
+  SrpQuadsSchema,
   StagedWriteCreateRequestSchema,
   StagedWriteKindSchema,
   StagedWriteSchema,
@@ -18735,6 +18832,7 @@ function odToothText(tooth) {
   screenSites,
   segmentOrder,
   slipNoteField,
+  srpQuadsProblem,
   stepPerioCursor,
   suggestVisitType,
   teethText,
@@ -18742,6 +18840,7 @@ function odToothText(tooth) {
   toggleMany,
   toothLabel,
   toothText,
+  visitTypeChoices,
   withPerioMobility,
   withPerioSite,
   withPerioSkipped,

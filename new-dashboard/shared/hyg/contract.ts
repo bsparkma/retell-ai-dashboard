@@ -45,6 +45,8 @@ import { z } from "zod";
 import {
   emptyNoteField,
   NoteFieldSchema,
+  SrpQuadsSchema,
+  srpQuadsProblem,
   VisitTypeSchema,
   VisitTypeSourceSchema,
   type NoteField,
@@ -869,6 +871,14 @@ export const DONE_TODAY_OPTIONS: readonly { id: string; label: string; retired?:
   { id: "sealants", label: "Sealants" },
   { id: "irrigation", label: "Irrigation" },
   { id: "ofi", label: "OFI" },
+  // Plain chips (practice request, 2026-11): they print on the Router and the
+  // note like every chip here, and do nothing else — no procedure, no staged
+  // write, no Open Dental call. Their ids match no prefix a reader keys on
+  // (`srp-` in tcHandoffClient's recall type, `srp-` / `laser-` in the note's
+  // doneAreas lines), which hygSrpMultiQuad.test.js pins.
+  { id: "d4346", label: "4346" },
+  { id: "fmd", label: "FMD" },
+  { id: "fine-scale", label: "Fine Scale" },
   { id: "polish", label: "Polish", retired: true },
 ];
 
@@ -1078,8 +1088,22 @@ export const HygSlipSchema = z
     medicalHistory: MedicalHistorySchema.nullable().default(null),
     /** What to take payment for at the desk. Rides the checkout alert and the TC handoff. */
     collectAtCheckout: CollectAtCheckoutSchema.default({ items: [], other: "" }),
+
+    /**
+     * The quads scaled on an `srp` visit, unique and ascending. Defaulted for
+     * the same load-bearing reason as above — a slip saved before this field
+     * (including one holding a retired `srp_quad_N`) parses and gains `[]`.
+     * Required non-empty on `srp` and empty on every other type: the
+     * superRefine below, so the SERVER refuses a bad pair (400), never only
+     * the form.
+     */
+    srpQuads: SrpQuadsSchema.default([]),
   })
-  .strict();
+  .strict()
+  .superRefine((slip, ctx) => {
+    const problem = srpQuadsProblem(slip.visitType, slip.srpQuads);
+    if (problem) ctx.addIssue({ code: "custom", path: ["srpQuads"], message: problem });
+  });
 export type HygSlip = z.infer<typeof HygSlipSchema>;
 
 /**
@@ -1114,6 +1138,7 @@ export function emptySlip(): HygSlip {
     orthoScreening: null,
     medicalHistory: null,
     collectAtCheckout: emptyCollectAtCheckout(),
+    srpQuads: [],
   };
 }
 

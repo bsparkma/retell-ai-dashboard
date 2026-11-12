@@ -49,7 +49,7 @@
 import { z } from "zod";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The five visit types
+// The visit types
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -71,6 +71,12 @@ export const VisitTypeSchema = z.enum([
   "child_prophy_np",
   "child_prophy_recall",
   "perio_maint",
+  // ONE SRP type with a multi-quad pick (srpQuads on the slip). Placed where
+  // the four quad entries used to sit, so the picker reads in the same order.
+  "srp",
+  // RETIRED — hidden from the picker unless a slip already holds one. See
+  // RETIRED_VISIT_TYPES. Kept as values so a slip saved with one still loads,
+  // composes byte-identically, prints and re-saves unchanged.
   "srp_quad_1",
   "srp_quad_2",
   "srp_quad_3",
@@ -92,6 +98,7 @@ export const VISIT_TYPE_LABELS: Record<VisitType, string> = {
   child_prophy_np: "Child Prophy NP",
   child_prophy_recall: "Child Prophy Recall",
   perio_maint: "Perio Maint",
+  srp: "SRP",
   srp_quad_1: "SRP Quad 1",
   srp_quad_2: "SRP Quad 2",
   srp_quad_3: "SRP Quad 3",
@@ -109,6 +116,7 @@ export const VISIT_TYPE_LABELS: Record<VisitType, string> = {
  * draft's wording for the practice's own.
  */
 export const DRAFT_VISIT_TYPES: ReadonlySet<VisitType> = new Set<VisitType>([
+  "srp",
   "srp_quad_1",
   "srp_quad_2",
   "srp_quad_3",
@@ -119,6 +127,75 @@ export const DRAFT_VISIT_TYPES: ReadonlySet<VisitType> = new Set<VisitType>([
   "d4346",
   "fl2",
 ]);
+
+/**
+ * RETIRED IS HIDDEN, NOT DELETED — the rule DONE_TODAY_OPTIONS follows for
+ * `polish`. The four per-quad SRP types were replaced by one `srp` type with a
+ * quad pick. They stay valid enum values with their own templates, so a slip
+ * saved with one still loads, composes exactly the note it always did, prints
+ * and re-saves unchanged. The picker shows one ONLY on a slip that already
+ * holds it (visitTypeChoices). Old slips are NOT migrated.
+ */
+export const RETIRED_VISIT_TYPES: ReadonlySet<VisitType> = new Set<VisitType>([
+  "srp_quad_1",
+  "srp_quad_2",
+  "srp_quad_3",
+  "srp_quad_4",
+]);
+
+/** The visit types the picker offers on THIS slip: every live type, plus a retired one it already holds. */
+export function visitTypeChoices(current: VisitType | null): VisitType[] {
+  return VISIT_TYPES.filter((t) => !RETIRED_VISIT_TYPES.has(t) || t === current);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SRP quadrants (the `srp` visit type's pick)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One quadrant, by its universal number: 1 UR, 2 UL, 3 LL, 4 LR. */
+export const SrpQuadSchema = z.number().int().min(1).max(4);
+export type SrpQuad = 1 | 2 | 3 | 4;
+
+export const SRP_QUADS: readonly SrpQuad[] = [1, 2, 3, 4];
+
+/** The selector's labels. */
+export const SRP_QUAD_LABELS: Record<SrpQuad, string> = {
+  1: "Quad 1 (UR)",
+  2: "Quad 2 (UL)",
+  3: "Quad 3 (LL)",
+  4: "Quad 4 (LR)",
+};
+
+/**
+ * The quads scaled on an `srp` visit: unique and ascending. Ascending is
+ * REQUIRED rather than repaired, so the stored value is exactly what the note
+ * prints and two slips with the same answer are the same JSON. Whether the list
+ * may be empty depends on the visit type, so the slip schema checks that
+ * (srpQuadsProblem), not this one.
+ */
+export const SrpQuadsSchema = z
+  .array(SrpQuadSchema)
+  .max(4)
+  .refine((qs) => qs.every((q, i) => i === 0 || q > qs[i - 1]), {
+    message: "SRP quads must be unique and in ascending order",
+  });
+
+/**
+ * Why this visit type and quad list cannot be saved together, or null when they can.
+ *
+ * SRP needs at least one quad: a note saying "scaled Quad " with no quad, and
+ * anesthetic sites for no arch, is a chart note nobody could stand behind. Any
+ * other type must carry none, so a quad pick cannot ride along silently on a
+ * note that never prints it.
+ */
+export function srpQuadsProblem(
+  visitType: VisitType | null,
+  srpQuads: readonly number[],
+): string | null {
+  if (visitType === "srp" && srpQuads.length === 0) return "Pick at least one quad for an SRP visit";
+  if (visitType !== "srp" && srpQuads.length > 0) return "SRP quads are only recorded on an SRP visit";
+  return null;
+}
 
 /**
  * The AutoNoteName in Open Dental each visit type re-states.
@@ -135,6 +212,14 @@ export const VISIT_TYPE_AUTONOTE: Record<VisitType, string | null> = {
   perio_maint: "Perio Maint",
   // Drafts: the nearest auto note each was written from. The quadrant notes
   // share the upper and lower SRP notes; FMD and 4346 share one note.
+  //
+  // `srp` is written from BOTH `SRP Upper` and `SRP Lower` — it prints the
+  // upper sites, the lower sites, or both, by the quads picked. This record
+  // holds one name, so it names `SRP Upper`; the two exports have the same
+  // holes in the same order and differ only in the sites sentence, and
+  // `hygSrpMultiQuad.test.js` checks the `srp` template against `SRP Lower`
+  // too, so neither source goes unchecked.
+  srp: "SRP Upper",
   srp_quad_1: "SRP Upper",
   srp_quad_2: "SRP Upper",
   srp_quad_3: "SRP Lower",
@@ -424,6 +509,14 @@ export type NoteLine =
    * when none were — never a quadrant nobody tapped.
    */
   | { t: "doneAreas"; prefix: string; label: string }
+  /**
+   * The `srp` type's anesthetic-sites sentence(s): the UPPER sites when any of
+   * quads 1–2 was picked, the LOWER sites when any of 3–4 was, both when both
+   * arches were. No quad, no line — never a site nobody anesthetised.
+   */
+  | { t: "srpSites" }
+  /** `Cavitron and hand scaled Quad 1, 3` — the picked quads, ascending. */
+  | { t: "srpScaled" }
   /** The S: line, whose wording differs per template and whose tail is the CC. */
   | { t: "subjective"; text: string; ccLabel: string }
   /** The O: line, plus the radiographs when any were taken. */
@@ -451,6 +544,41 @@ function assessment(
 
 const PROPHY_PROCEDURE = "Polished, flossed, scaled as needed";
 
+const SRP_UPPER_SITES =
+  "Anesthetic sites: PSA, MSA, ASA, 30 short. Topical anesthetic gel benzocaine 20%.";
+const SRP_LOWER_SITES =
+  "Anesthetic sites: IA, LB, Mental, Anterior Infiltration, 30 short. Topical anesthetic gel benzocaine 20%.";
+
+/**
+ * The SRP note's lines, with the two that differ between the per-quad drafts
+ * and the multi-quad `srp` type passed in. One body, so the two cannot drift.
+ */
+function srpLines(sites: NoteLine, scaled: NoteLine): NoteLine[] {
+  return [
+    { t: "subjective", text: "Patient presents for SRP appointment.", ccLabel: "CC" },
+    { t: "blank" },
+    { t: "objective", same: true },
+    { t: "control", id: "boneLoss", label: "SRP needed due to bone loss" },
+    { t: "blank" },
+    { t: "assessment", exam: null, fluoride: false, findings: false, procedure: null },
+    { t: "blank" },
+    { t: "control", id: "perioClass", label: "Perio class" },
+    { t: "perioChart" },
+    sites,
+    { t: "control", id: "anesthetic" },
+    { t: "control", id: "carps" },
+    scaled,
+    { t: "control", id: "calculus" },
+    { t: "control", id: "plaque" },
+    { t: "control", id: "bleeding" },
+    { t: "control", id: "inflammation" },
+    { t: "blank" },
+    { t: "plan" },
+    { t: "blank" },
+    { t: "free", field: "rtc", label: "RTC" },
+  ];
+}
+
 /**
  * DRAFT (feedback round 1): one SRP quadrant, from `SRP Upper` (quads 1, 2) or
  * `SRP Lower` (3, 4). ONE shape, parameterised by the quadrant: the only
@@ -465,36 +593,23 @@ function srpQuad(quad: 1 | 2 | 3 | 4): NoteTemplate {
   return {
     visitType: `srp_quad_${quad}` as VisitType,
     autoNote: upper ? "SRP Upper" : "SRP Lower",
-    lines: [
-      { t: "subjective", text: "Patient presents for SRP appointment.", ccLabel: "CC" },
-      { t: "blank" },
-      { t: "objective", same: true },
-      { t: "control", id: "boneLoss", label: "SRP needed due to bone loss" },
-      { t: "blank" },
-      { t: "assessment", exam: null, fluoride: false, findings: false, procedure: null },
-      { t: "blank" },
-      { t: "control", id: "perioClass", label: "Perio class" },
-      { t: "perioChart" },
-      {
-        t: "text",
-        text: upper
-          ? "Anesthetic sites: PSA, MSA, ASA, 30 short. Topical anesthetic gel benzocaine 20%."
-          : "Anesthetic sites: IA, LB, Mental, Anterior Infiltration, 30 short. Topical anesthetic gel benzocaine 20%.",
-      },
-      { t: "control", id: "anesthetic" },
-      { t: "control", id: "carps" },
+    lines: srpLines(
+      { t: "text", text: upper ? SRP_UPPER_SITES : SRP_LOWER_SITES },
       { t: "text", text: `Cavitron and hand scaled Quad ${quad}` },
-      { t: "control", id: "calculus" },
-      { t: "control", id: "plaque" },
-      { t: "control", id: "bleeding" },
-      { t: "control", id: "inflammation" },
-      { t: "blank" },
-      { t: "plan" },
-      { t: "blank" },
-      { t: "free", field: "rtc", label: "RTC" },
-    ],
+    ),
   };
 }
+
+/**
+ * DRAFT: the ONE SRP type, for any combination of quads (slip `srpQuads`). The
+ * per-quad note's lines exactly, except the sites sentence follows the arches
+ * picked and the scaled line names every quad picked. Pending approval.
+ */
+const SRP_TEMPLATE: NoteTemplate = {
+  visitType: "srp",
+  autoNote: "SRP Upper",
+  lines: srpLines({ t: "srpSites" }, { t: "srpScaled" }),
+};
 
 /**
  * DRAFT (feedback round 1): FMD and 4346 share the practice's `FMD/4346` note;
@@ -695,6 +810,8 @@ export const NOTE_TEMPLATES: Record<VisitType, NoteTemplate> = {
   },
 
   // ── DRAFTS, feedback round 1 — pending the practice hygienist's approval ──
+  srp: SRP_TEMPLATE,
+  // Retired (RETIRED_VISIT_TYPES): still render, for the slips that hold them.
   srp_quad_1: srpQuad(1),
   srp_quad_2: srpQuad(2),
   srp_quad_3: srpQuad(3),
@@ -882,6 +999,11 @@ export interface RenderNoteInput {
   recallMonths: number | null;
   /** `yes` / `no` / null, for Perio Maint's chart line. */
   perioChartUpdated: "yes" | "no" | null;
+  /**
+   * The slip's `srpQuads`. Only the `srp` template reads it. Optional so every
+   * caller written before it renders exactly what it did.
+   */
+  srpQuads?: readonly number[];
 }
 
 /**
@@ -986,6 +1108,23 @@ export function renderVisitNote(input: RenderNoteInput): string[] {
       case "free":
         out.push(labelled(l.label, FREE_FIELD_READERS[l.field](input).trim()));
         break;
+
+      case "srpSites": {
+        const quads = input.srpQuads ?? [];
+        if (quads.some((q) => q === 1 || q === 2)) out.push(SRP_UPPER_SITES);
+        if (quads.some((q) => q === 3 || q === 4)) out.push(SRP_LOWER_SITES);
+        break;
+      }
+
+      case "srpScaled": {
+        const quads = (input.srpQuads ?? [])
+          .filter((q, i, all) => all.indexOf(q) === i)
+          .sort((a, b) => a - b);
+        // Unpicked keeps the label and the blank, this file's rule — never a
+        // quad nobody scaled.
+        out.push(`Cavitron and hand scaled Quad ${quads.join(", ")}`);
+        break;
+      }
     }
   }
 
