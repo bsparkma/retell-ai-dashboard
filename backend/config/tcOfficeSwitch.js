@@ -35,6 +35,7 @@
  */
 
 const registry = require('../platform/registry');
+const officeSettingsParity = require('../platform/officeSettingsParity');
 const { OFFICES } = require('./officeAgents');
 
 /**
@@ -158,6 +159,14 @@ function createOfficeSwitch({ settingKey, envPrefix, label }) {
         updatedAt: row && byOffice && row.updated_at ? new Date(row.updated_at).toISOString() : null,
         updatedBy: row && byOffice ? row.updated_by || null : null,
       };
+      // MT-2a parity tripwire: LOGS only, never awaited, never changes an answer.
+      // The stored-layer answer: the office's boolean, or null (nobody chose).
+      void officeSettingsParity.compare(
+        settingKey,
+        Object.fromEntries(
+          realOffices().map((o) => [o, byOffice && typeof byOffice[o] === 'boolean' ? byOffice[o] : null])
+        )
+      );
       return { ok: true, error: null };
     } catch (err) {
       const message = err && err.message ? err.message : String(err);
@@ -216,7 +225,10 @@ function createOfficeSwitch({ settingKey, envPrefix, label }) {
         ? { .../** @type {Record<string, unknown>} */ (current.value) }
         : {};
     base[officeKey] = enabled;
-    await registry.setPlatformSetting(settingKey, base, updatedBy);
+    // MT-2a: the registry also mirrors this map into office_setting, in the same
+    // transaction, and refuses (OFFICE_SETTING_READBACK_MISMATCH) if either
+    // table does not read back as asked.
+    await registry.setPlatformSetting(settingKey, base, updatedBy, { officeKey });
     const read = await refreshFromDb();
     if (!read.ok) {
       const err = /** @type {Error & { code?: string }} */ (
