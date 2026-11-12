@@ -124,6 +124,8 @@ export interface TcFollowupRow {
   patient_responded: boolean | null;
   nurture_type: string | null;
   legacy_id: string | null;
+  /** Next-touch owner. Optional so a row read before the column existed maps to null. */
+  owner?: string | null;
 }
 
 export interface TcCaseEventRow {
@@ -292,6 +294,7 @@ export function caseToRows(tcCase: TcCase, newId: () => string): TcCaseRows {
     patient_responded: f.patientResponded,
     nurture_type: f.nurtureType,
     legacy_id: f.legacyId,
+    owner: f.owner,
   }));
 
   const eventRows: TcCaseEventRow[] = c.events.map((e) => ({
@@ -442,6 +445,7 @@ export function caseFromRows(rows: TcCaseRows): TcCase {
       source: f.source,
       patientResponded: f.patient_responded,
       nurtureType: f.nurture_type,
+      owner: f.owner ?? null,
     })),
     events: eventRows.map((e) => ({
       eventId: e.event_id,

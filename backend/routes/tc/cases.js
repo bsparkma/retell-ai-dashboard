@@ -33,6 +33,7 @@ const { withTenantTx } = require('./tx');
 const tenantDb = require('../../platform/tenantDb');
 const store = require('./caseStore');
 const caseStatus = require('./caseStatus');
+const nextTouch = require('./nextTouch');
 const checkoutStore = require('./checkoutStore');
 const tcCheckout = require('../../config/tcCheckout');
 // (item 47) A case leaving TC work stops its nurture enrollment: routes/tc/caseStatus.js.
@@ -43,7 +44,21 @@ const activityFeed = require('./activityFeed');
 const { isEntitledModule } = require('../../middleware/tenantContext');
 const unifiedCallStore = require('../../services/unifiedCallStore');
 
-const { z, TcCase, TcCasePhase, TcCaseItem, TcObjection, ContactAttemptDetail, CaseStatus, LostReason, Uuid, caseToRows } = contract;
+const {
+  z,
+  TcCase,
+  TcCasePhase,
+  TcCaseItem,
+  TcObjection,
+  ContactAttemptDetail,
+  CaseStatus,
+  LostReason,
+  Uuid,
+  caseToRows,
+  NextTouchInput,
+  NEXT_TOUCH_REQUIRED,
+  isOpenCaseStatus,
+} = contract;
 
 const router = express.Router();
 router.use(requireOffice);
@@ -194,6 +209,15 @@ const StatusChange = z
     status: CaseStatus,
     lostReason: LostReason.nullable().default(null),
     note: z.string().max(8000).default(''),
+    /**
+     * Next touch (date + owner) set while moving INTO an open status. Required
+     * for that move unless the case already has a pending follow-up; refused on
+     * any other request. This route is the HUMAN path only. The system
+     * transitions (checkout routing, OD pipeline sync, nurture) do not come
+     * through here and are never blocked. They leave the case in "No next
+     * step" instead.
+     */
+    nextTouch: NextTouchInput.optional(),
   })
   .strict();
 
@@ -337,11 +361,19 @@ router.get(
       });
     }
 
+    // Next touch: each card's earliest pending follow-up, one office-scoped
+    // read over exactly the ids on this page (shared/tc/nextTouch.ts picks).
+    const touches =
+      ids.length > 0
+        ? await tenantDb.withTenantDb(req, (pool) => nextTouch.nextTouchesForCases(pool, req.tcOffice, ids))
+        : new Map();
+
     await auditTc(req, 'READ', 'tc_case', null);
     res.json({
       success: true,
       cases: rows.rows.map((r) => ({
         ...caseRowToSummary(r),
+        nextTouch: touches.has(String(r.case_id)) ? nextTouch.summarize(touches.get(String(r.case_id))) : null,
         hasOrthoScreening: screened.has(r.case_id),
         txNotInOd: unentered.has(String(r.case_id)),
         // CO-4b: "Moved by Open Dental sync" (with Undo) / "Open Dental no
@@ -613,6 +645,21 @@ router.post(
     // The transition itself is routes/tc/caseStatus.js (extracted unchanged so
     // the checkout card's Route to → Pipeline, CO-6, runs the same code).
     const result = await withTenantTx(req, async (client) => {
+      // Next touch (this human route only). Moving INTO an open status needs a
+      // date + owner unless a pending follow-up already carries one. Checked
+      // in the transaction, before anything is written.
+      const header = await store.getCaseHeader(client, req.tcOffice, caseId);
+      if (!header) return { missing: true };
+      const movingIntoOpen = header.status !== input.status && isOpenCaseStatus(input.status);
+      if (input.nextTouch && !movingIntoOpen) return { refused: 'NEXT_TOUCH_INVALID' };
+      if (
+        movingIntoOpen &&
+        !input.nextTouch &&
+        !(await nextTouch.hasPendingFollowup(client, req.tcOffice, caseId))
+      ) {
+        return { refused: NEXT_TOUCH_REQUIRED };
+      }
+
       const applied = await caseStatus.applyStatusChange(client, {
         office: req.tcOffice,
         caseId,
@@ -623,11 +670,53 @@ router.post(
         now,
       });
       if (applied.missing) return applied;
-      return { ...applied, aggregate: await store.loadCaseAggregate(client, req.tcOffice, caseId) };
+
+      let nextTouchFollowupId = null;
+      if (input.nextTouch) {
+        nextTouchFollowupId = randomUUID();
+        await store.insertFollowupRow(client, {
+          followup_id: nextTouchFollowupId,
+          case_id: caseId,
+          office_id: req.tcOffice,
+          kind: 'followup',
+          due_date: input.nextTouch.dueDate,
+          channel: input.nextTouch.channel,
+          status: 'pending',
+          talking_point: input.nextTouch.talkingPoint,
+          outcome_note: '',
+          completed_at: null,
+          completed_by: null,
+          source: 'manual',
+          patient_responded: null,
+          nurture_type: null,
+          legacy_id: null,
+          owner: input.nextTouch.owner,
+        });
+      }
+      return {
+        ...applied,
+        nextTouchFollowupId,
+        aggregate: await store.loadCaseAggregate(client, req.tcOffice, caseId),
+      };
     });
 
     if (result.missing) return notFound(res, 'case');
+    if (result.refused === NEXT_TOUCH_REQUIRED) {
+      return res.status(409).json({
+        success: false,
+        error: 'Set a next touch (date and owner) to move this case into an open status.',
+        code: NEXT_TOUCH_REQUIRED,
+      });
+    }
+    if (result.refused === 'NEXT_TOUCH_INVALID') {
+      return res.status(400).json({
+        success: false,
+        error: 'nextTouch is only valid when moving a case into an open status',
+        code: 'NEXT_TOUCH_INVALID',
+      });
+    }
     if (!result.unchanged) await auditTc(req, 'UPDATE', 'tc_case', caseId);
+    if (result.nextTouchFollowupId) await auditTc(req, 'CREATE', 'tc_followup', result.nextTouchFollowupId);
     if (result.noteEventId) await auditTc(req, 'CREATE', 'tc_case_event', result.noteEventId);
     for (const id of result.stoppedEnrollments || []) {
       await auditTc(req, 'UPDATE', 'tc_nurture_enrollment.stopped', id, { office: req.tcOffice });

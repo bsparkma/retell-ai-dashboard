@@ -14813,10 +14813,10 @@ var require_zod = __commonJS({
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.z = void 0;
-    var z16 = __importStar(require_external());
-    exports2.z = z16;
+    var z17 = __importStar(require_external());
+    exports2.z = z17;
     __exportStar(require_external(), exports2);
-    exports2.default = z16;
+    exports2.default = z17;
   }
 });
 
@@ -14883,12 +14883,14 @@ __export(contract_entry_exports, {
   MessageChannel: () => MessageChannel,
   MessageDirection: () => MessageDirection,
   MessageStatus: () => MessageStatus,
+  NEXT_TOUCH_REQUIRED: () => NEXT_TOUCH_REQUIRED,
   NURTURE_CAPS: () => NURTURE_CAPS,
   NURTURE_DEFAULT_INTENSITY: () => NURTURE_DEFAULT_INTENSITY,
   NURTURE_SMS_STOP_SUFFIX: () => NURTURE_SMS_STOP_SUFFIX,
   NURTURE_STOP_CASE_TERMINAL: () => NURTURE_STOP_CASE_TERMINAL,
   NURTURE_STOP_OPTED_OUT: () => NURTURE_STOP_OPTED_OUT,
   NURTURE_TRACKS: () => NURTURE_TRACKS,
+  NextTouchInput: () => NextTouchInput,
   NotesRevisionDetail: () => NotesRevisionDetail,
   NurtureCadence: () => NurtureCadence,
   NurtureCaseResponse: () => NurtureCaseResponse,
@@ -15132,7 +15134,8 @@ __export(contract_entry_exports, {
   Urgency: () => Urgency,
   Uuid: () => Uuid,
   VoiceHandoffDetail: () => VoiceHandoffDetail,
-  ZodError: () => import_zod15.ZodError,
+  ZodError: () => import_zod16.ZodError,
+  addBusinessDays: () => addBusinessDays,
   allPresetViolations: () => allPresetViolations,
   appointmentWhenLabel: () => appointmentWhenLabel,
   assertPresetsWithinCaps: () => assertPresetsWithinCaps,
@@ -15151,6 +15154,7 @@ __export(contract_entry_exports, {
   communicationToRow: () => communicationToRow,
   composePrintDocument: () => composePrintDocument,
   contrastOnWhite: () => contrastOnWhite,
+  defaultNextTouchDate: () => defaultNextTouchDate,
   defaultPrintTemplate: () => defaultPrintTemplate,
   effectivePrintStyling: () => effectivePrintStyling,
   emailBodyText: () => emailBodyText,
@@ -15167,10 +15171,13 @@ __export(contract_entry_exports, {
   isContactAttemptDetail: () => isContactAttemptDetail,
   isDefaultStyling: () => isDefaultStyling,
   isNotesRevisionDetail: () => isNotesRevisionDetail,
+  isOpenCaseStatus: () => isOpenCaseStatus,
   isPrimaryTooth: () => isPrimaryTooth,
   isPrintTemplateType: () => isPrintTemplateType,
   isVoiceHandoffDetail: () => isVoiceHandoffDetail,
   layoutPrintDocument: () => layoutPrintDocument,
+  nextTouchByCase: () => nextTouchByCase,
+  nextTouchState: () => nextTouchState,
   nurtureSchedule: () => nurtureSchedule,
   nurtureTemplateId: () => nurtureTemplateId,
   nurtureTokensIn: () => nurtureTokensIn,
@@ -15178,6 +15185,8 @@ __export(contract_entry_exports, {
   nurtureTrack: () => nurtureTrack,
   odToothText: () => odToothText,
   openQuestionCount: () => openQuestionCount,
+  ownerInitials: () => ownerInitials,
+  pickNextTouch: () => pickNextTouch,
   preauthToRow: () => preauthToRow,
   presetViolations: () => presetViolations,
   primaryToNumber: () => primaryToNumber,
@@ -15225,7 +15234,7 @@ __export(contract_entry_exports, {
   validatePrintTemplate: () => validatePrintTemplate,
   wrapToChars: () => wrapToChars,
   wrapToWidth: () => wrapToWidth,
-  z: () => import_zod15.z
+  z: () => import_zod16.z
 });
 module.exports = __toCommonJS(contract_entry_exports);
 
@@ -15782,8 +15791,16 @@ var TcFollowup = import_zod4.z.object({
   source: FollowupSource,
   patientResponded: import_zod4.z.boolean().nullable(),
   // null = not recorded
-  nurtureType: NurtureType.nullable()
+  nurtureType: NurtureType.nullable(),
   // present iff kind === 'nurture'
+  /**
+   * Who owns this touch (next-touch slice) — the identity string of the person
+   * on the hook, same convention as completedBy / the signed-in actor's email.
+   * NULL on every row written before the column existed (legacy and pre-slice
+   * rows): shown as "no owner", never guessed from the case's assignedTc.
+   * Defaults to null so a payload that predates the field still parses.
+   */
+  owner: ShortText.nullable().default(null)
 });
 var ContactAttemptDetail = import_zod4.z.object({
   channel: import_zod4.z.enum(["call", "text", "email"]),
@@ -16255,7 +16272,8 @@ function caseToRows(tcCase, newId) {
     source: f.source,
     patient_responded: f.patientResponded,
     nurture_type: f.nurtureType,
-    legacy_id: f.legacyId
+    legacy_id: f.legacyId,
+    owner: f.owner
   }));
   const eventRows = c.events.map((e) => ({
     event_id: e.eventId,
@@ -16388,7 +16406,8 @@ function caseFromRows(rows) {
       completedBy: f.completed_by,
       source: f.source,
       patientResponded: f.patient_responded,
-      nurtureType: f.nurture_type
+      nurtureType: f.nurture_type,
+      owner: f.owner ?? null
     })),
     events: eventRows.map((e) => ({
       eventId: e.event_id,
@@ -20385,8 +20404,82 @@ function printTimeLabel(dateTime) {
   return `${h % 12 === 0 ? 12 : h % 12}:${m[2]} ${h < 12 ? "AM" : "PM"}`;
 }
 
+// shared/tc/nextTouch.ts
+var import_zod15 = __toESM(require_zod(), 1);
+var OPEN = new Set(OPEN_CASE_STATUSES);
+function isOpenCaseStatus(status) {
+  return OPEN.has(status);
+}
+function pickNextTouch(followups) {
+  let best = null;
+  for (const f of followups) {
+    if (f.status !== "pending") continue;
+    if (best === null || f.dueDate < best.dueDate || f.dueDate === best.dueDate && f.followupId < best.followupId) {
+      best = f;
+    }
+  }
+  return best;
+}
+function nextTouchByCase(followups) {
+  const grouped = /* @__PURE__ */ new Map();
+  for (const f of followups) {
+    const list = grouped.get(f.caseId);
+    if (list) list.push(f);
+    else grouped.set(f.caseId, [f]);
+  }
+  const out = /* @__PURE__ */ new Map();
+  grouped.forEach((list, caseId) => {
+    const picked = pickNextTouch(list);
+    if (picked) out.set(caseId, picked);
+  });
+  return out;
+}
+function nextTouchState(dueDate, today) {
+  if (dueDate < today) return "overdue";
+  if (dueDate === today) return "today";
+  return "upcoming";
+}
+function parseIsoDate(iso) {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(Date.UTC(y ?? 1970, (m ?? 1) - 1, d ?? 1));
+}
+function formatIsoDate(d) {
+  return d.toISOString().slice(0, 10);
+}
+function addBusinessDays(iso, n) {
+  const d = parseIsoDate(iso);
+  let left = n;
+  while (left > 0) {
+    d.setUTCDate(d.getUTCDate() + 1);
+    const dow = d.getUTCDay();
+    if (dow !== 0 && dow !== 6) left -= 1;
+  }
+  return formatIsoDate(d);
+}
+function defaultNextTouchDate(today) {
+  return addBusinessDays(today, 2);
+}
+function ownerInitials(owner) {
+  const raw = (owner ?? "").trim();
+  if (raw === "") return "?";
+  const base = raw.includes("@") ? raw.slice(0, raw.indexOf("@")) : raw;
+  const parts = base.split(/[\s._-]+/).filter((p) => p !== "");
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return (parts[0] ?? "").slice(0, 2).toUpperCase();
+  const first = parts[0] ?? "";
+  const last = parts[parts.length - 1] ?? "";
+  return `${first.charAt(0)}${last.charAt(0)}`.toUpperCase();
+}
+var NextTouchInput = import_zod15.z.object({
+  dueDate: import_zod15.z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD"),
+  owner: import_zod15.z.string().trim().min(1, "An owner is required").max(200),
+  channel: FollowupChannel.default("phone_call"),
+  talkingPoint: import_zod15.z.string().max(8e3).default("")
+}).strict();
+var NEXT_TOUCH_REQUIRED = "NEXT_TOUCH_REQUIRED";
+
 // ../backend/tc/contract.entry.ts
-var import_zod15 = __toESM(require_zod());
+var import_zod16 = __toESM(require_zod());
 
 // shared/hyg/teeth.ts
 var UPPER_PRIMARY = "ABCDEFGHIJ".split("");
@@ -20479,12 +20572,14 @@ function odToothText(tooth) {
   MessageChannel,
   MessageDirection,
   MessageStatus,
+  NEXT_TOUCH_REQUIRED,
   NURTURE_CAPS,
   NURTURE_DEFAULT_INTENSITY,
   NURTURE_SMS_STOP_SUFFIX,
   NURTURE_STOP_CASE_TERMINAL,
   NURTURE_STOP_OPTED_OUT,
   NURTURE_TRACKS,
+  NextTouchInput,
   NotesRevisionDetail,
   NurtureCadence,
   NurtureCaseResponse,
@@ -20729,6 +20824,7 @@ function odToothText(tooth) {
   Uuid,
   VoiceHandoffDetail,
   ZodError,
+  addBusinessDays,
   allPresetViolations,
   appointmentWhenLabel,
   assertPresetsWithinCaps,
@@ -20747,6 +20843,7 @@ function odToothText(tooth) {
   communicationToRow,
   composePrintDocument,
   contrastOnWhite,
+  defaultNextTouchDate,
   defaultPrintTemplate,
   effectivePrintStyling,
   emailBodyText,
@@ -20763,10 +20860,13 @@ function odToothText(tooth) {
   isContactAttemptDetail,
   isDefaultStyling,
   isNotesRevisionDetail,
+  isOpenCaseStatus,
   isPrimaryTooth,
   isPrintTemplateType,
   isVoiceHandoffDetail,
   layoutPrintDocument,
+  nextTouchByCase,
+  nextTouchState,
   nurtureSchedule,
   nurtureTemplateId,
   nurtureTokensIn,
@@ -20774,6 +20874,8 @@ function odToothText(tooth) {
   nurtureTrack,
   odToothText,
   openQuestionCount,
+  ownerInitials,
+  pickNextTouch,
   preauthToRow,
   presetViolations,
   primaryToNumber,
