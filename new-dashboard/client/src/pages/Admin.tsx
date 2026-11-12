@@ -23,6 +23,10 @@
  * /api/admin/* endpoints, which SC-1 did not touch. The Users tab's "coming
  * soon" placeholder is gone: the Users & roles card is the real thing.
  *
+ * PRACTICE SETUP (OB-1) sits first, above both groups: a read-only, per-office
+ * status of what is set up, linking to the screens above. See
+ * ./admin/PracticeSetupCard.tsx.
+ *
  * GATING. /admin itself demands admin.all (ROUTE_PERMISSIONS), unchanged. A card
  * a viewer could not open is not shown (see settingsHub.ts). No nav tab was
  * added: the "admin sub-pages get a card on /admin, never a nav item" ruling
@@ -33,6 +37,7 @@ import { ChevronRight } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { useAuth } from "@/contexts/AuthContext";
 import { hasModule } from "@/lib/modules";
+import PracticeSetupCard from "./admin/PracticeSetupCard";
 import RcmPostingSettingsCard from "./admin/RcmPostingSettingsCard";
 import RcmShadowComparisonCard from "./admin/RcmShadowComparisonCard";
 import VoiceNotificationsCard from "./admin/VoiceNotificationsCard";
@@ -91,6 +96,17 @@ export default function Admin() {
         </h1>
         <p className="text-sm text-muted-foreground mt-0.5">Settings for your practice and its modules</p>
       </div>
+
+      {/* OB-1: what is set up and what is missing, per office. FIRST on the
+          hub, in its own section — its "Go" links are not hub cards. */}
+      <section className="max-w-4xl" data-testid="admin-practice-setup" aria-label="Practice setup">
+        <PracticeSetupCard
+          homeOffice={user?.homeOffice ?? null}
+          permissions={user?.permissions}
+          tenantModules={tenantModules}
+          isSuperAdmin={user?.isSuperAdmin === true}
+        />
+      </section>
 
       <section className="space-y-3" data-testid="admin-practice-settings" aria-labelledby="admin-practice-heading">
         <h2 id="admin-practice-heading" className="text-base font-semibold text-foreground">
