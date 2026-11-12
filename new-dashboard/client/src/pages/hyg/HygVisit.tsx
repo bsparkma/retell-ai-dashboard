@@ -104,7 +104,7 @@ import {
   type HygVisitPage,
 } from "@/features/hyg/api";
 import { formatClock, formatLength, todayIso, visibleFlags } from "@/features/hyg/day";
-import { suggestVisitType } from "@shared/hyg/noteTemplates";
+import { srpQuadsProblem, suggestVisitType } from "@shared/hyg/noteTemplates";
 import type { PerioCounts } from "@shared/hyg/perio";
 import type { HygPerioSendResponse } from "@shared/hyg/perioSend";
 import { perioProvNumOf } from "@/features/hyg/perio/PerioSendConfirm";
@@ -685,8 +685,17 @@ export default function HygVisit() {
   const onSlipChange = useCallback(
     (next: HygSlip) => {
       setDraft(next);
-      pendingSlip.current = next;
       if (saveTimer.current) clearTimeout(saveTimer.current);
+      // SRP WITH NO QUAD YET IS HELD, NOT SENT. The server refuses that pair
+      // (400) — rightly — and the moment between tapping SRP and tapping a quad
+      // is not an error worth a banner. The draft stays on screen, the form
+      // says a quad is needed, and the first quad tap saves the whole slip.
+      if (srpQuadsProblem(next.visitType, next.srpQuads)) {
+        saveTimer.current = null;
+        pendingSlip.current = null;
+        return;
+      }
+      pendingSlip.current = next;
       saveTimer.current = setTimeout(() => {
         if (!isOfficeId(office)) return;
         pendingSlip.current = null;

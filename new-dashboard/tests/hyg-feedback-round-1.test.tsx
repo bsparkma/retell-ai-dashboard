@@ -97,7 +97,8 @@ describe("B: the Done-today vocabulary", () => {
   });
 
   it("every draft visit type is labelled a draft", () => {
-    expect(DRAFT_VISIT_TYPES.size).toBe(9);
+    // 9 from feedback round 1, plus the one multi-quad `srp` type (also a draft).
+    expect(DRAFT_VISIT_TYPES.size).toBe(10);
     for (const t of DRAFT_VISIT_TYPES) expect(VISIT_TYPE_LABELS[t]).toBeTruthy();
   });
 });

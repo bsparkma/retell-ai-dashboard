@@ -210,6 +210,9 @@ function noteTemplateLines(visit) {
     productsDispensed: Array.isArray(slip.productsDispensed) ? slip.productsDispensed : [],
     recallMonths: typeof next.intervalMonths === 'number' ? next.intervalMonths : null,
     perioChartUpdated: slip.perioChartUpdated ?? null,
+    // Only the `srp` template reads it; every other template ignores it, so a
+    // retired srp_quad_N slip composes exactly the note it always did.
+    srpQuads: Array.isArray(slip.srpQuads) ? slip.srpQuads : [],
   });
 }
 
