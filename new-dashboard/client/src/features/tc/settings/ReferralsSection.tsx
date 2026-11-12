@@ -8,6 +8,9 @@
  *  - the two REFERRAL POLICIES for this office: Dr. sign-off required, and
  *    auto-send on approval. A practice admin changes them; everyone else sees
  *    what is in force and why.
+ *  - the office's REFERRAL TEMPLATES (ReferralTemplatesCard): starting
+ *    wording for the specialist message and the correspondence note, under
+ *    the same admin rule.
  *
  * NOTHING SENDS from here, and nothing here reads or writes Open Dental.
  * Every row shown is what the server returned after it stored the change.
@@ -42,6 +45,7 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { tcErrorMessage } from "@/features/tc/api";
+import { ReferralTemplatesCard } from "@/features/tc/settings/ReferralTemplatesCard";
 import {
   createDirectoryEntry,
   deleteDirectoryEntry,
@@ -392,6 +396,8 @@ export function ReferralsSection({ office }: { office: OfficeId }) {
           />
         </CardContent>
       </Card>
+
+      <ReferralTemplatesCard office={office} />
 
       <Card>
         <CardHeader className="pb-2">

@@ -14813,10 +14813,10 @@ var require_zod = __commonJS({
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.z = void 0;
-    var z9 = __importStar(require_external());
-    exports2.z = z9;
+    var z10 = __importStar(require_external());
+    exports2.z = z10;
     __exportStar(require_external(), exports2);
-    exports2.default = z9;
+    exports2.default = z10;
   }
 });
 
@@ -14835,6 +14835,7 @@ __export(contract_entry_exports, {
   DRAFT_VISIT_TYPES: () => DRAFT_VISIT_TYPES,
   DX_LABELS: () => DX_LABELS,
   DxCodeSchema: () => DxCodeSchema,
+  EMPTY_HYG_PRESCRIPTIONS: () => EMPTY_HYG_PRESCRIPTIONS,
   EXAM_STATUS_LABELS: () => EXAM_STATUS_LABELS,
   EXISTING_TX_BATCH_MAX: () => EXISTING_TX_BATCH_MAX,
   EXISTING_TX_CLINICAL: () => EXISTING_TX_CLINICAL,
@@ -14865,6 +14866,8 @@ __export(contract_entry_exports, {
   FlagSourceSchema: () => FlagSourceSchema,
   HYG_DAY_SCOPES: () => HYG_DAY_SCOPES,
   HYG_ERROR_CODES: () => HYG_ERROR_CODES,
+  HYG_PHARMACY_MAX: () => HYG_PHARMACY_MAX,
+  HYG_RX_NEEDED_MAX: () => HYG_RX_NEEDED_MAX,
   HYG_STAFF_SIGN_IN_MAX: () => HYG_STAFF_SIGN_IN_MAX,
   HYG_VISIT_ERROR_CODES: () => HYG_VISIT_ERROR_CODES,
   HandoffCategorySchema: () => HandoffCategorySchema,
@@ -14884,6 +14887,9 @@ __export(contract_entry_exports, {
   HygPerioPriorResponseSchema: () => HygPerioPriorResponseSchema,
   HygPerioResponseSchema: () => HygPerioResponseSchema,
   HygPerioSendResponseSchema: () => HygPerioSendResponseSchema,
+  HygPrescriptionsResponseSchema: () => HygPrescriptionsResponseSchema,
+  HygPrescriptionsSaveRequestSchema: () => HygPrescriptionsSaveRequestSchema,
+  HygPrescriptionsSchema: () => HygPrescriptionsSchema,
   HygSendResponseSchema: () => HygSendResponseSchema,
   HygSlipSchema: () => HygSlipSchema,
   HygStaffInputSchema: () => HygStaffInputSchema,
@@ -15035,7 +15041,7 @@ __export(contract_entry_exports, {
   VisitUpsertRequestSchema: () => VisitUpsertRequestSchema,
   XRAY_OPTIONS: () => XRAY_OPTIONS,
   YesNoSchema: () => YesNoSchema,
-  ZodError: () => import_zod8.ZodError,
+  ZodError: () => import_zod9.ZodError,
   bleedSupPlaqCalcBits: () => bleedSupPlaqCalcBits,
   chartingOrder: () => chartingOrder,
   collectAtCheckoutLabels: () => collectAtCheckoutLabels,
@@ -15063,6 +15069,7 @@ __export(contract_entry_exports, {
   freeFieldsFor: () => freeFieldsFor,
   groupExistingTxForTc: () => groupExistingTxForTc,
   hasPerioChartLine: () => hasPerioChartLine,
+  hasPrescriptions: () => hasPrescriptions,
   isAnswered: () => isAnswered,
   isChildVisit: () => isChildVisit,
   isOfficeId: () => isOfficeId,
@@ -15117,7 +15124,7 @@ __export(contract_entry_exports, {
   withPerioMobility: () => withPerioMobility,
   withPerioSite: () => withPerioSite,
   withPerioSkipped: () => withPerioSkipped,
-  z: () => import_zod8.z
+  z: () => import_zod9.z
 });
 module.exports = __toCommonJS(contract_entry_exports);
 
@@ -18383,8 +18390,28 @@ var UserSignatureResponseSchema = import_zod7.z.object({
   usingBuiltInList: import_zod7.z.boolean()
 });
 
+// shared/hyg/prescriptions.ts
+var import_zod8 = __toESM(require_zod(), 1);
+var HYG_RX_NEEDED_MAX = 1e3;
+var HYG_PHARMACY_MAX = 200;
+var HygPrescriptionsSchema = import_zod8.z.object({
+  rxNeeded: import_zod8.z.string().max(HYG_RX_NEEDED_MAX, `Keep prescriptions under ${HYG_RX_NEEDED_MAX} characters`),
+  pharmacy: import_zod8.z.string().max(HYG_PHARMACY_MAX, `Keep the pharmacy under ${HYG_PHARMACY_MAX} characters`).refine((v) => !/[\r\n]/.test(v), "The pharmacy is one line")
+}).strict();
+var EMPTY_HYG_PRESCRIPTIONS = Object.freeze({ rxNeeded: "", pharmacy: "" });
+var HygPrescriptionsSaveRequestSchema = HygPrescriptionsSchema;
+var HygPrescriptionsResponseSchema = import_zod8.z.object({
+  success: import_zod8.z.literal(true),
+  office: import_zod8.z.enum(["roland", "valley"]),
+  aptNum: import_zod8.z.number().int().positive(),
+  prescriptions: HygPrescriptionsSchema
+});
+function hasPrescriptions(p) {
+  return !!p && (p.rxNeeded.trim() !== "" || p.pharmacy.trim() !== "");
+}
+
 // ../backend/hyg/contract.entry.ts
-var import_zod8 = __toESM(require_zod());
+var import_zod9 = __toESM(require_zod());
 
 // shared/hyg/teeth.ts
 var UPPER_PRIMARY = "ABCDEFGHIJ".split("");
@@ -18429,6 +18456,7 @@ function odToothText(tooth) {
   DRAFT_VISIT_TYPES,
   DX_LABELS,
   DxCodeSchema,
+  EMPTY_HYG_PRESCRIPTIONS,
   EXAM_STATUS_LABELS,
   EXISTING_TX_BATCH_MAX,
   EXISTING_TX_CLINICAL,
@@ -18459,6 +18487,8 @@ function odToothText(tooth) {
   FlagSourceSchema,
   HYG_DAY_SCOPES,
   HYG_ERROR_CODES,
+  HYG_PHARMACY_MAX,
+  HYG_RX_NEEDED_MAX,
   HYG_STAFF_SIGN_IN_MAX,
   HYG_VISIT_ERROR_CODES,
   HandoffCategorySchema,
@@ -18478,6 +18508,9 @@ function odToothText(tooth) {
   HygPerioPriorResponseSchema,
   HygPerioResponseSchema,
   HygPerioSendResponseSchema,
+  HygPrescriptionsResponseSchema,
+  HygPrescriptionsSaveRequestSchema,
+  HygPrescriptionsSchema,
   HygSendResponseSchema,
   HygSlipSchema,
   HygStaffInputSchema,
@@ -18657,6 +18690,7 @@ function odToothText(tooth) {
   freeFieldsFor,
   groupExistingTxForTc,
   hasPerioChartLine,
+  hasPrescriptions,
   isAnswered,
   isChildVisit,
   isOfficeId,

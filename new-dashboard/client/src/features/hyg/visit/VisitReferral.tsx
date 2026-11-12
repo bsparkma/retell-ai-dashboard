@@ -23,6 +23,7 @@ import { Button } from "@/components/ui/button";
 import {
   fetchVisitProviderDirectory,
   fetchVisitReferralDirectory,
+  fetchVisitReferralTemplates,
   fetchVisitReferrals,
   HygApiError,
   startVisitReferral,
@@ -139,6 +140,7 @@ export function VisitReferral({ office, aptNum }: { office: OfficeId; aptNum: nu
         sourceLabel="this visit"
         loadDirectory={() => fetchVisitReferralDirectory(office, aptNum)}
         loadProviders={() => fetchVisitProviderDirectory(office, aptNum)}
+        loadTemplates={() => fetchVisitReferralTemplates(office, aptNum)}
         onClose={() => setOpen(false)}
         onSave={(input, _submit, files) => void save(input, files)}
       />

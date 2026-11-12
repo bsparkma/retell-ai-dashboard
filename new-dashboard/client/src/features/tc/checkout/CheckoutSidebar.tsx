@@ -44,6 +44,7 @@ import {
 import type { OfficeId } from "@shared/tc/contract";
 import { teethText } from "@shared/hyg/teeth";
 import { ExistingTreatmentFromHygiene } from "@/features/tc/checkout/HygieneTreatmentPanel";
+import { CheckoutPrescriptions } from "@/features/tc/checkout/CheckoutPrescriptions";
 
 export { checkoutClock };
 
@@ -234,6 +235,9 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
                   )}
                 </section>
               )}
+
+              {/* In-app only: what the hygienist asked for, read-only. Never in Open Dental. */}
+              <CheckoutPrescriptions prescriptions={snap.prescriptions} testId="checkout-prescriptions" />
 
               {!hygieneData && (
                 <p className="rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground" data-testid="checkout-no-hygiene-data">

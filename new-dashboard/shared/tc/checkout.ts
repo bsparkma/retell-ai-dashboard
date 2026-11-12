@@ -38,6 +38,7 @@
 import { z } from "zod";
 
 import { EXISTING_TX_HANDOFF_MAX, ExistingTxHandoffItemSchema } from "../hyg/existingTx";
+import { HygPrescriptionsSchema } from "../hyg/prescriptions";
 
 /** The intake kinds `POST /api/tc/hygiene-intakes` accepts. */
 export const TcIntakeKind = z.enum(["hygiene", "ortho", "checkout"]);
@@ -176,6 +177,12 @@ export const TcCheckoutSnapshot = z
      * v2). OPTIONAL and additive; absent when the treatment needs none.
      */
     records: z.array(TcCheckoutRecord).max(TC_CHECKOUT_RECORDS_MAX).optional(),
+    /**
+     * What the hygienist noted for the doctor / front desk: the prescription(s)
+     * needed and the pharmacy. IN-APP ONLY — never sent to Open Dental.
+     * OPTIONAL and additive, like existingTx: absent when neither was filled in.
+     */
+    prescriptions: HygPrescriptionsSchema.optional(),
   })
   .strict();
 export type TcCheckoutSnapshot = z.infer<typeof TcCheckoutSnapshot>;

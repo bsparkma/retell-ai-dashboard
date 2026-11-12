@@ -57,6 +57,9 @@ export * from "../../new-dashboard/shared/tc/printTemplates";
 // Print template styling (CO-3b): the closed styling schema and the ONE layout
 // engine the PDF and the Settings preview both draw from.
 export * from "../../new-dashboard/shared/tc/printStyling";
+// Referral note templates: per-office prefill wording, its closed placeholder
+// menu and the validator a save with an unknown placeholder is refused by.
+export * from "../../new-dashboard/shared/tc/referralTemplates";
 // Next touch: the earliest pending follow-up per open case, its open-status
 // test, and the human status route's nextTouch body. One derivation for
 // server and dashboard.

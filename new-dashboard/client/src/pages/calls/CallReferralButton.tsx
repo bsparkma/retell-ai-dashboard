@@ -24,6 +24,7 @@ import { hasModule } from "@/lib/modules";
 import { can } from "@/lib/permissions";
 import {
   getReferralsStatus,
+  getReferralTemplates,
   listDirectory,
   listReferrals,
   referralVerb,
@@ -134,6 +135,7 @@ export function CallReferralButton({ call }: { call: CallReferralCall }) {
         sourceLabel="this call's matched patient"
         loadDirectory={() => listDirectory(office, false)}
         loadProviders={() => listActiveProviders(office)}
+        loadTemplates={() => getReferralTemplates(office).then((r) => r.templates)}
         onClose={() => setOpen(false)}
         onSave={(input, submit, files) => void save(input, submit, files)}
       />

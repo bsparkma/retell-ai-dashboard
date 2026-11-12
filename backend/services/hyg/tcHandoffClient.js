@@ -510,7 +510,7 @@ function capped(value, max) {
  * @returns {{ ok: true, body: Record<string, unknown> }
  *          | { ok: false, code: string, error: string }}
  */
-function buildCheckoutIntake({ visit, snapshot, date, final, existingTx }) {
+function buildCheckoutIntake({ visit, snapshot, date, final, existingTx, prescriptions }) {
   const snap = snapshot || {};
   const patientName = capped(snap.patientName, 200);
   if (!patientName) {
@@ -558,6 +558,15 @@ function buildCheckoutIntake({ visit, snapshot, date, final, existingTx }) {
   const carried = existingTxForTc(existingTx);
   const collect = collectForTc(slip);
   const records = recordsForTc(items, slip);
+  // "Prescriptions needed" + "Pharmacy" (in-app only): to the front desk and
+  // the doctor on the checkout card. Absent when neither is filled in, so a
+  // visit without them sends exactly the snapshot it always did. This is the
+  // TC handoff, not a chart write — nothing here reaches Open Dental.
+  const rx = {
+    rxNeeded: capped(prescriptions && prescriptions.rxNeeded, 1000),
+    pharmacy: capped(prescriptions && prescriptions.pharmacy, 200),
+  };
+  const carriesRx = rx.rxNeeded !== '' || rx.pharmacy !== '';
   return {
     ok: true,
     body: {
@@ -589,6 +598,7 @@ function buildCheckoutIntake({ visit, snapshot, date, final, existingTx }) {
         // exactly the snapshot it always did.
         ...(collect ? { collectAtCheckout: collect } : {}),
         ...(records ? { records } : {}),
+        ...(carriesRx ? { prescriptions: rx } : {}),
       },
     },
   };

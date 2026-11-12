@@ -218,6 +218,18 @@ jobs:
           MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
         run: node scripts/checkout-questions-verify-queries.js
 
+      # Referral templates + hygiene Rx/pharmacy (1794600000000): the template
+      # store's CHECKs and grant (no DELETE), the Rx columns' CHECKs (caps, a
+      # single-line pharmacy) and their office-scoped store, EXECUTED against
+      # the real schema (one transaction, rolled back) — then this migration's
+      # REAL down() and up() with a template and an Rx present. Leaves the
+      # schema as it found it.
+      - name: referral templates + hyg Rx verification (real CHECKs, real down/up)
+        working-directory: backend
+        env:
+          MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
+        run: node scripts/ref-templates-hyg-rx-verify-queries.js
+
       - name: spine smoke test (registry / tenantDb / append-only audit / entitlement)
         working-directory: backend
         env:

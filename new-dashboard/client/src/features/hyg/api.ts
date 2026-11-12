@@ -30,6 +30,11 @@ import {
   type TcReferralInput,
 } from "@shared/tc/referrals";
 import { TcProviderEntry } from "@shared/tc/providers";
+import { ReferralTemplatesResponse, type ReferralTemplateState } from "@shared/tc/referralTemplates";
+import {
+  HygPrescriptionsResponseSchema,
+  type HygPrescriptions,
+} from "@shared/hyg/prescriptions";
 import {
   HygCheckoutQuestionBadgesResponse,
   HygCheckoutThreadResponse,
@@ -1075,6 +1080,33 @@ export async function fetchVisitProviderDirectory(office: OfficeId, aptNum: numb
 /** The office's active specialists, for the chairside picker. */
 export async function fetchVisitReferralDirectory(office: OfficeId, aptNum: number): Promise<TcReferralDirectoryEntry[]> {
   return (await get(`/visit/${aptNum}/referral-directory`, { office }, parseWith(VisitDirectoryResponse))).entries;
+}
+
+/** The office's referral note templates, so the chairside form prefills like TC's. */
+export async function fetchVisitReferralTemplates(office: OfficeId, aptNum: number): Promise<ReferralTemplateState[]> {
+  return (await get(`/visit/${aptNum}/referral-templates`, { office }, parseWith(ReferralTemplatesResponse))).templates;
+}
+
+// ── "Prescriptions needed" + "Pharmacy" (in-app only, never to Open Dental) ──
+
+function parsePrescriptions(raw: unknown): HygPrescriptions {
+  const parsed = HygPrescriptionsResponseSchema.safeParse(raw);
+  if (!parsed.success) throw new HygApiError("The prescriptions answer could not be read", 0, "CONTRACT_MISMATCH");
+  return parsed.data.prescriptions;
+}
+
+/** What is stored for this visit. VISIT_NOT_FOUND (404) before the visit is open. */
+export async function fetchVisitPrescriptions(office: OfficeId, aptNum: number): Promise<HygPrescriptions> {
+  return get(`/visit/${aptNum}/prescriptions`, { office }, parsePrescriptions);
+}
+
+/** Store both fields; answers what the server read back. Touches no chart. */
+export async function saveVisitPrescriptions(
+  office: OfficeId,
+  aptNum: number,
+  prescriptions: HygPrescriptions,
+): Promise<HygPrescriptions> {
+  return mutate("PUT", `/visit/${aptNum}/prescriptions`, { office }, parsePrescriptions, prescriptions);
 }
 
 /**

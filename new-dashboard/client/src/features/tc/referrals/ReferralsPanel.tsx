@@ -37,6 +37,7 @@ import { tcErrorMessage } from "@/features/tc/api";
 import {
   createReferral,
   getReferralsStatus,
+  getReferralTemplates,
   listDirectory,
   listReferralAttachments,
   listReferrals,
@@ -72,6 +73,8 @@ import {
   type TcReferralStatus,
   type TcReferralTeeth,
 } from "@shared/tc/referrals";
+import { fillReferralTemplate, templateBody, type ReferralTemplateState } from "@shared/tc/referralTemplates";
+import { templateValuesFromForm } from "@/features/tc/referrals/referralTemplatePrefill";
 
 type Source = { caseId: string } | { handoffId: string };
 
@@ -309,6 +312,14 @@ export interface ReferralDialogProps {
   submitOnly?: boolean;
   /** "this case", "this call", "this visit" — where the patient comes from. */
   sourceLabel?: string;
+  /**
+   * The office's referral note templates (Settings → Referrals). When the
+   * "message to the specialist" one is set, it prefills "Notes for the
+   * specialist" — filled from the form as it changes, until someone types in
+   * the field; a referral that already has notes is never overwritten. Absent,
+   * or a failed read, means no prefill.
+   */
+  loadTemplates?: () => Promise<ReferralTemplateState[]>;
 }
 
 /**
@@ -326,6 +337,7 @@ export function ReferralDialog({
   submitOnly = false,
   sourceLabel,
   alreadyAttached = 0,
+  loadTemplates,
 }: ReferralDialogProps) {
   const [d, setD] = useState<Draft>(draftOf(null));
   const [files, setFiles] = useState<File[]>([]);
@@ -333,12 +345,19 @@ export function ReferralDialog({
   // null until (and unless) the provider directory answers: free text meanwhile.
   const [providers, setProviders] = useState<TcProviderEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The office's "message to the specialist" template; "" = none (no prefill).
+  const [template, setTemplate] = useState("");
+  // Once someone types in the notes field (or the referral already had notes),
+  // the template stops filling it: a prefill is a starting point, never an overwrite.
+  const [notesOwned, setNotesOwned] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setD(draftOf(editing));
     setFiles([]);
     setError(null);
+    setTemplate("");
+    setNotesOwned((editing?.narrative ?? "").trim() !== "");
     loadDirectory()
       .then(setEntries)
       .catch(() => setEntries([]));
@@ -348,8 +367,37 @@ export function ReferralDialog({
         .then(setProviders)
         .catch(() => setProviders(null));
     }
-    // loadDirectory / loadProviders are fresh closures each render; `open` is the trigger.
+    if (loadTemplates) {
+      // Optional: a read that throws or fails just means no prefill.
+      Promise.resolve()
+        .then(loadTemplates)
+        .then((t) => setTemplate(templateBody(t, "specialist_message")))
+        .catch(() => setTemplate(""));
+    }
+    // loadDirectory / loadProviders / loadTemplates are fresh closures each render; `open` is the trigger.
   }, [open, editing]);
+
+  // The prefill: the template, filled from what the form says now — kept in
+  // step with the form until the notes are someone's own.
+  const chosenEntry = entries.find((x) => x.entryId === d.directoryEntryId) ?? null;
+  const prefill =
+    template.trim() === ""
+      ? null
+      : fillReferralTemplate(
+          template,
+          templateValuesFromForm({
+            specialistName: chosenEntry?.specialistName,
+            practiceName: chosenEntry?.practiceName,
+            specialty: d.specialty,
+            referringProvider: d.referringProvider,
+            teeth: d.wholeMouth ? "mouth" : parseTeeth(d.teeth),
+            reason: d.reason,
+          }),
+        );
+  useEffect(() => {
+    if (!open || notesOwned || prefill === null) return;
+    setD((x) => (x.narrative === prefill ? x : { ...x, narrative: prefill }));
+  }, [open, notesOwned, prefill]);
 
   function set<K extends keyof Draft>(k: K, v: Draft[K]) {
     setD((x) => ({ ...x, [k]: v }));
@@ -465,8 +513,16 @@ export function ReferralDialog({
                 rows={3}
                 className={REFERRAL_LONG_TEXT_CLASS}
                 value={d.narrative}
-                onChange={(e) => set("narrative", e.target.value)}
+                onChange={(e) => {
+                  setNotesOwned(true);
+                  set("narrative", e.target.value);
+                }}
               />
+              {prefill !== null && !notesOwned && (
+                <p className="text-[11px] text-muted-foreground" data-testid="tc-referral-notes-prefilled">
+                  Started from this office&apos;s template. Edit it freely; what you save is what is sent.
+                </p>
+              )}
             </div>
             <div className="sm:col-span-2 space-y-1">
               <Label>X-rays and files</Label>
@@ -596,6 +652,7 @@ export function ReferralsPanel({ office, source, compact = false }: ReferralsPan
     <ReferralDialog
       loadDirectory={() => listDirectory(office, false)}
       loadProviders={() => listActiveProviders(office)}
+      loadTemplates={() => getReferralTemplates(office).then((r) => r.templates)}
       sourceLabel={"caseId" in source ? "this case" : "this checkout"}
       open={dialogOpen}
       editing={editing}
