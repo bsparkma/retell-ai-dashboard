@@ -108,6 +108,7 @@ test('an actual status change with a note keeps the existing "A → B: note" for
   const r = await api(baseUrl, 'POST', CASES(`/${c.caseId}/status`), {
     status: 'presented',
     note: 'Walked through the plan',
+    nextTouch: { dueDate: '2026-11-13', owner: 'tc@carein.ai' }, // next-touch slice
   });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.changed, true);

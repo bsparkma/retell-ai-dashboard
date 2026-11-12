@@ -236,7 +236,10 @@ test('the funnel parses exactly the status_change shape the real writers produce
     });
     assert.equal(created.status, 201, JSON.stringify(created.body));
     const caseId = created.body.case.caseId;
-    const plain = await api(baseUrl, 'POST', `/api/tc/cases/${caseId}/status?office=roland`, { status: 'presented' });
+    const plain = await api(baseUrl, 'POST', `/api/tc/cases/${caseId}/status?office=roland`, {
+      status: 'presented',
+      nextTouch: { dueDate: '2026-11-13', owner: 'tc@carein.ai' }, // next-touch slice
+    });
     assert.equal(plain.status, 200, JSON.stringify(plain.body));
     const noted = await api(baseUrl, 'POST', `/api/tc/cases/${caseId}/status?office=roland`, {
       status: 'accepted',

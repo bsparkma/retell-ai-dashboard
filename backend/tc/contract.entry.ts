@@ -57,6 +57,10 @@ export * from "../../new-dashboard/shared/tc/printTemplates";
 // Print template styling (CO-3b): the closed styling schema and the ONE layout
 // engine the PDF and the Settings preview both draw from.
 export * from "../../new-dashboard/shared/tc/printStyling";
+// Next touch: the earliest pending follow-up per open case, its open-status
+// test, and the human status route's nextTouch body. One derivation for
+// server and dashboard.
+export * from "../../new-dashboard/shared/tc/nextTouch";
 // The routes compose small request shapes (status-transition bodies, complete/
 // reschedule payloads) from contract pieces; export the SAME zod instance so
 // those shapes and the contract schemas share one library version.

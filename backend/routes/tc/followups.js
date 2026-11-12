@@ -13,12 +13,13 @@
 const express = require('express');
 const { randomUUID } = require('node:crypto');
 
-const { contract, requireOffice, actorEmail, parseBody, h, auditTc, notFound } = require('./helpers');
+const { contract, requireOffice, actorEmail, parseBody, h, auditTc, notFound, iso } = require('./helpers');
 const { withTenantTx } = require('./tx');
 const tenantDb = require('../../platform/tenantDb');
 const store = require('./caseStore');
+const nextTouch = require('./nextTouch');
 
-const { z, TcFollowup, FollowupKind, FollowupStatus, Uuid } = contract;
+const { z, TcFollowup, FollowupKind, FollowupStatus, Uuid, OPEN_CASE_STATUSES, isOpenCaseStatus } = contract;
 
 const router = express.Router();
 router.use(requireOffice);
@@ -135,6 +136,66 @@ router.get(
   })
 );
 
+// ── GET /next-touch — every open case's ONE next touch, plus the flagged ─────
+//
+// The Follow-ups page's main view. For each OPEN case in the office
+// (OPEN_CASE_STATUSES), its earliest pending follow-up (shared/tc/nextTouch.ts)
+// with just enough case context to work it; and, separately, every open case
+// that has NO pending follow-up, which is the "No next step" list. Two
+// single-table, office-scoped reads joined in memory, never a cross-office join.
+
+const NextTouchQuery = z.object({ office: z.string() }).strict();
+
+/** Open cases per office the view reads. Far above a practice's open book. */
+const OPEN_CASE_LIMIT = 2000;
+
+router.get(
+  '/next-touch',
+  h(async (req, res) => {
+    const query = parseBody(res, NextTouchQuery, req.query);
+    if (!query) return;
+
+    const { cases, touches } = await tenantDb.withTenantDb(req, async (pool) => {
+      const open = await pool.query(
+        `SELECT case_id, patient_name, phone, status, assigned_tc, case_value_cents, urgency, status_changed_at
+           FROM tc_cases
+          WHERE office_id = $1 AND status = ANY($2)
+          ORDER BY patient_name
+          LIMIT ${OPEN_CASE_LIMIT}`,
+        [req.tcOffice, [...OPEN_CASE_STATUSES]]
+      );
+      const ids = open.rows.map((r) => String(r.case_id));
+      return { cases: open.rows, touches: await nextTouch.nextTouchesForCases(pool, req.tcOffice, ids) };
+    });
+
+    const withTouch = [];
+    const noNextStep = [];
+    for (const c of cases) {
+      const t = touches.get(String(c.case_id));
+      const context = {
+        patient_name: c.patient_name,
+        case_phone: c.phone,
+        case_status: c.status,
+        assigned_tc: c.assigned_tc,
+        case_value_cents: c.case_value_cents == null ? null : Number(c.case_value_cents),
+        case_urgency: c.urgency,
+      };
+      if (t) withTouch.push({ ...t.row, ...context });
+      else {
+        noNextStep.push({
+          case_id: c.case_id,
+          ...context,
+          status_changed_at: iso(c.status_changed_at),
+        });
+      }
+    }
+    withTouch.sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)) || String(a.patient_name).localeCompare(String(b.patient_name)));
+
+    await auditTc(req, 'READ', 'tc_followup', null);
+    res.json({ success: true, touches: withTouch, noNextStep, truncated: cases.length >= OPEN_CASE_LIMIT });
+  })
+);
+
 // ── GET / — list (by case / status / kind) ──────────────────────────────────
 
 const ListQuery = z
@@ -211,6 +272,9 @@ router.post(
         patient_responded: input.patientResponded,
         nurture_type: input.nurtureType,
         legacy_id: null,
+        // A person created this touch, so it has an owner: the one they named,
+        // else themselves. Never left ownerless.
+        owner: input.owner || actorEmail(req),
       });
       return loadFollowup(client, req.tcOffice, followupId);
     });
@@ -245,6 +309,16 @@ function closeOut(finalStatus) {
       );
       if (updated.rows.length === 0) return null;
 
+      // Was that the case's LAST pending touch while the case is still open?
+      // Then the client prompts for the next one (dismissable). Dismissing
+      // leaves the case in "No next step", which is the honest state.
+      const caseId = updated.rows[0].case_id;
+      const header = await store.getCaseHeader(client, req.tcOffice, caseId);
+      const nextTouchNeeded =
+        Boolean(header) &&
+        isOpenCaseStatus(header.status) &&
+        !(await nextTouch.hasPendingFollowup(client, req.tcOffice, caseId));
+
       if (finalStatus === 'completed') {
         await store.insertEventRow(client, {
           event_id: randomUUID(),
@@ -258,7 +332,7 @@ function closeOut(finalStatus) {
           legacy_id: null,
         });
       }
-      return loadFollowup(client, req.tcOffice, followupId);
+      return { followup: await loadFollowup(client, req.tcOffice, followupId), nextTouchNeeded };
     });
     if (!result) {
       return res.status(404).json({
@@ -269,7 +343,7 @@ function closeOut(finalStatus) {
     }
 
     await auditTc(req, 'UPDATE', 'tc_followup', followupId);
-    res.json({ success: true, followup: result });
+    res.json({ success: true, followup: result.followup, nextTouchNeeded: result.nextTouchNeeded });
   });
 }
 

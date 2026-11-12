@@ -90,9 +90,13 @@ export interface FollowupActionCardProps {
   showOfficeBadge?: boolean;
   /** YYYY-MM-DD reference date for escalation math (deterministic in tests). */
   today: string;
-  /** Called after the API confirms — parent removes the row. */
-  onCompleted: (followupId: string) => void;
-  onSkipped: (followupId: string) => void;
+  /**
+   * Called after the API confirms — parent removes the row. `nextTouchNeeded`
+   * is true when that was the open case's LAST pending touch, so the parent
+   * can prompt for the next one.
+   */
+  onCompleted: (followupId: string, info: { nextTouchNeeded: boolean }) => void;
+  onSkipped: (followupId: string, info: { nextTouchNeeded: boolean }) => void;
   /** Called with the merged row after a confirmed reschedule. */
   onRescheduled: (updated: TcDueFollowup) => void;
 }
@@ -126,13 +130,13 @@ export function FollowupActionCard({
   const handleComplete = async () => {
     setSaving(true);
     try {
-      await completeFollowup(office, followup.followupId, {
+      const closed = await completeFollowup(office, followup.followupId, {
         ...(outcomeNote.trim() ? { outcomeNote: outcomeNote.trim() } : {}),
         patientResponded,
       });
       toast.success(`Follow-up completed for ${followup.patientName}`);
       setCompleteOpen(false);
-      onCompleted(followup.followupId);
+      onCompleted(followup.followupId, { nextTouchNeeded: closed?.nextTouchNeeded === true });
     } catch (e) {
       // Keep the dialog open with the typed values.
       toast.error(tcErrorMessage(e));
@@ -144,10 +148,10 @@ export function FollowupActionCard({
   const handleSkip = async () => {
     setSaving(true);
     try {
-      await skipFollowup(office, followup.followupId);
+      const closed = await skipFollowup(office, followup.followupId);
       toast.success(`Follow-up skipped for ${followup.patientName}`);
       setSkipOpen(false);
-      onSkipped(followup.followupId);
+      onSkipped(followup.followupId, { nextTouchNeeded: closed?.nextTouchNeeded === true });
     } catch (e) {
       toast.error(tcErrorMessage(e));
     } finally {
@@ -211,6 +215,11 @@ export function FollowupActionCard({
             </span>
             <span>Due {followup.dueDate}</span>
             {followup.assignedTc && <span>· {followup.assignedTc}</span>}
+            {followup.owner && (
+              <span className="inline-flex items-center gap-1" title="Who owns this touch">
+                <User className="w-3 h-3" /> Owner: {followup.owner}
+              </span>
+            )}
           </div>
         </div>
         <div className="text-sm font-semibold text-foreground shrink-0">

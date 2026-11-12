@@ -211,7 +211,10 @@ test('a NON-terminal status change leaves the enrollment running', async (t) => 
   const app = await boot(t);
   const c = await createCase(app);
   const e = (await enroll(app, 'roland', c.case_id)).body.enrollment;
-  const r = await api(app.baseUrl, 'POST', `/api/tc/cases/${c.case_id}/status?office=roland`, { status: 'considering' });
+  const r = await api(app.baseUrl, 'POST', `/api/tc/cases/${c.case_id}/status?office=roland`, {
+    status: 'considering',
+    nextTouch: { dueDate: '2026-11-13', owner: 'tc@carein.ai' }, // next-touch slice
+  });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(app.db.table('tc_nurture_enrollments').find((x) => x.enrollment_id === e.enrollmentId).status, 'active');
 });

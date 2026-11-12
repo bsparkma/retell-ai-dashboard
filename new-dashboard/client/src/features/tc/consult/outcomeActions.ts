@@ -37,6 +37,7 @@ import { validateTransition } from "../status";
 import { getCadenceTier } from "../lib/followups";
 import { addObjection, createFollowup, transitionCase, type TcQueueFollowup } from "../api";
 import { objectionLabel } from "./objectionScripts";
+import { isOpenCaseStatus } from "@shared/tc/nextTouch";
 import type { OfficeId } from "@shared/tc/contract";
 
 export type ConsultOutcome =
@@ -364,27 +365,59 @@ export type ConsultExecResult =
   | { ok: true; case: TcCase | null; followups: TcQueueFollowup[] }
   | {
       ok: false;
-      /** Index of the step that failed (steps before it committed). */
+      /** Index (in the plan as given) of the step that failed. */
       failedIndex: number;
       failedLabel: string;
       completedCount: number;
+      /** The steps that did NOT commit, in plan order (the failed one first). */
+      remaining: ConsultStep[];
       error: unknown;
     };
 
+/** The next touch a person set for a move into an open status. */
+export interface ConsultNextTouch {
+  dueDate: string;
+  owner: string;
+  channel: FollowupChannelId;
+}
+
 /**
- * Apply plan steps in order through the TC API. Each mutation awaits the
- * server's persisted row before the next starts (confirmed-save). Stops on
- * first failure — already-committed steps are reported, never rolled back
- * (the API has no transaction across these endpoints).
+ * Run order for a plan. A transition INTO an open status needs a next touch,
+ * so when the plan also schedules follow-ups, the FIRST of them runs just
+ * before that transition. The case then already has its next touch when it
+ * moves, and the server's requirement is met by the plan's own cadence.
+ * Everything else keeps plan order.
+ */
+export function consultRunOrder(steps: readonly ConsultStep[]): number[] {
+  const order = steps.map((_, i) => i);
+  const t = steps.findIndex((s) => s.kind === "transition" && isOpenCaseStatus(s.status));
+  if (t < 0) return order;
+  const f = steps.findIndex((s, i) => i > t && s.kind === "followup");
+  if (f < 0) return order;
+  return [...order.slice(0, t), f, ...order.slice(t).filter((i) => i !== f)];
+}
+
+/**
+ * Apply plan steps through the TC API (in consultRunOrder). Each mutation
+ * awaits the server's persisted row before the next starts (confirmed-save).
+ * Stops on first failure. Already-committed steps are reported, never rolled
+ * back (the API has no transaction across these endpoints).
+ *
+ * `nextTouch` (optional) rides on a transition into an open status. It is for
+ * a plan that has no follow-up of its own, such as a move to nurture.
  */
 export async function executeConsultPlan(
   office: OfficeId,
   caseId: string,
   steps: ConsultStep[],
+  opts: { nextTouch?: ConsultNextTouch } = {},
 ): Promise<ConsultExecResult> {
   let updatedCase: TcCase | null = null;
   const followups: TcQueueFollowup[] = [];
-  for (let i = 0; i < steps.length; i++) {
+  const order = consultRunOrder(steps);
+  const done = new Set<number>();
+  for (let n = 0; n < order.length; n++) {
+    const i = order[n] ?? n;
     const step = steps[i];
     if (!step) continue;
     try {
@@ -399,6 +432,7 @@ export async function executeConsultPlan(
           status: step.status,
           lostReason: step.lostReason,
           note: step.note,
+          ...(opts.nextTouch && isOpenCaseStatus(step.status) ? { nextTouch: opts.nextTouch } : {}),
         });
         updatedCase = res.case;
       } else {
@@ -418,10 +452,12 @@ export async function executeConsultPlan(
         ok: false,
         failedIndex: i,
         failedLabel: consultStepLabel(step),
-        completedCount: i,
+        completedCount: n,
+        remaining: steps.filter((_, k) => !done.has(k)),
         error,
       };
     }
+    done.add(i);
   }
   return { ok: true, case: updatedCase, followups };
 }
