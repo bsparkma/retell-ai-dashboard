@@ -37,6 +37,8 @@ import {
   getEscalationTier,
   todayIsoDate,
 } from "../lib/followups";
+import { isOpenCaseStatus, pickNextTouch } from "@shared/tc/nextTouch";
+import { NextTouchChip, SetNextTouchDialog, type NextTouchValues } from "../nextTouch/NextTouch";
 
 type FollowupKindId = TcFollowup["kind"];
 type FollowupChannelId = TcFollowup["channel"];
@@ -83,12 +85,42 @@ export function FollowupsTab({ office, tcCase, refreshCase }: FollowupsTabProps)
 
   const today = todayIsoDate();
   const followups = [...tcCase.followups].sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  const open = isOpenCaseStatus(tcCase.status);
+  const next = pickNextTouch(tcCase.followups);
+  /** The last pending touch was just closed on this open case: ask for the next. */
+  const [promptNext, setPromptNext] = useState(false);
 
   const refresh = () =>
     refreshCase().catch((e: unknown) => toast.error(tcErrorMessage(e)));
 
+  const saveNextTouch = async (values: NextTouchValues) => {
+    await createFollowup(office, {
+      caseId: tcCase.caseId,
+      kind: "followup",
+      dueDate: values.dueDate,
+      channel: values.channel,
+      talkingPoint: "",
+      owner: values.owner,
+      source: "manual",
+    });
+    toast.success("Next touch set");
+    await refresh();
+  };
+
   return (
     <div className="space-y-4">
+      {open && (
+        <div className="flex items-center gap-2 text-sm">
+          <span className="text-muted-foreground">Next touch:</span>
+          <NextTouchChip nextTouch={next} today={today} />
+          {next?.owner && <span className="text-xs text-muted-foreground">{next.owner}</span>}
+          {!next && (
+            <Button size="sm" variant="outline" onClick={() => setPromptNext(true)}>
+              Set next step
+            </Button>
+          )}
+        </div>
+      )}
       <div className="flex items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">
           {followups.length === 0
@@ -126,6 +158,9 @@ export function FollowupsTab({ office, tcCase, refreshCase }: FollowupsTabProps)
                       </Badge>
                     )}
                   </div>
+                  {f.owner && (
+                    <p className="text-xs text-muted-foreground">Owner: {f.owner}</p>
+                  )}
                   {f.talkingPoint && (
                     <p className="text-sm text-muted-foreground">{f.talkingPoint}</p>
                   )}
@@ -164,7 +199,19 @@ export function FollowupsTab({ office, tcCase, refreshCase }: FollowupsTabProps)
         office={office}
         target={outcomeTarget}
         onClose={() => setOutcomeTarget(null)}
-        onDone={refresh}
+        onDone={(info) => {
+          if (info.nextTouchNeeded) setPromptNext(true);
+          void refresh();
+        }}
+      />
+
+      <SetNextTouchDialog
+        open={promptNext}
+        onOpenChange={setPromptNext}
+        today={today}
+        title={next ? "Set a next touch" : "What's the next touch?"}
+        description={`${tcCase.patientName}'s case is still open with no touch on file. Set the next one, or choose Not now to leave it flagged "No next step".`}
+        onSave={saveNextTouch}
       />
 
       <AddFollowupDialog
@@ -190,7 +237,7 @@ function OutcomeDialog({
   office: OfficeId;
   target: { followup: TcFollowup; action: "complete" | "skip" } | null;
   onClose: () => void;
-  onDone: () => void;
+  onDone: (info: { nextTouchNeeded: boolean }) => void;
 }) {
   const [outcomeNote, setOutcomeNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -200,14 +247,13 @@ function OutcomeDialog({
     setSubmitting(true);
     try {
       const input = outcomeNote.trim() ? { outcomeNote: outcomeNote.trim() } : undefined;
-      if (target.action === "complete") {
-        await completeFollowup(office, target.followup.followupId, input);
-      } else {
-        await skipFollowup(office, target.followup.followupId, input);
-      }
+      const closed =
+        target.action === "complete"
+          ? await completeFollowup(office, target.followup.followupId, input)
+          : await skipFollowup(office, target.followup.followupId, input);
       toast.success(target.action === "complete" ? "Follow-up completed" : "Follow-up skipped");
       onClose();
-      onDone();
+      onDone({ nextTouchNeeded: closed?.nextTouchNeeded === true });
     } catch (e) {
       toast.error(tcErrorMessage(e));
       setSubmitting(false);

@@ -5,6 +5,12 @@
  * lostReason) so bad submits never leave the dialog. Confirmed-save: success
  * toast fires only after transitionCase resolves; rejections keep the dialog
  * open with values intact.
+ *
+ * Next touch: moving a case INTO an open status requires a next-touch date and
+ * owner (defaults: the signed-in person, two business days out) unless the
+ * case already has a pending follow-up. The server enforces the same rule
+ * (409 NEXT_TOUCH_REQUIRED). If the case changed under the dialog, that 409
+ * reveals the fields instead of failing.
  */
 import { useEffect, useState } from "react";
 import type { OfficeId, TcCase } from "@shared/tc/contract";
@@ -30,6 +36,15 @@ import { Textarea } from "@/components/ui/textarea";
 import { Loader2 } from "lucide-react";
 import { tcErrorMessage, transitionCase } from "../api";
 import { isAcceptedStatus, useWinCelebration } from "@/features/tc/wins/WinCelebrationProvider";
+import { isOpenCaseStatus, pickNextTouch } from "@shared/tc/nextTouch";
+import {
+  defaultNextTouchValues,
+  isNextTouchRequired,
+  NextTouchFields,
+  nextTouchValuesError,
+  useCurrentUserEmail,
+  type NextTouchValues,
+} from "../nextTouch/NextTouch";
 import {
   ALL_CASE_STATUSES,
   CASE_STATUSES,
@@ -62,6 +77,10 @@ export function StatusTransitionDialog({
   const [inlineError, setInlineError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const { celebrateWin } = useWinCelebration();
+  const me = useCurrentUserEmail();
+  const [touch, setTouch] = useState<NextTouchValues>(() => defaultNextTouchValues(me));
+  /** The server said this move needs a next touch even though the case looked covered. */
+  const [serverWantsTouch, setServerWantsTouch] = useState(false);
 
   // Reset the form to the case's current state each time the dialog opens.
   useEffect(() => {
@@ -71,8 +90,10 @@ export function StatusTransitionDialog({
       setNote("");
       setInlineError(null);
       setSubmitting(false);
+      setTouch(defaultNextTouchValues(me));
+      setServerWantsTouch(false);
     }
-  }, [open, tcCase.status, tcCase.lostReason]);
+  }, [open, tcCase.status, tcCase.lostReason, me]);
 
   const pickStatus = (next: CaseStatusId) => {
     setStatus(next);
@@ -86,6 +107,9 @@ export function StatusTransitionDialog({
   const hasNote = note.trim() !== "";
   const nothingToSave = sameStatus && !hasNote;
   const saveLabel = sameStatus && hasNote ? "Save note" : "Save";
+  const hasPendingTouch = pickNextTouch(tcCase.followups) !== null;
+  const needsNextTouch =
+    !sameStatus && isOpenCaseStatus(status) && (!hasPendingTouch || serverWantsTouch);
 
   const submit = async () => {
     if (nothingToSave) return;
@@ -95,6 +119,13 @@ export function StatusTransitionDialog({
       setInlineError(check.message);
       return;
     }
+    if (needsNextTouch) {
+      const problem = nextTouchValuesError(touch);
+      if (problem) {
+        setInlineError(problem);
+        return;
+      }
+    }
     setInlineError(null);
     setSubmitting(true);
     try {
@@ -102,6 +133,10 @@ export function StatusTransitionDialog({
         status,
         lostReason: effectiveReason,
         note: note.trim(),
+        // Only on a move that needs one: the server refuses it otherwise.
+        ...(needsNextTouch
+          ? { nextTouch: { dueDate: touch.dueDate, owner: touch.owner.trim(), channel: touch.channel } }
+          : {}),
       });
       // changed:false is still success — the server case is authoritative.
       toast.success(
@@ -124,14 +159,20 @@ export function StatusTransitionDialog({
       onSuccess(result.case);
       onOpenChange(false);
     } catch (e) {
-      toast.error(tcErrorMessage(e));
+      if (isNextTouchRequired(e) && !needsNextTouch) {
+        // The case lost its pending follow-up since it loaded: ask, don't fail.
+        setServerWantsTouch(true);
+        setInlineError("This case has no next step anymore. Set a next touch to move it.");
+      } else {
+        toast.error(tcErrorMessage(e));
+      }
       setSubmitting(false);
     }
   };
 
   return (
     <Dialog open={open} onOpenChange={(o) => !submitting && onOpenChange(o)}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className={needsNextTouch ? "sm:max-w-lg" : "sm:max-w-md"}>
         <DialogHeader>
           <DialogTitle>Change status</DialogTitle>
           <DialogDescription>
@@ -181,6 +222,23 @@ export function StatusTransitionDialog({
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+          )}
+
+          {needsNextTouch && (
+            <div className="space-y-2 rounded-lg border border-border p-3">
+              <p className="text-xs text-muted-foreground">
+                {CASE_STATUSES[status].label} is open work, so the case needs a next touch: when,
+                and who makes it.
+              </p>
+              <NextTouchFields
+                value={touch}
+                onChange={(v) => {
+                  setTouch(v);
+                  setInlineError(null);
+                }}
+                disabled={submitting}
+              />
             </div>
           )}
 

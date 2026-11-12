@@ -32,6 +32,8 @@ import { OfficeBadge } from "../components/OfficeBadge";
 import { OrthoWorkupChip } from "../caseview/OrthoScreeningSection";
 import { TxNotInOdChip } from "../checkout/HygieneTreatmentPanel";
 import { OdSyncCardLine } from "../odSync/OdSyncPanel";
+import { isOpenCaseStatus } from "@shared/tc/nextTouch";
+import { NextTouchChip } from "../nextTouch/NextTouch";
 
 /** Whole days the case has sat in its current status (statusChangedAt, falling back to createdAt). */
 export function daysInStatus(row: TcCaseSummary): number {
@@ -142,6 +144,15 @@ export function CaseCardBody({
         </span>
       </div>
 
+      {/* Next touch: every OPEN case shows its one next touch (date + owner
+          initials; red overdue, amber today) or "No next step". Terminal
+          cases show nothing. Hidden when an older server omits the field
+          (undefined), so a missing field is never read as "no next step". */}
+      {isOpenCaseStatus(caseRow.status) && caseRow.nextTouch !== undefined && (
+        <div className="mt-1.5">
+          <NextTouchChip nextTouch={caseRow.nextTouch} />
+        </div>
+      )}
       {caseRow.assignedTc && (
         <div className="mt-1.5 flex items-center gap-1 text-[11px] text-muted-foreground truncate">
           <User className="w-3 h-3 shrink-0" />
