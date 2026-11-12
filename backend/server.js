@@ -69,6 +69,7 @@ async function bootstrap() {
   const tcEmail = require('./config/tcEmail');
   const emailIdentity = require('./config/emailIdentity');
   const officeRegistry = require('./platform/officeRegistry');
+  const officeSettingsParity = require('./platform/officeSettingsParity');
   const { requireDashboardAuth, socketAuth } = require('./middleware/auth');
   const { tenantContext, requireModule } = require('./middleware/tenantContext');
   const { requirePermission, requireReadWrite, requireSuperAdmin } = require('./config/permissions');
@@ -600,6 +601,14 @@ async function bootstrap() {
     await officeRegistry.refreshFromDb();
     officeRegistry.startRefreshTimer();
 
+    //    The office settings parity tripwire (MT-2a). DARK: from here on, each
+    //    of the ten per-office readers compares what it read from
+    //    platform_setting with office_setting and warns on drift. It only LOGS;
+    //    platform_setting is still what every reader serves. Armed before the
+    //    hygiene and email identity reads below so their boot reads compare too;
+    //    the rest are swept once after them (see the end of step 6).
+    officeSettingsParity.arm();
+
     // 5. Start the per-office Open Dental health check (default every 5 min).
     //    This is the DELIBERATE replacement for the 3-minute self-polling loop
     //    that used to live inside the OD client — a loop that made ~25,000 OD
@@ -661,6 +670,25 @@ async function bootstrap() {
     //    answering, exactly as before this existed.
     await emailIdentity.refreshFromDb();
     emailIdentity.startRefreshTimer();
+
+    //    MT-2a parity sweep: read the other eight per-office settings once now,
+    //    so the tripwire covers all ten at boot rather than waiting for the
+    //    first request (the six TC switches) or the first nightly pass
+    //    (nurture, opportunities). Each read is one the reader would make
+    //    anyway, and never throws; the comparisons are not awaited.
+    for (const sw of [
+      require('./config/tcCheckout'),
+      require('./config/tcOdSync'),
+      require('./config/tcAutoCheckout'),
+      require('./config/tcReferrals'),
+      require('./config/tcReferralEmail'),
+      require('./config/tcReferralPatientEmail'),
+    ]) {
+      await sw.refreshFromDb();
+    }
+    const controlRegistry = require('./platform/registry');
+    await require('./config/tcNurture').switchedOnOffices(controlRegistry);
+    await require('./config/tcOpportunities').switchedOnOffices(controlRegistry);
 
     hygDayWarm.start();
 
