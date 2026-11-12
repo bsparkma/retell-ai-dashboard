@@ -61,6 +61,7 @@ import { formatCents } from "../money";
 import { todayIsoDate } from "../lib/followups";
 import { FollowupActionCard } from "../followups/FollowupActionCard";
 import { CadenceDialog } from "./CadenceDialog";
+import { isNextTouchRequired, SetNextTouchDialog, type NextTouchValues } from "../nextTouch/NextTouch";
 import {
   addDaysIso,
   buildFinancingTalkingPoint,
@@ -98,6 +99,8 @@ export function NurtureWorkspace({ office, today }: NurtureWorkspaceProps) {
   const [notice, setNotice] = useState<string | null>(null);
   const [cadenceTargetId, setCadenceTargetId] = useState<string | null>(null);
   const [busyCaseId, setBusyCaseId] = useState<string | null>(null);
+  /** Exit-nurture move waiting on a next touch (the case had no pending one). */
+  const [exitNeedsTouch, setExitNeedsTouch] = useState<TcCaseSummary | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -253,12 +256,30 @@ export function NurtureWorkspace({ office, today }: NurtureWorkspaceProps) {
           `${c.patientName} moved back to the active pipeline (${caseStatusLabel(EXIT_NURTURE_STATUS)})`,
         );
       } catch (e) {
-        toast.error(tcErrorMessage(e));
+        // Back in the active pipeline with no pending touch: ask for one.
+        if (isNextTouchRequired(e)) setExitNeedsTouch(c);
+        else toast.error(tcErrorMessage(e));
       } finally {
         setBusyCaseId(null);
       }
     },
     [],
+  );
+
+  const saveExitWithTouch = useCallback(
+    async (values: NextTouchValues) => {
+      const c = exitNeedsTouch;
+      if (!c) return;
+      await transitionCase(c.officeId, c.caseId, {
+        status: EXIT_NURTURE_STATUS,
+        nextTouch: { dueDate: values.dueDate, owner: values.owner, channel: values.channel },
+      });
+      setCases((prev) => prev.filter((row) => row.caseId !== c.caseId));
+      toast.success(
+        `${c.patientName} moved back to the active pipeline (${caseStatusLabel(EXIT_NURTURE_STATUS)})`,
+      );
+    },
+    [exitNeedsTouch],
   );
 
   const handleUnsubscribe = useCallback(
@@ -545,6 +566,22 @@ export function NurtureWorkspace({ office, today }: NurtureWorkspaceProps) {
           onClose={() => setCadenceTargetId(null)}
         />
       )}
+
+      <SetNextTouchDialog
+        open={exitNeedsTouch !== null}
+        onOpenChange={(o) => {
+          if (!o) setExitNeedsTouch(null);
+        }}
+        title="Set the next touch"
+        description={
+          exitNeedsTouch
+            ? `${exitNeedsTouch.patientName} is going back to ${caseStatusLabel(EXIT_NURTURE_STATUS)}. When is the next touch, and who makes it?`
+            : ""
+        }
+        saveLabel="Move and set next touch"
+        dismissLabel="Cancel move"
+        onSave={saveExitWithTouch}
+      />
     </div>
   );
 }

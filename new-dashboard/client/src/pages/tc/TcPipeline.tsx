@@ -50,6 +50,13 @@ import { PipelineBoard } from "@/features/tc/cases/PipelineBoard";
 import { OdSyncPanel } from "@/features/tc/odSync/OdSyncPanel";
 import { CaseListTable } from "@/features/tc/cases/CaseListTable";
 import { NewCaseDialog, CASE_CATEGORY_LABELS } from "@/features/tc/cases/NewCaseDialog";
+import { isOpenCaseStatus } from "@shared/tc/nextTouch";
+import {
+  isNextTouchRequired,
+  nextTouchSummaryOf,
+  SetNextTouchDialog,
+  type NextTouchValues,
+} from "@/features/tc/nextTouch/NextTouch";
 import type { CaseCategoryId } from "@/features/tc/cases/NewCaseDialog";
 
 export default function TcPipeline() {
@@ -92,6 +99,15 @@ function PipelineInner({
   const [newCaseOpen, setNewCaseOpen] = useState(false);
   // CO-4b: bumped when the Open Dental sync (a run, or an Undo) moved cases.
   const [reloadKey, setReloadKey] = useState(0);
+  /** A human move into an open status that is waiting on a next touch. */
+  const [touchMove, setTouchMove] = useState<{
+    caseId: string;
+    office: OfficeId;
+    patientName: string;
+    status: CaseStatusId;
+    lostReason: LostReasonId | null;
+    note?: string;
+  } | null>(null);
   const reloadCases = useCallback(() => setReloadKey((n) => n + 1), []);
 
   useEffect(() => {
@@ -123,7 +139,9 @@ function PipelineInner({
           hygieneIntake: _hygieneIntake,
           ...scalars
         } = updated;
-        return { ...row, ...scalars };
+        // The full case carries its followups, so the card's next touch is
+        // recomputed with the same derivation the server uses.
+        return { ...row, ...scalars, nextTouch: nextTouchSummaryOf(updated.followups) };
       }),
     );
   }, []);
@@ -141,9 +159,19 @@ function PipelineInner({
         return false;
       }
       // The write goes to the office that owns the row, never the page scope.
-      const rowOffice = cases.find((row) => row.caseId === caseId)?.officeId;
-      if (!rowOffice) {
+      const row = cases.find((r) => r.caseId === caseId);
+      const rowOffice = row?.officeId;
+      if (!row || !rowOffice) {
         toast.error("That case is no longer loaded — refresh and try again.");
+        return false;
+      }
+      // Next touch: a move INTO an open status needs a date + owner when the
+      // case has no pending follow-up. Ask first; the card stays put until
+      // the move is confirmed.
+      const askForTouch = () =>
+        setTouchMove({ caseId, office: rowOffice, patientName: row.patientName, status, lostReason, note });
+      if (row.status !== status && isOpenCaseStatus(status) && row.nextTouch === null) {
+        askForTouch();
         return false;
       }
       try {
@@ -171,11 +199,27 @@ function PipelineInner({
         }
         return true;
       } catch (err) {
-        toast.error(tcErrorMessage(err));
+        if (isNextTouchRequired(err)) askForTouch();
+        else toast.error(tcErrorMessage(err));
         return false;
       }
     },
     [cases, mergeCase],
+  );
+
+  const saveTouchMove = useCallback(
+    async (values: NextTouchValues) => {
+      if (!touchMove) return;
+      const result = await transitionCase(touchMove.office, touchMove.caseId, {
+        status: touchMove.status,
+        lostReason: touchMove.lostReason,
+        ...(touchMove.note !== undefined ? { note: touchMove.note } : {}),
+        nextTouch: { dueDate: values.dueDate, owner: values.owner, channel: values.channel },
+      });
+      mergeCase(result.case);
+      toast.success(`${result.case.patientName} moved to ${caseStatusLabel(touchMove.status)}`);
+    },
+    [touchMove, mergeCase],
   );
 
   const openCase = useCallback(
@@ -305,6 +349,22 @@ function PipelineInner({
           </>
         )}
       </Tabs>
+
+      <SetNextTouchDialog
+        open={touchMove !== null}
+        onOpenChange={(o) => {
+          if (!o) setTouchMove(null);
+        }}
+        title="Set the next touch"
+        description={
+          touchMove
+            ? `${touchMove.patientName} is moving to ${caseStatusLabel(touchMove.status)}, which is open work. When is the next touch, and who makes it?`
+            : ""
+        }
+        saveLabel="Move and set next touch"
+        dismissLabel="Cancel move"
+        onSave={saveTouchMove}
+      />
 
       {writeOffice && (
         <NewCaseDialog

@@ -60,6 +60,10 @@ export * from "../../new-dashboard/shared/tc/printStyling";
 // Referral note templates: per-office prefill wording, its closed placeholder
 // menu and the validator a save with an unknown placeholder is refused by.
 export * from "../../new-dashboard/shared/tc/referralTemplates";
+// Next touch: the earliest pending follow-up per open case, its open-status
+// test, and the human status route's nextTouch body. One derivation for
+// server and dashboard.
+export * from "../../new-dashboard/shared/tc/nextTouch";
 // The routes compose small request shapes (status-transition bodies, complete/
 // reschedule payloads) from contract pieces; export the SAME zod instance so
 // those shapes and the contract schemas share one library version.

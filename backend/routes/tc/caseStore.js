@@ -101,6 +101,9 @@ const FOLLOWUP_COLS = [
   'patient_responded',
   'nurture_type',
   'legacy_id',
+  // Next-touch owner (migration 1794500000000). params() maps a missing key to
+  // null, so a writer that predates the column still inserts cleanly.
+  'owner',
 ];
 
 // source_call_id is null on every event type but voice_handoff; params() maps a

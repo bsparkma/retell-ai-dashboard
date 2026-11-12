@@ -38,7 +38,14 @@ import {
   executeConsultPlan,
   planConsultOutcome,
   type ConsultOutcome,
+  type ConsultStep,
 } from "@/features/tc/consult/outcomeActions";
+import { isOpenCaseStatus, pickNextTouch } from "@shared/tc/nextTouch";
+import {
+  isNextTouchRequired,
+  SetNextTouchDialog,
+  type NextTouchValues,
+} from "@/features/tc/nextTouch/NextTouch";
 import { OBJECTION_SCRIPTS, objectionScriptFor } from "@/features/tc/consult/objectionScripts";
 import { todayIsoDate } from "@/features/tc/lib/followups";
 
@@ -90,6 +97,13 @@ function PostConsultInner({ office }: { office: OfficeId }) {
   const [acceptedPhaseIds, setAcceptedPhaseIds] = useState<Set<string>>(new Set());
   const [declineReason, setDeclineReason] = useState<LostReasonId | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  /**
+   * Steps waiting on a next touch: the outcome moves the case into an open
+   * status (e.g. nurture) with no follow-up of its own and none pending.
+   */
+  const [touchSteps, setTouchSteps] = useState<{ steps: ConsultStep[]; successMessage: string } | null>(
+    null,
+  );
 
   useEffect(() => {
     if (!caseId) {
@@ -162,9 +176,24 @@ function PostConsultInner({ office }: { office: OfficeId }) {
       toast.error(plan.message);
       return;
     }
+    // Next touch: a move into an open status with no follow-up in the plan and
+    // none pending on the case. Ask for one before anything is written.
+    const opensWithoutTouch =
+      plan.steps.some((s) => s.kind === "transition" && isOpenCaseStatus(s.status)) &&
+      !plan.steps.some((s) => s.kind === "followup") &&
+      pickNextTouch(tcCase.followups) === null;
+    if (opensWithoutTouch) {
+      setTouchSteps({ steps: plan.steps, successMessage: plan.successMessage });
+      return;
+    }
     setSubmitting(true);
     const result = await executeConsultPlan(office, tcCase.caseId, plan.steps);
     setSubmitting(false);
+    if (!result.ok && isNextTouchRequired(result.error)) {
+      // The case lost its pending touch since it loaded: ask, then finish.
+      setTouchSteps({ steps: result.remaining, successMessage: plan.successMessage });
+      return;
+    }
     if (!result.ok) {
       const committed =
         result.completedCount > 0
@@ -176,6 +205,19 @@ function PostConsultInner({ office }: { office: OfficeId }) {
       return; // keep the form — nothing lost.
     }
     toast.success(plan.successMessage);
+    setLocation(`/tc/cases/${caseId}`);
+  }
+
+  async function finishWithTouch(values: NextTouchValues) {
+    if (!touchSteps || !tcCase) return;
+    const result = await executeConsultPlan(office, tcCase.caseId, touchSteps.steps, {
+      nextTouch: values,
+    });
+    if (!result.ok) {
+      // Keep the dialog open: SetNextTouchDialog shows this message.
+      throw new Error(`Failed while ${result.failedLabel}: ${tcErrorMessage(result.error)}`);
+    }
+    toast.success(touchSteps.successMessage);
     setLocation(`/tc/cases/${caseId}`);
   }
 
@@ -541,6 +583,18 @@ function PostConsultInner({ office }: { office: OfficeId }) {
           </Link>
         </div>
       </div>
+
+      <SetNextTouchDialog
+        open={touchSteps !== null}
+        onOpenChange={(o) => {
+          if (!o) setTouchSteps(null);
+        }}
+        title="Set the next touch"
+        description={`${tcCase.patientName} stays open work, so the case needs a next touch: when, and who makes it.`}
+        saveLabel="Save outcome"
+        dismissLabel="Back"
+        onSave={finishWithTouch}
+      />
     </div>
   );
 }

@@ -16,7 +16,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CalendarCheck2, CalendarDays, Inbox, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { followupsDue, type TcDueFollowup } from "../api";
+import { toast } from "sonner";
+import { createFollowup, followupsDue, type TcDueFollowup } from "../api";
+import { SetNextTouchDialog, type NextTouchValues } from "../nextTouch/NextTouch";
 import {
   fanOutOfficeRows,
   hardErrorMessage,
@@ -95,6 +97,34 @@ export function FollowupQueue({ office, today }: FollowupQueueProps) {
     setRows((prev) => prev.filter((f) => f.followupId !== followupId));
   }, []);
 
+  // Next touch: closing an open case's LAST pending touch prompts for the next
+  // one. "Not now" leaves the case flagged "No next step".
+  const [prompt, setPrompt] = useState<TcDueFollowup | null>(null);
+  const afterClose = useCallback(
+    (row: TcDueFollowup) => (followupId: string, info: { nextTouchNeeded: boolean }) => {
+      removeRow(followupId);
+      if (info.nextTouchNeeded) setPrompt(row);
+    },
+    [removeRow],
+  );
+  const saveTouch = useCallback(
+    async (values: NextTouchValues) => {
+      if (!prompt) return;
+      await createFollowup(prompt.officeId, {
+        caseId: prompt.caseId,
+        kind: "followup",
+        dueDate: values.dueDate,
+        channel: values.channel,
+        talkingPoint: "",
+        owner: values.owner,
+        source: "manual",
+      });
+      toast.success(`Next touch set for ${prompt.patientName}`);
+      void load();
+    },
+    [prompt, load],
+  );
+
   const replaceRow = useCallback((updated: TcDueFollowup) => {
     setRows((prev) => prev.map((f) => (f.followupId === updated.followupId ? updated : f)));
   }, []);
@@ -145,8 +175,8 @@ export function FollowupQueue({ office, today }: FollowupQueueProps) {
               followup={f}
               showOfficeBadge={showOfficeBadges}
               today={todayIso}
-              onCompleted={removeRow}
-              onSkipped={removeRow}
+              onCompleted={afterClose(f)}
+              onSkipped={afterClose(f)}
               onRescheduled={replaceRow}
             />
           ))}
@@ -225,6 +255,21 @@ export function FollowupQueue({ office, today }: FollowupQueueProps) {
           {renderGroup("Upcoming", CalendarDays, "text-muted-foreground", groups.upcoming)}
         </>
       )}
+
+      <SetNextTouchDialog
+        open={prompt !== null}
+        onOpenChange={(o) => {
+          if (!o) setPrompt(null);
+        }}
+        today={todayIso}
+        title="What's the next touch?"
+        description={
+          prompt
+            ? `That was the last touch on file for ${prompt.patientName}, and the case is still open. Set the next one, or choose Not now to leave it flagged "No next step".`
+            : ""
+        }
+        onSave={saveTouch}
+      />
     </div>
   );
 }
