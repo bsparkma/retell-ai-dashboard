@@ -181,7 +181,8 @@ afterEach(() => {
 });
 
 describe("F4: checkout alerts reach front desk anywhere in the app", () => {
-  it("on Calls, a new arrival toasts '<patient> is headed to checkout'", async () => {
+  // Prominence ruling (CO-6/CO-7 PR): the arrival is a persistent banner, not a toast.
+  it("on Calls, a new arrival shows the banner '<patient> is headed to checkout'", async () => {
     renderShell("/calls");
     await waitFor(() => expect(state.getCheckoutSummary).toHaveBeenCalledWith("roland"));
     // First answer only records the backlog; the next tick sees a newer arrival.
@@ -190,8 +191,9 @@ describe("F4: checkout alerts reach front desk anywhere in the app", () => {
     );
     await nextTick();
     await waitFor(() =>
-      expect(state.toast).toHaveBeenCalledWith("Pat Example is headed to checkout", expect.anything()),
+      expect(screen.getByTestId("checkout-arrival-banner").textContent).toContain("Pat Example is headed to checkout"),
     );
+    expect(state.toast).not.toHaveBeenCalledWith("Pat Example is headed to checkout", expect.anything());
   });
 
   it("the checkout_handoff preference is still obeyed off TC: silent means no toast", async () => {
@@ -205,6 +207,7 @@ describe("F4: checkout alerts reach front desk anywhere in the app", () => {
     await waitFor(() => expect(state.getCheckoutSummary.mock.calls.length).toBeGreaterThanOrEqual(2));
     await waitFor(() => expect(state.getNotificationPrefs.mock.calls.length).toBeGreaterThanOrEqual(2));
     expect(state.toast).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("checkout-arrival-banner")).toBeNull();
   });
 
   it("a voice-only practice is never asked, even for someone holding tc.full", async () => {

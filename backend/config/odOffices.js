@@ -31,7 +31,8 @@
  * are read from process.env, populated at startup by ../config/secrets.js.
  */
 
-const { OFFICES, UNMAPPED_OFFICE } = require('./officeAgents');
+const officeAgents = require('./officeAgents');
+const { OFFICES, UNMAPPED_OFFICE } = officeAgents;
 // The hygiene switch's run-time layers (control DB → env). It deliberately does
 // NOT require this module back: the hardcoded floor below is passed IN to it, so
 // the dependency runs one way and there is no cycle. See config/hygPilot.js.
@@ -128,6 +129,125 @@ const OFFICE_OD_SETTINGS = Object.freeze({
   }),
 });
 
+// ── Serving from the office registry (MT-1b) ─────────────────────────────────
+// The control-plane `office` table now ANSWERS for some of the fields above.
+// Final precedence, per field, as found and kept (nothing that existed before
+// MT-1b moved down; the registry slots in BETWEEN the env and the code):
+//
+//   field                    precedence (first that applies)
+//   -----------------------  ----------------------------------------------------
+//   call CommType DefNum     env OPENDENTAL_CAREIN_COMMTYPE_DEFNUM[_<OFFICE>]
+//                            (any integer, exactly as before) > registry
+//                            commtype_defnums.call > defaultCommTypeDefNum
+//   referral CommType DefNum env OPENDENTAL_REFERRAL_COMMTYPE_DEFNUM[_<OFFICE>]
+//                            (positive integer, as before) > registry
+//                            commtype_defnums.referral > default > null (refuse)
+//   odEnabled                registry od_enabled > code  (there is no env layer)
+//   hygOdEnabled (floor)     unchanged chain in config/hygPilot.js: a disabling
+//                            HYG_OD_ENABLED_<OFFICE> > platform_setting > floor,
+//                            where the floor is now code AND registry. The
+//                            registry can LOWER the floor, never raise it:
+//                            hygPilot's rule is that nobody raises the floor.
+//   customer key env/secret  CODE ONLY. The key VALUE still comes from
+//                            process.env[customerKeyEnv], loaded by
+//                            config/secrets.js from its own fixed list; letting
+//                            the registry rename the variable could point an
+//                            office at ANOTHER office's key. Parity still checks
+//                            the names.
+//   office display name      via officeAgents.officeNameFor (registry > code)
+//
+// "registry" means officeAgents.servedRegistryOffice(): the last read succeeded,
+// is under 15 minutes old, and the office's row is active. Otherwise every
+// value above is the code's, exactly as before MT-1b.
+//
+// A registry DefNum is served only if it has the shape the schema CHECK
+// enforces (a positive integer; mapRow turns anything else into null) AND it
+// does not CROSS: it may not equal a DefNum that the code defaults, or another
+// office's registry row, assign to a DIFFERENT (office, type). So 486 and 491
+// can never be served to valley, nor 451 and 452 to roland, nor a call DefNum
+// as a referral one. A crossing value is refused and the code default is
+// served instead; the parity warning for that field names the crossing.
+
+/** @typedef {'call'|'referral'} CommTypeKind */
+
+/** @param {OdOfficeSettings} s @param {CommTypeKind} kind @returns {number|null} */
+function codeDefaultDefNum(s, kind) {
+  const v = kind === 'call' ? s.defaultCommTypeDefNum : s.defaultReferralCommTypeDefNum;
+  return Number.isInteger(v) && v > 0 ? v : null;
+}
+
+/** @param {unknown} v @returns {number|null} */
+function positiveInt(v) {
+  return typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : null;
+}
+
+/**
+ * Which (office, type) pair other than this one already owns `value`, or null.
+ * Checked against every code default AND every other office's registry value.
+ * @param {string} officeKey @param {CommTypeKind} kind @param {number} value
+ * @returns {string|null}  e.g. "roland call"
+ */
+function defNumCrossing(officeKey, kind, value) {
+  for (const s of Object.values(OFFICE_OD_SETTINGS)) {
+    const r = officeAgents.servedRegistryOffice(s.officeKey);
+    for (const k of /** @type {CommTypeKind[]} */ (['call', 'referral'])) {
+      if (s.officeKey === officeKey && k === kind) continue;
+      if (codeDefaultDefNum(s, k) === value) return `${s.officeKey} ${k}`;
+      if (r && positiveInt(r.commTypeDefNums[k]) === value) return `${s.officeKey} ${k}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * The registry's DefNum for an office and type, or null (serve the code).
+ * @param {string} officeKey @param {CommTypeKind} kind
+ * @returns {{ value: number|null, reason: string|null }}
+ */
+function registryDefNum(officeKey, kind) {
+  const r = officeAgents.servedRegistryOffice(officeKey);
+  if (!r) return { value: null, reason: 'the office has no active registry row' };
+  const v = positiveInt(r.commTypeDefNums[kind]);
+  if (v === null) return { value: null, reason: 'the registry value is unconfigured' };
+  const owner = defNumCrossing(officeKey, kind, v);
+  // Not logged here: a refused value always differs from this office's code
+  // default (or is that default), so the parity warning already names it and
+  // gives this reason. This sits on the chart-note path; it must stay quiet.
+  if (owner) return { value: null, reason: `DefNum ${v} belongs to ${owner}; DefNums never cross` };
+  return { value: v, reason: null };
+}
+
+/**
+ * The voice module's OD switch for an office: registry > code.
+ * @param {OdOfficeSettings} settings @returns {boolean}
+ */
+function odEnabledFor(settings) {
+  const r = officeAgents.servedRegistryOffice(settings.officeKey);
+  // The code branch is the pre-MT-1b test exactly: `if (!settings.odEnabled)`.
+  return r ? r.odEnabled === true : Boolean(settings.odEnabled);
+}
+
+/**
+ * The hygiene FLOOR handed to config/hygPilot: code AND registry. The registry
+ * may only lower it (see the precedence table above).
+ * @param {OdOfficeSettings} settings @returns {boolean}
+ */
+function hygFloorFor(settings) {
+  const r = officeAgents.servedRegistryOffice(settings.officeKey);
+  return r ? settings.hygOdEnabled === true && r.hygOdEnabled === true : settings.hygOdEnabled;
+}
+
+/**
+ * The display name served for an office (registry > code), for messages.
+ * @param {string} officeKey @returns {string|undefined}
+ */
+function nameOf(officeKey) {
+  const served = officeAgents.officeNameFor(officeKey);
+  if (served !== undefined) return served;
+  const c = OFFICES[officeKey];
+  return c ? c.officeName : undefined;
+}
+
 /**
  * Typed refusal so routes can map an office problem to an HTTP status and an
  * honest UI message without leaking internals.
@@ -211,16 +331,18 @@ function customerKeyFor(settings) {
 }
 
 /**
- * This office's CareIN commlog CommType DefNum: env override, else the verified
- * per-practice default. A non-numeric override falls back to the default rather
- * than writing NaN into a chart note.
+ * This office's CareIN commlog CommType DefNum: env override, else the
+ * registry's (MT-1b, non-crossing), else the verified per-practice default. A
+ * non-numeric override falls through rather than writing NaN into a chart note.
  * @param {OdOfficeSettings} settings
  * @returns {number}
  */
 function commTypeDefNumFor(settings) {
   const raw = process.env[settings.commTypeEnv];
   const parsed = parseInt(raw, 10);
-  return Number.isInteger(parsed) ? parsed : settings.defaultCommTypeDefNum;
+  if (Number.isInteger(parsed)) return parsed;
+  const fromRegistry = registryDefNum(settings.officeKey, 'call').value;
+  return fromRegistry !== null ? fromRegistry : settings.defaultCommTypeDefNum;
 }
 
 /**
@@ -235,6 +357,9 @@ function referralCommTypeDefNumFor(settings) {
   if (!settings) return null;
   const parsed = parseInt(process.env[settings.referralCommTypeEnv], 10);
   if (Number.isInteger(parsed) && parsed > 0) return parsed;
+  // MT-1b: the registry's, between the env and the code default.
+  const fromRegistry = registryDefNum(settings.officeKey, 'referral').value;
+  if (fromRegistry !== null) return fromRegistry;
   const fallback = settings.defaultReferralCommTypeDefNum;
   return Number.isInteger(fallback) && fallback > 0 ? fallback : null;
 }
@@ -253,7 +378,7 @@ function referralChartNoteBlockReason(officeKey) {
   if (referralCommTypeDefNumFor(OFFICE_OD_SETTINGS[officeKey]) === null) {
     return {
       code: 'REFERRAL_COMMTYPE_NOT_CONFIGURED',
-      message: `No "Referral" chart note type is configured for ${OFFICES[officeKey].officeName}, so nothing can be written to its charts`,
+      message: `No "Referral" chart note type is configured for ${nameOf(officeKey)}, so nothing can be written to its charts`,
     };
   }
   return null;
@@ -279,16 +404,16 @@ function odBlockReason(officeKey) {
   if (!settings) {
     return {
       code: 'OFFICE_NOT_OD_CONNECTED',
-      message: `Open Dental is not configured for ${officeConfig.officeName}`,
+      message: `Open Dental is not configured for ${nameOf(officeKey)}`,
     };
   }
 
   // The voice module's reversible switch (odEnabled above). An office that has
   // not been turned on stays off no matter what credentials exist.
-  if (!settings.odEnabled) {
+  if (!odEnabledFor(settings)) {
     return {
       code: 'OFFICE_NOT_OD_CONNECTED',
-      message: `Open Dental is not connected for ${officeConfig.officeName} yet`,
+      message: `Open Dental is not connected for ${nameOf(officeKey)} yet`,
     };
   }
 
@@ -298,7 +423,7 @@ function odBlockReason(officeKey) {
   if (!customerKeyFor(settings)) {
     return {
       code: 'OFFICE_OD_KEY_MISSING',
-      message: `Open Dental credentials are not configured for ${officeConfig.officeName}`,
+      message: `Open Dental credentials are not configured for ${nameOf(officeKey)}`,
     };
   }
 
@@ -353,7 +478,6 @@ function hygOdBlockReason(officeKey) {
   if (base) return base;
 
   const settings = OFFICE_OD_SETTINGS[officeKey];
-  const officeConfig = OFFICES[officeKey];
   // Read at RUN TIME, through the precedence chain in config/hygPilot.js:
   // a disabling HYG_OD_ENABLED_<OFFICE> narrows first, then platform_setting,
   // then the hardcoded floor passed in here. (Nothing in the environment can
@@ -362,10 +486,10 @@ function hygOdBlockReason(officeKey) {
   // /api/hyg request. A console write updates that cache inline, so an office
   // turned OFF is refused on the VERY NEXT request — which is the only thing
   // that makes this a kill switch rather than a deployment.
-  if (!hygPilot.hygEnabledFor(officeKey, settings.hygOdEnabled)) {
+  if (!hygPilot.hygEnabledFor(officeKey, hygFloorFor(settings))) {
     return {
       code: 'OFFICE_HYG_NOT_ENABLED',
-      message: `The hygiene module is not switched on for ${officeConfig.officeName} yet`,
+      message: `The hygiene module is not switched on for ${nameOf(officeKey)} yet`,
     };
   }
 
@@ -396,7 +520,7 @@ function hygOdBlockReason(officeKey) {
 function hygSwitchState() {
   return Object.keys(OFFICE_OD_SETTINGS).map((officeKey) => {
     const settings = OFFICE_OD_SETTINGS[officeKey];
-    const state = hygPilot.officeState(officeKey, settings.hygOdEnabled);
+    const state = hygPilot.officeState(officeKey, hygFloorFor(settings));
     // Everything the VOICE path already refuses, independent of this switch.
     const base = odBlockReason(officeKey);
     return {
@@ -457,7 +581,7 @@ function describeOffice(officeKey) {
   const blocked = odBlockReason(officeKey);
   return {
     officeId: officeKey,
-    officeName: officeConfig ? officeConfig.officeName : 'Unmapped',
+    officeName: officeConfig ? nameOf(officeKey) : 'Unmapped',
     odConnected: blocked === null,
     odBlockedReason: blocked ? blocked.message : null,
   };
@@ -494,27 +618,44 @@ function getOdOffice(officeKey) {
     );
   }
 
-  const cached = clientCache.get(key);
-  if (cached) return cached;
-
   const settings = OFFICE_OD_SETTINGS[key];
-  const customerKey = customerKeyFor(settings);
-  const officeConfig = OFFICES[key];
+  // The SERVED values, resolved on every call (pure, no I/O). While they match
+  // the cached handle the cached handle is returned, the same frozen object as
+  // before MT-1b; when a registry read changes one, a new handle is frozen
+  // around the SAME client. The client depends only on the customer key, which
+  // the registry never serves.
+  const officeName = nameOf(key);
+  const commTypeDefNum = commTypeDefNumFor(settings);
+  const referralCommTypeDefNum = referralCommTypeDefNumFor(settings);
 
-  // Reuse the singleton when it is already bound to THIS office's customer key.
-  // Derived from the key itself (not hardcoded to 'roland'), so the day Roland's
-  // key moves the reuse follows it — and a mismatched key never reuses.
-  const client =
-    odCloudSingleton.customerKey && odCloudSingleton.customerKey === customerKey
-      ? odCloudSingleton
-      : new OpenDentalService({ customerKey, officeKey: key });
+  const cached = clientCache.get(key);
+  if (
+    cached &&
+    cached.officeName === officeName &&
+    cached.commTypeDefNum === commTypeDefNum &&
+    cached.referralCommTypeDefNum === referralCommTypeDefNum
+  ) {
+    return cached;
+  }
+
+  let client = cached ? cached.client : null;
+  if (!client) {
+    const customerKey = customerKeyFor(settings);
+    // Reuse the singleton when it is already bound to THIS office's customer key.
+    // Derived from the key itself (not hardcoded to 'roland'), so the day Roland's
+    // key moves the reuse follows it — and a mismatched key never reuses.
+    client =
+      odCloudSingleton.customerKey && odCloudSingleton.customerKey === customerKey
+        ? odCloudSingleton
+        : new OpenDentalService({ customerKey, officeKey: key });
+  }
 
   /** @type {OdOfficeHandle} */
   const handle = Object.freeze({
     officeKey: key,
-    officeName: officeConfig.officeName,
-    commTypeDefNum: commTypeDefNumFor(settings),
-    referralCommTypeDefNum: referralCommTypeDefNumFor(settings),
+    officeName: /** @type {string} */ (officeName),
+    commTypeDefNum,
+    referralCommTypeDefNum,
     client,
   });
 
@@ -562,17 +703,45 @@ function resetOdOfficeCache() {
   clientCache.clear();
 }
 
-// ── Office registry parity tripwire (MT-1a) ──────────────────────────────────
+// ── Office registry parity tripwire (MT-1a, two-way since MT-1b) ─────────────
 // Same as officeAgents' check, over the Open Dental fields this module owns.
-// DARK: it logs a divergence and changes nothing. getOdOffice() and every
-// readiness check above keep answering from OFFICE_OD_SETTINGS and process.env.
-// Compares the code DEFAULT DefNums: an env override is a deploy-time choice,
-// not something the registry is meant to mirror. Only secret NAMES are compared
-// or logged, never a value.
+// It still only LOGS; what is served is decided by the helpers above, and each
+// warning says which side won and why. Compares the code DEFAULT DefNums: an
+// env override is a deploy-time choice that outranks both, not something the
+// registry is meant to mirror. Only secret NAMES are compared or logged, never
+// a value.
 const officeRegistry = require('../platform/officeRegistry');
+
+/**
+ * Why a divergent field is served from the CODE, or null when the registry wins.
+ * @param {import('../platform/officeRegistry').Divergence} d
+ * @returns {string|null}
+ */
+function servedCodeReason(d) {
+  if (d.field === 'odCustomerKeySecret' || d.field === 'odCustomerKeyEnv') {
+    return 'credential names are code-only; config/secrets.js loads a fixed list';
+  }
+  const settings = OFFICE_OD_SETTINGS[d.officeKey];
+  if (!settings) return 'the office has no Open Dental settings';
+  const r = officeAgents.servedRegistryOffice(d.officeKey);
+  if (!r) return 'the office has no active registry row';
+  switch (d.field) {
+    case 'commTypeDefNums.call':
+      return registryDefNum(d.officeKey, 'call').reason;
+    case 'commTypeDefNums.referral':
+      return registryDefNum(d.officeKey, 'referral').reason;
+    case 'hygOdEnabled':
+      return r.hygOdEnabled === true && settings.hygOdEnabled !== true
+        ? 'the registry can only lower the hygiene floor, never raise it'
+        : null;
+    default:
+      return null;
+  }
+}
 
 const registryParity = officeRegistry.createParityCheck({
   label: 'odOffices',
+  servedCode: servedCodeReason,
   fields: [
     'odCustomerKeySecret',
     'odCustomerKeyEnv',

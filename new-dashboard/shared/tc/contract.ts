@@ -280,6 +280,14 @@ export const TcFollowup = z.object({
   source: FollowupSource,
   patientResponded: z.boolean().nullable(), // null = not recorded
   nurtureType: NurtureType.nullable(), // present iff kind === 'nurture'
+  /**
+   * Who owns this touch (next-touch slice) — the identity string of the person
+   * on the hook, same convention as completedBy / the signed-in actor's email.
+   * NULL on every row written before the column existed (legacy and pre-slice
+   * rows): shown as "no owner", never guessed from the case's assignedTc.
+   * Defaults to null so a payload that predates the field still parses.
+   */
+  owner: ShortText.nullable().default(null),
 });
 export type TcFollowup = z.infer<typeof TcFollowup>;
 

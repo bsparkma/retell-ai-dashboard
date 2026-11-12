@@ -122,7 +122,8 @@ test('numbered strictly above 1794200000000 and the newest; uniform width; uniqu
   assert.ok(files.every((f) => f.split('_')[0].length === 13));
   assert.deepEqual([...files].sort(), [...files].sort((a, b) => Number(a.split('_')[0]) - Number(b.split('_')[0])));
   assert.ok(1794300000000 > 1794200000000);
-  assert.equal(Math.max(...numbers), 1794300000000);
+  // CO-7 (1794400000000) is numbered above this one; "the newest" held only until then.
+  assert.ok(numbers.includes(1794300000000) && Math.max(...numbers) >= 1794300000000);
 });
 
 test('the store sees the new column and table once every tenant migration has run', () => {

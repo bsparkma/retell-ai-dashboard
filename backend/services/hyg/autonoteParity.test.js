@@ -197,7 +197,10 @@ test("a template's rows cover every graded hole its auto note has", () => {
   const FREE_TEXT_PROMPTS = new Set(['Chief Complaint']);
   // RULING (feedback round 1): an SRP note's "Quad" hole is answered by WHICH
   // visit type was picked (SRP Quad 1-4), and the note prints that quad.
-  const FIXED_BY_TYPE = { Quad: (t) => t.startsWith('srp_quad_') };
+  // RULING (SRP multi-quad): on the one `srp` type the same hole is answered by
+  // the slip's srpQuads pick, not by a graded row — hygSrpMultiQuad.test.js
+  // pins that the note prints exactly the quads picked.
+  const FIXED_BY_TYPE = { Quad: (t) => t.startsWith('srp_quad_') || t === 'srp' };
 
   for (const visitType of contract.VISIT_TYPES) {
     // A draft with no source (Sealant) has no holes to cover.

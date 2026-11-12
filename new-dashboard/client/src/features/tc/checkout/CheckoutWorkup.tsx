@@ -32,6 +32,8 @@ import { tcErrorMessage } from "@/features/tc/api";
 import { ReferralsPanel } from "@/features/tc/referrals/ReferralsPanel";
 import { setCheckoutWorkup } from "@/features/tc/checkout/checkoutApi";
 import { CheckoutOutcome, checkoutClock } from "@/features/tc/checkout/CheckoutOutcome";
+import { CheckoutRouteTo } from "@/features/tc/checkout/CheckoutRouteTo";
+import { CheckoutQuestions } from "@/features/tc/checkout/CheckoutQuestions";
 import { checkoutOriginText } from "@/features/tc/checkout/checkoutOrigin";
 import { PriorityChip, ProcedureTags, teethLine } from "@/features/tc/checkout/CheckoutSidebar";
 import { ExistingTreatmentFromHygiene } from "@/features/tc/checkout/HygieneTreatmentPanel";
@@ -57,6 +59,7 @@ import {
 import { DX_LABELS, type DxCode } from "@shared/hyg/contract";
 import { EXISTING_TX_PATIENT_LABELS, type ExistingTxPatient } from "@shared/hyg/existingTx";
 import type { OfficeId } from "@shared/tc/contract";
+import { CheckoutPrescriptions } from "@/features/tc/checkout/CheckoutPrescriptions";
 
 /**
  * Groups the workup folds to a heading and count (CO-1 polish ruling): "Not
@@ -285,6 +288,9 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
         </div>
       )}
 
+      {/* In-app only: what the hygienist asked for, read-only. Never in Open Dental. */}
+      <CheckoutPrescriptions prescriptions={snap.prescriptions} testId="workup-prescriptions" />
+
       {!hygieneData && (
         <section className="rounded-xl border border-dashed border-border bg-muted/30 p-4 space-y-1" data-testid="workup-no-hygiene-data">
           <h2 className="text-base font-semibold text-foreground">No hygiene visit data</h2>
@@ -472,11 +478,21 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
       {/* CO-3: the school/work excuse and the appointment card. */}
       <CheckoutPrint office={office} handoffId={handoff.handoffId} />
 
-      {/* THE EXIT — the same component the sidebar uses. */}
+      {/* CO-7: the ask-hygiene thread. */}
+      <section className="rounded-xl border border-border bg-card p-4" data-testid="workup-questions">
+        <CheckoutQuestions key={`q-${handoff.handoffId}`} office={office} handoffId={handoff.handoffId} />
+      </section>
+
+      {/* THE EXIT — the same component the sidebar uses. CO-6: Route to… beside it. */}
       <section className="rounded-xl border border-border bg-card p-4" data-testid="workup-exit">
-        <h2 className="flex items-center gap-2 text-base font-semibold text-foreground">
-          <CheckCircle2 className="w-4 h-4 text-muted-foreground" /> Checkout outcome
-        </h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="flex items-center gap-2 text-base font-semibold text-foreground">
+            <CheckCircle2 className="w-4 h-4 text-muted-foreground" /> Checkout outcome
+          </h2>
+          <div className="ml-auto">
+            <CheckoutRouteTo office={office} handoff={handoff} onAdopt={onChange} onReload={onReload} />
+          </div>
+        </div>
         <CheckoutOutcome key={handoff.handoffId} office={office} handoff={handoff} onAdopt={onChange} onReload={onReload} />
       </section>
 

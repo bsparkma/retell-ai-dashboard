@@ -52,6 +52,7 @@ import { parseServedFunnel } from "./reports/funnel";
 import { TcActivityPage, type ActivityScope } from "@shared/tc/activity";
 // Type-only: the card state the case list carries (CO-4b).
 import type { OdSyncCardState } from "./odSync/odSyncApi";
+import type { NextTouchInput } from "@shared/tc/nextTouch";
 import type { ServedFunnel } from "./reports/funnel";
 
 type CaseStatusId = z.infer<typeof CaseStatus>;
@@ -324,7 +325,22 @@ export type TcCaseSummary = Omit<
    * as the two above.
    */
   odSync?: OdSyncCardState | null;
+  /**
+   * Next touch: the case's earliest pending follow-up (shared/tc/nextTouch.ts),
+   * or null when it has none. Optional because an older server omits it; a
+   * summary folded back from a full TcCase recomputes it from its followups.
+   */
+  nextTouch?: TcNextTouchSummary | null;
 };
+
+/** The compact next touch a pipeline card shows: date + owner. */
+export interface TcNextTouchSummary {
+  followupId: string;
+  dueDate: string;
+  owner: string | null;
+  channel: z.infer<typeof FollowupChannel>;
+  kind: z.infer<typeof FollowupKind>;
+}
 
 export interface TcCaseListFilters {
   status?: CaseStatusId;
@@ -451,6 +467,12 @@ export function transitionCase(
     status: CaseStatusId;
     lostReason?: z.infer<typeof LostReason> | null;
     note?: string;
+    /**
+     * Next touch set with a move INTO an open status. The server requires it
+     * (409 NEXT_TOUCH_REQUIRED) unless the case already has a pending
+     * follow-up, and refuses it on any other move. Send it only when it is used.
+     */
+    nextTouch?: z.input<typeof NextTouchInput>;
   },
 ): Promise<TransitionResult> {
   return tcRequest<TransitionResult>(`/tc/cases/${caseId}/status`, {
@@ -540,6 +562,8 @@ export interface TcQueueFollowup {
   patientResponded: boolean | null;
   nurtureType: z.infer<typeof NurtureType> | null;
   legacyId: string | null;
+  /** Who owns the touch. Null on rows written before owners existed. */
+  owner: string | null;
 }
 
 /** Due-queue row: followup + joined case context. */
@@ -568,6 +592,7 @@ interface FollowupRow {
   patient_responded: boolean | null;
   nurture_type: z.infer<typeof NurtureType> | null;
   legacy_id: string | null;
+  owner?: string | null;
 }
 
 interface DueFollowupRow extends FollowupRow {
@@ -596,6 +621,7 @@ function mapFollowupRow(r: FollowupRow): TcQueueFollowup {
     patientResponded: r.patient_responded,
     nurtureType: r.nurture_type,
     legacyId: r.legacy_id,
+    owner: r.owner ?? null,
   };
 }
 
@@ -647,6 +673,8 @@ export function createFollowup(
     patientResponded?: boolean | null;
     nurtureType?: z.infer<typeof NurtureType> | null;
     source?: "auto" | "manual";
+    /** Defaults server-side to the signed-in person. */
+    owner?: string;
   },
 ): Promise<TcQueueFollowup> {
   return tcRequest<{ followup: FollowupRow }>("/tc/followups", {
@@ -656,28 +684,98 @@ export function createFollowup(
   }).then((r) => mapFollowupRow(r.followup));
 }
 
+/**
+ * A completed/skipped follow-up, plus whether that left its OPEN case with no
+ * pending touch at all (the UI then prompts for the next one). False when an
+ * older server omits the flag.
+ */
+export type TcClosedFollowup = TcQueueFollowup & { nextTouchNeeded: boolean };
+
+interface ClosedFollowupResponse {
+  followup: FollowupRow;
+  nextTouchNeeded?: boolean;
+}
+
+function mapClosed(r: ClosedFollowupResponse): TcClosedFollowup {
+  return { ...mapFollowupRow(r.followup), nextTouchNeeded: r.nextTouchNeeded === true };
+}
+
 export function completeFollowup(
   office: OfficeId,
   followupId: string,
   input?: { outcomeNote?: string; patientResponded?: boolean },
-): Promise<TcQueueFollowup> {
-  return tcRequest<{ followup: FollowupRow }>(`/tc/followups/${followupId}/complete`, {
+): Promise<TcClosedFollowup> {
+  return tcRequest<ClosedFollowupResponse>(`/tc/followups/${followupId}/complete`, {
     method: "POST",
     office,
     body: input ?? {},
-  }).then((r) => mapFollowupRow(r.followup));
+  }).then(mapClosed);
 }
 
 export function skipFollowup(
   office: OfficeId,
   followupId: string,
   input?: { outcomeNote?: string },
-): Promise<TcQueueFollowup> {
-  return tcRequest<{ followup: FollowupRow }>(`/tc/followups/${followupId}/skip`, {
+): Promise<TcClosedFollowup> {
+  return tcRequest<ClosedFollowupResponse>(`/tc/followups/${followupId}/skip`, {
     method: "POST",
     office,
     body: input ?? {},
-  }).then((r) => mapFollowupRow(r.followup));
+  }).then(mapClosed);
+}
+
+/** An open case with NO pending follow-up — the "No next step" list. */
+export interface TcNoNextStepCase {
+  caseId: string;
+  officeId: OfficeId;
+  patientName: string;
+  casePhone: string | null;
+  caseStatus: CaseStatusId;
+  assignedTc: string;
+  caseValueCents: number;
+  caseUrgency: UrgencyId;
+  statusChangedAt: string | null;
+}
+
+interface NoNextStepRow {
+  case_id: string;
+  patient_name: string;
+  case_phone: string | null;
+  case_status: CaseStatusId;
+  assigned_tc: string;
+  case_value_cents: number | null;
+  case_urgency: UrgencyId;
+  status_changed_at: string | null;
+}
+
+export interface TcNextTouchView {
+  /** One row per open case: its next touch, earliest due first. */
+  touches: TcDueFollowup[];
+  /** Open cases with no pending follow-up. */
+  noNextStep: TcNoNextStepCase[];
+  truncated: boolean;
+}
+
+/** GET /followups/next-touch — the Follow-ups page's main view, per office. */
+export function nextTouchView(office: OfficeId): Promise<TcNextTouchView> {
+  return tcRequest<{ touches: DueFollowupRow[]; noNextStep: NoNextStepRow[]; truncated?: boolean }>(
+    "/tc/followups/next-touch",
+    { office },
+  ).then((r) => ({
+    touches: r.touches.map(mapDueFollowupRow),
+    noNextStep: r.noNextStep.map((c) => ({
+      caseId: c.case_id,
+      officeId: office,
+      patientName: c.patient_name,
+      casePhone: c.case_phone,
+      caseStatus: c.case_status,
+      assignedTc: c.assigned_tc,
+      caseValueCents: Number(c.case_value_cents ?? 0),
+      caseUrgency: c.case_urgency,
+      statusChangedAt: c.status_changed_at,
+    })),
+    truncated: r.truncated === true,
+  }));
 }
 
 export function rescheduleFollowup(

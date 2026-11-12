@@ -40,6 +40,8 @@ export * from "../../new-dashboard/shared/tc/emailRender";
 export * from "../../new-dashboard/shared/tc/nurture";
 // The checkout handoff and the intake-kind / source-key vocabulary (item 49).
 export * from "../../new-dashboard/shared/tc/checkout";
+// CO-6 / CO-7: "Route to…" from a checkout card, and the ask-hygiene thread.
+export * from "../../new-dashboard/shared/tc/checkoutRouting";
 // In-app alert preferences (item 51).
 export * from "../../new-dashboard/shared/tc/notifications";
 // Referrals (items 52-55): status/urgency vocabulary, directory, settings.
@@ -55,6 +57,13 @@ export * from "../../new-dashboard/shared/tc/printTemplates";
 // Print template styling (CO-3b): the closed styling schema and the ONE layout
 // engine the PDF and the Settings preview both draw from.
 export * from "../../new-dashboard/shared/tc/printStyling";
+// Referral note templates: per-office prefill wording, its closed placeholder
+// menu and the validator a save with an unknown placeholder is refused by.
+export * from "../../new-dashboard/shared/tc/referralTemplates";
+// Next touch: the earliest pending follow-up per open case, its open-status
+// test, and the human status route's nextTouch body. One derivation for
+// server and dashboard.
+export * from "../../new-dashboard/shared/tc/nextTouch";
 // The routes compose small request shapes (status-transition bodies, complete/
 // reschedule payloads) from contract pieces; export the SAME zod instance so
 // those shapes and the contract schemas share one library version.

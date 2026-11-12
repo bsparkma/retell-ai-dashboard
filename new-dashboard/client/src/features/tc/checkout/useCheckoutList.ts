@@ -32,6 +32,8 @@ export interface CheckoutList {
   load: () => Promise<void>;
   /** Put the server's read-back of one checkout in place (or drop it if it left this tab). */
   replace: (next: TcCheckoutHandoff) => void;
+  /** CO-7: handoffId → open ask-hygiene questions (absent = none). */
+  openQuestions: Record<string, number>;
 }
 
 export function useCheckoutList(offices: OfficeId[]): CheckoutList {
@@ -41,6 +43,7 @@ export function useCheckoutList(offices: OfficeId[]): CheckoutList {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [enabledOffices, setEnabledOffices] = useState<OfficeId[] | null>(null);
+  const [openQuestions, setOpenQuestions] = useState<Record<string, number>>({});
   const loadSeq = useRef(0);
 
   const load = useCallback(async () => {
@@ -49,7 +52,8 @@ export function useCheckoutList(offices: OfficeId[]): CheckoutList {
     setError(null);
     const res = await fanOutOfficeValues(offices, async (office) => {
       try {
-        return (await listCheckout(office, tab)).handoffs;
+        const res = await listCheckout(office, tab);
+        return { handoffs: res.handoffs, openQuestions: res.openQuestions };
       } catch (e) {
         // Off for this office is a fact about the office, not a failed load.
         if (e instanceof TcApiError && e.code === "CHECKOUT_DISABLED") return null;
@@ -61,9 +65,10 @@ export function useCheckoutList(offices: OfficeId[]): CheckoutList {
     setEnabledOffices(on.map((v) => v.officeId));
     setRows(
       on
-        .flatMap((v) => v.value ?? [])
+        .flatMap((v) => v.value?.handoffs ?? [])
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     );
+    setOpenQuestions(Object.assign({}, ...on.map((v) => v.value?.openQuestions ?? {})));
     if (res.failed) setError(res.errors[0]?.message ?? "The checkout list could not be loaded.");
     else setNotice(res.partial ? `Some offices could not be loaded: ${res.errors.map((e) => e.officeId).join(", ")}` : null);
     setLoading(false);
@@ -87,5 +92,5 @@ export function useCheckoutList(offices: OfficeId[]): CheckoutList {
     [tab],
   );
 
-  return { tab, setTab, rows, loading, error, notice, enabledOffices, load, replace };
+  return { tab, setTab, rows, loading, error, notice, enabledOffices, load, replace, openQuestions };
 }

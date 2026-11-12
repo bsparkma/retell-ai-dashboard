@@ -25,6 +25,12 @@ import {
   type TcReferralInput,
 } from "@shared/tc/referrals";
 import type { OfficeId } from "@shared/tc/contract";
+import {
+  ReferralTemplateSaveResponse,
+  ReferralTemplatesResponse,
+  type ReferralTemplateKind,
+  type ReferralTemplateState,
+} from "@shared/tc/referralTemplates";
 
 /** Parse, or throw the mismatch in words. */
 function parse<T>(schema: z.ZodType<T>, raw: unknown): T {
@@ -93,6 +99,25 @@ export async function updateReferralSettings(
     TcReferralSettingsResponse,
     await tcRequest<unknown>("/tc/referrals/settings", { office, method: "PUT", body: change }),
   );
+}
+
+// ── Referral note templates (per office) ────────────────────────────────────
+
+/** Both kinds for this office (blank = no prefill), and whether this user may change them. */
+export async function getReferralTemplates(office: OfficeId): Promise<ReferralTemplatesResponse> {
+  return parse(ReferralTemplatesResponse, await tcRequest<unknown>("/tc/referrals/templates", { office }));
+}
+
+/** Save one kind's wording ("" clears it). Answers the template as stored. */
+export async function saveReferralTemplate(
+  office: OfficeId,
+  kind: ReferralTemplateKind,
+  body: string,
+): Promise<ReferralTemplateState> {
+  return parse(
+    ReferralTemplateSaveResponse,
+    await tcRequest<unknown>(`/tc/referrals/templates/${kind}`, { office, method: "PUT", body: { body } }),
+  ).template;
 }
 
 // ── R2 (item 53): referrals and the sign-off queue ──────────────────────────

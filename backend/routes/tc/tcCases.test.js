@@ -156,6 +156,7 @@ test('status transition writes the status_change event; lost requires a reason',
 
     const ok = await api(baseUrl, 'POST', `/api/tc/cases/${caseId}/status?office=roland`, {
       status: 'presented',
+      nextTouch: { dueDate: '2026-11-13', owner: 'tc@carein.ai' }, // next-touch slice: a human move into an open status names one
     });
     assert.equal(ok.status, 200);
     assert.equal(ok.body.case.status, 'presented');

@@ -94,9 +94,12 @@ const contract = require('../../hyg/contract.gen.cjs');
 const tcContract = require('../../tc/contract.gen.cjs');
 const referralCreate = require('../tc/referralCreate');
 const referralStore = require('../tc/referralStore');
+const referralTemplateStore = require('../tc/referralTemplateStore');
 const providerStore = require('../tc/providerStore');
 const referralAttachments = require('../tc/referralAttachments');
 const transitions = require('../tc/referralTransitions');
+const checkoutQuestionStore = require('../tc/checkoutQuestionStore');
+const checkoutQuestions = require('../../services/hyg/checkoutQuestions');
 
 const router = express.Router();
 
@@ -607,6 +610,85 @@ router.put(
       sourceRef: null,
     });
     return res.json(await viewPayload(req, visit));
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// "Prescriptions needed" + "Pharmacy" — IN-APP ONLY (shared/hyg/prescriptions.ts)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Two free-form fields for the doctor and the front desk. Stored in their own
+// hyg_visit columns, never on the HygVisit the composer and the Send read, so
+// NOTHING here can reach Open Dental: no OD call, no staged write, no chart
+// payload. They ride only to the checkout card (deliverCheckout's snapshot).
+//
+// The office is req.hygOffice; the appointment is the URL's; the visit row is
+// found by BOTH, so another office's appointment is a 404. No PatNum is read
+// from the request. Audited like the slip (the text is clinical).
+
+function prescriptionsVisitNotFound(res, office) {
+  return res.status(404).json({
+    success: false,
+    error: 'No visit has been started for this appointment yet',
+    code: 'VISIT_NOT_FOUND',
+    office,
+  });
+}
+
+router.get(
+  '/:aptNum/prescriptions',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumOr400(req, res, office);
+    if (aptNum === null) return undefined;
+    const prescriptions = await tenantDb.withTenantDb(req, (pool) =>
+      visitStore.getPrescriptions(pool, { office, aptNum })
+    );
+    if (!prescriptions) return prescriptionsVisitNotFound(res, office);
+    await audit(req, {
+      action: 'READ',
+      resourceType: 'hyg_visit_prescriptions',
+      resourceId: aptNum,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+    return res.json({ success: true, office, aptNum, prescriptions });
+  })
+);
+
+router.put(
+  '/:aptNum/prescriptions',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumOr400(req, res, office);
+    if (aptNum === null) return undefined;
+    const body = parseBody(res, contract.HygPrescriptionsSaveRequestSchema, req.body);
+    if (body === null) return undefined;
+    const rxNeeded = body.rxNeeded.trim();
+    const pharmacy = body.pharmacy.trim();
+    const stored = await tenantDb.withTenantDb(req, (pool) =>
+      visitStore.savePrescriptions(pool, { office, aptNum, rxNeeded, pharmacy, actor: actorEmail(req) })
+    );
+    if (!stored) return prescriptionsVisitNotFound(res, office);
+    // Honest save: what is answered is what the database holds.
+    if (stored.rxNeeded !== rxNeeded || stored.pharmacy !== pharmacy) {
+      return res.status(500).json({
+        success: false,
+        error: 'The prescriptions could not be confirmed as saved. Reload and check them.',
+        code: 'SAVE_NOT_CONFIRMED',
+        office,
+      });
+    }
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'hyg_visit_prescriptions',
+      resourceId: aptNum,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+    return res.json({ success: true, office, aptNum, prescriptions: stored });
   })
 );
 
@@ -2587,6 +2669,8 @@ async function deliverCheckout(req, { office, aptNum, final }) {
       date,
       final,
       existingTx: ctx.existingTx,
+      // In-app only: rides to the checkout card, never to a chart.
+      prescriptions: ctx.prescriptions,
     });
     if (!built.ok) return refuse(409, built.code, built.error);
 
@@ -2946,6 +3030,26 @@ router.get(
 );
 
 /**
+ * GET /api/hyg/visit/:aptNum/referral-templates — the office's referral note
+ * templates, so the chairside form prefills "Notes for the specialist" the
+ * way TC's does. Non-PHI office configuration (an office's own wording), read
+ * only, the same gate as the specialist list above. Never editable from here:
+ * `canEdit` is always false on this read.
+ */
+router.get(
+  '/:aptNum/referral-templates',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumOr400(req, res, office);
+    if (aptNum === null) return undefined;
+    const gate = await referralCreate.referralsGate(req, office);
+    if (gate) return res.status(gate[0]).json(gate[1]);
+    const templates = await tenantDb.withTenantDb(req, (pool) => referralTemplateStore.listTemplates(pool, office));
+    return res.json({ success: true, office, canEdit: false, templates });
+  })
+);
+
+/**
  * GET /api/hyg/visit/:aptNum/provider-directory — the office's ACTIVE
  * providers (the TC provider directory), for the chairside form's referring
  * provider pick. Non-PHI office configuration, read only, the same gate as
@@ -2999,6 +3103,102 @@ router.post(
       },
     })
   )
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CO-7 — the ask-hygiene thread: the front desk's questions on this visit's
+// checkout card, and the hygienist's reply. CareIN tables only (no Open Dental,
+// no email, no SMS); which card is this visit's is services/hyg/
+// checkoutQuestions.js. The day view's badges are GET /api/hyg/day/
+// checkout-questions (counts only).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The visit's card and its thread, or the refusal answered and null. */
+async function checkoutThreadFor(req, res, office, aptNum) {
+  if (!(await tcCheckout.isEnabled(office))) {
+    res.status(403).json({
+      success: false,
+      error: 'The checkout handoff is not switched on for this office',
+      code: 'CHECKOUT_DISABLED',
+      office,
+    });
+    return null;
+  }
+  const found = await tenantDb.withTenantDb(req, (pool) => checkoutQuestions.threadForApt(pool, office, aptNum));
+  if (!found) {
+    res.status(404).json({ success: false, error: 'This visit has no checkout card to ask about', code: 'NOT_FOUND', office });
+    return null;
+  }
+  return found;
+}
+
+/** GET /api/hyg/visit/:aptNum/checkout-questions — the thread (free text about a patient: audited). */
+router.get(
+  '/:aptNum/checkout-questions',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) return badAptNum(res, office);
+    const found = await checkoutThreadFor(req, res, office, aptNum);
+    if (!found) return undefined;
+    await auditHygRead(req, 'tc_checkout_question', { office, resourceId: null });
+    return res.json({ success: true, office, aptNum, thread: found.thread });
+  })
+);
+
+/**
+ * POST /api/hyg/visit/:aptNum/checkout-questions/reply — { body }, a hygienist
+ * REPLY. The role is this route's; the author is the SSO identity; the card is
+ * the visit's, in this office. A reply needs an open question to answer. The
+ * answer is the thread READ BACK.
+ */
+router.post(
+  '/:aptNum/checkout-questions/reply',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumFrom(req);
+    if (aptNum === null) return badAptNum(res, office);
+    const body = parseBody(res, tcContract.TcCheckoutQuestionPost, req.body ?? {});
+    if (body === null) return undefined;
+    const found = await checkoutThreadFor(req, res, office, aptNum);
+    if (!found) return undefined;
+    if (found.thread.open === 0) {
+      return res.status(409).json({
+        success: false,
+        error: 'There is no open question on this checkout to answer',
+        code: 'NO_OPEN_QUESTION',
+        office,
+      });
+    }
+    const questionId = await tenantDb.withTenantDb(req, (pool) =>
+      checkoutQuestionStore.insertQuestion(pool, {
+        office,
+        handoffId: found.handoffId,
+        authorEmail: actorEmail(req),
+        authorRole: 'hygienist',
+        body: body.body,
+        at: new Date().toISOString(),
+      })
+    );
+    await audit(req, {
+      action: 'CREATE',
+      resourceType: 'tc_checkout_question',
+      resourceId: questionId,
+      result: 'SUCCESS',
+      office,
+      sourceRef: `hyg_visit:${aptNum}`,
+    });
+    const now = await tenantDb.withTenantDb(req, (pool) => checkoutQuestions.threadForApt(pool, office, aptNum));
+    if (!now || !now.thread.messages.some((m) => m.questionId === questionId)) {
+      return res.status(500).json({
+        success: false,
+        error: 'The reply could not be read back. Reload before trusting it.',
+        code: 'QUESTION_NOT_PERSISTED',
+        office,
+      });
+    }
+    return res.status(201).json({ success: true, office, aptNum, thread: now.thread });
+  })
 );
 
 module.exports = router;

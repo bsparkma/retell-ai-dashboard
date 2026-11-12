@@ -214,7 +214,11 @@ test('parity is silent on the seed', async () => {
   });
 });
 
-test('parity warns once per divergent field, and keeps serving the code values', async () => {
+// MT-1b EDIT (disclosed): this test pinned the MT-1a "dark" contract — the
+// registry changes nothing a consumer reads. MT-1b reverses exactly that, so
+// the setup and the warning counts are unchanged and only the served-value
+// expectations below are inverted. The crossed DefNum is still refused.
+test('parity warns once per divergent field, and says which side it serves', async () => {
   const rows = seedRows();
   rows[1].display_name = 'Riley';                       // officeAgents field
   rows[1].mango_dids = rows[1].mango_dids.slice(1);     // officeAgents field
@@ -248,20 +252,41 @@ test('parity warns once per divergent field, and keeps serving the code values',
     assert.equal(lines.length, 5, lines.join('\n'));
     // The extra row is reported by its presence, and the OD check never sees it.
     assert.equal(has('odOffices', 'fortsmith2', 'row'), 0);
-    assert.ok(lines.every((w) => w.includes('Serving the CODE value')));
+    const served = (prefix, officeKey, field) =>
+      lines.find((w) => w.startsWith(`[${prefix}]`) && w.includes(`'${officeKey}' ${field} differs`));
+    assert.match(served('officeAgents', 'valley', 'displayName'), /Serving the REGISTRY value/);
+    assert.match(served('officeAgents', 'valley', 'mangoDids'), /Serving the REGISTRY value/);
+    assert.match(served('officeAgents', 'fortsmith2', 'row'), /Serving the CODE value \(not a frozen office key/);
+    assert.match(served('odOffices', 'roland', 'commTypeDefNums.call'), /Serving the CODE value \(DefNum 451 belongs to valley call/);
+    assert.match(served('odOffices', 'valley', 'odEnabled'), /Serving the REGISTRY value/);
 
     // Same divergence on the next refresh → no new warning.
     await later(5 * 60 * 1000 + 1, () => officeRegistry.getOffices());
     assert.equal(warnings.filter((w) => w.includes('office registry parity')).length, 5);
 
-    // NOTHING a consumer reads changed.
-    assert.equal(officeAgents.getOfficeConfig('valley').officeName, before.officeName);
-    assert.equal(officeAgents.getOfficeForCall(valleyCall), before.valleyLine);
-    assert.deepEqual(odOffices.describeOffice('valley'), before.describeValley);
+    // MT-1b: the registry's values are served, except the refused ones.
+    assert.equal(before.officeName, 'Valley Fort Smith');
+    assert.equal(officeAgents.getOfficeConfig('valley').officeName, 'Riley');
+    assert.equal(before.valleyLine, 'valley');
+    assert.equal(officeAgents.getOfficeForCall(valleyCall), 'unknown', 'the dropped line is unmapped, never Roland');
+    assert.equal(before.describeValley.officeName, 'Valley Fort Smith');
+    assert.deepEqual(odOffices.describeOffice('valley'), {
+      officeId: 'valley',
+      officeName: 'Riley',
+      odConnected: false,
+      odBlockedReason: 'Open Dental is not connected for Riley yet',
+    });
+    // Roland's crossed DefNum was refused, so nothing about Roland moved.
     assert.deepEqual(odOffices.describeOffice('roland'), before.describeRoland);
+    // The code maps themselves are never written to.
     assert.equal(odOffices.OFFICE_OD_SETTINGS.roland.defaultCommTypeDefNum, before.rolandCommType);
     assert.equal(odOffices.OFFICE_OD_SETTINGS.valley.odEnabled, before.valleyOdEnabled);
-    assert.deepEqual(officeAgents.getAllOfficeConfigs(), before.offices);
+    assert.deepEqual(officeAgents.getAllOfficeConfigs(), [
+      before.offices[0],
+      { officeId: 'valley', officeName: 'Riley' },
+    ]);
+    // The registry-only row never becomes an office.
+    assert.equal(officeAgents.getOfficeConfig('fortsmith2'), null);
   });
 });
 

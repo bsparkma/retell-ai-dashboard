@@ -29,6 +29,8 @@ import { OfficeBadge } from "@/features/tc/components/OfficeBadge";
 import { tcErrorMessage } from "@/features/tc/api";
 import { getCheckoutHandoff } from "@/features/tc/checkout/checkoutApi";
 import { CheckoutOutcome, checkoutClock } from "@/features/tc/checkout/CheckoutOutcome";
+import { CheckoutRouteTo } from "@/features/tc/checkout/CheckoutRouteTo";
+import { CheckoutQuestions } from "@/features/tc/checkout/CheckoutQuestions";
 import { checkoutOriginText } from "@/features/tc/checkout/checkoutOrigin";
 import { ReopenedNotice } from "@/features/tc/checkout/ReopenedNotice";
 import {
@@ -42,6 +44,7 @@ import {
 import type { OfficeId } from "@shared/tc/contract";
 import { teethText } from "@shared/hyg/teeth";
 import { ExistingTreatmentFromHygiene } from "@/features/tc/checkout/HygieneTreatmentPanel";
+import { CheckoutPrescriptions } from "@/features/tc/checkout/CheckoutPrescriptions";
 
 export { checkoutClock };
 
@@ -233,6 +236,9 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
                 </section>
               )}
 
+              {/* In-app only: what the hygienist asked for, read-only. Never in Open Dental. */}
+              <CheckoutPrescriptions prescriptions={snap.prescriptions} testId="checkout-prescriptions" />
+
               {!hygieneData && (
                 <p className="rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground" data-testid="checkout-no-hygiene-data">
                   No hygiene visit data: {handoff.source === "schedule" ? "this card was made from today's schedule" : "this patient was added at the desk"}, and
@@ -329,6 +335,14 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
                   Dr. sign-off / Approved) with Start referral beside it. It
                   reads "None" exactly as before while referrals is off. */}
               <ReferralsPanel compact office={handoff.officeId} source={{ handoffId: handoff.handoffId }} />
+
+              {/* CO-7: ask the hygienist; CO-6: route the patient elsewhere in TC. */}
+              {office && <CheckoutQuestions key={`q-${handoff.handoffId}`} office={office} handoffId={handoff.handoffId} />}
+              {office && (
+                <div className="border-t border-border pt-4">
+                  <CheckoutRouteTo office={office} handoff={handoff} onAdopt={adopt} onReload={load} />
+                </div>
+              )}
 
               {office && (
                 <CheckoutOutcome key={handoff.handoffId} office={office} handoff={handoff} onAdopt={adopt} onReload={load} />

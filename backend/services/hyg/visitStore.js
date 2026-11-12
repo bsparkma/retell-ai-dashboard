@@ -83,8 +83,25 @@ const VISIT_COLUMNS = `
   visit_id, office, apt_num, pat_num, visit_date, slip,
   appointment_snapshot, ortho_tc_case_id, ortho_sent_at, ortho_sent_by, ortho_send_claimed_at,
   checkout_handoff_id, checkout_sent_at, checkout_sent_by, checkout_send_claimed_at, checkout_final_at,
+  rx_needed, pharmacy,
   created_by, created_at, updated_by, updated_at
 `;
+
+/**
+ * "Prescriptions needed" + "Pharmacy" (1794600000000) — IN-APP ONLY.
+ *
+ * Read from the row here and NEVER put on the contract's HygVisit (`toVisit`
+ * does not name them): the visit object is what the staged-write composer and
+ * the Send read, so leaving them off it is what keeps them out of every chart
+ * payload by construction. They reach exactly two places — the prescriptions
+ * routes and the checkout snapshot (getOrthoSendContext → buildCheckoutIntake).
+ */
+function readPrescriptions(row) {
+  return {
+    rxNeeded: typeof row?.rx_needed === 'string' ? row.rx_needed : '',
+    pharmacy: typeof row?.pharmacy === 'string' ? row.pharmacy : '',
+  };
+}
 
 /**
  * How long an ortho send's claim holds before another press may take it over
@@ -396,7 +413,35 @@ async function getOrthoSendContext(pool, { office, aptNum }) {
     row.appointment_snapshot && typeof row.appointment_snapshot === 'object'
       ? row.appointment_snapshot
       : null;
-  return { visit: await hydrate(pool, row), snapshot };
+  return { visit: await hydrate(pool, row), snapshot, prescriptions: readPrescriptions(row) };
+}
+
+/**
+ * The visit's Rx-needed / pharmacy, or null when there is no visit for this
+ * (office, appointment) — so another office's appointment is a 404, not a read.
+ */
+async function getPrescriptions(pool, { office, aptNum }) {
+  const found = await pool.query(
+    `SELECT ${VISIT_COLUMNS} FROM hyg_visit WHERE office = $1 AND apt_num = $2`,
+    [office, aptNum]
+  );
+  if (found.rowCount === 0) return null;
+  return readPrescriptions(found.rows[0]);
+}
+
+/**
+ * Store both fields (the whole pair, replaced — as saveSlip). Answers the pair
+ * AS STORED, or null when there is no visit for this (office, appointment).
+ */
+async function savePrescriptions(pool, { office, aptNum, rxNeeded, pharmacy, actor }) {
+  const res = await pool.query(
+    `UPDATE hyg_visit SET rx_needed = $3, pharmacy = $4, updated_by = $5, updated_at = now()
+      WHERE office = $1 AND apt_num = $2
+      RETURNING ${VISIT_COLUMNS}`,
+    [office, aptNum, rxNeeded, pharmacy, actor]
+  );
+  if (res.rowCount === 0) return null;
+  return readPrescriptions(res.rows[0]);
 }
 
 /**
@@ -1145,6 +1190,8 @@ module.exports = {
   saveSlip,
   saveAppointmentSnapshot,
   getOrthoSendContext,
+  getPrescriptions,
+  savePrescriptions,
   claimOrthoSend,
   markOrthoSent,
   releaseOrthoClaim,

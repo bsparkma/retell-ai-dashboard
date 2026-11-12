@@ -30,6 +30,17 @@ import {
   type TcReferralInput,
 } from "@shared/tc/referrals";
 import { TcProviderEntry } from "@shared/tc/providers";
+import { ReferralTemplatesResponse, type ReferralTemplateState } from "@shared/tc/referralTemplates";
+import {
+  HygPrescriptionsResponseSchema,
+  type HygPrescriptions,
+} from "@shared/hyg/prescriptions";
+import {
+  HygCheckoutQuestionBadgesResponse,
+  HygCheckoutThreadResponse,
+  type HygCheckoutQuestionBadge,
+  type TcCheckoutQuestionThread,
+} from "@shared/tc/checkoutRouting";
 import {
   type HygDayScope,
   FlagSourceSchema,
@@ -1071,6 +1082,33 @@ export async function fetchVisitReferralDirectory(office: OfficeId, aptNum: numb
   return (await get(`/visit/${aptNum}/referral-directory`, { office }, parseWith(VisitDirectoryResponse))).entries;
 }
 
+/** The office's referral note templates, so the chairside form prefills like TC's. */
+export async function fetchVisitReferralTemplates(office: OfficeId, aptNum: number): Promise<ReferralTemplateState[]> {
+  return (await get(`/visit/${aptNum}/referral-templates`, { office }, parseWith(ReferralTemplatesResponse))).templates;
+}
+
+// ── "Prescriptions needed" + "Pharmacy" (in-app only, never to Open Dental) ──
+
+function parsePrescriptions(raw: unknown): HygPrescriptions {
+  const parsed = HygPrescriptionsResponseSchema.safeParse(raw);
+  if (!parsed.success) throw new HygApiError("The prescriptions answer could not be read", 0, "CONTRACT_MISMATCH");
+  return parsed.data.prescriptions;
+}
+
+/** What is stored for this visit. VISIT_NOT_FOUND (404) before the visit is open. */
+export async function fetchVisitPrescriptions(office: OfficeId, aptNum: number): Promise<HygPrescriptions> {
+  return get(`/visit/${aptNum}/prescriptions`, { office }, parsePrescriptions);
+}
+
+/** Store both fields; answers what the server read back. Touches no chart. */
+export async function saveVisitPrescriptions(
+  office: OfficeId,
+  aptNum: number,
+  prescriptions: HygPrescriptions,
+): Promise<HygPrescriptions> {
+  return mutate("PUT", `/visit/${aptNum}/prescriptions`, { office }, parsePrescriptions, prescriptions);
+}
+
 /**
  * Draft it here; it goes straight to the doctor's sign-off. The server takes
  * the patient from the visit. `submit: false` (item 55) keeps it a draft so its
@@ -1120,4 +1158,49 @@ export async function uploadVisitReferralAttachment(
   if (!res.ok) throw await toError(res);
   return parseWith(z.object({ success: z.literal(true), attachment: TcReferralAttachment }))((await res.json()) as unknown)
     .attachment;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CO-7 — the front desk's questions on a visit's checkout card
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Parse with a named failure (the referral helper's message is about referrals). */
+function parseQuestions<T>(schema: z.ZodType<T>): (raw: unknown) => T {
+  return (raw) => {
+    const parsed = schema.safeParse(raw);
+    if (!parsed.success) throw new HygApiError("CareIN returned checkout questions this page could not read", 0, "CONTRACT_MISMATCH");
+    return parsed.data;
+  };
+}
+
+/**
+ * The day's badges: per AptNum, the open and total question counts on that
+ * visit's checkout card. Counts only — no names, no text. Like the progress
+ * pill, a failure is the BADGE's problem, never the day's.
+ */
+export async function fetchCheckoutQuestionBadges(
+  office: OfficeId,
+  date: string,
+  aptNums: readonly number[],
+  signal?: AbortSignal,
+): Promise<{ enabled: boolean; badges: HygCheckoutQuestionBadge[] }> {
+  const res = await get(
+    "/day/checkout-questions",
+    { office, date, apt: aptNums.join(",") },
+    parseQuestions(HygCheckoutQuestionBadgesResponse),
+    signal,
+  );
+  return { enabled: res.enabled, badges: res.badges };
+}
+
+/** One visit's thread (the front desk's questions and the replies). */
+export async function fetchCheckoutThread(office: OfficeId, aptNum: number): Promise<TcCheckoutQuestionThread> {
+  return (await get(`/visit/${aptNum}/checkout-questions`, { office }, parseQuestions(HygCheckoutThreadResponse))).thread;
+}
+
+/** Reply to the open question(s). The answer is the thread read back. */
+export async function replyCheckoutQuestion(office: OfficeId, aptNum: number, body: string): Promise<TcCheckoutQuestionThread> {
+  return (
+    await mutate("POST", `/visit/${aptNum}/checkout-questions/reply`, { office }, parseQuestions(HygCheckoutThreadResponse), { body })
+  ).thread;
 }

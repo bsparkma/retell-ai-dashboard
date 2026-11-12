@@ -189,9 +189,16 @@ describe("Settings → Print templates", () => {
     expect(screen.getByText(/Edited by om@carein.ai/)).toBeTruthy();
 
     api.savePrintTemplate.mockRejectedValueOnce(new TcApiError("The template could not be read back as saved.", 500, "SAVE_NOT_CONFIRMED", null, []));
-    fireEvent.change(heading, { target: { value: "Attendance note 2" } });
+    // Settle the read-back before the second edit: the editor takes the server's
+    // wording when the saved wording changes, which can overwrite an edit made
+    // too early and leave Save disabled, so the click would send nothing.
+    await waitFor(() => expect((screen.getByTestId("print-field-heading") as HTMLInputElement).value).toBe("Attendance note"));
+    fireEvent.change(screen.getByTestId("print-field-heading"), { target: { value: "Attendance note 2" } });
+    await waitFor(() => expect((screen.getByTestId("print-save") as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByTestId("print-save"));
-    expect((await screen.findByTestId("print-save-error")).textContent).toContain("could not be read back");
+    await waitFor(() => expect(api.savePrintTemplate).toHaveBeenCalledTimes(2));
+    const refusal = await screen.findByTestId("print-save-error");
+    expect(refusal.textContent).toBe("The template could not be read back as saved.");
   });
 
   it("without logo storage: the page says so, and the upload is off", async () => {

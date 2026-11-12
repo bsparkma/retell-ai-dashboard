@@ -10,6 +10,9 @@
  *   DELETE /directory/:id         remove one that no referral names (else 409)
  *   GET    /settings              the two policies, what is in force and why
  *   PUT    /settings              change them — practice admin only
+ *   GET    /templates             the office's two note templates (prefill wording)
+ *   PUT    /templates/:kind       change one — practice admin only; an unknown
+ *                                 placeholder is refused 400, by name
  *
  *   R2 (item 53) — the referral record and its lifecycle:
  *   GET    /                      ?caseId= | ?handoffId= | ?callId= | ?status= , newest first
@@ -85,6 +88,7 @@ const tenantDb = require('../../platform/tenantDb');
 const { holdsPermission } = require('../../config/permissions');
 const tcReferrals = require('../../config/tcReferrals');
 const store = require('./referralStore');
+const templateStore = require('./referralTemplateStore');
 const checkoutStore = require('./checkoutStore');
 const { withTenantTx } = require('./tx');
 const transitions = require('./referralTransitions');
@@ -110,6 +114,7 @@ const {
   TcReferralSendRequest,
   TcReferralCorrespondenceRequest,
   TcReferralChartNoteRequest,
+  ReferralTemplateSaveRequest,
 } = contract;
 
 const router = express.Router();
@@ -312,6 +317,76 @@ router.put(
     }
     await auditTc(req, 'UPDATE', 'tc_referral_settings', office, { office, priorState: settingsSlug(before) });
     res.json(await settingsPayload(req));
+  })
+);
+
+// ── Referral note templates (per office) ────────────────────────────────────
+//
+// Two kinds (shared/tc/referralTemplates.ts): the specialist message that
+// prefills a referral's "Notes for the specialist", and the correspondence
+// note that prefills "Log correspondence". Read by anyone who can work
+// referrals (the forms prefill from it); changed by a practice admin — the
+// SAME rule as the policies above, no new permission. The office is
+// requireOffice's, in every WHERE; a body names only the text.
+//
+// A save whose text names a placeholder off the closed menu, or carries a
+// stray brace, is refused 400 with the problem NAMED and nothing stored. The
+// placeholders are filled in the browser; the send path never sees a template.
+
+router.get(
+  '/templates',
+  h(async (req, res) => {
+    const office = req.tcOffice;
+    const templates = await tenantDb.withTenantDb(req, (pool) => templateStore.listTemplates(pool, office));
+    res.json({ success: true, office, canEdit: holdsPermission(req, 'admin.all'), templates });
+  })
+);
+
+router.put(
+  '/templates/:kind',
+  h(async (req, res) => {
+    if (!holdsPermission(req, 'admin.all')) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only a practice admin can change the referral templates.',
+        code: 'FORBIDDEN',
+      });
+    }
+    const kind = req.params.kind;
+    if (!contract.isReferralTemplateKind(kind)) {
+      return res.status(404).json({
+        success: false,
+        error: `There is no referral template called "${String(kind).slice(0, 40)}".`,
+        code: 'REFERRAL_TEMPLATE_NOT_FOUND',
+      });
+    }
+    const body = parseBody(res, ReferralTemplateSaveRequest, req.body);
+    if (!body) return undefined;
+    // Trailing whitespace is not wording; a body that is only whitespace is blank.
+    const text = body.body.replace(/\s+$/u, '');
+    const problems = contract.validateReferralTemplate(text);
+    if (problems.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: problems[0].message,
+        code: problems[0].code,
+        problems,
+      });
+    }
+    const office = req.tcOffice;
+    const saved = await tenantDb.withTenantDb(req, (pool) =>
+      templateStore.saveTemplate(pool, { office, kind, body: text, actor: actorEmail(req) })
+    );
+    // HONEST SAVE: answer what is stored, and refuse to claim a save that is not.
+    if (!saved.row || saved.row.body !== text) {
+      return res.status(500).json({
+        success: false,
+        error: 'The template could not be confirmed as saved. Reload and check it.',
+        code: 'SAVE_NOT_CONFIRMED',
+      });
+    }
+    await auditTc(req, 'UPDATE', 'tc_referral_template', `${office}:${kind}`, { office, priorState: saved.prior });
+    res.json({ success: true, template: templateStore.toState(kind, saved.row) });
   })
 );
 

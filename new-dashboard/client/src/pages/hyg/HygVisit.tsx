@@ -104,7 +104,7 @@ import {
   type HygVisitPage,
 } from "@/features/hyg/api";
 import { formatClock, formatLength, todayIso, visibleFlags } from "@/features/hyg/day";
-import { suggestVisitType } from "@shared/hyg/noteTemplates";
+import { srpQuadsProblem, suggestVisitType } from "@shared/hyg/noteTemplates";
 import type { PerioCounts } from "@shared/hyg/perio";
 import type { HygPerioSendResponse } from "@shared/hyg/perioSend";
 import { perioProvNumOf } from "@/features/hyg/perio/PerioSendConfirm";
@@ -125,6 +125,7 @@ import type { OrthoScreening as OrthoScreeningValue } from "@shared/hyg/orthoScr
 import type { CheckoutDelivery } from "@shared/hyg/contract";
 import { cn } from "@/lib/utils";
 import { VisitReferral } from "@/features/hyg/visit/VisitReferral";
+import { VisitPrescriptions } from "@/features/hyg/visit/VisitPrescriptions";
 
 /** How long after the last keystroke the slip is stored. */
 const SAVE_DEBOUNCE_MS = 800;
@@ -684,8 +685,17 @@ export default function HygVisit() {
   const onSlipChange = useCallback(
     (next: HygSlip) => {
       setDraft(next);
-      pendingSlip.current = next;
       if (saveTimer.current) clearTimeout(saveTimer.current);
+      // SRP WITH NO QUAD YET IS HELD, NOT SENT. The server refuses that pair
+      // (400) — rightly — and the moment between tapping SRP and tapping a quad
+      // is not an error worth a banner. The draft stays on screen, the form
+      // says a quad is needed, and the first quad tap saves the whole slip.
+      if (srpQuadsProblem(next.visitType, next.srpQuads)) {
+        saveTimer.current = null;
+        pendingSlip.current = null;
+        return;
+      }
+      pendingSlip.current = next;
       saveTimer.current = setTimeout(() => {
         if (!isOfficeId(office)) return;
         pendingSlip.current = null;
@@ -1108,6 +1118,8 @@ export default function HygVisit() {
                 onChange={onSlipChange}
               />
               <RouterSlip slip={draft} recordsNeeded={page.recordsNeeded} onChange={onSlipChange} />
+              {/* In-app only: Rx needed + pharmacy, for the checkout card. Never sent to Open Dental. */}
+              {isOfficeId(office) && page.visit ? <VisitPrescriptions office={office} aptNum={aptNum} /> : null}
               <ExistingTreatment
                 state={existingTxShown}
                 saving={existingSaving}
