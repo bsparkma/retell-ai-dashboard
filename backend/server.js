@@ -309,6 +309,12 @@ async function bootstrap() {
   app.use('/api/webhooks/referral-link', referralLinkWebhooksRouter);
   app.use('/api/webhooks', webhooksRouter);
   app.use('/api/live-calls', voiceModule, voiceSurface, liveCallsRouter);
+  // OB-1: the /admin hub's read-only "Practice setup" card. The hub's own gate
+  // (admin.all) and NO module guard: whether a practice is set up is a property
+  // of the practice, not of the voice product, so a TC-only practice gets it
+  // too. MOUNTED ABOVE /api/admin on purpose, so this one path answers without
+  // the voice guard and every other /api/admin path still meets it below.
+  app.use('/api/admin/setup-status', requirePermission('admin.all'), require('./routes/setupStatus'));
   // The Admin page: scheduler start/stop, cost ceilings, queues, config. Tenant
   // 'admin' only — this is the one surface 'office' does not get.
   app.use('/api/admin', voiceModule, requirePermission('admin.all'), adminRouter);
