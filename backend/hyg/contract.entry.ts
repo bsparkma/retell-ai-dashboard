@@ -58,6 +58,9 @@ export * from "../../new-dashboard/shared/hyg/existingTx";
 // The Practice staff page (hygienists the office manager enters): the bodies
 // routes/hygStaff.js parses and the one sign-in normaliser.
 export * from "../../new-dashboard/shared/hyg/staff";
+// "Prescriptions needed" + "Pharmacy" (in-app only, never to Open Dental): the
+// PUT body routes/hyg/visit.js parses and the caps the DB CHECKs share.
+export * from "../../new-dashboard/shared/hyg/prescriptions";
 // The routes compose small request shapes from contract pieces; export the SAME
 // zod instance so those shapes and the contract schemas share one library
 // version. ZodError is what the 400-shaping helper switches on.

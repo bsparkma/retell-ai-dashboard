@@ -57,6 +57,9 @@ export * from "../../new-dashboard/shared/tc/printTemplates";
 // Print template styling (CO-3b): the closed styling schema and the ONE layout
 // engine the PDF and the Settings preview both draw from.
 export * from "../../new-dashboard/shared/tc/printStyling";
+// Referral note templates: per-office prefill wording, its closed placeholder
+// menu and the validator a save with an unknown placeholder is refused by.
+export * from "../../new-dashboard/shared/tc/referralTemplates";
 // The routes compose small request shapes (status-transition bodies, complete/
 // reschedule payloads) from contract pieces; export the SAME zod instance so
 // those shapes and the contract schemas share one library version.

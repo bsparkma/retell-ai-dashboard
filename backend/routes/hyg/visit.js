@@ -94,6 +94,7 @@ const contract = require('../../hyg/contract.gen.cjs');
 const tcContract = require('../../tc/contract.gen.cjs');
 const referralCreate = require('../tc/referralCreate');
 const referralStore = require('../tc/referralStore');
+const referralTemplateStore = require('../tc/referralTemplateStore');
 const providerStore = require('../tc/providerStore');
 const referralAttachments = require('../tc/referralAttachments');
 const transitions = require('../tc/referralTransitions');
@@ -609,6 +610,85 @@ router.put(
       sourceRef: null,
     });
     return res.json(await viewPayload(req, visit));
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// "Prescriptions needed" + "Pharmacy" — IN-APP ONLY (shared/hyg/prescriptions.ts)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Two free-form fields for the doctor and the front desk. Stored in their own
+// hyg_visit columns, never on the HygVisit the composer and the Send read, so
+// NOTHING here can reach Open Dental: no OD call, no staged write, no chart
+// payload. They ride only to the checkout card (deliverCheckout's snapshot).
+//
+// The office is req.hygOffice; the appointment is the URL's; the visit row is
+// found by BOTH, so another office's appointment is a 404. No PatNum is read
+// from the request. Audited like the slip (the text is clinical).
+
+function prescriptionsVisitNotFound(res, office) {
+  return res.status(404).json({
+    success: false,
+    error: 'No visit has been started for this appointment yet',
+    code: 'VISIT_NOT_FOUND',
+    office,
+  });
+}
+
+router.get(
+  '/:aptNum/prescriptions',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumOr400(req, res, office);
+    if (aptNum === null) return undefined;
+    const prescriptions = await tenantDb.withTenantDb(req, (pool) =>
+      visitStore.getPrescriptions(pool, { office, aptNum })
+    );
+    if (!prescriptions) return prescriptionsVisitNotFound(res, office);
+    await audit(req, {
+      action: 'READ',
+      resourceType: 'hyg_visit_prescriptions',
+      resourceId: aptNum,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+    return res.json({ success: true, office, aptNum, prescriptions });
+  })
+);
+
+router.put(
+  '/:aptNum/prescriptions',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumOr400(req, res, office);
+    if (aptNum === null) return undefined;
+    const body = parseBody(res, contract.HygPrescriptionsSaveRequestSchema, req.body);
+    if (body === null) return undefined;
+    const rxNeeded = body.rxNeeded.trim();
+    const pharmacy = body.pharmacy.trim();
+    const stored = await tenantDb.withTenantDb(req, (pool) =>
+      visitStore.savePrescriptions(pool, { office, aptNum, rxNeeded, pharmacy, actor: actorEmail(req) })
+    );
+    if (!stored) return prescriptionsVisitNotFound(res, office);
+    // Honest save: what is answered is what the database holds.
+    if (stored.rxNeeded !== rxNeeded || stored.pharmacy !== pharmacy) {
+      return res.status(500).json({
+        success: false,
+        error: 'The prescriptions could not be confirmed as saved. Reload and check them.',
+        code: 'SAVE_NOT_CONFIRMED',
+        office,
+      });
+    }
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'hyg_visit_prescriptions',
+      resourceId: aptNum,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+    return res.json({ success: true, office, aptNum, prescriptions: stored });
   })
 );
 
@@ -2589,6 +2669,8 @@ async function deliverCheckout(req, { office, aptNum, final }) {
       date,
       final,
       existingTx: ctx.existingTx,
+      // In-app only: rides to the checkout card, never to a chart.
+      prescriptions: ctx.prescriptions,
     });
     if (!built.ok) return refuse(409, built.code, built.error);
 
@@ -2944,6 +3026,26 @@ router.get(
       referralStore.listDirectory(pool, office, { includeInactive: false })
     );
     return res.json({ success: true, entries: rows.map(referralStore.toEntry) });
+  })
+);
+
+/**
+ * GET /api/hyg/visit/:aptNum/referral-templates — the office's referral note
+ * templates, so the chairside form prefills "Notes for the specialist" the
+ * way TC's does. Non-PHI office configuration (an office's own wording), read
+ * only, the same gate as the specialist list above. Never editable from here:
+ * `canEdit` is always false on this read.
+ */
+router.get(
+  '/:aptNum/referral-templates',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumOr400(req, res, office);
+    if (aptNum === null) return undefined;
+    const gate = await referralCreate.referralsGate(req, office);
+    if (gate) return res.status(gate[0]).json(gate[1]);
+    const templates = await tenantDb.withTenantDb(req, (pool) => referralTemplateStore.listTemplates(pool, office));
+    return res.json({ success: true, office, canEdit: false, templates });
   })
 );
 

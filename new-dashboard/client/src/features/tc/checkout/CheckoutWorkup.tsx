@@ -59,6 +59,7 @@ import {
 import { DX_LABELS, type DxCode } from "@shared/hyg/contract";
 import { EXISTING_TX_PATIENT_LABELS, type ExistingTxPatient } from "@shared/hyg/existingTx";
 import type { OfficeId } from "@shared/tc/contract";
+import { CheckoutPrescriptions } from "@/features/tc/checkout/CheckoutPrescriptions";
 
 /**
  * Groups the workup folds to a heading and count (CO-1 polish ruling): "Not
@@ -286,6 +287,9 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
           )}
         </div>
       )}
+
+      {/* In-app only: what the hygienist asked for, read-only. Never in Open Dental. */}
+      <CheckoutPrescriptions prescriptions={snap.prescriptions} testId="workup-prescriptions" />
 
       {!hygieneData && (
         <section className="rounded-xl border border-dashed border-border bg-muted/30 p-4 space-y-1" data-testid="workup-no-hygiene-data">

@@ -22,7 +22,13 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { tcErrorMessage } from "@/features/tc/api";
-import { logReferralCorrespondence, uploadReferralAttachment } from "@/features/tc/referrals/referralsApi";
+import {
+  getReferralTemplates,
+  logReferralCorrespondence,
+  uploadReferralAttachment,
+} from "@/features/tc/referrals/referralsApi";
+import { templateValuesFromReferral } from "@/features/tc/referrals/referralTemplatePrefill";
+import { fillReferralTemplate, templateBody } from "@shared/tc/referralTemplates";
 import { AttachmentZone } from "@/features/tc/referrals/AttachmentZone";
 import { REFERRAL_LONG_TEXT_CLASS } from "@/features/tc/referrals/longText";
 import { uploadAll } from "@/features/tc/referrals/ReferralsPanel";
@@ -94,6 +100,23 @@ export function LogCorrespondence({
   const full = filesAttached >= TC_REFERRAL_ATTACHMENT_MAX_FILES;
   const fileNote = !attachable ? CORRESPONDENCE_FILE_LOCKED_COPY : full ? CORRESPONDENCE_FILE_FULL_COPY : null;
 
+  /**
+   * The office's "correspondence note" template, filled from this referral,
+   * as the note's starting point — only into an EMPTY note, so nothing typed
+   * is ever replaced. A failed read just means no prefill.
+   */
+  function prefillNote() {
+    Promise.resolve()
+      .then(() => getReferralTemplates(office))
+      .then((res) => {
+        const body = templateBody(res.templates, "correspondence_note");
+        if (body.trim() === "") return;
+        const filled = fillReferralTemplate(body, templateValuesFromReferral(r)).slice(0, TC_REFERRAL_CORRESPONDENCE_NOTE_MAX);
+        setNote((current) => (current === "" ? filled : current));
+      })
+      .catch(() => undefined);
+  }
+
   function reset() {
     setWho("from:specialist");
     setChannel("phone");
@@ -149,6 +172,7 @@ export function LogCorrespondence({
           onClick={() => {
             setFileOutcome([]);
             setOpen(true);
+            prefillNote();
           }}
           disabled={busy}
           data-testid="tc-hub-correspondence-open"

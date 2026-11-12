@@ -125,6 +125,7 @@ import type { OrthoScreening as OrthoScreeningValue } from "@shared/hyg/orthoScr
 import type { CheckoutDelivery } from "@shared/hyg/contract";
 import { cn } from "@/lib/utils";
 import { VisitReferral } from "@/features/hyg/visit/VisitReferral";
+import { VisitPrescriptions } from "@/features/hyg/visit/VisitPrescriptions";
 
 /** How long after the last keystroke the slip is stored. */
 const SAVE_DEBOUNCE_MS = 800;
@@ -1108,6 +1109,8 @@ export default function HygVisit() {
                 onChange={onSlipChange}
               />
               <RouterSlip slip={draft} recordsNeeded={page.recordsNeeded} onChange={onSlipChange} />
+              {/* In-app only: Rx needed + pharmacy, for the checkout card. Never sent to Open Dental. */}
+              {isOfficeId(office) && page.visit ? <VisitPrescriptions office={office} aptNum={aptNum} /> : null}
               <ExistingTreatment
                 state={existingTxShown}
                 saving={existingSaving}
