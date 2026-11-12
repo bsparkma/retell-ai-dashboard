@@ -65,7 +65,15 @@ function TemplateEditor({
   const [error, setError] = useState<string | null>(null);
   const ref = useRef<HTMLTextAreaElement | null>(null);
 
+  /*
+   * Take the stored wording only when it CHANGED (a save's read-back). Not on
+   * the first run: useState already holds it, and a mount-time setBody lands
+   * AFTER anything typed before the effect flushed — wiping the typed text.
+   */
+  const seenStored = useRef(storedBody);
   useEffect(() => {
+    if (seenStored.current === storedBody) return;
+    seenStored.current = storedBody;
     setBody(storedBody);
     setError(null);
   }, [storedBody]);
