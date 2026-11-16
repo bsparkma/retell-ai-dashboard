@@ -196,6 +196,7 @@ describe.skipIf(!SHOOT)("multi-treatment screenshot dumps", () => {
     fireEvent.click(screen.getByTestId("hyg-clear-selection"));
     fireEvent.click(screen.getByTestId("hyg-tooth-3"));
     fireEvent.click(screen.getByTestId("hyg-add-Comp"));
+    fireEvent.click(screen.getByTestId("hyg-surfaces-add")); // Comp asks for surfaces; none is allowed
     await waitFor(() => expect(server.items.length).toBe(3));
     dump("hyg-multi-03-grouped@1180x3400");
   });

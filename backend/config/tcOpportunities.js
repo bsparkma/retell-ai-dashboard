@@ -29,6 +29,7 @@
  */
 
 const { OFFICES } = require('./officeAgents');
+const officeSettingsParity = require('../platform/officeSettingsParity');
 
 /** The `platform_setting` key. */
 const SETTING_KEY = 'tc_opportunities_sync';
@@ -135,6 +136,17 @@ async function switchedOnOffices(registry) {
   } catch (err) {
     return { offices: [], reason: `CONTROL_PLANE_UNREADABLE: ${(err && err.message) || err}` };
   }
+  // MT-2a parity tripwire: ON only for a stored literal true. LOGS only, never
+  // awaited, never changes an answer.
+  const on = officesOnIn(row ? row.value : null);
+  void officeSettingsParity.compare(
+    SETTING_KEY,
+    Object.fromEntries(
+      Object.keys(OFFICES)
+        .filter((k) => k !== 'unknown')
+        .map((o) => [o, on.includes(o)])
+    )
+  );
   if (!row) return { offices: [], reason: 'NO_SETTING_ROW' };
   const offices = officesOnIn(row.value);
   return { offices, reason: offices.length ? null : 'NO_OFFICE_SWITCHED_ON' };

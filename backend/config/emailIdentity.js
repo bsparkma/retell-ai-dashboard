@@ -48,6 +48,7 @@
  */
 
 const registry = require('../platform/registry');
+const officeSettingsParity = require('../platform/officeSettingsParity');
 const { OFFICES } = require('./officeAgents');
 
 const SETTING_KEY = 'tc_email_identity';
@@ -199,6 +200,20 @@ async function refreshFromDb() {
       updatedBy: row && byOffice ? row.updated_by || null : null,
     };
     loadedAt = Date.now();
+    // MT-2a parity tripwire: every stored field per real office (string or
+    // null). The tripwire logs field NAMES only, never a value. LOGS only,
+    // never awaited, never changes an answer.
+    void officeSettingsParity.compare(
+      SETTING_KEY,
+      Object.fromEntries(
+        Object.keys(OFFICES)
+          .filter(isRealOffice)
+          .map((o) => [
+            o,
+            Object.fromEntries(STORED_FIELDS.map((f) => [f, storedValue(o, /** @type {StoredField} */ (f))])),
+          ])
+      )
+    );
     return { ok: true, error: null };
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
@@ -291,7 +306,10 @@ async function persist(officeKey, values, updatedBy) {
   }
   const { all } = await readStoredFromDb(officeKey);
   all[officeKey] = next;
-  await registry.setPlatformSetting(SETTING_KEY, all, updatedBy);
+  // MT-2a: the registry also mirrors this map into office_setting, in the same
+  // transaction, and refuses (OFFICE_SETTING_READBACK_MISMATCH) if either table
+  // does not read back as asked.
+  await registry.setPlatformSetting(SETTING_KEY, all, updatedBy, { officeKey });
 
   const read = await refreshFromDb();
   const mismatch =

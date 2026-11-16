@@ -809,8 +809,15 @@ test('A: only the one route reaches the chart-note code, and nothing but a reque
   assert.match(service, /openDentalSync\.createCommLog\(/);
 
   // Who may name the commlog writer at all: the voice module itself, its legacy
-  // webhook (COMMLOG_AUTO_WRITE, off by default), and this slice's one file.
-  assert.deepEqual(requirers(/\bcreateCommLog\(/), ['routes/webhooks.js', 'services/openDentalSync.js', 'services/tc/referralChartNote.js']);
+  // webhook (COMMLOG_AUTO_WRITE, off by default), this slice's one file, and
+  // (AT-2 EDIT, disclosed) the TC "Log to chart" writer, whose own single
+  // caller is pinned in routes/tc/tcActivityChart.test.js.
+  assert.deepEqual(requirers(/\bcreateCommLog\(/), [
+    'routes/webhooks.js',
+    'services/openDentalSync.js',
+    'services/tc/referralChartNote.js',
+    'services/tc/tcChartNote.js',
+  ]);
 });
 
 test('A: every other referral action — create, moves, sign-off, marks, close, edits, correspondence, reads — writes nothing to any chart', async (t) => {

@@ -67,6 +67,20 @@ const { OpenDentalService } = require('./openDental');
  * null, and a referral chart note there is REFUSED with a named reason — it
  * never falls back to the call-note type or any other.
  *
+ * `tcCommTypeDefNum` (AT-2) is a third type, "CareIN TC" — the commlog type a
+ * TC activity-feed item is charted with ("Log to chart"). Same mechanism, read
+ * live (GET /definitions?Category=27, includeHidden) on 2026-11-12 against both
+ * practices — exactly one visible "CareIN TC" in each:
+ *
+ *     Roland       "CareIN TC" = DefNum 492
+ *     Riley/valley "CareIN TC" = DefNum 453
+ *
+ * Three families per office, no number shared across offices or families:
+ * call 486/451, referral 491/452, TC 492/453. An unconfigured office gets null
+ * and a TC chart note there is REFUSED (TC_COMMTYPE_NOT_CONFIGURED) — never a
+ * fallback to the call or referral type. An env override naming a number that
+ * another (office, type) already owns is refused the same way, not served.
+ *
  * `odEnabled` is THE reversible switch for an office's Open Dental access: flip it
  * and that office's calls get the full worklist action set and its TC screens read
  * its charts; flip it back and neither does.
@@ -91,6 +105,8 @@ const { OpenDentalService } = require('./openDental');
  * @property {number} defaultCommTypeDefNum verified default for this practice
  * @property {string} referralCommTypeEnv  process.env key overriding the referral DefNum
  * @property {number|null} defaultReferralCommTypeDefNum verified "Referral" DefNum; null = none configured
+ * @property {string} tcCommTypeEnv        process.env key overriding the "CareIN TC" DefNum
+ * @property {number|null} defaultTcCommTypeDefNum verified "CareIN TC" DefNum; null = none configured
  * @type {Readonly<Record<string, OdOfficeSettings>>}
  */
 // Outer map frozen (no office may be added or removed at runtime); the entries
@@ -115,6 +131,8 @@ const OFFICE_OD_SETTINGS = Object.freeze({
     defaultCommTypeDefNum: 486,
     referralCommTypeEnv: 'OPENDENTAL_REFERRAL_COMMTYPE_DEFNUM',
     defaultReferralCommTypeDefNum: 491,
+    tcCommTypeEnv: 'OPENDENTAL_TC_COMMTYPE_DEFNUM',
+    defaultTcCommTypeDefNum: 492,
   }),
   valley: ({
     officeKey: 'valley',
@@ -126,6 +144,8 @@ const OFFICE_OD_SETTINGS = Object.freeze({
     defaultCommTypeDefNum: 451,
     referralCommTypeEnv: 'OPENDENTAL_REFERRAL_COMMTYPE_DEFNUM_VALLEY',
     defaultReferralCommTypeDefNum: 452,
+    tcCommTypeEnv: 'OPENDENTAL_TC_COMMTYPE_DEFNUM_VALLEY',
+    defaultTcCommTypeDefNum: 453,
   }),
 });
 
@@ -142,6 +162,9 @@ const OFFICE_OD_SETTINGS = Object.freeze({
 //   referral CommType DefNum env OPENDENTAL_REFERRAL_COMMTYPE_DEFNUM[_<OFFICE>]
 //                            (positive integer, as before) > registry
 //                            commtype_defnums.referral > default > null (refuse)
+//   TC CommType DefNum       env OPENDENTAL_TC_COMMTYPE_DEFNUM[_<OFFICE>]
+//   (AT-2)                   (positive AND non-crossing, else refused) > registry
+//                            commtype_defnums.tc > default > null (refuse)
 //   odEnabled                registry od_enabled > code  (there is no env layer)
 //   hygOdEnabled (floor)     unchanged chain in config/hygPilot.js: a disabling
 //                            HYG_OD_ENABLED_<OFFICE> > platform_setting > floor,
@@ -168,11 +191,19 @@ const OFFICE_OD_SETTINGS = Object.freeze({
 // as a referral one. A crossing value is refused and the code default is
 // served instead; the parity warning for that field names the crossing.
 
-/** @typedef {'call'|'referral'} CommTypeKind */
+/** @typedef {'call'|'referral'|'tc'} CommTypeKind */
+
+/** Every commlog-type family an office configures (AT-2 added 'tc'). */
+const COMMTYPE_KINDS = /** @type {ReadonlyArray<CommTypeKind>} */ (Object.freeze(['call', 'referral', 'tc']));
 
 /** @param {OdOfficeSettings} s @param {CommTypeKind} kind @returns {number|null} */
 function codeDefaultDefNum(s, kind) {
-  const v = kind === 'call' ? s.defaultCommTypeDefNum : s.defaultReferralCommTypeDefNum;
+  const v =
+    kind === 'call'
+      ? s.defaultCommTypeDefNum
+      : kind === 'referral'
+        ? s.defaultReferralCommTypeDefNum
+        : s.defaultTcCommTypeDefNum;
   return Number.isInteger(v) && v > 0 ? v : null;
 }
 
@@ -190,7 +221,7 @@ function positiveInt(v) {
 function defNumCrossing(officeKey, kind, value) {
   for (const s of Object.values(OFFICE_OD_SETTINGS)) {
     const r = officeAgents.servedRegistryOffice(s.officeKey);
-    for (const k of /** @type {CommTypeKind[]} */ (['call', 'referral'])) {
+    for (const k of COMMTYPE_KINDS) {
       if (s.officeKey === officeKey && k === kind) continue;
       if (codeDefaultDefNum(s, k) === value) return `${s.officeKey} ${k}`;
       if (r && positiveInt(r.commTypeDefNums[k]) === value) return `${s.officeKey} ${k}`;
@@ -316,6 +347,7 @@ const clientCache = new Map();
  * @property {string} officeName       display name (for UI + log lines)
  * @property {number} commTypeDefNum   this practice's "CareIN AI Call" DefNum
  * @property {number|null} referralCommTypeDefNum this practice's "Referral" DefNum; null = not configured
+ * @property {number|null} tcCommTypeDefNum this practice's "CareIN TC" DefNum; null = not configured
  * @property {any}    client           OpenDentalService instance for this office
  */
 
@@ -362,6 +394,64 @@ function referralCommTypeDefNumFor(settings) {
   if (fromRegistry !== null) return fromRegistry;
   const fallback = settings.defaultReferralCommTypeDefNum;
   return Number.isInteger(fallback) && fallback > 0 ? fallback : null;
+}
+
+/**
+ * This office's "CareIN TC" commlog DefNum (AT-2), with the reason when there
+ * is none: env override, else the registry's (non-crossing), else the verified
+ * per-practice default, else null.
+ *
+ * Stricter than the two older types on ONE point, on purpose: an env override
+ * naming a DefNum another (office, type) already owns is REFUSED (null), not
+ * served. A valley number configured for roland is exactly the misconfig that
+ * would file a note under the wrong practice's type, and this type is new, so
+ * nothing depends on the looser behaviour. A non-numeric or non-positive
+ * override falls through to the registry/default, like the referral type's.
+ *
+ * @param {OdOfficeSettings|undefined} settings
+ * @returns {{ value: number|null, reason: string|null }}
+ */
+function tcCommTypeResolution(settings) {
+  if (!settings) return { value: null, reason: 'the office has no Open Dental settings' };
+  const parsed = parseInt(process.env[settings.tcCommTypeEnv], 10);
+  if (Number.isInteger(parsed) && parsed > 0) {
+    const owner = defNumCrossing(settings.officeKey, 'tc', parsed);
+    if (owner) {
+      return { value: null, reason: `${settings.tcCommTypeEnv}=${parsed} is the ${owner} DefNum; DefNums never cross` };
+    }
+    return { value: parsed, reason: null };
+  }
+  const fromRegistry = registryDefNum(settings.officeKey, 'tc').value;
+  if (fromRegistry !== null) return { value: fromRegistry, reason: null };
+  const fallback = settings.defaultTcCommTypeDefNum;
+  return Number.isInteger(fallback) && fallback > 0
+    ? { value: fallback, reason: null }
+    : { value: null, reason: 'no "CareIN TC" DefNum is configured' };
+}
+
+/** @param {OdOfficeSettings|undefined} settings @returns {number|null} */
+function tcCommTypeDefNumFor(settings) {
+  return tcCommTypeResolution(settings).value;
+}
+
+/**
+ * Why (if at all) a TC activity item cannot be charted for an office right now
+ * (AT-2): the office's own Open Dental readiness first, then a configured,
+ * non-crossing "CareIN TC" DefNum. Pure — no network, no client — so the feed
+ * can show the reason beside a disabled button.
+ * @param {string} officeKey
+ * @returns {{ code: string, message: string } | null}
+ */
+function tcChartNoteBlockReason(officeKey) {
+  const blocked = odBlockReason(officeKey);
+  if (blocked) return blocked;
+  if (tcCommTypeDefNumFor(OFFICE_OD_SETTINGS[officeKey]) === null) {
+    return {
+      code: 'TC_COMMTYPE_NOT_CONFIGURED',
+      message: `No "CareIN TC" chart note type is configured for ${nameOf(officeKey)}, so nothing can be written to its charts`,
+    };
+  }
+  return null;
 }
 
 /**
@@ -627,13 +717,15 @@ function getOdOffice(officeKey) {
   const officeName = nameOf(key);
   const commTypeDefNum = commTypeDefNumFor(settings);
   const referralCommTypeDefNum = referralCommTypeDefNumFor(settings);
+  const tcCommTypeDefNum = tcCommTypeDefNumFor(settings);
 
   const cached = clientCache.get(key);
   if (
     cached &&
     cached.officeName === officeName &&
     cached.commTypeDefNum === commTypeDefNum &&
-    cached.referralCommTypeDefNum === referralCommTypeDefNum
+    cached.referralCommTypeDefNum === referralCommTypeDefNum &&
+    cached.tcCommTypeDefNum === tcCommTypeDefNum
   ) {
     return cached;
   }
@@ -656,6 +748,7 @@ function getOdOffice(officeKey) {
     officeName: /** @type {string} */ (officeName),
     commTypeDefNum,
     referralCommTypeDefNum,
+    tcCommTypeDefNum,
     client,
   });
 
@@ -730,6 +823,8 @@ function servedCodeReason(d) {
       return registryDefNum(d.officeKey, 'call').reason;
     case 'commTypeDefNums.referral':
       return registryDefNum(d.officeKey, 'referral').reason;
+    case 'commTypeDefNums.tc':
+      return registryDefNum(d.officeKey, 'tc').reason;
     case 'hygOdEnabled':
       return r.hygOdEnabled === true && settings.hygOdEnabled !== true
         ? 'the registry can only lower the hygiene floor, never raise it'
@@ -747,6 +842,7 @@ const registryParity = officeRegistry.createParityCheck({
     'odCustomerKeyEnv',
     'commTypeDefNums.call',
     'commTypeDefNums.referral',
+    'commTypeDefNums.tc',
     'odEnabled',
     'hygOdEnabled',
   ],
@@ -766,6 +862,8 @@ module.exports = {
   hygSwitchState,
   isChartTargetOffice,
   referralChartNoteBlockReason,
+  tcChartNoteBlockReason,
+  COMMTYPE_KINDS,
   describeOffice,
   getOdOffice,
   assertOfficeMatch,
