@@ -15033,6 +15033,7 @@ __export(contract_entry_exports, {
   TcCheckoutCaseTreatment: () => TcCheckoutCaseTreatment,
   TcCheckoutDismissRequest: () => TcCheckoutDismissRequest,
   TcCheckoutHandoff: () => TcCheckoutHandoff,
+  TcCheckoutItemPriority: () => TcCheckoutItemPriority,
   TcCheckoutManualAddRequest: () => TcCheckoutManualAddRequest,
   TcCheckoutNextVisit: () => TcCheckoutNextVisit,
   TcCheckoutOutcome: () => TcCheckoutOutcome,
@@ -15181,6 +15182,7 @@ __export(contract_entry_exports, {
   fillPlaceholders: () => fillPlaceholders,
   fillReferralTemplate: () => fillReferralTemplate,
   galleryToRow: () => galleryToRow,
+  holdingLast: () => holdingLast,
   htmlToPlainText: () => htmlToPlainText,
   intensityFor: () => intensityFor,
   isContactAttemptDetail: () => isContactAttemptDetail,
@@ -17546,22 +17548,30 @@ var TC_INTAKE_KIND_LABELS = {
 };
 var TcIntakeSourceKey = import_zod8.z.string().min(8).max(200).regex(/^[A-Za-z0-9:_-]+$/, "a source key is letters, digits, ':', '_' and '-' only");
 var TcCheckoutPriority = import_zod8.z.enum(["urgent", "preventative", "cosmetic"]);
+var TcCheckoutItemPriority = import_zod8.z.enum(["urgent", "preventative", "cosmetic", "holding"]);
 var TC_CHECKOUT_PRIORITY_LABELS = {
   urgent: "Urgent",
   preventative: "Preventative",
-  cosmetic: "Cosmetic"
+  cosmetic: "Cosmetic",
+  holding: "Holding"
 };
 var TC_CHECKOUT_PRIORITY_ORDER = [
   "urgent",
   "preventative",
   "cosmetic"
 ];
+function holdingLast(rows, priorityOf) {
+  return [
+    ...rows.filter((r) => priorityOf(r) !== "holding"),
+    ...rows.filter((r) => priorityOf(r) === "holding")
+  ];
+}
 var TcCheckoutProcedure = import_zod8.z.object({
   /** Universal tooth numbers, or "mouth" for a whole-mouth item. */
   teeth: import_zod8.z.union([import_zod8.z.array(import_zod8.z.number().int()), import_zod8.z.literal("mouth")]),
   code: import_zod8.z.string().min(1).max(60),
   category: import_zod8.z.string().min(1).max(40),
-  priority: TcCheckoutPriority,
+  priority: TcCheckoutItemPriority,
   status: import_zod8.z.string().min(1).max(40),
   surfaces: import_zod8.z.array(import_zod8.z.string().max(4)).max(10),
   /** The hygienist marked this to schedule at the next visit. */
@@ -17596,7 +17606,10 @@ var TC_CHECKOUT_RECORDS_MAX = 60;
 var TcCheckoutRecord = import_zod8.z.object({ record: import_zod8.z.string().min(1).max(120), status: TcCheckoutRecordStatus }).strict();
 var TcCheckoutSnapshot = import_zod8.z.object({
   procedures: import_zod8.z.array(TcCheckoutProcedure).max(100),
-  /** The highest priority among the procedures; null when there are none. */
+  /**
+   * The highest priority among the NON-HOLDING procedures; null when there
+   * are none (no procedures, or only holding ones).
+   */
   priority: TcCheckoutPriority.nullable(),
   nextVisit: TcCheckoutNextVisit,
   /**
@@ -20865,6 +20878,7 @@ function odToothText(tooth) {
   TcCheckoutCaseTreatment,
   TcCheckoutDismissRequest,
   TcCheckoutHandoff,
+  TcCheckoutItemPriority,
   TcCheckoutManualAddRequest,
   TcCheckoutNextVisit,
   TcCheckoutOutcome,
@@ -21013,6 +21027,7 @@ function odToothText(tooth) {
   fillPlaceholders,
   fillReferralTemplate,
   galleryToRow,
+  holdingLast,
   htmlToPlainText,
   intensityFor,
   isContactAttemptDetail,

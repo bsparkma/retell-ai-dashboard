@@ -73,8 +73,29 @@ function sourceKeyFor(visit, kind) {
 /** TC refusal codes this module reports as themselves rather than TC_ERROR. */
 const PASSTHROUGH_CODES = new Set(['CHECKOUT_DISABLED', 'SOURCE_KEY_CONFLICT', 'CHECKOUT_UPDATE_CONFLICT']);
 
-/** Highest first, the order TC's `checkoutPriorityOf` uses. */
+/**
+ * Highest first, the order TC's `checkoutPriorityOf` uses. The VISIT-level
+ * vocabulary: three values, never 'holding'.
+ */
 const PRIORITY_ORDER = Object.freeze(['urgent', 'preventative', 'cosmetic']);
+
+/**
+ * Every value an ITEM may carry: the three above plus 'holding' — an
+ * alternative or secondary option to the proposed treatment (Beau's ruling).
+ * Holding is NOT an urgency. It travels to TC as itself, never coerced, and it
+ * never raises or determines a visit's priority, urgency or flagUrgent: every
+ * derivation below reads `urgencyItems()`, never the raw list.
+ */
+const ITEM_PRIORITIES = Object.freeze([...PRIORITY_ORDER, 'holding']);
+
+/**
+ * The items that count toward a visit's urgency: all but the holding ones.
+ * When this is empty the visit reads exactly as a visit with no items.
+ * @param {Array<{ priority?: unknown }>} items
+ */
+function urgencyItems(items) {
+  return items.filter((i) => i.priority !== 'holding');
+}
 
 /** Same derivation as services/tcCaseClient.js — one process, one port. */
 function internalBaseUrl() {
@@ -232,11 +253,14 @@ function buildIntake({ visit, appointment, handoffCategory, date, existingTx }) 
   }
 
   const slip = visit.slip || {};
-  const priorities = new Set(items.map((i) => i.priority));
+  // Holding items are alternatives, not urgencies: they are left out here, so
+  // a visit whose items are all holding takes the no-new-treatment path below.
+  const counted = urgencyItems(items);
+  const priorities = new Set(counted.map((i) => i.priority));
   // With no new treatment, the existing items set the urgency: one the
   // hygienist marked "getting worse -> urgent" is urgent; otherwise preventative
   // (existing treatment is restorative work, never cosmetic by default).
-  if (items.length === 0) {
+  if (counted.length === 0) {
     priorities.add((carried || []).some((i) => i.clinical === 'worse_urgent') ? 'urgent' : 'preventative');
   }
   const urgency = priorities.has('urgent')
@@ -538,7 +562,8 @@ function buildCheckoutIntake({ visit, snapshot, date, final, existingTx, prescri
       teeth: item.teeth === 'mouth' ? 'mouth' : Array.isArray(item.teeth) ? item.teeth : [],
       code: capped(item.code, 60) || 'Other',
       category: capped(item.category, 40) || 'Other',
-      priority: PRIORITY_ORDER.includes(item.priority) ? item.priority : 'preventative',
+      // 'holding' arrives as 'holding' — it is a real item value, not unknown.
+      priority: ITEM_PRIORITIES.includes(item.priority) ? item.priority : 'preventative',
       status: capped(item.status, 40) || 'proposed',
       surfaces: (Array.isArray(item.surfaces) ? item.surfaces : []).slice(0, 10).map((x) => capped(x, 4)),
       scheduleNext: item.scheduleNext === true,
@@ -547,7 +572,8 @@ function buildCheckoutIntake({ visit, snapshot, date, final, existingTx, prescri
       ...(dxNote ? { dxNote } : {}),
     };
   });
-  const priority = PRIORITY_ORDER.find((p) => procedures.some((x) => x.priority === p)) ?? null;
+  // From the non-holding procedures only; all-holding (or none) is null.
+  const priority = PRIORITY_ORDER.find((p) => urgencyItems(procedures).some((x) => x.priority === p)) ?? null;
 
   const slip = visit.slip || {};
   const next = slip.nextVisit || {};
@@ -731,4 +757,6 @@ module.exports = {
   PERIO_MAP,
   RADIOGRAPH_MAP,
   URGENCY_BY_PRIORITY,
+  ITEM_PRIORITIES,
+  urgencyItems,
 };

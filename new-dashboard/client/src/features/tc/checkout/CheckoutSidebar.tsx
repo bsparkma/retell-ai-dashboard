@@ -38,7 +38,9 @@ import {
   TC_CHECKOUT_RECORD_STATUS_LABELS,
   TC_CHECKOUT_STATUS_LABELS,
   checkoutHasHygieneData,
+  holdingLast,
   type TcCheckoutHandoff,
+  type TcCheckoutItemPriority,
   type TcCheckoutPriority,
 } from "@shared/tc/checkout";
 import type { OfficeId } from "@shared/tc/contract";
@@ -48,10 +50,12 @@ import { CheckoutPrescriptions } from "@/features/tc/checkout/CheckoutPrescripti
 
 export { checkoutClock };
 
-export const PRIORITY_CLASS: Record<TcCheckoutPriority, string> = {
+export const PRIORITY_CLASS: Record<TcCheckoutItemPriority, string> = {
   urgent: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
   preventative: "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300",
   cosmetic: "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-300",
+  // An alternative option, not an urgency: neutral grey, never a warning.
+  holding: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
 };
 
 /** The workup view's address for one checkout (CO-1): linkable, office in the query. */
@@ -76,7 +80,7 @@ export function PriorityChip({ priority, prefix = "" }: { priority: TcCheckoutPr
  * "Preventative" were the category. Now the priority is a filled, coloured pill
  * that SAYS "priority", and the category is a plain outlined tag.
  */
-export function ProcedureTags({ priority, category }: { priority: TcCheckoutPriority; category: string }) {
+export function ProcedureTags({ priority, category }: { priority: TcCheckoutItemPriority; category: string }) {
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5">
       <span
@@ -253,7 +257,10 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
                     <p className="text-sm text-muted-foreground">Nothing staged at the hygiene visit.</p>
                   ) : (
                     <ul className="space-y-2" data-testid="checkout-procedures">
-                      {snap.procedures.map((p, i) => (
+                      {holdingLast(
+                        snap.procedures.map((p, i) => ({ p, i })),
+                        (r) => r.p.priority,
+                      ).map(({ p, i }) => (
                         <li key={i} className="rounded-lg border border-border p-2.5 text-sm">
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="font-medium text-foreground">{teethLine(p.teeth)} {p.code}</span>

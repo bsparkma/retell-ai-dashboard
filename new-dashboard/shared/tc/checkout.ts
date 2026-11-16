@@ -62,22 +62,51 @@ export const TcIntakeSourceKey = z
   .regex(/^[A-Za-z0-9:_-]+$/, "a source key is letters, digits, ':', '_' and '-' only");
 export type TcIntakeSourceKey = z.infer<typeof TcIntakeSourceKey>;
 
-/** The visit's treatment priority, as TC stores it on a checkout. */
+/**
+ * The VISIT's treatment priority, as TC stores it on a checkout. Three values,
+ * never "holding": see `TcCheckoutItemPriority`.
+ */
 export const TcCheckoutPriority = z.enum(["urgent", "preventative", "cosmetic"]);
 export type TcCheckoutPriority = z.infer<typeof TcCheckoutPriority>;
 
-export const TC_CHECKOUT_PRIORITY_LABELS: Record<TcCheckoutPriority, string> = {
+/**
+ * One staged PROCEDURE's priority: the visit's three, plus "holding" — an
+ * alternative or secondary option to the proposed treatment (Beau's ruling).
+ * Holding is NOT an urgency: it never raises, and never determines, the
+ * visit-level priority, the card's urgency or a case's urgency
+ * (`checkoutPriorityOf` skips it), and it is never styled as a warning.
+ */
+export const TcCheckoutItemPriority = z.enum(["urgent", "preventative", "cosmetic", "holding"]);
+export type TcCheckoutItemPriority = z.infer<typeof TcCheckoutItemPriority>;
+
+export const TC_CHECKOUT_PRIORITY_LABELS: Record<TcCheckoutItemPriority, string> = {
   urgent: "Urgent",
   preventative: "Preventative",
   cosmetic: "Cosmetic",
+  holding: "Holding",
 };
 
-/** Highest first — the order `checkoutPriorityOf` picks by. */
+/** Highest first — the order `checkoutPriorityOf` picks by. Holding is not in it. */
 export const TC_CHECKOUT_PRIORITY_ORDER: readonly TcCheckoutPriority[] = [
   "urgent",
   "preventative",
   "cosmetic",
 ];
+
+/**
+ * Rows in display order: holding items after the rest, each group in the order
+ * the hygienist entered it (a stable partition, not a re-sort — nothing on
+ * these screens was ordered by priority before, and the non-holding items keep
+ * exactly the order they always had). `priorityOf` reads a row's priority, so
+ * a caller can carry the procedure's ORIGINAL index alongside it (the workup's
+ * marks are keyed by that index). Pure.
+ */
+export function holdingLast<T>(rows: readonly T[], priorityOf: (row: T) => TcCheckoutItemPriority): T[] {
+  return [
+    ...rows.filter((r) => priorityOf(r) !== "holding"),
+    ...rows.filter((r) => priorityOf(r) === "holding"),
+  ];
+}
 
 /** One staged procedure, as the hygienist left it. */
 export const TcCheckoutProcedure = z
@@ -86,7 +115,7 @@ export const TcCheckoutProcedure = z
     teeth: z.union([z.array(z.number().int()), z.literal("mouth")]),
     code: z.string().min(1).max(60),
     category: z.string().min(1).max(40),
-    priority: TcCheckoutPriority,
+    priority: TcCheckoutItemPriority,
     status: z.string().min(1).max(40),
     surfaces: z.array(z.string().max(4)).max(10),
     /** The hygienist marked this to schedule at the next visit. */
@@ -148,7 +177,10 @@ export type TcCheckoutRecord = z.infer<typeof TcCheckoutRecord>;
 export const TcCheckoutSnapshot = z
   .object({
     procedures: z.array(TcCheckoutProcedure).max(100),
-    /** The highest priority among the procedures; null when there are none. */
+    /**
+     * The highest priority among the NON-HOLDING procedures; null when there
+     * are none (no procedures, or only holding ones).
+     */
     priority: TcCheckoutPriority.nullable(),
     nextVisit: TcCheckoutNextVisit,
     /**
@@ -659,9 +691,13 @@ export const TcCheckoutSubmitResponse = z.object({
 });
 export type TcCheckoutSubmitResponse = z.infer<typeof TcCheckoutSubmitResponse>;
 
-/** The highest priority among procedures, or null for none. Pure. */
+/**
+ * The highest priority among procedures, or null for none. Holding procedures
+ * are skipped (not in TC_CHECKOUT_PRIORITY_ORDER), so a list of only holding
+ * items is null — exactly as an empty list. Pure.
+ */
 export function checkoutPriorityOf(
-  procedures: readonly { priority: TcCheckoutPriority }[],
+  procedures: readonly { priority: TcCheckoutItemPriority }[],
 ): TcCheckoutPriority | null {
   for (const p of TC_CHECKOUT_PRIORITY_ORDER) {
     if (procedures.some((x) => x.priority === p)) return p;

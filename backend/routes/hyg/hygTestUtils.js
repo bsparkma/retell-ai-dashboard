@@ -256,7 +256,8 @@ class FakeHygDb extends FakeAuditDb {
   }
 
   static OFFICES = ['roland', 'valley'];
-  static PRIORITIES = ['urgent', 'preventative', 'cosmetic'];
+  /** The CHECK as 1794800000000_hyg_priority_holding leaves it. */
+  static PRIORITIES = ['urgent', 'preventative', 'cosmetic', 'holding'];
   static CATEGORIES = [
     'Restorative', 'Endo', 'Surgery', 'Perio', 'Prosth', 'Ortho', 'Cosmetic', 'Other',
   ];
