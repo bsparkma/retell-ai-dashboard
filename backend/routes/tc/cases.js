@@ -41,6 +41,8 @@ const tcCheckout = require('../../config/tcCheckout');
 const odPipelineSync = require('../../services/tc/odPipelineSync');
 // AT-1: the Activity tab's merged, paged feed (read-only).
 const activityFeed = require('./activityFeed');
+// AT-2: "Log to chart" (review-then-send; the POST handler below is its only caller).
+const activityChart = require('./activityChart');
 const { isEntitledModule } = require('../../middleware/tenantContext');
 const unifiedCallStore = require('../../services/unifiedCallStore');
 
@@ -535,7 +537,50 @@ router.get(
     if (!page) return notFound(res, 'case');
 
     await auditTc(req, 'READ', 'tc_case_activity', caseId, { office: req.tcOffice });
-    res.json({ success: true, items: page.items, nextCursor: page.nextCursor });
+    res.json({
+      success: true,
+      items: page.items,
+      nextCursor: page.nextCursor,
+      // AT-2: whether "Log to chart" can write for this office right now (pure).
+      chartWrite: activityChart.writeAvailability(req.tcOffice),
+    });
+  })
+);
+
+// ── AT-2: "Log to chart" — one feed item to the patient's Open Dental chart ─
+//
+// GET is the preview the dialog opens with (read-only; one READ audit row).
+// POST writes ONLY the text the person approved, from THIS handler and nowhere
+// else — see routes/tc/activityChart.js for the whole sequence and
+// routes/tc/tcActivityChart.test.js for the pin that nothing else reaches it.
+
+router.get(
+  '/:caseId/activity/:itemId/chart',
+  h(async (req, res) => {
+    const caseId = parseId(res, req.params.caseId, 'case');
+    if (!caseId) return;
+    const itemId = String(req.params.itemId || '');
+    const out = await tenantDb.withTenantDb(req, (pool) =>
+      activityChart.preview(pool, { office: req.tcOffice, caseId, itemId })
+    );
+    if (out.status === 200) {
+      await auditTc(req, 'READ', 'tc_case_activity', caseId, { office: req.tcOffice, sourceRef: itemId });
+    }
+    res.status(out.status).json(out.body);
+  })
+);
+
+router.post(
+  '/:caseId/activity/:itemId/chart',
+  h(async (req, res) => {
+    const caseId = parseId(res, req.params.caseId, 'case');
+    if (!caseId) return;
+    const out = await activityChart.writeFromFeed(req, {
+      caseId,
+      itemId: String(req.params.itemId || ''),
+      body: req.body,
+    });
+    res.status(out.status).json(out.body);
   })
 );
 
