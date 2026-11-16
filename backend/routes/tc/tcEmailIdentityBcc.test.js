@@ -109,8 +109,8 @@ test('one plain address only; a refused value saves nothing', async (t) => {
 test('no app-setting fallback: no env var turns copies on, and clearing really means no copy', async (t) => {
   const { baseUrl } = await boot(t);
   // Not FIELD_NAMES (which each have an env fallback) — the copy inbox is its own field.
-  assert.deepEqual([...emailIdentity.FIELD_NAMES], ['replyTo', 'practiceName', 'practicePhone']);
-  assert.deepEqual([...emailIdentity.STORED_FIELDS], ['replyTo', 'practiceName', 'practicePhone', 'referralBcc']);
+  assert.deepEqual([...emailIdentity.FIELD_NAMES], ['replyTo', 'practiceName', 'practicePhone', 'practiceAddress']);
+  assert.deepEqual([...emailIdentity.STORED_FIELDS], ['replyTo', 'practiceName', 'practicePhone', 'practiceAddress', 'referralBcc']);
   const r = await api(baseUrl, 'GET', URL('roland'));
   assert.equal(r.body.fields.referralBcc, undefined, 'not presented as an env-backed field');
   assert.equal(r.body.referralBcc, null);

@@ -215,8 +215,11 @@ async function emailIdentityStep(office) {
   const stored = [];
   const fallback = [];
   const none = [];
-  for (const name of emailIdentity.FIELD_NAMES) {
-    const label = IDENTITY_FIELD_LABELS[name] || name;
+  // P5 judges the three fields an email signs with. The practice ADDRESS is
+  // also an identity field now, but it is P1's (the letterhead), not P5's, so
+  // this walks P5's own list rather than emailIdentity.FIELD_NAMES.
+  for (const name of /** @type {Array<keyof typeof IDENTITY_FIELD_LABELS>} */ (Object.keys(IDENTITY_FIELD_LABELS))) {
+    const label = IDENTITY_FIELD_LABELS[name];
     const source = fields[name] ? fields[name].source : 'none';
     if (source === 'stored') stored.push(label);
     else if (source === 'env') fallback.push(label);

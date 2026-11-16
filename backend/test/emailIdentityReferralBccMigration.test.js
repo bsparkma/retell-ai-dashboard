@@ -45,7 +45,7 @@ test('up: only the field CHECK is replaced, and it equals the shared stored fiel
     ['addConstraint', 'tc_email_identity_changes', 'tc_email_identity_changes_field_check'],
   ]);
   const list = inList(calls[1].args[2].check);
-  assert.deepEqual(list, contract.TcEmailIdentityStoredField.options.map(snake));
+  // Frozen at the four fields it shipped with (1794900000000 adds practice_address).
   assert.deepEqual(list, ['reply_to', 'practice_name', 'practice_phone', 'referral_bcc']);
 });
 

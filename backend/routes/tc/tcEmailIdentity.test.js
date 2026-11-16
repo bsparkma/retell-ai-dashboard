@@ -130,6 +130,7 @@ test('P: a save is read back, in force for the next email, and null clears back 
       replyTo: ['frontdesk@roland.example.test', 'stored'],
       practiceName: ['Roland Example Dental', 'stored'],
       practicePhone: ['(918) 555-0142', 'stored'],
+      practiceAddress: [null, 'none'],
     }
   );
   assert.equal(r.body.updatedBy, 'tc@carein.ai');
@@ -186,7 +187,7 @@ test('S: strict body — a smuggled from, office or extra key is a 400; a missin
   for (const body of [
     { ...IDENTITY, from: 'ceo@roland.example.test' },
     { ...IDENTITY, office: 'valley' },
-    { ...IDENTITY, practiceAddress: '1 Example St' },
+    { ...IDENTITY, practiceFax: '(918) 555-0199' },
     { replyTo: IDENTITY.replyTo, practiceName: IDENTITY.practiceName },
   ]) {
     const r = await api(baseUrl, 'PUT', URL('roland'), body);
@@ -279,6 +280,6 @@ test('guards: no Open Dental anywhere in the slice, and the From is not an edita
   const fs = require('node:fs');
   const src = fs.readFileSync(`${__dirname}/emailIdentity.js`, 'utf8') + fs.readFileSync(`${__dirname}/../../config/emailIdentity.js`, 'utf8');
   assert.doesNotMatch(src, /require\([^)]*(openDental|odOffices|odAccess|odClient)/i);
-  assert.deepEqual([...emailIdentity.FIELD_NAMES], ['replyTo', 'practiceName', 'practicePhone']);
+  assert.deepEqual([...emailIdentity.FIELD_NAMES], ['replyTo', 'practiceName', 'practicePhone', 'practiceAddress']);
   for (const f of emailIdentity.FIELD_NAMES) assert.doesNotMatch(emailIdentity.FIELDS[f].envPrefix, /FROM/);
 });

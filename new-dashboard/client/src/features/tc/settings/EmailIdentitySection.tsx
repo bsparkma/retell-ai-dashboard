@@ -9,6 +9,9 @@
  *     value and the app setting (if there is one) applies again.
  *   - The From address is shown, never editable: it is tied to the verified
  *     sending domain and the platform manages it.
+ *   - (Setup polish) "Practice address": the letterhead / footer address, a
+ *     multi-line box with the same "In use: …" line as the phone. Shown only
+ *     when the server reports the field (an older server cannot take it).
  *   - (R6.3) "Send a copy to (BCC)": an optional inbox every referral letter
  *     is blind-copied to. Saved here only (no app-setting fallback); empty =
  *     no copy.
@@ -24,10 +27,12 @@ import { Loader2, Lock, Mail, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { tcErrorMessage } from "@/features/tc/api";
 import { getEmailIdentity, saveEmailIdentity } from "@/features/tc/emailIdentity/emailIdentityApi";
 import {
   EMAIL_IDENTITY_LIMITS,
+  TC_EMAIL_IDENTITY_ADDRESS_LABEL,
   TC_EMAIL_IDENTITY_FIELD_LABELS,
   TcEmailIdentityField,
   type TcEmailIdentityFieldState,
@@ -37,10 +42,11 @@ import type { OfficeId } from "@shared/tc/contract";
 
 const FIELDS = TcEmailIdentityField.options;
 
-/** The three identity fields plus (R6.3) the referral copy inbox. */
-type Drafts = Record<TcEmailIdentityField, string> & { referralBcc: string };
+/** The three identity fields, the practice address, and (R6.3) the referral copy inbox. */
+type Drafts = Record<TcEmailIdentityField, string> & { practiceAddress: string; referralBcc: string };
 
 const BCC_ID = "tc-email-identity-referralBcc";
+const ADDRESS_ID = "tc-email-identity-practiceAddress";
 
 const HINTS: Record<TcEmailIdentityField, string> = {
   replyTo: "Where a reply lands. Referral letters need one: the specialist replies with findings.",
@@ -53,6 +59,7 @@ function draftsOf(state: TcEmailIdentityResponse): Drafts {
     replyTo: state.fields.replyTo.stored ?? "",
     practiceName: state.fields.practiceName.stored ?? "",
     practicePhone: state.fields.practicePhone.stored ?? "",
+    practiceAddress: state.fields.practiceAddress?.stored ?? "",
     referralBcc: state.referralBcc ?? "",
   };
 }
@@ -94,6 +101,8 @@ export function EmailIdentitySection({ office }: { office: OfficeId }) {
         practiceName: value(drafts.practiceName),
         practicePhone: value(drafts.practicePhone),
         referralBcc: value(drafts.referralBcc),
+        // Only to a server that reports the address (its strict body would refuse it otherwise).
+        ...(state?.fields.practiceAddress ? { practiceAddress: value(drafts.practiceAddress) } : {}),
       });
       setState(next);
       setDrafts(draftsOf(next));
@@ -125,8 +134,11 @@ export function EmailIdentitySection({ office }: { office: OfficeId }) {
   }
 
   const savedBcc = state.referralBcc ?? "";
+  const address = state.fields.practiceAddress;
   const dirty =
-    FIELDS.some((f) => drafts[f].trim() !== (state.fields[f].stored ?? "")) || drafts.referralBcc.trim() !== savedBcc;
+    FIELDS.some((f) => drafts[f].trim() !== (state.fields[f].stored ?? "")) ||
+    drafts.referralBcc.trim() !== savedBcc ||
+    (address !== undefined && drafts.practiceAddress.trim() !== (address.stored ?? ""));
 
   return (
     <div className="bg-card rounded-xl border border-border p-4 shadow-sm space-y-4" data-testid="tc-email-identity-section">
@@ -186,6 +198,27 @@ export function EmailIdentitySection({ office }: { office: OfficeId }) {
             </div>
           );
         })}
+        {address ? (
+          <div className="space-y-1">
+            <Label htmlFor={ADDRESS_ID}>{TC_EMAIL_IDENTITY_ADDRESS_LABEL}</Label>
+            <Textarea
+              id={ADDRESS_ID}
+              data-testid={ADDRESS_ID}
+              rows={3}
+              value={drafts.practiceAddress}
+              maxLength={EMAIL_IDENTITY_LIMITS.practiceAddress}
+              placeholder={address.fallback ?? "Street\nCity, State ZIP"}
+              disabled={saving}
+              onChange={(ev) => setDrafts({ ...drafts, practiceAddress: ev.target.value })}
+            />
+            <p className="text-xs text-muted-foreground">
+              Printed on the letterhead and referral letters, and shown in every email's footer. One line per row.
+            </p>
+            <p className="text-xs text-foreground break-words whitespace-pre-line" data-testid={`${ADDRESS_ID}-in-use`}>
+              {inUseLine(address)}
+            </p>
+          </div>
+        ) : null}
         {/* R6.3: the referral copy inbox. Saved here or not at all — no app-setting fallback. */}
         <div className="space-y-1 border-t border-border pt-4">
           <Label htmlFor={BCC_ID}>Send a copy to (BCC)</Label>
