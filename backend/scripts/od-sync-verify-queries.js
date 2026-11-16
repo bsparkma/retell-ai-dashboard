@@ -111,7 +111,7 @@ function steps(client) {
   const pool = poolOver(client);
   const audited = [];
   const run = () =>
-    engine.syncOffice({ office: OFFICE, pool, trigger: 'nightly', odGet, sw: { isEnabled: async () => true }, audit: async (e) => audited.push(...e) });
+    engine.syncOffice({ tenantSlug: 'carein', office: OFFICE, pool, trigger: 'nightly', odGet, sw: { isEnabled: async () => true }, audit: async (e) => audited.push(...e) });
   const s = {};
 
   const mustRefuse = (name, sql, params) => ({
