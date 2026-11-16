@@ -465,6 +465,7 @@ describe("treatment items", () => {
     await screen.findByTestId("hyg-visit");
     fireEvent.click(screen.getByTestId("hyg-tooth-14"));
     fireEvent.click(screen.getByTestId("hyg-add-Comp"));
+    fireEvent.click(screen.getByTestId("hyg-surfaces-add")); // Comp asks for surfaces; none is allowed
 
     // A default of "urgent" would make the word mean nothing by Friday.
     await waitFor(() => expect(server.items[0].priority).toBe("preventative"));
