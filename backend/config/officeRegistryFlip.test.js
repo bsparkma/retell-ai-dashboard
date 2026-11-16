@@ -374,9 +374,9 @@ test('the hygiene floor can be lowered by the registry but never raised', async 
     env(SYNTHETIC_KEYS);
     for (const r of state.rows) r.hyg_od_enabled = true;
     await officeRegistry.refreshFromDb();
-    assert.equal(odOffices.isHygOdReady('roland'), false);
-    assert.equal(odOffices.hygOdBlockReason('valley').code, 'OFFICE_HYG_NOT_ENABLED');
-    assert.ok(odOffices.hygSwitchState().every((s) => s.hardcoded === false && s.enabled === false));
+    assert.equal(odOffices.isHygOdReady('carein', 'roland'), false);
+    assert.equal(odOffices.hygOdBlockReason('carein', 'valley').code, 'OFFICE_HYG_NOT_ENABLED');
+    assert.ok(odOffices.hygSwitchState('carein').every((s) => s.hardcoded === false && s.enabled === false));
     assert.ok(warnings.some((w) => w.includes("'roland' hygOdEnabled differs") && w.includes('only lower the hygiene floor')));
   });
 });

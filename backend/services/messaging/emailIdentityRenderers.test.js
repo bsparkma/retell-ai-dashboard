@@ -18,6 +18,9 @@ const emailContent = require('./emailContent');
 const referralLetter = require('./referralLetter');
 const adapter = require('./adapters/emailAdapter');
 const client = require('./acs/client');
+// MT-2b: the per-office readers SERVE office_setting. Derive it from this suite's
+// getPlatformSetting stubs, as the dual-write stores it (test infra; no assertion changes).
+require('../../platform/officeSettingsTestUtils').mirrorPlatformStubIntoOfficeSettings(registry);
 
 const ENV = {
   TC_EMAIL_ENABLED: 'true',
@@ -69,7 +72,7 @@ test.afterEach(() => {
 /** Save an identity "in the app" and load it the way boot / the timer would. */
 async function save(value) {
   storedIdentity = value;
-  await emailIdentity.refreshFromDb();
+  await emailIdentity.refreshFromDb('carein');
 }
 
 const SAVED = {
@@ -86,16 +89,16 @@ test('patient email: the footer and the practice tokens carry the SAVED identity
   process.env.ACS_EMAIL_REPLY_TO_ROLAND = 'env@roland.example.test';
   await save(SAVED);
 
-  const footer = emailContent.footerFor('roland', 'https://dashboard.example.test/u');
+  const footer = emailContent.footerFor('carein', 'roland', 'https://dashboard.example.test/u');
   assert.equal(footer.practiceName, 'Roland Example Dental');
   assert.equal(footer.practicePhone, '(918) 555-0142');
-  const values = emailContent.practiceValues('roland');
+  const values = emailContent.practiceValues('carein', 'roland');
   assert.equal(values['practice.name'], 'Roland Example Dental');
   assert.equal(values['practice.phone'], '(918) 555-0142');
   assert.equal(values['sender.email'], 'frontdesk@roland.example.test');
 
   const rendered = emailContent.renderRow(
-    { subject: 'Hello', body: 'Call us at {{practice.phone}}.', email_blocks: null, email_preheader: '' },
+    { subject: 'Hello', body: 'Call us at {{practice.phone}}.', email_blocks: null, email_preheader: '' }, 'carein',
     'roland',
     'https://dashboard.example.test/u'
   );
@@ -106,12 +109,12 @@ test('patient email: the footer and the practice tokens carry the SAVED identity
 
 test('patient email: nothing saved -> the app setting answers; nothing set -> the office label', async () => {
   await save(null);
-  assert.equal(emailContent.footerFor('roland', null).practiceName, 'Roland', 'the office label, as before R5c');
-  assert.equal(emailContent.practiceValues('roland')['sender.email'], null);
+  assert.equal(emailContent.footerFor('carein', 'roland', null).practiceName, 'Roland', 'the office label, as before R5c');
+  assert.equal(emailContent.practiceValues('carein', 'roland')['sender.email'], null);
   process.env.TC_EMAIL_PRACTICE_NAME_ROLAND = 'Env Name';
   process.env.ACS_EMAIL_REPLY_TO_ROLAND = 'env@roland.example.test';
-  assert.equal(emailContent.footerFor('roland', null).practiceName, 'Env Name');
-  assert.equal(emailContent.practiceValues('roland')['sender.email'], 'env@roland.example.test');
+  assert.equal(emailContent.footerFor('carein', 'roland', null).practiceName, 'Env Name');
+  assert.equal(emailContent.practiceValues('carein', 'roland')['sender.email'], 'env@roland.example.test');
 });
 
 test('patient email: the Reply-To header the adapter sends is the SAVED one', async () => {
@@ -135,7 +138,7 @@ test('patient email: the Reply-To header the adapter sends is the SAVED one', as
       html: '<!doctype html><p>hi</p>',
       unsubscribeUrl: 'https://dashboard.example.test/api/webhooks/email/unsubscribe?t=x',
     },
-    { officeKey: 'roland', officeName: 'Roland' }
+    { officeKey: 'roland', officeName: 'Roland', tenantSlug: 'carein' }
   );
   const post = calls.find((c) => c.method === 'POST');
   assert.deepEqual(post.body.replyTo, [{ address: 'frontdesk@roland.example.test' }]);
@@ -146,6 +149,7 @@ test('referral letter: the footer signs with the SAVED name and phone', async ()
   process.env.TC_EMAIL_PRACTICE_NAME_ROLAND = 'Env Name';
   await save(SAVED);
   const out = emailContent.renderReferralLetter({
+    tenantSlug: 'carein',
     office: 'roland',
     subject: 'Referral',
     text: 'Please see the patient.',
@@ -159,9 +163,9 @@ test('referral letter: the footer signs with the SAVED name and phone', async ()
 test('referral gate: a SAVED reply-to satisfies it with no app setting; neither -> the honest refusal', async () => {
   delete process.env.ACS_EMAIL_REPLY_TO_ROLAND;
   await save(null);
-  assert.equal(referralLetter.unavailableReason('roland'), 'office_not_configured');
+  assert.equal(referralLetter.unavailableReason('carein', 'roland'), 'office_not_configured');
   assert.throws(
-    () => referralLetter.assertAvailable('roland'),
+    () => referralLetter.assertAvailable('carein', 'roland'),
     (e) =>
       e.code === 'FEATURE_DISABLED' &&
       /no reply-to address for referral email yet/.test(e.message) &&
@@ -170,15 +174,15 @@ test('referral gate: a SAVED reply-to satisfies it with no app setting; neither 
   );
 
   await save(SAVED);
-  assert.equal(referralLetter.unavailableReason('roland'), null);
-  assert.doesNotThrow(() => referralLetter.assertAvailable('roland'));
+  assert.equal(referralLetter.unavailableReason('carein', 'roland'), null);
+  assert.doesNotThrow(() => referralLetter.assertAvailable('carein', 'roland'));
 });
 
 test("referral gate: a missing SENDER says it is the platform's, never sends the office to Settings", async () => {
   delete process.env.ACS_EMAIL_FROM_ROLAND;
   await save(SAVED);
   assert.throws(
-    () => referralLetter.assertAvailable('roland'),
+    () => referralLetter.assertAvailable('carein', 'roland'),
     (e) => /no referral sending address set up yet \(the platform sets that up\)/.test(e.message) && !/Settings/.test(e.message)
   );
 });

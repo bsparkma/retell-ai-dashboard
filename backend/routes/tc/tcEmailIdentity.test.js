@@ -135,8 +135,8 @@ test('P: a save is read back, in force for the next email, and null clears back 
   );
   assert.equal(r.body.updatedBy, 'tc@carein.ai');
   // The send path reads it right away — no wait for the 5-minute refresh.
-  assert.equal(acsConfig.replyToFor('roland'), 'frontdesk@roland.example.test');
-  assert.equal(acsConfig.practiceNameFor('roland'), 'Roland Example Dental');
+  assert.equal(acsConfig.replyToFor('carein', 'roland'), 'frontdesk@roland.example.test');
+  assert.equal(acsConfig.practiceNameFor('carein', 'roland'), 'Roland Example Dental');
 
   const cleared = await api(baseUrl, 'PUT', URL('roland'), { ...IDENTITY, replyTo: null });
   assert.equal(cleared.status, 200);
@@ -144,7 +144,7 @@ test('P: a save is read back, in force for the next email, and null clears back 
     [cleared.body.fields.replyTo.value, cleared.body.fields.replyTo.source],
     ['env@roland.example.test', 'env']
   );
-  assert.equal(acsConfig.replyToFor('roland'), 'env@roland.example.test');
+  assert.equal(acsConfig.replyToFor('carein', 'roland'), 'env@roland.example.test');
 });
 
 test('P: identities are per office — saving roland leaves valley untouched, and the other way round', async (t) => {
@@ -155,7 +155,7 @@ test('P: identities are per office — saving roland leaves valley untouched, an
   const valley = await api(baseUrl, 'GET', URL('valley'));
   assert.equal(valley.body.fields.replyTo.value, 'front@valley.example.test');
   assert.equal(valley.body.fields.practiceName.value, null);
-  assert.equal(acsConfig.replyToFor('valley'), 'front@valley.example.test');
+  assert.equal(acsConfig.replyToFor('carein', 'valley'), 'front@valley.example.test');
 });
 
 test('V: reply-to must be one plain address; caps and single-line rules are enforced; nothing is saved', async (t) => {

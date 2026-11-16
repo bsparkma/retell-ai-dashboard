@@ -17,6 +17,7 @@ const { randomUUID } = require('node:crypto');
 const express = require('express');
 
 const registry = require('../platform/registry');
+const { mirrorPlatformStubIntoOfficeSettings } = require('../platform/officeSettingsTestUtils');
 const tenantDb = require('../platform/tenantDb');
 const userContext = require('../platform/userContext');
 const tcReferrals = require('../config/tcReferrals');
@@ -72,6 +73,8 @@ async function boot(t, { superAdmin = true } = {}) {
     return row;
   };
   userContext.clearCache();
+  // MT-2b: office_setting is served; derive it from the stub above (test infra).
+  const restoreOfficeSettingsMirror = mirrorPlatformStubIntoOfficeSettings(registry);
   const db = new FakeTenantDb();
   tenantDb.withTenantDb = async (_req, fn) => fn(db);
 
@@ -92,6 +95,7 @@ async function boot(t, { superAdmin = true } = {}) {
     () =>
       new Promise((r) => {
         for (const k of REGISTRY_KEYS) registry[k] = originals.registry[k];
+        restoreOfficeSettingsMirror();
         tenantDb.withTenantDb = originals.withTenantDb;
         for (const [k, v] of Object.entries(originals.env)) {
           if (v === undefined) delete process.env[k];

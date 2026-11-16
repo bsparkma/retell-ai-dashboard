@@ -33,6 +33,7 @@ const test = require('node:test');
 const express = require('express');
 
 const registry = require('../platform/registry');
+const { mirrorPlatformStubIntoOfficeSettings } = require('../platform/officeSettingsTestUtils');
 const tenantDb = require('../platform/tenantDb');
 const userContext = require('../platform/userContext');
 const odOffices = require('../config/odOffices');
@@ -165,6 +166,8 @@ async function bootBoth({
   };
 
   userContext.clearCache();
+  // MT-2b: office_setting is served; derive it from the stub above (test infra).
+  const restoreOfficeSettingsMirror = mirrorPlatformStubIntoOfficeSettings(registry);
   const db = new FakeAuditDb();
   tenantDb.withTenantDb = async (_req, fn) => fn(db);
   process.env.DASHBOARD_API_TOKEN = 'test-token';
@@ -199,6 +202,7 @@ async function bootBoth({
         close: () =>
           new Promise((r) => {
             for (const k of REGISTRY_KEYS) registry[k] = originals.registry[k];
+        restoreOfficeSettingsMirror();
             tenantDb.withTenantDb = originals.withTenantDb;
             odOffices.getOdOffice = originals.getOdOffice;
             for (const [k, v] of Object.entries(originals.keys)) {

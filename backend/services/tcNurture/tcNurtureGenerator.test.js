@@ -96,7 +96,7 @@ test('a due touch becomes ONE draft, the enrollment advances, an event is writte
   const c = seedCase(db);
   const e = seedEnrollment(db, c);
   const now = fiveAm('2026-10-14');
-  const out = await generator.runForOffice({ pool: db, office: 'roland', now, tz: TZ });
+  const out = await generator.runForOffice({ pool: db, tenantSlug: 'carein', office: 'roland', now, tz: TZ });
   assert.equal(out.due, 1);
   assert.equal(out.queued, 1);
   assert.deepEqual(hits, { adapter: 0, sendMessage: 0 });
@@ -133,8 +133,8 @@ test('a second pass the same night drafts nothing more (the claim is index-condi
   const db = new FakeTenantDb();
   seedEnrollment(db, seedCase(db));
   const now = fiveAm('2026-10-14');
-  await generator.runForOffice({ pool: db, office: 'roland', now, tz: TZ });
-  const again = await generator.runForOffice({ pool: db, office: 'roland', now, tz: TZ });
+  await generator.runForOffice({ pool: db, tenantSlug: 'carein', office: 'roland', now, tz: TZ });
+  const again = await generator.runForOffice({ pool: db, tenantSlug: 'carein', office: 'roland', now, tz: TZ });
   assert.equal(again.due, 0);
   assert.equal(db.table('tc_messages').length, 1);
 });
@@ -150,7 +150,7 @@ test('a lost claim (stopped between read and write) writes no draft', async () =
   const outcome = await generator.processEnrollment(db, 'roland', due[0], {
     tz: TZ,
     now: fiveAm('2026-10-14'),
-    merge: cfg.officeMergeValues('roland'),
+    merge: cfg.officeMergeValues('carein', 'roland'),
   });
   assert.equal(outcome, 'lost_claim');
   assert.equal(db.table('tc_messages').length, 0);
@@ -172,7 +172,7 @@ test('consent blocked at draft time ⇒ STILL drafted, with the advisory hint (n
     updated_by: 'system:inbound',
     updated_at: new Date(),
   });
-  await generator.runForOffice({ pool: db, office: 'roland', now: fiveAm('2026-10-14'), tz: TZ });
+  await generator.runForOffice({ pool: db, tenantSlug: 'carein', office: 'roland', now: fiveAm('2026-10-14'), tz: TZ });
   const m = db.table('tc_messages')[0];
   assert.equal(m.status, 'draft');
   assert.equal(m.consent_blocked_hint, 'opted_out');
@@ -183,7 +183,7 @@ test('no usable address ⇒ drafted with no to_address and hint no_address; the 
   const db = new FakeTenantDb();
   const c = seedCase(db, { phone: null });
   seedEnrollment(db, c);
-  await generator.runForOffice({ pool: db, office: 'roland', now: fiveAm('2026-10-14'), tz: TZ });
+  await generator.runForOffice({ pool: db, tenantSlug: 'carein', office: 'roland', now: fiveAm('2026-10-14'), tz: TZ });
   const m = db.table('tc_messages')[0];
   assert.equal(m.to_address, null);
   assert.equal(m.consent_blocked_hint, 'no_address');
@@ -199,7 +199,7 @@ test('email touch: the case nurture_unsubscribed flag is flagged; blocks + CTA s
   const prev = process.env.TC_EMAIL_PRACTICE_PHONE_ROLAND;
   process.env.TC_EMAIL_PRACTICE_PHONE_ROLAND = '(918) 555-0100';
   try {
-    await generator.runForOffice({ pool: db, office: 'roland', now: fiveAm('2026-10-14'), tz: TZ });
+    await generator.runForOffice({ pool: db, tenantSlug: 'carein', office: 'roland', now: fiveAm('2026-10-14'), tz: TZ });
   } finally {
     if (prev === undefined) delete process.env.TC_EMAIL_PRACTICE_PHONE_ROLAND;
     else process.env.TC_EMAIL_PRACTICE_PHONE_ROLAND = prev;
@@ -229,7 +229,7 @@ test('caps at run time: a touch inside 48h of the last one is DEFERRED, not draf
     touch_key: 'ns1',
     created_at: fiveAm('2026-10-13').toISOString(),
   });
-  const out = await generator.runForOffice({ pool: db, office: 'roland', now: fiveAm('2026-10-14'), tz: TZ });
+  const out = await generator.runForOffice({ pool: db, tenantSlug: 'carein', office: 'roland', now: fiveAm('2026-10-14'), tz: TZ });
   assert.equal(out.deferred, 1);
   assert.equal(db.table('tc_messages').length, 1);
   assert.equal(e.next_touch_index, 1);
@@ -246,7 +246,7 @@ test('the STOP suffix rides every SMS until one has actually gone out; then it s
     next_touch_index: 1,
     next_touch_due_at: '2026-10-14T05:00:00.000Z',
   });
-  await generator.runForOffice({ pool: db, office: 'roland', now: fiveAm('2026-10-14'), tz: TZ });
+  await generator.runForOffice({ pool: db, tenantSlug: 'carein', office: 'roland', now: fiveAm('2026-10-14'), tz: TZ });
   const wf3 = db.table('tc_messages').find((m) => m.touch_key === 'wf3');
   assert.ok(wf3.body.endsWith('Reply STOP to opt out.'), 'first SMS carries it');
 
@@ -254,7 +254,7 @@ test('the STOP suffix rides every SMS until one has actually gone out; then it s
   wf3.status = 'sent';
   e.next_touch_index = 3;
   e.next_touch_due_at = '2026-11-20T06:00:00.000Z';
-  await generator.runForOffice({ pool: db, office: 'roland', now: fiveAm('2026-11-20'), tz: TZ });
+  await generator.runForOffice({ pool: db, tenantSlug: 'carein', office: 'roland', now: fiveAm('2026-11-20'), tz: TZ });
   const wf8 = db.table('tc_messages').find((m) => m.touch_key === 'wf8');
   assert.ok(!wf8.body.includes('Reply STOP'), wf8.body);
 });
@@ -263,7 +263,7 @@ test('the last touch completes the enrollment (no auto-chaining)', async () => {
   const db = new FakeTenantDb();
   const c = seedCase(db);
   const e = seedEnrollment(db, c, { next_touch_index: 2 }); // ns3 is the last of standard
-  await generator.runForOffice({ pool: db, office: 'roland', now: fiveAm('2026-10-14'), tz: TZ });
+  await generator.runForOffice({ pool: db, tenantSlug: 'carein', office: 'roland', now: fiveAm('2026-10-14'), tz: TZ });
   assert.equal(e.status, 'completed');
   assert.equal(e.next_touch_due_at, null);
   assert.deepEqual(db.table('tc_case_events').map((x) => x.type), ['nurture_touch_queued', 'nurture_completed']);
@@ -274,7 +274,7 @@ test('a case that went terminal behind the hook is stopped, not drafted for', as
   const db = new FakeTenantDb();
   const c = seedCase(db, { status: 'scheduled' });
   const e = seedEnrollment(db, c);
-  const out = await generator.runForOffice({ pool: db, office: 'roland', now: fiveAm('2026-10-14'), tz: TZ });
+  const out = await generator.runForOffice({ pool: db, tenantSlug: 'carein', office: 'roland', now: fiveAm('2026-10-14'), tz: TZ });
   assert.equal(out.stopped, 1);
   assert.equal(e.status, 'stopped');
   assert.equal(e.stop_reason, 'case_terminal');
@@ -285,9 +285,9 @@ test('office scoping: a valley enrollment is invisible to a roland pass', async 
   const db = new FakeTenantDb();
   const v = seedCase(db, { office_id: 'valley', patient_name: 'Stedi TestValley', od_patient_id: 7115, phone: '(479) 555-0177' });
   seedEnrollment(db, v);
-  const out = await generator.runForOffice({ pool: db, office: 'roland', now: fiveAm('2026-10-14'), tz: TZ });
+  const out = await generator.runForOffice({ pool: db, tenantSlug: 'carein', office: 'roland', now: fiveAm('2026-10-14'), tz: TZ });
   assert.equal(out.due, 0);
-  const vout = await generator.runForOffice({ pool: db, office: 'valley', now: fiveAm('2026-10-14'), tz: TZ });
+  const vout = await generator.runForOffice({ pool: db, tenantSlug: 'carein', office: 'valley', now: fiveAm('2026-10-14'), tz: TZ });
   assert.equal(vout.queued, 1);
   assert.equal(db.table('tc_messages')[0].office_id, 'valley');
 });
@@ -315,14 +315,17 @@ test('the nurture service files never reach a send path or Open Dental', () => {
 
 test('scheduler: dark with no row; runs only switched-on offices; refuses an ambiguous tenant', async () => {
   const calls = [];
-  const mk = (setting, tenants = [{ tenant_id: 'T1', status: 'active' }]) =>
+  // MT-2b: a tenant row carries its slug (the switch is read for it), and the
+  // fake registry derives office_setting from its getPlatformSetting answer (test infra).
+  const { mirrorPlatformStubIntoOfficeSettings: mirror } = require('../../platform/officeSettingsTestUtils');
+  const mk = (setting, tenants = [{ tenant_id: 'T1', slug: 'carein', status: 'active' }]) =>
     new TcNurtureScheduler({
       now: () => fiveAm('2026-10-14'),
-      registry: {
+      registry: ((r) => (mirror(r), r))({
         getPlatformSetting: async () => setting,
         listTenants: async () => tenants,
         getEnabledModules: async () => ['tc'],
-      },
+      }),
       tenantDb: { getTenantPool: async () => ({}) },
       runForOffice: async ({ office }) => {
         calls.push(office);

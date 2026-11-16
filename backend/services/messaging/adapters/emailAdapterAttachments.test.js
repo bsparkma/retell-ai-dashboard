@@ -61,7 +61,7 @@ const MESSAGE = {
   html: '<!doctype html><p>letter</p>',
   unsubscribeUrl: 'https://dashboard.example.test/api/webhooks/email/unsubscribe?t=x',
 };
-const OFFICE = { officeKey: 'roland', officeName: 'Roland' };
+const OFFICE = { officeKey: 'roland', officeName: 'Roland', tenantSlug: 'carein' };
 
 function fakeAcs() {
   const calls = [];
@@ -92,7 +92,7 @@ test('requestBytes() is the size of exactly the body that is POSTed', async () =
     subject: 'Referral — Stedi T., ünïcode',
     attachments: [{ name: 'x.png', contentType: 'image/png', contentInBase64: Buffer.alloc(5000, 7).toString('base64') }],
   };
-  const predicted = adapter.requestBytes(message, 'roland');
+  const predicted = adapter.requestBytes(message, 'carein', 'roland');
   await adapter.send(message, OFFICE);
   assert.equal(predicted, Buffer.byteLength(calls[0].raw, 'utf8'));
 });

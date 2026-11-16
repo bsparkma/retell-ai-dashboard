@@ -13,6 +13,20 @@
 
 const TENANT_ID = '00000000-0000-4000-8000-0000000000c1';
 
+/**
+ * Whether a suite has installed an in-memory control plane on the REAL
+ * registry (registry.setPoolForTests(fake)). While one is installed, the
+ * office_setting mirror below steps aside and the real registry reads that
+ * fake's office_setting table: those suites test the table itself.
+ */
+const realRegistry = require('./registry');
+let testPoolInstalled = false;
+const realSetPoolForTests = realRegistry.setPoolForTests;
+realRegistry.setPoolForTests = (fake) => {
+  testPoolInstalled = Boolean(fake);
+  return realSetPoolForTests(fake);
+};
+
 /** @param {unknown} v */
 const clone = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
 
@@ -200,4 +214,68 @@ class FakeControlPlane {
   }
 }
 
-module.exports = { FakeControlPlane, TENANT_ID };
+/**
+ * TESTS ONLY (MT-2b). Many suites drive a per-office switch by stubbing
+ * `registry.getPlatformSetting`. Since MT-2b the readers SERVE office_setting,
+ * which they read through `registry.listOfficeSettings`. This installs a
+ * `listOfficeSettings` that derives tenant 'carein's office_setting rows from
+ * whatever the suite's getPlatformSetting stub answers AT READ TIME, through
+ * the same officeSettingKeys.mirrorEntries the MT-2a dual-write mirrors with —
+ * i.e. exactly what registry.setPlatformSetting would have stored. Any other
+ * tenant holds no rows.
+ *
+ * FAILURES. office_setting is ONE read for all ten keys, while a suite's stub
+ * answers key by key, and many stubs fall through to the real registry (which
+ * throws with no control DB) for the keys they do not care about. So a key
+ * whose stub throws is read as "no row for that key"; only when EVERY key
+ * throws does this throw — the suite is simulating an unreachable control plane.
+ *
+ * It changes no assertion and no stubbed value: the suite's stub stays the one
+ * source of the test's settings. Returns a restore function.
+ *
+ * @param {{ getPlatformSetting: (key: string) => Promise<unknown>, listOfficeSettings: unknown }} registry
+ * @param {{ tenantSlug?: string }} [opts]
+ * @returns {() => void}
+ */
+function mirrorPlatformStubIntoOfficeSettings(registry, opts = {}) {
+  const tenantSlug = opts.tenantSlug || 'carein';
+  const { OFFICE_SETTING_KEYS, mirrorEntries } = require('./officeSettingKeys');
+  const saved = registry.listOfficeSettings;
+  registry.listOfficeSettings = async (slug) => {
+    // An in-memory control plane is installed on the real registry: read ITS
+    // office_setting table, not a derivation (see testPoolInstalled).
+    if (registry === realRegistry && testPoolInstalled) return saved.call(registry, slug);
+    if (slug !== tenantSlug) return [];
+    /** @type {Array<{ office_key: string, setting_key: string, value: unknown, updated_at: Date|null, updated_by: string|null }>} */
+    const rows = [];
+    /** @type {unknown[]} */
+    const errors = [];
+    for (const key of OFFICE_SETTING_KEYS) {
+      /** @type {{ value?: unknown, updated_at?: Date, updated_by?: string|null }|null} */
+      let row;
+      try {
+        row = /** @type {typeof row} */ (await registry.getPlatformSetting(key));
+      } catch (err) {
+        errors.push(err);
+        continue;
+      }
+      if (!row) continue;
+      for (const e of mirrorEntries(key, row.value)) {
+        rows.push({
+          office_key: e.officeKey,
+          setting_key: key,
+          value: e.value,
+          updated_at: row.updated_at || null,
+          updated_by: row.updated_by || null,
+        });
+      }
+    }
+    if (errors.length === OFFICE_SETTING_KEYS.length) throw errors[0];
+    return rows;
+  };
+  return () => {
+    registry.listOfficeSettings = saved;
+  };
+}
+
+module.exports = { FakeControlPlane, TENANT_ID, mirrorPlatformStubIntoOfficeSettings };

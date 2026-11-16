@@ -140,9 +140,10 @@ function snapshotNow() {
     ),
     odBlockReason: Object.fromEntries(OFFICE_INPUTS.map((k) => [k, odOffices.odBlockReason(k)])),
     isOdReady: Object.fromEntries(OFFICE_INPUTS.map((k) => [k, odOffices.isOdReady(k)])),
-    hygOdBlockReason: Object.fromEntries(OFFICE_INPUTS.map((k) => [k, odOffices.hygOdBlockReason(k)])),
-    isHygOdReady: Object.fromEntries(OFFICE_INPUTS.map((k) => [k, odOffices.isHygOdReady(k)])),
-    hygSwitchState: odOffices.hygSwitchState(),
+    // MT-2b: the hygiene getters take the tenant first; the code maps are tenant 'carein's.
+    hygOdBlockReason: Object.fromEntries(OFFICE_INPUTS.map((k) => [k, odOffices.hygOdBlockReason('carein', k)])),
+    isHygOdReady: Object.fromEntries(OFFICE_INPUTS.map((k) => [k, odOffices.isHygOdReady('carein', k)])),
+    hygSwitchState: odOffices.hygSwitchState('carein'),
     isChartTargetOffice: Object.fromEntries(OFFICE_INPUTS.map((k) => [k, odOffices.isChartTargetOffice(k)])),
     referralChartNoteBlockReason: Object.fromEntries(
       OFFICE_INPUTS.map((k) => [k, odOffices.referralChartNoteBlockReason(k)])

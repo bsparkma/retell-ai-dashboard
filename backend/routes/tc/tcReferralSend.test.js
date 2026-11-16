@@ -321,7 +321,7 @@ test('D: the email switch defaults OFF — no send, no auto-send, status says so
 test('D: env=false wins over a stored ON; referrals OFF refuses before anything', async (t) => {
   const { baseUrl, db, acsCalls } = await boot(t, { env: { TC_REFERRAL_EMAIL_ENABLED_ROLAND: 'false' } });
   const { id } = await approved(baseUrl, db);
-  assert.equal(tcReferralEmail.sourceFor('roland'), 'env');
+  assert.equal(tcReferralEmail.sourceFor('carein', 'roland'), 'env');
   assert.equal((await send(baseUrl, id)).body.code, 'REFERRAL_EMAIL_DISABLED');
   process.env.TC_REFERRALS_ENABLED_ROLAND = 'false';
   const off = await send(baseUrl, id);
@@ -953,7 +953,7 @@ test('R5c: a SAVED email identity signs the letter and sets its Reply-To, over t
         }
       : harnessGet(key);
   t.after(() => emailIdentity.resetCacheForTests());
-  await emailIdentity.refreshFromDb();
+  await emailIdentity.refreshFromDb('carein');
 
   const r = await send(baseUrl, id);
   assert.equal(r.status, 200, JSON.stringify(r.body));

@@ -255,22 +255,29 @@ test('resume never back-fills: the next touch is the preset gap from TODAY', () 
 // ── the switch ──────────────────────────────────────────────────────────────
 
 test('switch: absent = off; only literal true per known office; =false break-glass beats stored true', async () => {
-  const reg = (value) => ({ getPlatformSetting: async () => (value === undefined ? null : { value }) });
+  // MT-2b: the switch reads office_setting; each fake registry derives it from
+  // its getPlatformSetting answer, as the dual-write stores it (test infra).
+  const { mirrorPlatformStubIntoOfficeSettings: mirror } = require('../../platform/officeSettingsTestUtils');
+  const withMirror = (r) => {
+    mirror(r);
+    return r;
+  };
+  const reg = (value) => withMirror({ getPlatformSetting: async () => (value === undefined ? null : { value }) });
   const prev = process.env.TC_NURTURE_ENABLED;
   try {
     delete process.env.TC_NURTURE_ENABLED;
-    assert.deepEqual(await cfg.switchedOnOffices(reg(undefined)), { offices: [], reason: 'NO_SETTING_ROW' });
-    assert.deepEqual((await cfg.switchedOnOffices(reg({ roland: true, valley: 'true', bogus: true }))).offices, ['roland']);
-    assert.deepEqual((await cfg.switchedOnOffices(reg(true))).offices, []);
-    assert.equal(await cfg.isOfficeOn(reg({ valley: true }), 'valley'), true);
-    assert.equal(await cfg.isOfficeOn(reg({ valley: true }), 'roland'), false);
-    const unreadable = { getPlatformSetting: async () => { throw new Error('control db down'); } };
-    assert.deepEqual((await cfg.switchedOnOffices(unreadable)).offices, []);
+    assert.deepEqual(await cfg.switchedOnOffices(reg(undefined), 'carein'), { offices: [], reason: 'NO_SETTING_ROW' });
+    assert.deepEqual((await cfg.switchedOnOffices(reg({ roland: true, valley: 'true', bogus: true }), 'carein')).offices, ['roland']);
+    assert.deepEqual((await cfg.switchedOnOffices(reg(true), 'carein')).offices, []);
+    assert.equal(await cfg.isOfficeOn(reg({ valley: true }), 'carein', 'valley'), true);
+    assert.equal(await cfg.isOfficeOn(reg({ valley: true }), 'carein', 'roland'), false);
+    const unreadable = withMirror({ getPlatformSetting: async () => { throw new Error('control db down'); } });
+    assert.deepEqual((await cfg.switchedOnOffices(unreadable, 'carein')).offices, []);
     process.env.TC_NURTURE_ENABLED = 'false';
-    assert.deepEqual(await cfg.switchedOnOffices(reg({ roland: true })), { offices: [], reason: 'KILLED_BY_ENV' });
+    assert.deepEqual(await cfg.switchedOnOffices(reg({ roland: true }), 'carein'), { offices: [], reason: 'KILLED_BY_ENV' });
     // There is no env value that turns nurture ON.
     process.env.TC_NURTURE_ENABLED = 'true';
-    assert.deepEqual((await cfg.switchedOnOffices(reg(undefined))).offices, []);
+    assert.deepEqual((await cfg.switchedOnOffices(reg(undefined), 'carein')).offices, []);
   } finally {
     if (prev === undefined) delete process.env.TC_NURTURE_ENABLED;
     else process.env.TC_NURTURE_ENABLED = prev;
@@ -281,11 +288,11 @@ test('office merge values come from config: a missing phone reads "the office" a
   const prev = process.env.TC_EMAIL_PRACTICE_PHONE_ROLAND;
   try {
     delete process.env.TC_EMAIL_PRACTICE_PHONE_ROLAND;
-    let v = cfg.officeMergeValues('roland');
+    let v = cfg.officeMergeValues('carein', 'roland');
     assert.equal(v.officePhone, 'the office');
     assert.equal(v.telHref, null);
     process.env.TC_EMAIL_PRACTICE_PHONE_ROLAND = '(918) 555-0100';
-    v = cfg.officeMergeValues('roland');
+    v = cfg.officeMergeValues('carein', 'roland');
     assert.equal(v.officePhone, '(918) 555-0100');
     assert.equal(v.telHref, 'tel:+19185550100');
   } finally {
