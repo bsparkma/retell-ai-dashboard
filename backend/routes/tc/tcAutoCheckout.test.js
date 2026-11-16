@@ -48,6 +48,9 @@ const checkoutRoute = require('./checkout');
 const odSyncRoute = require('./odSync');
 const contract = require('../../tc/contract.gen.cjs');
 const { bootTcApp, api, auditRows, FakeTenantDb } = require('./tcTestUtils');
+// MT-2b: the per-office readers SERVE office_setting. Derive it from this suite's
+// getPlatformSetting stubs, as the dual-write stores it (test infra; no assertion changes).
+require('../../platform/officeSettingsTestUtils').mirrorPlatformStubIntoOfficeSettings(registry);
 
 // 2026-10-30 10:00 in America/Chicago.
 const NOW = new Date('2026-10-30T15:00:00.000Z');
@@ -412,7 +415,7 @@ test('dedupe: two sweeps racing on one appointment make ONE card (the unique ind
   const refused = emulateOriginIndex(db);
   const audits = [];
   const run = () =>
-    engine.sweepOffice({ office: 'roland', today: TODAY, pool: db, audit: async (e) => audits.push(e) });
+    engine.sweepOffice({ tenantSlug: 'carein', office: 'roland', today: TODAY, pool: db, audit: async (e) => audits.push(e) });
   const [a, b] = await Promise.all([run(), run()]);
   assert.equal(scheduleCards(db).length, 1);
   assert.equal(a.summary.created + b.summary.created, 1);
@@ -447,7 +450,7 @@ test('race: a card for the patient committed between the pre-check and the lock 
     })
   );
   const audits = [];
-  const out = await engine.sweepOffice({ office: 'roland', today: TODAY, pool: db, audit: async (e) => audits.push(e) });
+  const out = await engine.sweepOffice({ tenantSlug: 'carein', office: 'roland', today: TODAY, pool: db, audit: async (e) => audits.push(e) });
   assert.equal(out.summary.created, 0);
   assert.equal(scheduleCards(db).length, 0, 'the racing manual card stands alone');
   assert.equal(audits.length, 0);
@@ -463,7 +466,7 @@ test('race: a card from the same AptNum committed (then dismissed) between the p
       source: 'schedule', origin_apt_num: 5001, created_at: new Date(), updated_at: new Date(),
     })
   );
-  const out = await engine.sweepOffice({ office: 'roland', today: TODAY, pool: db, audit: async () => {} });
+  const out = await engine.sweepOffice({ tenantSlug: 'carein', office: 'roland', today: TODAY, pool: db, audit: async () => {} });
   assert.equal(out.summary.created, 0);
   assert.equal(scheduleCards(db).length, 1, 'only the dismissed one');
 });
@@ -510,7 +513,7 @@ test('switch OFF = zero activity: no Open Dental read, no row, no audit row — 
   assert.equal(scheduleAudits(db).length, 0);
 
   // Called directly, the engine refuses too.
-  const direct = await engine.sweepOffice({ office: 'roland', today: TODAY, pool: db, audit: async () => assert.fail('no audit') });
+  const direct = await engine.sweepOffice({ tenantSlug: 'carein', office: 'roland', today: TODAY, pool: db, audit: async () => assert.fail('no audit') });
   assert.equal(direct.status, 'off');
   assert.equal(calls.length, 0);
 });
@@ -522,14 +525,14 @@ test('switch: env =false beats a stored true (break-glass), and checkout OFF kee
     process.env.TC_AUTO_CHECKOUT_ENABLED_ROLAND = 'false';
     tcAutoCheckout.resetCacheForTests();
     const db = new FakeTenantDb();
-    const out = await engine.sweepOffice({ office: 'roland', today: TODAY, pool: db, audit: async () => {} });
+    const out = await engine.sweepOffice({ tenantSlug: 'carein', office: 'roland', today: TODAY, pool: db, audit: async () => {} });
     assert.equal(out.status, 'off');
     delete process.env.TC_AUTO_CHECKOUT_ENABLED_ROLAND;
   }
   {
     switches(t, { auto: { roland: true }, checkout: { roland: false } });
     const db = new FakeTenantDb();
-    const out = await engine.sweepOffice({ office: 'roland', today: TODAY, pool: db, audit: async () => {} });
+    const out = await engine.sweepOffice({ tenantSlug: 'carein', office: 'roland', today: TODAY, pool: db, audit: async () => {} });
     assert.equal(out.status, 'off');
   }
   assert.equal(calls.length, 0);
@@ -702,6 +705,7 @@ test('a failed audit write leaves no card behind (the audit is inside the transa
   try {
     await assert.rejects(
       engine.sweepOffice({
+        tenantSlug: 'carein',
         office: 'roland',
         today: TODAY,
         pool: db,
@@ -734,7 +738,7 @@ test('REVIEW: the switch turned off MID-SWEEP stops it — no further names read
     }
     return inner(p, params, opts);
   };
-  const out = await engine.sweepOffice({ office: 'roland', today: TODAY, pool: db, audit: async () => assert.fail('no card') });
+  const out = await engine.sweepOffice({ tenantSlug: 'carein', office: 'roland', today: TODAY, pool: db, audit: async () => assert.fail('no card') });
   assert.equal(out.status, 'off');
   assert.equal(calls.filter((c) => /^\/patients\//.test(c.path)).length, 0, 'no names read after the switch went off');
   assert.equal(handoffs(db).length, 0);
@@ -748,7 +752,7 @@ test('REVIEW: the switch turned off between two cards — the second is not made
     process.env.TC_AUTO_CHECKOUT_ENABLED_ROLAND = 'false';
     tcAutoCheckout.resetCacheForTests();
   };
-  const out = await engine.sweepOffice({ office: 'roland', today: TODAY, pool: db, audit });
+  const out = await engine.sweepOffice({ tenantSlug: 'carein', office: 'roland', today: TODAY, pool: db, audit });
   assert.equal(out.status, 'off');
   assert.deepEqual(scheduleCards(db).map((c) => c.origin_apt_num), [5001]);
 });
@@ -809,7 +813,7 @@ test('REVIEW 2: createdTotal counts a card the moment it commits, even if the sw
     n += 1;
     if (n === 2) throw new Error('audit store down');
   };
-  const run = () => engine.sweepOffice({ office: 'roland', today: TODAY, pool: db, audit });
+  const run = () => engine.sweepOffice({ tenantSlug: 'carein', office: 'roland', today: TODAY, pool: db, audit });
   await engine.ensureFresh('roland', run);
   assert.equal(engine.statusOf('roland', true).status, 'failed');
   assert.equal(engine.statusOf('roland', true).createdTotal, 1);

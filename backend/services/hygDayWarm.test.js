@@ -455,6 +455,8 @@ test('the warm re-reads the pilot switch every pass, never a boot snapshot', asy
   const registryModule = require('../platform/registry');
   const hygPilot = require('../config/hygPilot');
   const savedGet = registryModule.getPlatformSetting;
+  // MT-2b: office_setting is served; derive it from the stub below (test infra).
+  const restoreOfficeSettingsMirror = require('../platform/officeSettingsTestUtils').mirrorPlatformStubIntoOfficeSettings(registryModule);
 
   let stored = { roland: true };
   registryModule.getPlatformSetting = async (key) =>
@@ -480,6 +482,7 @@ test('the warm re-reads the pilot switch every pass, never a boot snapshot', asy
     });
   } finally {
     registryModule.getPlatformSetting = savedGet;
+    restoreOfficeSettingsMirror();
     hygPilot.resetCacheForTests();
   }
 });

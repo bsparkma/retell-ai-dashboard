@@ -14,6 +14,9 @@ const test = require('node:test');
 const registry = require('../platform/registry');
 const hygPilot = require('./hygPilot');
 const odOffices = require('./odOffices');
+// MT-2b: the per-office readers SERVE office_setting. Derive it from this suite's
+// getPlatformSetting stubs, as the dual-write stores it (test infra; no assertion changes).
+require('../platform/officeSettingsTestUtils').mirrorPlatformStubIntoOfficeSettings(registry);
 
 const KEY = hygPilot.SETTING_KEY;
 
@@ -92,25 +95,25 @@ function row(value) {
 
 test('nothing stored, nothing in the environment: OFF, from the hardcoded floor', () =>
   withControlPlane({}, async () => {
-    await hygPilot.refreshFromDb();
-    assert.equal(hygPilot.hygEnabledFor('roland', false), false);
-    assert.equal(hygPilot.sourceFor('roland'), 'default');
+    await hygPilot.refreshFromDb('carein');
+    assert.equal(hygPilot.hygEnabledFor('carein', 'roland', false), false);
+    assert.equal(hygPilot.sourceFor('carein', 'roland'), 'default');
   }));
 
 test('an app setting that says ON cannot switch an office on, and says so once', () =>
   withControlPlane({ env: { HYG_OD_ENABLED_ROLAND: '  TRUE  ' } }, async () => {
-    await hygPilot.refreshFromDb();
+    await hygPilot.refreshFromDb('carein');
     // There is no incident whose correct response is turning a module ON while
     // the control plane is down, so break-glass points one way only.
-    assert.equal(hygPilot.hygEnabledFor('roland', false), false);
+    assert.equal(hygPilot.hygEnabledFor('carein', 'roland', false), false);
     // ...and the console must not report `env` for a value that does nothing.
-    assert.equal(hygPilot.sourceFor('roland'), 'default');
+    assert.equal(hygPilot.sourceFor('carein', 'roland'), 'default');
 
     // It IS parsed (whitespace and case are not typos) and IS surfaced, because
     // silently ignoring it is the worse failure: somebody set it expecting an
     // effect, and would be left watching the module stay dark with no reason.
     assert.equal(hygPilot.envOverrideFor('roland'), true);
-    const state = hygPilot.officeState('roland', false);
+    const state = hygPilot.officeState('carein', 'roland', false);
     assert.equal(state.envEffect, 'inert');
     assert.equal(state.envRaw, '  TRUE  ');
 
@@ -130,28 +133,28 @@ test('an app setting that says ON cannot switch an office on, and says so once',
 
 test('an app setting that says OFF switches the office off — the only direction it points', () =>
   withControlPlane({ env: { HYG_OD_ENABLED_ROLAND: 'false' } }, async () => {
-    await hygPilot.refreshFromDb();
-    assert.equal(hygPilot.hygEnabledFor('roland', true), false, 'it narrows the floor');
-    assert.equal(hygPilot.sourceFor('roland'), 'env');
-    assert.equal(hygPilot.officeState('roland', true).envEffect, 'disables');
+    await hygPilot.refreshFromDb('carein');
+    assert.equal(hygPilot.hygEnabledFor('carein', 'roland', true), false, 'it narrows the floor');
+    assert.equal(hygPilot.sourceFor('carein', 'roland'), 'env');
+    assert.equal(hygPilot.officeState('carein', 'roland', true).envEffect, 'disables');
     // Per office, not a blanket switch.
-    assert.equal(hygPilot.hygEnabledFor('valley', true), true);
+    assert.equal(hygPilot.hygEnabledFor('carein', 'valley', true), true);
   }));
 
 test('an office killed from the environment stays killed, though the console says on', () =>
   withControlPlane(
     { row: row({ roland: true }), env: { HYG_OD_ENABLED_ROLAND: 'false' } },
     async () => {
-      await hygPilot.refreshFromDb();
+      await hygPilot.refreshFromDb('carein');
       // Break-glass only ever narrows, the same way hygOdBlockReason narrows
       // odBlockReason. Somebody who could not reach the console pulled this
       // lever; a control plane coming back must not undo it under them.
-      assert.equal(hygPilot.hygEnabledFor('roland', false), false);
-      assert.equal(hygPilot.sourceFor('roland'), 'env');
+      assert.equal(hygPilot.hygEnabledFor('carein', 'roland', false), false);
+      assert.equal(hygPilot.sourceFor('carein', 'roland'), 'env');
 
       // Both layers stay visible, because "the database says on and
       // HYG_OD_ENABLED_ROLAND says off" is exactly what an operator needs.
-      const state = hygPilot.officeState('roland', false);
+      const state = hygPilot.officeState('carein', 'roland', false);
       assert.equal(state.disagreesWithEnv, true);
       assert.equal(state.envEffect, 'disables');
       assert.equal(state.db, true, 'what the console holds is still reported');
@@ -165,8 +168,8 @@ test('agreement is not reported as disagreement', () =>
   withControlPlane(
     { row: row({ roland: true }), env: { HYG_OD_ENABLED_ROLAND: 'true' } },
     async () => {
-      await hygPilot.refreshFromDb();
-      assert.equal(hygPilot.officeState('roland', false).disagreesWithEnv, false);
+      await hygPilot.refreshFromDb('carein');
+      assert.equal(hygPilot.officeState('carein', 'roland', false).disagreesWithEnv, false);
     }
   ));
 
@@ -174,18 +177,18 @@ test('only a plain true/false is an env override — "yes" is not a decision', (
   withControlPlane(
     { env: { HYG_OD_ENABLED_ROLAND: 'yes', HYG_OD_ENABLED_VALLEY: '  FALSE  ' } },
     async () => {
-      await hygPilot.refreshFromDb();
+      await hygPilot.refreshFromDb('carein');
       // A switch over a real practice's chart data does not get to interpret.
       // Unparseable is not a kill signal either: it falls through entirely.
-      assert.equal(hygPilot.hygEnabledFor('roland', true), true);
-      assert.equal(hygPilot.sourceFor('roland'), 'default');
-      assert.equal(hygPilot.officeState('roland', true).envEffect, null);
+      assert.equal(hygPilot.hygEnabledFor('carein', 'roland', true), true);
+      assert.equal(hygPilot.sourceFor('carein', 'roland'), 'default');
+      assert.equal(hygPilot.officeState('carein', 'roland', true).envEffect, null);
       // ...but whitespace and case are not typos.
-      assert.equal(hygPilot.hygEnabledFor('valley', true), false);
+      assert.equal(hygPilot.hygEnabledFor('carein', 'valley', true), false);
 
       // The raw string is still surfaced, so the console can show that somebody
       // tried and that it did nothing.
-      assert.equal(hygPilot.officeState('roland', false).envRaw, 'yes');
+      assert.equal(hygPilot.officeState('carein', 'roland', false).envRaw, 'yes');
     }
   ));
 
@@ -195,61 +198,64 @@ test('a row that exists answers for EVERY office: absent means false, not inheri
   withControlPlane(
     { row: row({ roland: true }), env: { HYG_OD_ENABLED_VALLEY: 'true' } },
     async () => {
-      await hygPilot.refreshFromDb();
+      await hygPilot.refreshFromDb('carein');
       // valley is not named in the row. That is a FALSE, and the env override
       // does not rescue it: nothing in the environment can ENABLE an office.
-      assert.equal(hygPilot.hygEnabledFor('valley', false), false);
-      assert.equal(hygPilot.sourceFor('valley'), 'db');
-      assert.equal(hygPilot.officeState('valley', false).disagreesWithEnv, true);
+      assert.equal(hygPilot.hygEnabledFor('carein', 'valley', false), false);
+      assert.equal(hygPilot.sourceFor('carein', 'valley'), 'db');
+      assert.equal(hygPilot.officeState('carein', 'valley', false).disagreesWithEnv, true);
     }
   ));
 
-test('an EMPTY stored map is a decision — every office off, and the db said so', () =>
+// MT-2b: office_setting cannot hold an empty map (the mirror writes no rows), so
+// "{}" now reads as no rows: still OFF, from the floor. Documented and pinned in
+// platform/officeSettingsCareinSnapshot.test.js.
+test('an EMPTY stored map: every office off (MT-2b: from the floor — office_setting holds no rows)', () =>
   withControlPlane({ row: row({}), env: { HYG_OD_ENABLED_ROLAND: 'true' } }, async () => {
-    await hygPilot.refreshFromDb();
-    assert.equal(hygPilot.hygEnabledFor('roland', false), false);
-    assert.equal(hygPilot.sourceFor('roland'), 'db', '{} is not the same as no row');
+    await hygPilot.refreshFromDb('carein');
+    assert.equal(hygPilot.hygEnabledFor('carein', 'roland', false), false);
+    assert.equal(hygPilot.sourceFor('carein', 'roland'), 'default', 'MT-2b: {} mirrors to no rows');
   }));
 
 test('an unknown office key is ignored, and does not poison the rest of the map', () =>
   withControlPlane({ row: row({ roland: true, springfield: true }) }, async () => {
-    const res = await hygPilot.refreshFromDb();
+    const res = await hygPilot.refreshFromDb('carein');
     assert.equal(res.ok, true);
     // One typo must not make the whole switch unreadable and take a live pilot
     // office down with it.
-    assert.equal(hygPilot.hygEnabledFor('roland', false), true);
-    assert.equal(hygPilot.hygEnabledFor('springfield', false), false);
+    assert.equal(hygPilot.hygEnabledFor('carein', 'roland', false), true);
+    assert.equal(hygPilot.hygEnabledFor('carein', 'springfield', false), false);
   }));
 
 test('an office whose value is not a boolean is treated as ABSENT, which means off', () =>
   withControlPlane({ row: row({ roland: 'true', valley: true }) }, async () => {
-    await hygPilot.refreshFromDb();
-    assert.equal(hygPilot.hygEnabledFor('roland', false), false, "the STRING 'true' is not a decision");
-    assert.equal(hygPilot.hygEnabledFor('valley', false), true);
+    await hygPilot.refreshFromDb('carein');
+    assert.equal(hygPilot.hygEnabledFor('carein', 'roland', false), false, "the STRING 'true' is not a decision");
+    assert.equal(hygPilot.hygEnabledFor('carein', 'valley', false), true);
   }));
 
 test('a stored value that is not a map at all falls back, and is not an error', () =>
   withControlPlane({ row: row([1, 2, 3]) }, async () => {
-    const res = await hygPilot.refreshFromDb();
+    const res = await hygPilot.refreshFromDb('carein');
     assert.equal(res.ok, true, 'unusable is a fallback, not a failure');
     assert.equal(res.byOffice, null);
     // Treated exactly like an absent row: the floor answers, and the console is
     // told nobody has chosen rather than shown a value nothing produced.
-    assert.equal(hygPilot.hygEnabledFor('roland', false), false);
-    assert.equal(hygPilot.sourceFor('roland'), 'default');
-    assert.equal(hygPilot.policyKnown(), true, 'we DID read the control plane');
+    assert.equal(hygPilot.hygEnabledFor('carein', 'roland', false), false);
+    assert.equal(hygPilot.sourceFor('carein', 'roland'), 'default');
+    assert.equal(hygPilot.policyKnown('carein'), true, 'we DID read the control plane');
   }));
 
 // ─── failure directions ──────────────────────────────────────────────────────
 
 test('never read since boot, and nothing in the environment: every office OFF', () =>
   withControlPlane({ fail: true }, async () => {
-    const res = await hygPilot.refreshFromDb();
+    const res = await hygPilot.refreshFromDb('carein');
     assert.equal(res.ok, false);
-    assert.equal(hygPilot.policyKnown(), false);
+    assert.equal(hygPilot.policyKnown('carein'), false);
     // We do not assume the last thing we saw, because we have seen nothing.
-    assert.equal(hygPilot.hygEnabledFor('roland', false), false);
-    assert.equal(hygPilot.hygEnabledFor('valley', false), false);
+    assert.equal(hygPilot.hygEnabledFor('carein', 'roland', false), false);
+    assert.equal(hygPilot.hygEnabledFor('carein', 'valley', false), false);
   }));
 
 test('a leftover app setting cannot re-open an office somebody shut down', () =>
@@ -260,39 +266,39 @@ test('a leftover app setting cannot re-open an office somebody shut down', () =>
     // nothing is cached and the stored row cannot be consulted at all.
     { row: row({ roland: false }), fail: true, env: { HYG_OD_ENABLED_ROLAND: 'true' } },
     async () => {
-      const res = await hygPilot.refreshFromDb();
+      const res = await hygPilot.refreshFromDb('carein');
       assert.equal(res.ok, false);
-      assert.equal(hygPilot.policyKnown(), false);
+      assert.equal(hygPilot.policyKnown('carein'), false);
 
       // A restart during an outage must not re-enable a practice. This is the
       // whole reason the override is one-directional: the fast, always-available
       // path is the SAFE one.
-      assert.equal(hygPilot.hygEnabledFor('roland', false), false);
-      assert.equal(hygPilot.sourceFor('roland'), 'default');
-      assert.equal(hygPilot.officeState('roland', false).envEffect, 'inert');
+      assert.equal(hygPilot.hygEnabledFor('carein', 'roland', false), false);
+      assert.equal(hygPilot.sourceFor('carein', 'roland'), 'default');
+      assert.equal(hygPilot.officeState('carein', 'roland', false).envEffect, 'inert');
     }
   ));
 
 test('read once and then unreachable: the last known value STAYS', () =>
   withControlPlane({ row: row({ roland: true }) }, async (store) => {
-    await hygPilot.refreshFromDb();
-    assert.equal(hygPilot.hygEnabledFor('roland', false), true);
+    await hygPilot.refreshFromDb('carein');
+    assert.equal(hygPilot.hygEnabledFor('carein', 'roland', false), true);
 
     // A database blip must not switch a practice's chairside screen off
     // mid-morning any more than it should switch one on.
     registry.getPlatformSetting = async () => {
       throw new Error('control plane unreachable');
     };
-    const res = await hygPilot.refreshFromDb();
+    const res = await hygPilot.refreshFromDb('carein');
     assert.equal(res.ok, false);
-    assert.equal(hygPilot.hygEnabledFor('roland', false), true);
-    assert.equal(hygPilot.policyKnown(), true);
+    assert.equal(hygPilot.hygEnabledFor('carein', 'roland', false), true);
+    assert.equal(hygPilot.policyKnown('carein'), true);
     assert.equal(store.writes.length, 0);
   }));
 
 test('refreshFromDb never throws — it is called from a timer and a cron handler', () =>
   withControlPlane({ fail: true }, async () => {
-    const res = await hygPilot.refreshFromDb();
+    const res = await hygPilot.refreshFromDb('carein');
     assert.equal(res.ok, false);
     assert.match(String(res.error), /unreachable/);
   }));
@@ -301,20 +307,20 @@ test('refreshFromDb never throws — it is called from a timer and a cron handle
 
 test('a write merges into what the DATABASE holds, not into this cache', () =>
   withControlPlane({ row: row({ valley: true }) }, async (store) => {
-    await hygPilot.refreshFromDb();
+    await hygPilot.refreshFromDb('carein');
 
     // A runbook writes the row directly, behind this module's back.
     store.row = row({ valley: true, roland: true });
 
     // Flipping valley must not revert roland to whatever we last saw.
-    await hygPilot.persistHygEnabled('valley', false, 'boss@carein.ai');
+    await hygPilot.persistHygEnabled('carein', 'valley', false, 'boss@carein.ai');
     assert.deepEqual(store.writes.at(-1).value, { valley: false, roland: true });
   }));
 
 test('a write refuses an unknown office and a non-boolean before storing anything', () =>
   withControlPlane({}, async (store) => {
-    await assert.rejects(() => hygPilot.persistHygEnabled('springfield', true), /not an office/);
-    await assert.rejects(() => hygPilot.persistHygEnabled('roland', 'true'), /true or false/);
+    await assert.rejects(() => hygPilot.persistHygEnabled('carein', 'springfield', true), /not an office/);
+    await assert.rejects(() => hygPilot.persistHygEnabled('carein', 'roland', 'true'), /true or false/);
     assert.equal(store.writes.length, 0);
   }));
 
@@ -329,7 +335,7 @@ test('a write that cannot be read back is a failure, not a silent success', () =
       return realGet(key);
     };
     await assert.rejects(
-      () => hygPilot.persistHygEnabled('roland', true, 'boss@carein.ai'),
+      () => hygPilot.persistHygEnabled('carein', 'roland', true, 'boss@carein.ai'),
       /could not read it back/
     );
   }));
@@ -349,7 +355,7 @@ test('the switch can only NARROW what the voice path allows, never widen it', ()
      * this setting that reaches an office the voice module could not. Here the
      * switch is ON for both offices and NEITHER has a customer key.
      */
-    await hygPilot.refreshFromDb();
+    await hygPilot.refreshFromDb('carein');
 
     const savedKeys = {
       roland: process.env.OPENDENTAL_CUSTOMER_KEY,
@@ -360,13 +366,13 @@ test('the switch can only NARROW what the voice path allows, never widen it', ()
     odOffices.resetOdOfficeCache();
     try {
       for (const office of ['roland', 'valley']) {
-        assert.equal(hygPilot.hygEnabledFor(office, false), true, 'the switch is on');
-        const blocked = odOffices.hygOdBlockReason(office);
+        assert.equal(hygPilot.hygEnabledFor('carein', office, false), true, 'the switch is on');
+        const blocked = odOffices.hygOdBlockReason('carein', office);
         assert.ok(blocked, `${office} must still be refused`);
         // The VOICE path's own code, not the hygiene one — the hygiene switch
         // never gets to answer, because the base question already refused.
         assert.equal(blocked.code, 'OFFICE_OD_KEY_MISSING');
-        assert.equal(odOffices.isHygOdReady(office), false);
+        assert.equal(odOffices.isHygOdReady('carein', office), false);
       }
     } finally {
       if (savedKeys.roland === undefined) delete process.env.OPENDENTAL_CUSTOMER_KEY;
@@ -379,7 +385,7 @@ test('the switch can only NARROW what the voice path allows, never widen it', ()
 
 test('an office the voice path has switched off cannot be reached by turning hygiene on', () =>
   withControlPlane({ row: row({ roland: true }) }, async () => {
-    await hygPilot.refreshFromDb();
+    await hygPilot.refreshFromDb('carein');
 
     const settings = odOffices.OFFICE_OD_SETTINGS.roland;
     const savedOdEnabled = settings.odEnabled;
@@ -388,7 +394,7 @@ test('an office the voice path has switched off cannot be reached by turning hyg
     settings.odEnabled = false;
     odOffices.resetOdOfficeCache();
     try {
-      const blocked = odOffices.hygOdBlockReason('roland');
+      const blocked = odOffices.hygOdBlockReason('carein', 'roland');
       assert.equal(blocked.code, 'OFFICE_NOT_OD_CONNECTED');
     } finally {
       settings.odEnabled = savedOdEnabled;
@@ -400,12 +406,12 @@ test('an office the voice path has switched off cannot be reached by turning hyg
 
 test('the composed state names both the switch AND what still blocks the office', () =>
   withControlPlane({ row: row({ roland: true }) }, async () => {
-    await hygPilot.refreshFromDb();
+    await hygPilot.refreshFromDb('carein');
     const savedKey = process.env.OPENDENTAL_CUSTOMER_KEY;
     delete process.env.OPENDENTAL_CUSTOMER_KEY;
     odOffices.resetOdOfficeCache();
     try {
-      const roland = odOffices.hygSwitchState().find((o) => o.officeKey === 'roland');
+      const roland = odOffices.hygSwitchState('carein').find((o) => o.officeKey === 'roland');
       // A green toggle over a 503 is the thing the console must not show.
       assert.equal(roland.enabled, true, 'the switch is on');
       assert.equal(roland.ready, false, 'and the office still cannot serve a day');

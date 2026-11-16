@@ -32,44 +32,53 @@ const odOffices = require('../../config/odOffices');
 const acsConfig = require('../../config/acsEmail');
 const { firstNameOf } = require('./templates');
 
+/*
+ * MT-2b: every helper below takes the TENANT first — whose saved email
+ * identity (office_setting) the office's values come from. Callers pass the
+ * session tenant (services/messaging/index.js, routes/tc/referralSend.js) or
+ * the tenant a public webhook resolved from TC_EMAIL_TENANT_SLUG.
+ */
+
 /**
  * (R5c) The name an email from this office signs with: ONE identity per
  * office, the same for a patient email and a referral letter.
+ * @param {string|null} tenantSlug
  * @param {string} office
  */
-function practiceNameOf(office) {
-  return acsConfig.practiceNameFor(office) || odOffices.describeOffice(office).officeName;
+function practiceNameOf(tenantSlug, office) {
+  return acsConfig.practiceNameFor(tenantSlug, office) || odOffices.describeOffice(office).officeName;
 }
 
-/** @param {string} office */
-function practiceValues(office) {
-  const details = acsConfig.practiceDetailsFor(office);
+/** @param {string|null} tenantSlug @param {string} office */
+function practiceValues(tenantSlug, office) {
+  const details = acsConfig.practiceDetailsFor(tenantSlug, office);
   return {
-    'practice.name': practiceNameOf(office),
+    'practice.name': practiceNameOf(tenantSlug, office),
     'practice.address': details.address,
     'practice.phone': details.phone,
-    'sender.email': acsConfig.replyToFor(office),
+    'sender.email': acsConfig.replyToFor(tenantSlug, office),
   };
 }
 
 /**
  * Every value a render may use for this office + case.
+ * @param {string|null} tenantSlug
  * @param {string} office
  * @param {{ patientName?: string|null, senderName?: string|null }} ctx
  */
-function mergeValues(office, { patientName = null, senderName = null } = {}) {
+function mergeValues(tenantSlug, office, { patientName = null, senderName = null } = {}) {
   return {
-    ...practiceValues(office),
+    ...practiceValues(tenantSlug, office),
     'patient.firstName': firstNameOf(patientName) || 'there',
     'sender.name': typeof senderName === 'string' ? senderName.slice(0, 120) : null,
   };
 }
 
-/** The footer every email carries. @param {string} office @param {string|null} unsubscribeUrl */
-function footerFor(office, unsubscribeUrl) {
-  const details = acsConfig.practiceDetailsFor(office);
+/** The footer every email carries. @param {string|null} tenantSlug @param {string} office @param {string|null} unsubscribeUrl */
+function footerFor(tenantSlug, office, unsubscribeUrl) {
+  const details = acsConfig.practiceDetailsFor(tenantSlug, office);
   return {
-    practiceName: practiceNameOf(office),
+    practiceName: practiceNameOf(tenantSlug, office),
     practiceAddress: details.address,
     practicePhone: details.phone,
     unsubscribeUrl,
@@ -79,12 +88,13 @@ function footerFor(office, unsubscribeUrl) {
 /**
  * Snapshot a library template for one case: the stored draft content.
  * @param {{ subject: unknown, preheader: unknown, blocks: unknown }} template
+ * @param {string|null} tenantSlug
  * @param {string} office
  * @param {{ patientName?: string|null, senderName?: string|null }} ctx
  * @returns {{ subject: string, preheader: string, blocks: unknown[], body: string }}
  */
-function snapshotTemplate(template, office, ctx) {
-  const values = mergeValues(office, ctx);
+function snapshotTemplate(template, tenantSlug, office, ctx) {
+  const values = mergeValues(tenantSlug, office, ctx);
   const blocks = contract.fillBlockTokens(template.blocks, values);
   const subject = contract
     .fillMergeTokens(typeof template.subject === 'string' ? template.subject : '', values)
@@ -105,10 +115,11 @@ function snapshotTemplate(template, office, ctx) {
  * Practice values only: patient values were filled into the snapshot (or
  * typed by the TC) when the draft was written.
  * @param {{ subject?: string|null, body?: string|null, email_blocks?: unknown, email_preheader?: string|null }} row
+ * @param {string|null} tenantSlug
  * @param {string} office
  * @param {string|null} unsubscribeUrl  null in a preview
  */
-function renderRow(row, office, unsubscribeUrl) {
+function renderRow(row, tenantSlug, office, unsubscribeUrl) {
   const content =
     row.email_blocks != null
       ? { kind: 'blocks', blocks: row.email_blocks }
@@ -117,8 +128,8 @@ function renderRow(row, office, unsubscribeUrl) {
     subject: row.subject ?? '',
     preheader: row.email_preheader ?? '',
     content,
-    values: practiceValues(office),
-    footer: footerFor(office, unsubscribeUrl),
+    values: practiceValues(tenantSlug, office),
+    footer: footerFor(tenantSlug, office, unsubscribeUrl),
   });
 }
 
@@ -134,12 +145,12 @@ function renderRow(row, office, unsubscribeUrl) {
  * The text is composed by the caller (routes/tc/referralLetterText.js); no
  * merge token is filled here.
  * (R5b) `actions` are the letter's two link buttons, drawn under the text.
- * @param {{ office: string, subject: string, text: string, unsubscribeUrl: string|null,
+ * @param {{ tenantSlug: string|null, office: string, subject: string, text: string, unsubscribeUrl: string|null,
  *           actions?: Array<{ label: string, href: string }> }} input
  * @returns {{ subject: string, html: string, text: string }}
  */
-function renderReferralLetter({ office, subject, text, unsubscribeUrl, actions = [] }) {
-  const footer = footerFor(office, unsubscribeUrl);
+function renderReferralLetter({ tenantSlug, office, subject, text, unsubscribeUrl, actions = [] }) {
+  const footer = footerFor(tenantSlug, office, unsubscribeUrl);
   return contract.renderEmail({
     subject,
     preheader: '',
@@ -155,17 +166,17 @@ function renderReferralLetter({ office, subject, text, unsubscribeUrl, actions =
  * its one button. Composed by the caller (routes/tc/referralLetterText.js);
  * no merge token is filled.
  * `after` is the closing drawn below the button.
- * @param {{ office: string, subject: string, text: string, after?: string, unsubscribeUrl: string|null,
+ * @param {{ tenantSlug: string|null, office: string, subject: string, text: string, after?: string, unsubscribeUrl: string|null,
  *           actions: Array<{ label: string, href: string }> }} input
  * @returns {{ subject: string, html: string, text: string }}
  */
-function renderReferralPatientNotice({ office, subject, text, after = '', unsubscribeUrl, actions }) {
+function renderReferralPatientNotice({ tenantSlug, office, subject, text, after = '', unsubscribeUrl, actions }) {
   return contract.renderEmail({
     subject,
     preheader: '',
     content: { kind: 'text', body: text, literal: true, actions, after },
     values: {},
-    footer: footerFor(office, unsubscribeUrl),
+    footer: footerFor(tenantSlug, office, unsubscribeUrl),
   });
 }
 

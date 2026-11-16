@@ -16,6 +16,7 @@ const test = require('node:test');
 const express = require('express');
 
 const registry = require('../platform/registry');
+const { mirrorPlatformStubIntoOfficeSettings } = require('../platform/officeSettingsTestUtils');
 const tenantDb = require('../platform/tenantDb');
 const userContext = require('../platform/userContext');
 const tcReferralPatientEmail = require('../config/tcReferralPatientEmail');
@@ -64,6 +65,8 @@ async function boot(t, { superAdmin = true } = {}) {
     return row;
   };
   userContext.clearCache();
+  // MT-2b: office_setting is served; derive it from the stub above (test infra).
+  const restoreOfficeSettingsMirror = mirrorPlatformStubIntoOfficeSettings(registry);
   const db = new FakeTenantDb();
   tenantDb.withTenantDb = async (_req, fn) => fn(db);
 
@@ -83,6 +86,7 @@ async function boot(t, { superAdmin = true } = {}) {
     () =>
       new Promise((r) => {
         for (const k of REGISTRY_KEYS) registry[k] = originals.registry[k];
+        restoreOfficeSettingsMirror();
         tenantDb.withTenantDb = originals.withTenantDb;
         for (const [k, v] of Object.entries(originals.env)) {
           if (v === undefined) delete process.env[k];
@@ -104,19 +108,19 @@ test('default OFF for every office; ON then OFF from the console is stored, read
     ['roland', false, 'default'],
     ['valley', false, 'default'],
   ]);
-  assert.equal(await tcReferralPatientEmail.isEnabled('roland'), false);
+  assert.equal(await tcReferralPatientEmail.isEnabled('carein', 'roland'), false);
 
   const on = await api(baseUrl, 'PUT', `${SWITCH}/roland`, { enabled: true });
   assert.equal(on.status, 200, JSON.stringify(on.body));
   assert.deepEqual(store.get('tc_referral_patient_email_enabled').value, { roland: true });
   assert.deepEqual(store.get('tc_referral_email_enabled').value, { roland: true }, 'the letter switch is untouched');
   assert.equal(store.has('tc_referrals_enabled'), false, 'the referrals switch is untouched');
-  assert.equal(await tcReferralPatientEmail.isEnabled('roland'), true);
-  assert.equal(await tcReferralPatientEmail.isEnabled('valley'), false);
+  assert.equal(await tcReferralPatientEmail.isEnabled('carein', 'roland'), true);
+  assert.equal(await tcReferralPatientEmail.isEnabled('carein', 'valley'), false);
 
   const off = await api(baseUrl, 'PUT', `${SWITCH}/roland`, { enabled: false });
   assert.equal(off.status, 200);
-  assert.equal(await tcReferralPatientEmail.isEnabled('roland'), false);
+  assert.equal(await tcReferralPatientEmail.isEnabled('carein', 'roland'), false);
   assert.deepEqual(
     auditRows(db).filter((a) => a.resource_type === 'platform_setting').map((a) => [a.resource_id, a.office, a.prior_state]),
     [
@@ -132,7 +136,7 @@ test('the env break-glass =false wins over a console ON', async (t) => {
   const on = await api(baseUrl, 'PUT', `${SWITCH}/roland`, { enabled: true });
   const roland = on.body.offices.find((o) => o.office === 'roland');
   assert.deepEqual([roland.enabled, roland.source], [false, 'env']);
-  assert.equal(await tcReferralPatientEmail.isEnabled('roland'), false);
+  assert.equal(await tcReferralPatientEmail.isEnabled('carein', 'roland'), false);
 });
 
 test('only a super_admin can flip it; a bad body or office is refused and nothing is stored', async (t) => {

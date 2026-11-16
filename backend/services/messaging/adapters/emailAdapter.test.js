@@ -65,7 +65,7 @@ const MESSAGE = {
   html: '<!doctype html><p>hi</p>',
   unsubscribeUrl: 'https://dashboard.example.test/api/webhooks/email/unsubscribe?t=x',
 };
-const OFFICE = { officeKey: 'roland', officeName: 'Roland' };
+const OFFICE = { officeKey: 'roland', officeName: 'Roland', tenantSlug: 'carein' };
 
 /** A fake ACS: POST answers 202 + `first`; each GET answers the next of `polls`. */
 function fakeAcs(first, polls = []) {
@@ -168,7 +168,7 @@ test('send re-reads the kill switch: a stored false stops this send', async () =
 test('valley with no sender is refused inside send too (never borrows roland)', async () => {
   const calls = fakeAcs('Succeeded');
   await assert.rejects(
-    adapter.send({ ...MESSAGE, officeId: 'valley' }, { officeKey: 'valley', officeName: 'Valley Fort Smith' }),
+    adapter.send({ ...MESSAGE, officeId: 'valley' }, { officeKey: 'valley', officeName: 'Valley Fort Smith', tenantSlug: 'carein' }),
     (e) => e.code === 'FEATURE_DISABLED' && e.extra.reason === 'office_not_configured'
   );
   assert.equal(calls.length, 0);

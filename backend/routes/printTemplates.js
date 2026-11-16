@@ -68,6 +68,7 @@ const { withTenantTx } = require('./tc/tx');
 const tenantDb = require('../platform/tenantDb');
 const { audit, AuditError } = require('../platform/audit');
 const store = require('../services/tc/printTemplateStore');
+const { sessionTenantSlug } = require('../platform/sessionTenant');
 const assets = require('../services/tc/printAssetStore');
 const { prepareLogo, sniffLogoType, LogoImageError } = require('../services/tc/printImage');
 const { fontFileFor } = require('../services/tc/printFonts');
@@ -118,7 +119,7 @@ function auditTemplate(req, office, type, priorState) {
 
 /** Both types' states for the office. */
 async function readAll(req, office) {
-  const prefill = await store.prefillFor(office);
+  const prefill = await store.prefillFor(sessionTenantSlug(req), office);
   const rows = await tenantDb.withTenantDb(req, (pool) => store.rowsFor(pool, office));
   return {
     prefill,
@@ -179,7 +180,7 @@ router.put(
       await auditTemplate(req, office, type, outcome === 'created' ? 'default' : 'stored');
     });
 
-    const prefill = await store.prefillFor(office);
+    const prefill = await store.prefillFor(sessionTenantSlug(req), office);
     const row = await tenantDb.withTenantDb(req, (pool) => store.rowFor(pool, office, type));
     const state = row ? store.stateOf(type, row, prefill) : null;
     const same = state && JSON.stringify(state.fields) === JSON.stringify(fields);
@@ -212,7 +213,7 @@ router.put(
       styling = checked.styling;
     }
     const actor = String(actorEmail(req)).trim().toLowerCase();
-    const prefill = await store.prefillFor(office);
+    const prefill = await store.prefillFor(sessionTenantSlug(req), office);
 
     await withTenantTx(req, async (client) => {
       const { prior, unchanged } = await store.saveStyling(client, { office, type, styling, actor, prefill });
@@ -280,7 +281,7 @@ router.post(
       }
       throw err;
     }
-    const prefill = await store.prefillFor(office);
+    const prefill = await store.prefillFor(sessionTenantSlug(req), office);
     try {
       await withTenantTx(req, async (client) => {
         const { prior } = await store.setLogo(client, { office, type, logoKey: stored.key, contentType, actor, prefill });
@@ -308,7 +309,7 @@ router.post(
     if (!type) return undefined;
     const office = req.tcOffice;
     const actor = String(actorEmail(req)).trim().toLowerCase();
-    const prefill = await store.prefillFor(office);
+    const prefill = await store.prefillFor(sessionTenantSlug(req), office);
     const current = await tenantDb.withTenantDb(req, (pool) => store.rowFor(pool, office, type));
     if (!current || !current.logo_key) {
       return res.json({ success: true, template: store.stateOf(type, current, prefill) });

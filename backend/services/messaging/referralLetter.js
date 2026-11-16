@@ -73,23 +73,25 @@ function suffix(office) {
  * Why a referral letter cannot go out from this office right now, or null.
  * Synchronous: reads the transport's cached kill switch (call
  * refreshTransportSwitch first on a request path that reports it).
+ * MT-2b: the TENANT comes first — whose saved Reply-To is judged.
+ * @param {string|null} tenantSlug
  * @param {string} office
  * @returns {'switched_off'|'not_configured'|'office_not_configured'|null}
  */
-function unavailableReason(office) {
+function unavailableReason(tenantSlug, office) {
   const transport = adapters.channelUnavailableReason('email', office);
   if (transport === 'switched_off' || transport === 'not_configured') return transport;
-  if (!acsConfig.ownFromAddressFor(office) || !acsConfig.replyToFor(office)) return 'office_not_configured';
+  if (!acsConfig.ownFromAddressFor(office) || !acsConfig.replyToFor(tenantSlug, office)) return 'office_not_configured';
   return transport;
 }
 
-/** Setting NAMES (never values) this office is missing for a referral letter. @param {string} office */
-function missingFor(office) {
+/** Setting NAMES (never values) this office is missing for a referral letter. @param {string|null} tenantSlug @param {string} office */
+function missingFor(tenantSlug, office) {
   const missing = [];
   if (!tcEmail.emailEnabled()) missing.push(tcEmail.ENV_KEY);
   missing.push(...acsConfig.missingAccountConfig());
   if (!acsConfig.ownFromAddressFor(office)) missing.push(`ACS_EMAIL_FROM_${suffix(office)}`);
-  if (!acsConfig.replyToFor(office)) missing.push(`ACS_EMAIL_REPLY_TO_${suffix(office)}`);
+  if (!acsConfig.replyToFor(tenantSlug, office)) missing.push(`ACS_EMAIL_REPLY_TO_${suffix(office)}`);
   return missing;
 }
 
@@ -97,13 +99,14 @@ function missingFor(office) {
  * Which office detail a referral letter lacks, by kind (never a setting
  * name), so the hub can say which one and who sets it. Only meaningful
  * alongside office_not_configured.
+ * @param {string|null} tenantSlug
  * @param {string} office
  * @returns {Array<'sending_address'|'reply_to'>}
  */
-function officeMissing(office) {
+function officeMissing(tenantSlug, office) {
   const missing = [];
   if (!acsConfig.ownFromAddressFor(office)) missing.push('sending_address');
-  if (!acsConfig.replyToFor(office)) missing.push('reply_to');
+  if (!acsConfig.replyToFor(tenantSlug, office)) missing.push('reply_to');
   return missing;
 }
 
@@ -128,12 +131,13 @@ const UNAVAILABLE_SENTENCE = Object.freeze({
  * sending address is the platform's to set up, the reply-to is the office's
  * own (Settings -> Email identity), and the two are fixed by different people.
  * @param {'switched_off'|'not_configured'|'office_not_configured'} reason
+ * @param {string|null} tenantSlug
  * @param {string} office
  */
-function unavailableSentence(reason, office) {
+function unavailableSentence(reason, tenantSlug, office) {
   if (reason !== 'office_not_configured') return UNAVAILABLE_SENTENCE[reason];
   const noFrom = !acsConfig.ownFromAddressFor(office);
-  const noReplyTo = !acsConfig.replyToFor(office);
+  const noReplyTo = !acsConfig.replyToFor(tenantSlug, office);
   if (noFrom && !noReplyTo) return 'This office has no referral sending address set up yet (the platform sets that up).';
   if (noReplyTo && !noFrom) {
     return 'This office has no reply-to address for referral email yet. An admin or office manager can set one in Settings, under Email identity.';
@@ -144,15 +148,16 @@ function unavailableSentence(reason, office) {
 /**
  * Refuse unless a letter can go out from this office. The FEATURE_DISABLED
  * error names the reason and the missing setting names.
+ * @param {string|null} tenantSlug
  * @param {string} office
  */
-function assertAvailable(office) {
-  const reason = unavailableReason(office);
+function assertAvailable(tenantSlug, office) {
+  const reason = unavailableReason(tenantSlug, office);
   if (!reason) return;
-  throw new MessagingError('FEATURE_DISABLED', `${unavailableSentence(reason, office)} Nothing was sent.`, {
+  throw new MessagingError('FEATURE_DISABLED', `${unavailableSentence(reason, tenantSlug, office)} Nothing was sent.`, {
     feature: 'tc_referral_email',
     reason,
-    missing: missingFor(office),
+    missing: missingFor(tenantSlug, office),
   });
 }
 
@@ -254,7 +259,7 @@ async function patientMayEmail(q, { office, address }) {
 
 /**
  * (R5b) Render the patient's notice (patient footer, its one button, then `after`).
- * @param {{ office: string, subject: string, text: string, after?: string, unsubscribeUrl: string,
+ * @param {{ tenantSlug: string|null, office: string, subject: string, text: string, after?: string, unsubscribeUrl: string,
  *           actions: Array<{ label: string, href: string }> }} input
  */
 function renderPatientNotice(input) {
@@ -265,12 +270,13 @@ function renderPatientNotice(input) {
  * (R6.3) The inbox this letter is blind-copied to, or null for none: the
  * office's saved copy inbox when it is one usable address and is not the
  * recipient itself (that would be the same mailbox twice).
+ * @param {string|null} tenantSlug
  * @param {string} office
  * @param {string} recipient
  * @returns {string|null}
  */
-function bccFor(office, recipient) {
-  const v = normalizeEmail(emailIdentity.referralBccFor(office));
+function bccFor(tenantSlug, office, recipient) {
+  const v = normalizeEmail(emailIdentity.referralBccFor(tenantSlug, office));
   if (!v || !acsConfig.isEmailAddress(v)) return null;
   return v === normalizeEmail(recipient) ? null : v;
 }
@@ -303,7 +309,7 @@ function messageOf({ office, attemptId, toAddress, rendered, unsubscribeUrl, att
 /**
  * Render the composed letter through the shared renderer. (R5b) `actions`
  * are its two link buttons.
- * @param {{ office: string, subject: string, text: string, unsubscribeUrl: string,
+ * @param {{ tenantSlug: string|null, office: string, subject: string, text: string, unsubscribeUrl: string,
  *           actions?: Array<{ label: string, href: string }> }} input
  */
 function render(input) {
@@ -314,10 +320,11 @@ function render(input) {
  * The exact size of the request this message would make (attachments' base64
  * included), measured by the transport's own payload builder.
  * @param {ReturnType<typeof messageOf>} message
+ * @param {string|null} tenantSlug
  * @param {string} office
  */
-function requestBytes(message, office) {
-  return emailAdapter.requestBytes(message, office);
+function requestBytes(message, tenantSlug, office) {
+  return emailAdapter.requestBytes(message, tenantSlug, office);
 }
 
 /**
@@ -325,13 +332,18 @@ function requestBytes(message, office) {
  * confirmed hand-off (`sent` or `queued` — ACS accepted it); anything else
  * throws, and nothing was sent.
  * @param {ReturnType<typeof messageOf>} message
+ * @param {string|null} tenantSlug
  * @param {string} office
  * @returns {Promise<{ provider: string, providerMessageId: string, status: 'sent'|'queued', fromAddress: string|null }>}
  */
-async function transport(message, office) {
-  assertAvailable(office);
+async function transport(message, tenantSlug, office) {
+  assertAvailable(tenantSlug, office);
   const adapter = adapters.getAdapter('email');
-  const raw = await adapter.send(message, { officeKey: office, officeName: odOffices.describeOffice(office).officeName });
+  const raw = await adapter.send(message, {
+    officeKey: office,
+    officeName: odOffices.describeOffice(office).officeName,
+    tenantSlug,
+  });
   const result = adapters.checkResult(raw);
   if (!result) {
     throw new MessagingError('SEND_FAILED', 'The email service returned a response that did not confirm the hand-off.', {

@@ -44,15 +44,18 @@ function iso(v) {
 
 /**
  * The office's own letterhead details, from config that already exists.
- * Re-reads the saved email identity first (a failed read keeps the last one).
+ * Re-reads the tenant's saved email identity first (MT-2b: a failed read keeps
+ * the last good read for up to 3 refresh windows; with none, the app settings
+ * answer — tenant 'carein' only).
+ * @param {string|null} tenantSlug the SESSION tenant
  * @param {string} office
  * @returns {Promise<{ name: string, address: string, phone: string }>}
  */
-async function prefillFor(office) {
-  await emailIdentity.refreshFromDb().catch(() => undefined);
-  const details = acsEmail.practiceDetailsFor(office);
+async function prefillFor(tenantSlug, office) {
+  await emailIdentity.refreshFromDb(tenantSlug).catch(() => undefined);
+  const details = acsEmail.practiceDetailsFor(tenantSlug, office);
   return {
-    name: acsEmail.practiceNameFor(office) || (OFFICES[office] && OFFICES[office].officeName) || '',
+    name: acsEmail.practiceNameFor(tenantSlug, office) || (OFFICES[office] && OFFICES[office].officeName) || '',
     address: details.address || '',
     phone: details.phone || '',
   };

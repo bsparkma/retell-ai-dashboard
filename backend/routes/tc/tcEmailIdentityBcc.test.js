@@ -68,8 +68,8 @@ test('a copy inbox is saved (lowercased), read back, and in force for the next s
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.referralBcc, 'referral-copies@roland.example.test');
   assert.equal(cp.row.value.roland.referralBcc, 'referral-copies@roland.example.test');
-  assert.equal(emailIdentity.referralBccFor('roland'), 'referral-copies@roland.example.test');
-  assert.equal(emailIdentity.referralBccFor('valley'), null, 'per office');
+  assert.equal(emailIdentity.referralBccFor('carein', 'roland'), 'referral-copies@roland.example.test');
+  assert.equal(emailIdentity.referralBccFor('carein', 'valley'), null, 'per office');
   const contract = require('../../tc/contract.gen.cjs');
   assert.equal(contract.TcEmailIdentityResponse.safeParse(r.body).success, true);
   assert.equal(acsConfig.fromAddressFor('roland'), 'donotreply@roland.example.test', 'the From never moves');
@@ -85,7 +85,7 @@ test('optional: absent leaves it as saved; null clears it (no copy); the other f
   assert.equal(kept.body.fields.practicePhone.value, '(918) 555-0142');
   const cleared = await api(baseUrl, 'PUT', URL('roland'), { ...IDENTITY, referralBcc: null });
   assert.equal(cleared.body.referralBcc, null);
-  assert.equal(emailIdentity.referralBccFor('roland'), null);
+  assert.equal(emailIdentity.referralBccFor('carein', 'roland'), null);
   assert.equal(cleared.body.fields.replyTo.value, 'frontdesk@roland.example.test');
 });
 

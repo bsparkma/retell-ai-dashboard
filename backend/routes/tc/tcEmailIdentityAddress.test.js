@@ -32,6 +32,9 @@ const printTemplateStore = require('../../services/tc/printTemplateStore');
 const { computeSetupStatus } = require('../../services/setupStatus');
 const contract = require('../../tc/contract.gen.cjs');
 const { FakeTenantDb, bootTcApp, api, auditRows } = require('./tcTestUtils');
+// MT-2b: the per-office readers SERVE office_setting. Derive it from this suite's
+// getPlatformSetting stubs, as the dual-write stores it (test infra; no assertion changes).
+require('../../platform/officeSettingsTestUtils').mirrorPlatformStubIntoOfficeSettings(registry);
 
 const URL = (office) => `/api/tc/email-identity?office=${office}`;
 
@@ -108,26 +111,26 @@ test('P: GET shows the address with its app-setting fallback; a save beats it; n
   assert.equal(r.body.fields.practiceAddress.source, 'stored');
   assert.equal(r.body.fields.practiceAddress.value, '1 Example St\nExample OK 00000');
   assert.equal(r.body.fields.practiceAddress.fallback, ENV_ADDRESS, 'the fallback is still shown');
-  assert.equal(acsConfig.practiceDetailsFor('roland').address, '1 Example St\nExample OK 00000');
+  assert.equal(acsConfig.practiceDetailsFor('carein', 'roland').address, '1 Example St\nExample OK 00000');
   assert.equal(cp.row.value.roland.practiceAddress, '1 Example St\nExample OK 00000');
 
   // Absent = unchanged (a client that predates the field cannot clear it).
   r = await api(baseUrl, 'PUT', URL('roland'), { ...IDENTITY, practicePhone: '(918) 555-0143' });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.fields.practiceAddress.stored, '1 Example St\nExample OK 00000');
-  assert.equal(acsConfig.practiceDetailsFor('roland').address, '1 Example St\nExample OK 00000');
+  assert.equal(acsConfig.practiceDetailsFor('carein', 'roland').address, '1 Example St\nExample OK 00000');
 
   // null = clear back to the app setting.
   r = await api(baseUrl, 'PUT', URL('roland'), { ...IDENTITY, practiceAddress: null });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.deepEqual([r.body.fields.practiceAddress.source, r.body.fields.practiceAddress.stored], ['env', null]);
-  assert.equal(acsConfig.practiceDetailsFor('roland').address, ENV_ADDRESS);
+  assert.equal(acsConfig.practiceDetailsFor('carein', 'roland').address, ENV_ADDRESS);
   assert.equal('practiceAddress' in cp.row.value.roland, false, 'nothing saved once cleared');
 
   // And with no app setting either, the address is simply not set.
   delete process.env.TC_EMAIL_PRACTICE_ADDRESS_ROLAND;
-  assert.equal(acsConfig.practiceDetailsFor('roland').address, null);
-  assert.equal(acsConfig.identityStateFor('roland').practiceAddress.source, 'none');
+  assert.equal(acsConfig.practiceDetailsFor('carein', 'roland').address, null);
+  assert.equal(acsConfig.identityStateFor('carein', 'roland').practiceAddress.source, 'none');
 });
 
 test('M: multi-line is normalized; another control character or an over-long address is a 400 and saves nothing', async (t) => {
@@ -142,7 +145,7 @@ test('M: multi-line is normalized; another control character or an over-long add
     assert.equal(r.status, 400, JSON.stringify(practiceAddress));
   }
   assert.equal(cp.writes, writes, 'nothing saved');
-  assert.equal(acsConfig.practiceDetailsFor('roland').address, '1 Example St\nSuite 2\nExample OK 00000');
+  assert.equal(acsConfig.practiceDetailsFor('carein', 'roland').address, '1 Example St\nSuite 2\nExample OK 00000');
 
   // The phone is still single-line: a line break there is still refused.
   r = await api(baseUrl, 'PUT', URL('roland'), { ...IDENTITY, practicePhone: '(918)\n555-0142' });
@@ -191,23 +194,24 @@ test('C: every consumer of the address reads the saved one, with no change of it
   const saved = '1 Example St\nExample OK 00000';
 
   // 1. The print letterhead prefill (services/tc/printTemplateStore.js).
-  assert.equal((await printTemplateStore.prefillFor('roland')).address, saved);
+  assert.equal((await printTemplateStore.prefillFor('carein', 'roland')).address, saved);
   // 2. The email footer every TC email carries, and 3. the {{practice.address}} token
   //    (services/messaging/emailContent.js).
-  assert.equal(emailContent.footerFor('roland', null).practiceAddress, saved);
-  assert.equal(emailContent.practiceValues('roland')['practice.address'], saved);
+  assert.equal(emailContent.footerFor('carein', 'roland', null).practiceAddress, saved);
+  assert.equal(emailContent.practiceValues('carein', 'roland')['practice.address'], saved);
   // 4. The referral letter (routes/tc/referralSend.js officeDetails, not exported):
   //    it reads practiceDetailsFor(office).address and nothing else for the address.
   const src = fs.readFileSync(path.join(__dirname, 'referralSend.js'), 'utf8');
-  const officeDetailsSrc = /function officeDetails\(office\) \{[\s\S]*?\n\}/.exec(src)[0];
-  assert.match(officeDetailsSrc, /acsConfig\.practiceDetailsFor\(office\)/);
+  // MT-2b: officeDetails takes the session tenant first; the address still comes from practiceDetailsFor alone.
+  const officeDetailsSrc = /function officeDetails\(tenantSlug, office\) \{[\s\S]*?\n\}/.exec(src)[0];
+  assert.match(officeDetailsSrc, /acsConfig\.practiceDetailsFor\(tenantSlug, office\)/);
   assert.match(officeDetailsSrc, /address: details\.address,/);
 
   // Cleared: every consumer falls back to the app setting together.
   assert.equal((await api(baseUrl, 'PUT', URL('roland'), { ...IDENTITY, practiceAddress: null })).status, 200);
-  assert.equal((await printTemplateStore.prefillFor('roland')).address, ENV_ADDRESS);
-  assert.equal(emailContent.footerFor('roland', null).practiceAddress, ENV_ADDRESS);
-  assert.equal(emailContent.practiceValues('roland')['practice.address'], ENV_ADDRESS);
+  assert.equal((await printTemplateStore.prefillFor('carein', 'roland')).address, ENV_ADDRESS);
+  assert.equal(emailContent.footerFor('carein', 'roland', null).practiceAddress, ENV_ADDRESS);
+  assert.equal(emailContent.practiceValues('carein', 'roland')['practice.address'], ENV_ADDRESS);
 });
 
 test('S: setup card P1 turns done once the address is saved here (no app setting needed)', async (t) => {
@@ -220,7 +224,7 @@ test('S: setup card P1 turns done once the address is saved here (no app setting
     },
   };
   const p1 = async () => {
-    const status = await computeSetupStatus({ office: 'roland', tenantId: 'T1', modules: ['tc'], pool });
+    const status = await computeSetupStatus({ office: 'roland', tenantId: 'T1', tenantSlug: 'carein', modules: ['tc'], pool });
     return status.steps.find((s) => s.id === 'P1');
   };
 
@@ -234,7 +238,7 @@ test('S: setup card P1 turns done once the address is saved here (no app setting
   assert.equal(s.status, 'done', s.detail);
 
   // P5 still judges only the three fields an email signs with.
-  const status = await computeSetupStatus({ office: 'roland', tenantId: 'T1', modules: ['tc'], pool });
+  const status = await computeSetupStatus({ office: 'roland', tenantId: 'T1', tenantSlug: 'carein', modules: ['tc'], pool });
   const p5 = status.steps.find((x) => x.id === 'P5');
   assert.doesNotMatch(p5.detail, /address/i);
 });
@@ -242,8 +246,8 @@ test('S: setup card P1 turns done once the address is saved here (no app setting
 test('O: per office — roland’s saved address never answers for valley', async (t) => {
   const { baseUrl } = await boot(t, { env: { TC_EMAIL_PRACTICE_ADDRESS_VALLEY: '5 Valley Example Ave' } });
   assert.equal((await api(baseUrl, 'PUT', URL('roland'), { ...IDENTITY, practiceAddress: '1 Example St' })).status, 200);
-  assert.equal(acsConfig.practiceDetailsFor('roland').address, '1 Example St');
-  assert.equal(acsConfig.practiceDetailsFor('valley').address, '5 Valley Example Ave');
+  assert.equal(acsConfig.practiceDetailsFor('carein', 'roland').address, '1 Example St');
+  assert.equal(acsConfig.practiceDetailsFor('carein', 'valley').address, '5 Valley Example Ave');
   const v = await api(baseUrl, 'GET', URL('valley'));
   assert.equal(v.body.fields.practiceAddress.source, 'env');
   // The office comes from ?office=, never the body.

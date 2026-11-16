@@ -88,7 +88,7 @@ function probeRow(over) {
 function steps(client) {
   const pool = poolOver(client);
   const audited = [];
-  const sweep = () => engine.sweepOffice({ office: OFFICE, today: TODAY, pool, odGet, audit: async (e) => audited.push(e) });
+  const sweep = () => engine.sweepOffice({ tenantSlug: 'carein', office: OFFICE, today: TODAY, pool, odGet, audit: async (e) => audited.push(e) });
   const s = {};
 
   const mustRefuse = (name, code, row) => ({

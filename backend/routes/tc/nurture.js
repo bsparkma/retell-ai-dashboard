@@ -38,6 +38,7 @@ const { withTenantTx } = require('./tx');
 const tenantDb = require('../../platform/tenantDb');
 const registry = require('../../platform/registry');
 const cfg = require('../../config/tcNurture');
+const { sessionTenantSlug } = require('../../platform/sessionTenant');
 const nurtureStore = require('../../services/tcNurture/store');
 const engine = require('../../services/tcNurture/engine');
 const messaging = require('../../services/messaging');
@@ -78,10 +79,10 @@ async function loadConfig(q, office) {
   return { config: LibraryNurtureConfig.parse(res.rows[0].value), stored: true };
 }
 
-/** Is nurture switched on for this office? Fail closed. */
-async function officeOn(office) {
+/** Is nurture switched on for this office of the SESSION tenant? Fail closed. */
+async function officeOn(req, office) {
   try {
-    return await cfg.isOfficeOn(registry, office);
+    return await cfg.isOfficeOn(registry, sessionTenantSlug(req), office);
   } catch {
     return false;
   }
@@ -156,7 +157,7 @@ router.post(
       if (!tcCase) return { missing: true };
       const office = tcCase.office_id;
       if (office !== req.tcOffice) return { mismatch: true };
-      if (!(await officeOn(office))) return { off: true };
+      if (!(await officeOn(req, office))) return { off: true };
       if (TERMINAL.has(tcCase.status)) return { terminal: tcCase.status };
       const open = await nurtureStore.openForCase(client, office, tcCase.case_id);
       if (open.length) return { already: open[0].enrollment_id };
@@ -382,7 +383,7 @@ router.get(
     const query = parseBody(res, CaseQuery, req.query);
     if (!query) return;
     const office = req.tcOffice;
-    const enabled = await officeOn(office);
+    const enabled = await officeOn(req, office);
     const out = await tenantDb.withTenantDb(req, async (q) => {
       const r = await q.query(
         `SELECT case_id, office_id, patient_name, phone, email, status FROM tc_cases
@@ -431,7 +432,7 @@ router.get(
   h(async (req, res) => {
     if (!parseBody(res, OfficeOnly, req.query)) return;
     const office = req.tcOffice;
-    const enabled = await officeOn(office);
+    const enabled = await officeOn(req, office);
     const groups = await tenantDb.withTenantDb(req, async (q) => {
       const drafts = await q.query(
         `SELECT ${messaging.MESSAGE_COLS.join(', ')}, enrollment_id, touch_key, consent_blocked_hint
@@ -501,9 +502,9 @@ router.post(
 
 // ── GET / PUT /config ───────────────────────────────────────────────────────
 
-async function configResponse(q, office) {
+async function configResponse(req, q, office) {
   const { config } = await loadConfig(q, office);
-  const enabled = await officeOn(office);
+  const enabled = await officeOn(req, office);
   return contract.NurtureConfigResponse.parse({
     enabled,
     tracks: cfg.TRACK_KEYS.map((trackKey) => ({
@@ -519,7 +520,7 @@ router.get(
   '/config',
   h(async (req, res) => {
     if (!parseBody(res, OfficeOnly, req.query)) return;
-    const body = await tenantDb.withTenantDb(req, (q) => configResponse(q, req.tcOffice));
+    const body = await tenantDb.withTenantDb(req, (q) => configResponse(req, q, req.tcOffice));
     res.json({ success: true, ...body });
   })
 );
@@ -570,7 +571,7 @@ router.put(
           RETURNING section, value, updated_at`,
         [office, SECTION, JSON.stringify(value)]
       );
-      return configResponse(client, office);
+      return configResponse(req, client, office);
     });
     await auditTc(req, 'UPDATE', 'tc_library_config', `${office}/${SECTION}`, { office });
     res.json({ success: true, ...body });

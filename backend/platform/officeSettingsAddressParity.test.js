@@ -103,14 +103,17 @@ test('L + C: a save with the address lands identically in both tables, and parit
   assert.deepEqual(warns(), []);
 
   // With the other nine keys clean too, the OK line is logged once.
+  // MT-2b INVERTED (brief item 2): compare(key) checks the SERVED read itself;
+  // the save's refresh already swept all ten, so this only re-asks.
   for (const k of OFFICE_SETTING_KEYS) {
     if (k === 'tc_email_identity') continue;
-    const clean = KIND[k] === 'on' ? { roland: false, valley: false } : { roland: null, valley: null };
-    await parity.compare(k, clean);
+    await parity.compare(k);
   }
-  await emailIdentity.refreshFromDb();
+  await emailIdentity.refreshFromDb('carein');
   await parity.settled();
-  assert.deepEqual(logs(), ['[officeSettings] office settings parity OK — 2 office(s), 10 setting(s)']);
+  assert.deepEqual(logs(), [
+    '[officeSettings] office settings parity OK — 2 office(s), 10 setting(s) (serving office_setting)',
+  ]);
   assert.deepEqual(warns(), []);
 });
 
@@ -119,9 +122,10 @@ test('D: a drift in the address alone names the field practiceAddress and never 
   const { warns } = await boot(t, cp);
   cp.seedPlatform('tc_email_identity', { roland: { practiceAddress: '1 Example St' } });
   cp.seedOffice('roland', 'tc_email_identity', { practiceAddress: '2 Other Example St' });
-  await emailIdentity.refreshFromDb();
+  await emailIdentity.refreshFromDb('carein');
   await parity.settled();
-  assert.equal(emailIdentity.storedValue('roland', 'practiceAddress'), '1 Example St', 'platform_setting is served');
+  // MT-2b INVERTED (brief item 2): office_setting is the served side.
+  assert.equal(emailIdentity.storedValue('carein', 'roland', 'practiceAddress'), '2 Other Example St', 'office_setting is served');
   const w = warns();
   assert.equal(w.length, 1, JSON.stringify(w));
   assert.match(w[0], /'tc_email_identity' for 'roland' differs — field\(s\) practiceAddress differ/);

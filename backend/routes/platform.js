@@ -65,6 +65,7 @@ const tcAutoCheckout = require('../config/tcAutoCheckout');
 const tcReferralEmail = require('../config/tcReferralEmail');
 const tcReferralPatientEmail = require('../config/tcReferralPatientEmail');
 const { realOffices } = require('../config/tcOfficeSwitch');
+const { sessionTenantSlug } = require('../platform/sessionTenant');
 const odOffices = require('../config/odOffices');
 const retentionScheduler = require('../services/retentionScheduler');
 const unifiedCallStore = require('../services/unifiedCallStore');
@@ -667,11 +668,15 @@ router.get('/retention/impact', (req, res) => {
 // is why they are separate routes with separate payloads rather than one
 // combined toggle that would have to explain itself in a tooltip.
 
-/** The switch panel's whole view, freshly composed. */
-function hygOfficesPayload() {
+/**
+ * The switch panel's whole view, freshly composed, for the SESSION tenant
+ * (MT-2b: platform/sessionTenant.js — never a tenant the request names).
+ * @param {string|null} tenantSlug
+ */
+function hygOfficesPayload(tenantSlug) {
   return {
-    offices: odOffices.hygSwitchState(),
-    setting: hygPilot.settingMeta(),
+    offices: odOffices.hygSwitchState(tenantSlug),
+    setting: hygPilot.settingMeta(tenantSlug),
   };
 }
 
@@ -683,10 +688,10 @@ function hygOfficesPayload() {
  * exactly where a stale read would tell somebody their change did not take.
  */
 router.get('/hyg-offices', async (req, res) => {
-  const refreshed = await hygPilot.refreshFromDb();
+  const refreshed = await hygPilot.refreshFromDb(sessionTenantSlug(req));
   // Reported, not thrown. The panel is still useful when the control plane is
   // down — it just has to say so rather than present the fallback as the policy.
-  return res.json({ success: true, ...hygOfficesPayload(), controlPlaneError: refreshed.error });
+  return res.json({ success: true, ...hygOfficesPayload(sessionTenantSlug(req)), controlPlaneError: refreshed.error });
 });
 
 /**
@@ -716,13 +721,13 @@ router.put('/hyg-offices/:office', async (req, res) => {
   }
 
   // Read BEFORE the write, so the audit row can say what it replaced.
-  const before = odOffices.hygSwitchState().find((o) => o.officeKey === office);
+  const before = odOffices.hygSwitchState(sessionTenantSlug(req)).find((o) => o.officeKey === office);
   if (!before) {
     return fail(res, 404, 'No such office', 'INVALID_OFFICE');
   }
 
   try {
-    await hygPilot.persistHygEnabled(office, enabled, actorEmail(req));
+    await hygPilot.persistHygEnabled(sessionTenantSlug(req), office, enabled, actorEmail(req));
 
     await audit(req, {
       action: 'UPDATE',
@@ -736,11 +741,16 @@ router.put('/hyg-offices/:office', async (req, res) => {
       priorState: before.enabled ? 'on' : 'off',
     });
 
-    return res.json({ success: true, ...hygOfficesPayload() });
+    return res.json({ success: true, ...hygOfficesPayload(sessionTenantSlug(req)) });
   } catch (err) {
     const code = err && err.code ? err.code : 'HYG_SWITCH_WRITE_FAILED';
     console.error('[platform] hygiene switch write failed:', err && err.message ? err.message : err);
-    const status = code === 'INVALID_OFFICE' || code === 'INVALID_HYG_ENABLED' ? 400 : 500;
+    const status =
+      code === 'INVALID_OFFICE' || code === 'INVALID_HYG_ENABLED'
+        ? 400
+        : code === 'OFFICE_SETTING_TENANT_NOT_WRITABLE'
+          ? 409
+          : 500;
     return fail(res, status, 'Could not save the hygiene switch', code);
   }
 });
@@ -756,17 +766,18 @@ router.put('/hyg-offices/:office', async (req, res) => {
 // environment, not this switch, is in charge.
 
 /** The panel's whole view, freshly composed. */
-function tcCheckoutPayload() {
+/** @param {string|null} tenantSlug the SESSION tenant (MT-2b) */
+function tcCheckoutPayload(tenantSlug) {
   return {
-    offices: realOffices().map((office) => tcCheckout.officeState(office)),
+    offices: realOffices(tenantSlug).map((office) => tcCheckout.officeState(tenantSlug, office)),
     settingKey: tcCheckout.settingKey,
   };
 }
 
 /** GET /tc-checkout-offices — refreshed from the control plane before answering. */
 router.get('/tc-checkout-offices', async (req, res) => {
-  const refreshed = await tcCheckout.refreshFromDb();
-  return res.json({ success: true, ...tcCheckoutPayload(), controlPlaneError: refreshed.error });
+  const refreshed = await tcCheckout.refreshFromDb(sessionTenantSlug(req));
+  return res.json({ success: true, ...tcCheckoutPayload(sessionTenantSlug(req)), controlPlaneError: refreshed.error });
 });
 
 /**
@@ -782,14 +793,14 @@ router.put('/tc-checkout-offices/:office', async (req, res) => {
   if (typeof enabled !== 'boolean') {
     return fail(res, 400, 'enabled must be true or false', 'INVALID_BODY');
   }
-  if (!realOffices().includes(office)) {
+  if (!realOffices(sessionTenantSlug(req)).includes(office)) {
     return fail(res, 404, 'No such office', 'INVALID_OFFICE');
   }
 
   try {
-    await tcCheckout.refreshFromDb();
-    const before = tcCheckout.officeState(office);
-    await tcCheckout.persist(office, enabled, actorEmail(req));
+    await tcCheckout.refreshFromDb(sessionTenantSlug(req));
+    const before = tcCheckout.officeState(sessionTenantSlug(req), office);
+    await tcCheckout.persist(sessionTenantSlug(req), office, enabled, actorEmail(req));
     await audit(req, {
       action: 'UPDATE',
       resourceType: 'platform_setting',
@@ -798,11 +809,16 @@ router.put('/tc-checkout-offices/:office', async (req, res) => {
       office,
       priorState: before.enabled ? 'on' : 'off',
     });
-    return res.json({ success: true, ...tcCheckoutPayload() });
+    return res.json({ success: true, ...tcCheckoutPayload(sessionTenantSlug(req)) });
   } catch (err) {
     const code = err && err.code ? err.code : 'TC_CHECKOUT_SWITCH_WRITE_FAILED';
     console.error('[platform] checkout switch write failed:', err && err.message ? err.message : err);
-    const status = code === 'INVALID_OFFICE' || code === 'INVALID_BODY' ? 400 : 500;
+    const status =
+      code === 'INVALID_OFFICE' || code === 'INVALID_BODY'
+        ? 400
+        : code === 'OFFICE_SETTING_TENANT_NOT_WRITABLE'
+          ? 409
+          : 500;
     return fail(res, status, 'Could not save the checkout switch', code);
   }
 });
@@ -813,17 +829,18 @@ router.put('/tc-checkout-offices/:office', async (req, res) => {
 // "Sync now" and the nightly pass read the office's anchored appointments
 // (GET only) and move cases on unambiguous Open Dental signals.
 
-function tcOdSyncPayload() {
+/** @param {string|null} tenantSlug the SESSION tenant (MT-2b) */
+function tcOdSyncPayload(tenantSlug) {
   return {
-    offices: realOffices().map((office) => tcOdSync.officeState(office)),
+    offices: realOffices(tenantSlug).map((office) => tcOdSync.officeState(tenantSlug, office)),
     settingKey: tcOdSync.settingKey,
   };
 }
 
 /** GET /tc-od-sync-offices — refreshed from the control plane before answering. */
 router.get('/tc-od-sync-offices', async (req, res) => {
-  const refreshed = await tcOdSync.refreshFromDb();
-  return res.json({ success: true, ...tcOdSyncPayload(), controlPlaneError: refreshed.error });
+  const refreshed = await tcOdSync.refreshFromDb(sessionTenantSlug(req));
+  return res.json({ success: true, ...tcOdSyncPayload(sessionTenantSlug(req)), controlPlaneError: refreshed.error });
 });
 
 /** PUT /tc-od-sync-offices/:office   { enabled: boolean } — written, read back, audited with priorState on|off. */
@@ -833,14 +850,14 @@ router.put('/tc-od-sync-offices/:office', async (req, res) => {
   if (typeof enabled !== 'boolean') {
     return fail(res, 400, 'enabled must be true or false', 'INVALID_BODY');
   }
-  if (!realOffices().includes(office)) {
+  if (!realOffices(sessionTenantSlug(req)).includes(office)) {
     return fail(res, 404, 'No such office', 'INVALID_OFFICE');
   }
 
   try {
-    await tcOdSync.refreshFromDb();
-    const before = tcOdSync.officeState(office);
-    await tcOdSync.persist(office, enabled, actorEmail(req));
+    await tcOdSync.refreshFromDb(sessionTenantSlug(req));
+    const before = tcOdSync.officeState(sessionTenantSlug(req), office);
+    await tcOdSync.persist(sessionTenantSlug(req), office, enabled, actorEmail(req));
     await audit(req, {
       action: 'UPDATE',
       resourceType: 'platform_setting',
@@ -849,11 +866,16 @@ router.put('/tc-od-sync-offices/:office', async (req, res) => {
       office,
       priorState: before.enabled ? 'on' : 'off',
     });
-    return res.json({ success: true, ...tcOdSyncPayload() });
+    return res.json({ success: true, ...tcOdSyncPayload(sessionTenantSlug(req)) });
   } catch (err) {
     const code = err && err.code ? err.code : 'TC_OD_SYNC_SWITCH_WRITE_FAILED';
     console.error('[platform] OD sync switch write failed:', err && err.message ? err.message : err);
-    const status = code === 'INVALID_OFFICE' || code === 'INVALID_BODY' ? 400 : 500;
+    const status =
+      code === 'INVALID_OFFICE' || code === 'INVALID_BODY'
+        ? 400
+        : code === 'OFFICE_SETTING_TENANT_NOT_WRITABLE'
+          ? 409
+          : 500;
     return fail(res, status, 'Could not save the Open Dental sync switch', code);
   }
 });
@@ -865,17 +887,18 @@ router.put('/tc-od-sync-offices/:office', async (req, res) => {
 // office's appointments today (GET only) and makes a Waiting card for each
 // completed non-hygiene appointment.
 
-function tcAutoCheckoutPayload() {
+/** @param {string|null} tenantSlug the SESSION tenant (MT-2b) */
+function tcAutoCheckoutPayload(tenantSlug) {
   return {
-    offices: realOffices().map((office) => tcAutoCheckout.officeState(office)),
+    offices: realOffices(tenantSlug).map((office) => tcAutoCheckout.officeState(tenantSlug, office)),
     settingKey: tcAutoCheckout.settingKey,
   };
 }
 
 /** GET /tc-auto-checkout-offices — refreshed from the control plane before answering. */
 router.get('/tc-auto-checkout-offices', async (req, res) => {
-  const refreshed = await tcAutoCheckout.refreshFromDb();
-  return res.json({ success: true, ...tcAutoCheckoutPayload(), controlPlaneError: refreshed.error });
+  const refreshed = await tcAutoCheckout.refreshFromDb(sessionTenantSlug(req));
+  return res.json({ success: true, ...tcAutoCheckoutPayload(sessionTenantSlug(req)), controlPlaneError: refreshed.error });
 });
 
 /** PUT /tc-auto-checkout-offices/:office   { enabled: boolean } — written, read back, audited with priorState on|off. */
@@ -885,14 +908,14 @@ router.put('/tc-auto-checkout-offices/:office', async (req, res) => {
   if (typeof enabled !== 'boolean') {
     return fail(res, 400, 'enabled must be true or false', 'INVALID_BODY');
   }
-  if (!realOffices().includes(office)) {
+  if (!realOffices(sessionTenantSlug(req)).includes(office)) {
     return fail(res, 404, 'No such office', 'INVALID_OFFICE');
   }
 
   try {
-    await tcAutoCheckout.refreshFromDb();
-    const before = tcAutoCheckout.officeState(office);
-    await tcAutoCheckout.persist(office, enabled, actorEmail(req));
+    await tcAutoCheckout.refreshFromDb(sessionTenantSlug(req));
+    const before = tcAutoCheckout.officeState(sessionTenantSlug(req), office);
+    await tcAutoCheckout.persist(sessionTenantSlug(req), office, enabled, actorEmail(req));
     await audit(req, {
       action: 'UPDATE',
       resourceType: 'platform_setting',
@@ -901,28 +924,34 @@ router.put('/tc-auto-checkout-offices/:office', async (req, res) => {
       office,
       priorState: before.enabled ? 'on' : 'off',
     });
-    return res.json({ success: true, ...tcAutoCheckoutPayload() });
+    return res.json({ success: true, ...tcAutoCheckoutPayload(sessionTenantSlug(req)) });
   } catch (err) {
     const code = err && err.code ? err.code : 'TC_AUTO_CHECKOUT_SWITCH_WRITE_FAILED';
     console.error('[platform] auto-checkout switch write failed:', err && err.message ? err.message : err);
-    const status = code === 'INVALID_OFFICE' || code === 'INVALID_BODY' ? 400 : 500;
+    const status =
+      code === 'INVALID_OFFICE' || code === 'INVALID_BODY'
+        ? 400
+        : code === 'OFFICE_SETTING_TENANT_NOT_WRITABLE'
+          ? 409
+          : 500;
     return fail(res, status, 'Could not save the checkout-from-schedule switch', code);
   }
 });
 
 // ── TC referrals switch (item 52) — the same shape as checkout's ────────────
 
-function tcReferralsPayload() {
+/** @param {string|null} tenantSlug the SESSION tenant (MT-2b) */
+function tcReferralsPayload(tenantSlug) {
   return {
-    offices: realOffices().map((office) => tcReferrals.officeState(office)),
+    offices: realOffices(tenantSlug).map((office) => tcReferrals.officeState(tenantSlug, office)),
     settingKey: tcReferrals.settingKey,
   };
 }
 
 /** GET /tc-referrals-offices — refreshed from the control plane before answering. */
 router.get('/tc-referrals-offices', async (req, res) => {
-  const refreshed = await tcReferrals.refreshFromDb();
-  return res.json({ success: true, ...tcReferralsPayload(), controlPlaneError: refreshed.error });
+  const refreshed = await tcReferrals.refreshFromDb(sessionTenantSlug(req));
+  return res.json({ success: true, ...tcReferralsPayload(sessionTenantSlug(req)), controlPlaneError: refreshed.error });
 });
 
 /**
@@ -937,14 +966,14 @@ router.put('/tc-referrals-offices/:office', async (req, res) => {
   if (typeof enabled !== 'boolean') {
     return fail(res, 400, 'enabled must be true or false', 'INVALID_BODY');
   }
-  if (!realOffices().includes(office)) {
+  if (!realOffices(sessionTenantSlug(req)).includes(office)) {
     return fail(res, 404, 'No such office', 'INVALID_OFFICE');
   }
 
   try {
-    await tcReferrals.refreshFromDb();
-    const before = tcReferrals.officeState(office);
-    await tcReferrals.persist(office, enabled, actorEmail(req));
+    await tcReferrals.refreshFromDb(sessionTenantSlug(req));
+    const before = tcReferrals.officeState(sessionTenantSlug(req), office);
+    await tcReferrals.persist(sessionTenantSlug(req), office, enabled, actorEmail(req));
     await audit(req, {
       action: 'UPDATE',
       resourceType: 'platform_setting',
@@ -953,28 +982,34 @@ router.put('/tc-referrals-offices/:office', async (req, res) => {
       office,
       priorState: before.enabled ? 'on' : 'off',
     });
-    return res.json({ success: true, ...tcReferralsPayload() });
+    return res.json({ success: true, ...tcReferralsPayload(sessionTenantSlug(req)) });
   } catch (err) {
     const code = err && err.code ? err.code : 'TC_REFERRALS_SWITCH_WRITE_FAILED';
     console.error('[platform] referrals switch write failed:', err && err.message ? err.message : err);
-    const status = code === 'INVALID_OFFICE' || code === 'INVALID_BODY' ? 400 : 500;
+    const status =
+      code === 'INVALID_OFFICE' || code === 'INVALID_BODY'
+        ? 400
+        : code === 'OFFICE_SETTING_TENANT_NOT_WRITABLE'
+          ? 409
+          : 500;
     return fail(res, status, 'Could not save the referrals switch', code);
   }
 });
 
 // ── TC referral EMAIL switch (R5) — the same shape again ────────────────────
 
-function tcReferralEmailPayload() {
+/** @param {string|null} tenantSlug the SESSION tenant (MT-2b) */
+function tcReferralEmailPayload(tenantSlug) {
   return {
-    offices: realOffices().map((office) => tcReferralEmail.officeState(office)),
+    offices: realOffices(tenantSlug).map((office) => tcReferralEmail.officeState(tenantSlug, office)),
     settingKey: tcReferralEmail.settingKey,
   };
 }
 
 /** GET /tc-referral-email-offices — refreshed from the control plane before answering. */
 router.get('/tc-referral-email-offices', async (req, res) => {
-  const refreshed = await tcReferralEmail.refreshFromDb();
-  return res.json({ success: true, ...tcReferralEmailPayload(), controlPlaneError: refreshed.error });
+  const refreshed = await tcReferralEmail.refreshFromDb(sessionTenantSlug(req));
+  return res.json({ success: true, ...tcReferralEmailPayload(sessionTenantSlug(req)), controlPlaneError: refreshed.error });
 });
 
 /**
@@ -989,14 +1024,14 @@ router.put('/tc-referral-email-offices/:office', async (req, res) => {
   if (typeof enabled !== 'boolean') {
     return fail(res, 400, 'enabled must be true or false', 'INVALID_BODY');
   }
-  if (!realOffices().includes(office)) {
+  if (!realOffices(sessionTenantSlug(req)).includes(office)) {
     return fail(res, 404, 'No such office', 'INVALID_OFFICE');
   }
 
   try {
-    await tcReferralEmail.refreshFromDb();
-    const before = tcReferralEmail.officeState(office);
-    await tcReferralEmail.persist(office, enabled, actorEmail(req));
+    await tcReferralEmail.refreshFromDb(sessionTenantSlug(req));
+    const before = tcReferralEmail.officeState(sessionTenantSlug(req), office);
+    await tcReferralEmail.persist(sessionTenantSlug(req), office, enabled, actorEmail(req));
     await audit(req, {
       action: 'UPDATE',
       resourceType: 'platform_setting',
@@ -1005,11 +1040,16 @@ router.put('/tc-referral-email-offices/:office', async (req, res) => {
       office,
       priorState: before.enabled ? 'on' : 'off',
     });
-    return res.json({ success: true, ...tcReferralEmailPayload() });
+    return res.json({ success: true, ...tcReferralEmailPayload(sessionTenantSlug(req)) });
   } catch (err) {
     const code = err && err.code ? err.code : 'TC_REFERRAL_EMAIL_SWITCH_WRITE_FAILED';
     console.error('[platform] referral email switch write failed:', err && err.message ? err.message : err);
-    const status = code === 'INVALID_OFFICE' || code === 'INVALID_BODY' ? 400 : 500;
+    const status =
+      code === 'INVALID_OFFICE' || code === 'INVALID_BODY'
+        ? 400
+        : code === 'OFFICE_SETTING_TENANT_NOT_WRITABLE'
+          ? 409
+          : 500;
     return fail(res, status, 'Could not save the referral email switch', code);
   }
 });
@@ -1017,17 +1057,18 @@ router.put('/tc-referral-email-offices/:office', async (req, res) => {
 // ── TC referral PATIENT email switch (R5b) — the same shape again ───────────
 // Gates only the patient's notice; the specialist letter keeps its own switch.
 
-function tcReferralPatientEmailPayload() {
+/** @param {string|null} tenantSlug the SESSION tenant (MT-2b) */
+function tcReferralPatientEmailPayload(tenantSlug) {
   return {
-    offices: realOffices().map((office) => tcReferralPatientEmail.officeState(office)),
+    offices: realOffices(tenantSlug).map((office) => tcReferralPatientEmail.officeState(tenantSlug, office)),
     settingKey: tcReferralPatientEmail.settingKey,
   };
 }
 
 /** GET /tc-referral-patient-email-offices — refreshed from the control plane before answering. */
 router.get('/tc-referral-patient-email-offices', async (req, res) => {
-  const refreshed = await tcReferralPatientEmail.refreshFromDb();
-  return res.json({ success: true, ...tcReferralPatientEmailPayload(), controlPlaneError: refreshed.error });
+  const refreshed = await tcReferralPatientEmail.refreshFromDb(sessionTenantSlug(req));
+  return res.json({ success: true, ...tcReferralPatientEmailPayload(sessionTenantSlug(req)), controlPlaneError: refreshed.error });
 });
 
 /**
@@ -1042,14 +1083,14 @@ router.put('/tc-referral-patient-email-offices/:office', async (req, res) => {
   if (typeof enabled !== 'boolean') {
     return fail(res, 400, 'enabled must be true or false', 'INVALID_BODY');
   }
-  if (!realOffices().includes(office)) {
+  if (!realOffices(sessionTenantSlug(req)).includes(office)) {
     return fail(res, 404, 'No such office', 'INVALID_OFFICE');
   }
 
   try {
-    await tcReferralPatientEmail.refreshFromDb();
-    const before = tcReferralPatientEmail.officeState(office);
-    await tcReferralPatientEmail.persist(office, enabled, actorEmail(req));
+    await tcReferralPatientEmail.refreshFromDb(sessionTenantSlug(req));
+    const before = tcReferralPatientEmail.officeState(sessionTenantSlug(req), office);
+    await tcReferralPatientEmail.persist(sessionTenantSlug(req), office, enabled, actorEmail(req));
     await audit(req, {
       action: 'UPDATE',
       resourceType: 'platform_setting',
@@ -1058,11 +1099,16 @@ router.put('/tc-referral-patient-email-offices/:office', async (req, res) => {
       office,
       priorState: before.enabled ? 'on' : 'off',
     });
-    return res.json({ success: true, ...tcReferralPatientEmailPayload() });
+    return res.json({ success: true, ...tcReferralPatientEmailPayload(sessionTenantSlug(req)) });
   } catch (err) {
     const code = err && err.code ? err.code : 'TC_REFERRAL_PATIENT_EMAIL_SWITCH_WRITE_FAILED';
     console.error('[platform] referral patient email switch write failed:', err && err.message ? err.message : err);
-    const status = code === 'INVALID_OFFICE' || code === 'INVALID_BODY' ? 400 : 500;
+    const status =
+      code === 'INVALID_OFFICE' || code === 'INVALID_BODY'
+        ? 400
+        : code === 'OFFICE_SETTING_TENANT_NOT_WRITABLE'
+          ? 409
+          : 500;
     return fail(res, status, 'Could not save the referral patient email switch', code);
   }
 });

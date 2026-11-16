@@ -40,6 +40,7 @@ const tenantDb = require('../../platform/tenantDb');
 const { auditMany } = require('../../platform/audit');
 const store = require('./caseStore');
 const tcOdSync = require('../../config/tcOdSync');
+const { sessionTenantSlug } = require('../../platform/sessionTenant');
 const engine = require('../../services/tc/odPipelineSync');
 const { kickScheduleSweep } = require('./checkout');
 
@@ -92,7 +93,7 @@ router.get(
   '/status',
   h(async (req, res) => {
     const office = req.tcOffice;
-    const enabled = await tcOdSync.isEnabled(office);
+    const enabled = await tcOdSync.isEnabled(sessionTenantSlug(req), office);
     const now = Date.now();
     const out = await tenantDb.withTenantDb(req, async (pool) => {
       const [last, lastManual, panel, unanchored] = await Promise.all([
@@ -126,7 +127,7 @@ router.post(
   h(async (req, res) => {
     const office = req.tcOffice;
     const actor = actorEmail(req);
-    if (!(await tcOdSync.isEnabled(office))) {
+    if (!(await tcOdSync.isEnabled(sessionTenantSlug(req), office))) {
       return res.status(409).json({
         success: false,
         error: 'Open Dental sync is off for this office',
@@ -164,6 +165,7 @@ router.post(
       const done = tenantDb
         .withTenantDb(req, (pool) =>
           engine.syncOffice({
+            tenantSlug: sessionTenantSlug(req),
             office,
             pool,
             trigger: 'manual',

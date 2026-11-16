@@ -38,6 +38,9 @@ const tcCheckout = require('../config/tcCheckout');
 const tcReferrals = require('../config/tcReferrals');
 const tcReferralEmail = require('../config/tcReferralEmail');
 const { COULD_NOT_CHECK } = require('../services/setupStatus');
+// MT-2b: the per-office readers SERVE office_setting. Derive it from this suite's
+// getPlatformSetting stubs, as the dual-write stores it (test infra; no assertion changes).
+require('../platform/officeSettingsTestUtils').mirrorPlatformStubIntoOfficeSettings(registry);
 
 const URL_PATH = '/api/admin/setup-status';
 

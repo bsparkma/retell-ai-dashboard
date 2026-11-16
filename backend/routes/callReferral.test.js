@@ -29,6 +29,9 @@ const tenantDb = require('../platform/tenantDb');
 const registry = require('../platform/registry');
 const tcReferrals = require('../config/tcReferrals');
 const { FakeTenantDb, auditRows } = require('./tc/tcTestUtils');
+// MT-2b: the per-office readers SERVE office_setting. Derive it from this suite's
+// getPlatformSetting stubs, as the dual-write stores it (test infra; no assertion changes).
+require('../platform/officeSettingsTestUtils').mirrorPlatformStubIntoOfficeSettings(registry);
 
 let server;
 let baseUrl;
@@ -68,7 +71,8 @@ beforeEach(async () => {
   app.use((req, _res, next) => {
     req.user = { name: 'Front Desk', email: 'front@carein.ai' };
     req.userRole = sessionRole;
-    req.tenant = { id: 'tenant-test', modules: tenantModules };
+    // MT-2b: the session tenant's slug, as tenantContext sets it (the readers ask for it).
+    req.tenant = { id: 'tenant-test', slug: 'carein', modules: tenantModules };
     next();
   });
   app.use('/api/unified-calls', router);

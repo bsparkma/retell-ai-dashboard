@@ -607,12 +607,12 @@ async function bootstrap() {
     await officeRegistry.refreshFromDb();
     officeRegistry.startRefreshTimer();
 
-    //    The office settings parity tripwire (MT-2a). DARK: from here on, each
-    //    of the ten per-office readers compares what it read from
-    //    platform_setting with office_setting and warns on drift. It only LOGS;
-    //    platform_setting is still what every reader serves. Armed before the
-    //    hygiene and email identity reads below so their boot reads compare too;
-    //    the rest are swept once after them (see the end of step 6).
+    //    The office settings parity tripwire, INVERTED in MT-2b. The ten
+    //    per-office readers SERVE office_setting now; after every successful
+    //    office_setting read of tenant 'carein' the tripwire reads
+    //    platform_setting (still written alongside, for rollback) and warns on
+    //    drift, naming office_setting as served. It only LOGS. Armed before the
+    //    boot read below so that read is compared too.
     officeSettingsParity.arm();
 
     // 5. Start the per-office Open Dental health check (default every 5 min).
@@ -645,7 +645,10 @@ async function bootstrap() {
     //    rather than reporting the hardcoded floor. refreshFromDb never throws;
     //    a control plane that could not be reached leaves every office OFF,
     //    which is the safe direction. See config/hygPilot.js.
-    await hygPilot.refreshFromDb();
+    //    MT-2b: the switch is read per TENANT from office_setting — every
+    //    active tenant once now (officeSettings.refreshActiveTenants), which is
+    //    also the read the email identity and the six TC switches serve from.
+    await require('./platform/officeSettings').refreshActiveTenants();
     //    Then say so, once, if somebody has set HYG_OD_ENABLED_<OFFICE>=true:
     //    that variable can only DISABLE an office, so it is doing nothing —
     //    and a variable that quietly does nothing is its own incident.
@@ -674,27 +677,14 @@ async function bootstrap() {
     //    could send, then keep fresh (5 min); a save refreshes it inline.
     //    Never throws; an unreadable control plane leaves the app settings
     //    answering, exactly as before this existed.
-    await emailIdentity.refreshFromDb();
+    //    MT-2b: already read above with every other per-office setting (one
+    //    shared office_setting read per tenant); this only arms its timer.
     emailIdentity.startRefreshTimer();
 
-    //    MT-2a parity sweep: read the other eight per-office settings once now,
-    //    so the tripwire covers all ten at boot rather than waiting for the
-    //    first request (the six TC switches) or the first nightly pass
-    //    (nurture, opportunities). Each read is one the reader would make
-    //    anyway, and never throws; the comparisons are not awaited.
-    for (const sw of [
-      require('./config/tcCheckout'),
-      require('./config/tcOdSync'),
-      require('./config/tcAutoCheckout'),
-      require('./config/tcReferrals'),
-      require('./config/tcReferralEmail'),
-      require('./config/tcReferralPatientEmail'),
-    ]) {
-      await sw.refreshFromDb();
-    }
-    const controlRegistry = require('./platform/registry');
-    await require('./config/tcNurture').switchedOnOffices(controlRegistry);
-    await require('./config/tcOpportunities').switchedOnOffices(controlRegistry);
+    //    MT-2b parity sweep: the boot read above already handed all ten keys to
+    //    the tripwire (one office_setting read covers every key). Awaited here
+    //    only so its first verdict lands in the boot log; it never throws.
+    await officeSettingsParity.settled();
 
     hygDayWarm.start();
 

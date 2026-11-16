@@ -35,6 +35,9 @@ const tcReferrals = require('../../config/tcReferrals');
 const composer = require('../../services/hyg/stagedWriteComposer');
 const { FakeOd, FakeHygDb, bootHygApp, api, apptRow, patientRow, operatoryRow } = require('./hygTestUtils');
 const { FakeTenantDb } = require('../tc/tcTestUtils');
+// MT-2b: the per-office readers SERVE office_setting. Derive it from this suite's
+// getPlatformSetting stubs, as the dual-write stores it (test infra; no assertion changes).
+require('../../platform/officeSettingsTestUtils').mirrorPlatformStubIntoOfficeSettings(registry);
 
 const DATE = '2026-09-08';
 const Q = '?office=roland&date=' + DATE;

@@ -70,6 +70,8 @@ const cron = require('node-cron');
 const warmConfig = require('../config/hygWarm');
 const odOffices = require('../config/odOffices');
 const hygPilot = require('../config/hygPilot');
+const officeSettings = require('../platform/officeSettings');
+const officeRegistry = require('../platform/officeRegistry');
 const odDay = require('./hyg/odDay');
 const odPatientCache = require('./odPatientCache');
 const { localDayKey } = require('./localDayClock');
@@ -96,11 +98,15 @@ class HygDayWarm {
    * That is why this is a method and not a field, and why `runNow` refreshes
    * the switch from the control plane before calling it.
    *
+   * MT-2b: for ONE tenant. The office handles are tenant 'carein's, so
+   * odOffices.isHygOdReady answers false for every office of any other tenant.
+   *
+   * @param {string} [tenantSlug] default: the code-map tenant
    * @returns {string[]}
    */
-  eligibleOffices() {
+  eligibleOffices(tenantSlug = officeRegistry.CODE_MAP_TENANT_SLUG) {
     return Object.keys(odOffices.OFFICE_OD_SETTINGS).filter((key) =>
-      odOffices.isHygOdReady(key)
+      odOffices.isHygOdReady(tenantSlug, key)
     );
   }
 
@@ -265,9 +271,19 @@ class HygDayWarm {
       // the current value is a practice's real patient data being read at 7:45
       // in the morning after somebody switched it off. Never throws: a control
       // plane we cannot reach leaves the previous value in place.
-      await hygPilot.refreshFromDb();
-
-      const offices = this.eligibleOffices();
+      //
+      // MT-2b: the switch is per TENANT. Every ACTIVE tenant
+      // (officeSettings.activeTenantSlugs: registry.listTenants(), or the
+      // code-map tenant when the list cannot be read) is read and asked; only
+      // the code-map tenant has Open Dental handles, so only its offices can be
+      // eligible.
+      const { slugs } = await officeSettings.activeTenantSlugs();
+      /** @type {string[]} */
+      const offices = [];
+      for (const slug of slugs) {
+        await hygPilot.refreshFromDb(slug);
+        for (const officeKey of this.eligibleOffices(slug)) offices.push(officeKey);
+      }
       if (offices.length === 0) {
         // The normal state until an office is switched on from the Platform
         // Console. Said once per pass rather than silently, so "the warm is

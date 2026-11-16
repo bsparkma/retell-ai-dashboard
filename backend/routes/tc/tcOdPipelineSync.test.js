@@ -37,6 +37,9 @@ const odSyncRoute = require('./odSync');
 const { TcOpportunitiesScheduler } = require('../../services/tcOpportunities/scheduler');
 const contract = require('../../tc/contract.gen.cjs');
 const { bootTcApp, api, auditRows, FakeTenantDb } = require('./tcTestUtils');
+// MT-2b: the per-office readers SERVE office_setting. Derive it from this suite's
+// getPlatformSetting stubs, as the dual-write stores it (test infra; no assertion changes).
+require('../../platform/officeSettingsTestUtils').mirrorPlatformStubIntoOfficeSettings(registry);
 
 const OD_KEY_ENV = { roland: 'OPENDENTAL_CUSTOMER_KEY', valley: 'OPENDENTAL_CUSTOMER_KEY_VALLEY' };
 const SWITCH_ENV = ['TC_OD_SYNC_ENABLED_ROLAND', 'TC_OD_SYNC_ENABLED_VALLEY', 'TC_OD_SYNC_MAX_PER_RUN'];
@@ -182,7 +185,7 @@ const writes = (db) => db.log.filter((l) => /^(INSERT|UPDATE|DELETE)/i.test(l.sq
 /** Run the engine directly (the nightly path), auditing into a list. */
 async function runEngine(db, office = 'roland', trigger = 'nightly') {
   const audited = [];
-  const out = await engine.syncOffice({ office, pool: db, trigger, audit: async (e) => audited.push(...e) });
+  const out = await engine.syncOffice({ tenantSlug: 'carein', office, pool: db, trigger, audit: async (e) => audited.push(...e) });
   return { out, audited };
 }
 
@@ -253,8 +256,13 @@ test('switch OFF (the default): Sync now refuses, the engine and the nightly pas
       assert.deepEqual(direct.out, { status: 'skipped', reason: 'SWITCH_OFF' });
       assert.deepEqual(direct.audited, []);
 
+      // MT-2b: the switch is per tenant, so the pass resolves the one TC tenant
+      // FIRST; give it carein so the assertion below is still about the switch.
       const nightly = new TcOpportunitiesScheduler({
-        registry: { listTenants: async () => [], getEnabledModules: async () => [] },
+        registry: {
+          listTenants: async () => [{ tenant_id: 'T1', slug: 'carein', status: 'active' }],
+          getEnabledModules: async () => ['tc'],
+        },
       });
       const pass = await nightly.runPipelineSync();
       assert.equal(pass.skipped, 'NO_OFFICE_SWITCHED_ON');
@@ -275,10 +283,10 @@ test('env =false beats a stored true (break-glass supreme); the floor is OFF', a
   registry.getPlatformSetting = async () => ({ key: 'tc_od_sync_enabled', value: { roland: true }, updated_at: new Date(), updated_by: 'x' });
   try {
     tcOdSync.resetCacheForTests();
-    assert.equal(await tcOdSync.isEnabled('roland'), true);
-    assert.equal(await tcOdSync.isEnabled('valley'), false, 'an office the row does not name is OFF');
+    assert.equal(await tcOdSync.isEnabled('carein', 'roland'), true);
+    assert.equal(await tcOdSync.isEnabled('carein', 'valley'), false, 'an office the row does not name is OFF');
     process.env.TC_OD_SYNC_ENABLED_ROLAND = 'false';
-    assert.equal(await tcOdSync.isEnabled('roland'), false);
+    assert.equal(await tcOdSync.isEnabled('carein', 'roland'), false);
   } finally {
     registry.getPlatformSetting = async () => null;
     delete process.env.TC_OD_SYNC_ENABLED_ROLAND;
@@ -424,7 +432,7 @@ test('a person who moves the case while the sweep is reading wins: the sync does
     return { ok: true, status: 200, data: apt({ AptStatus: 'Complete' }) };
   };
   const audited = [];
-  const out = await engine.syncOffice({ office: 'roland', pool: db, trigger: 'nightly', odGet, audit: async (e) => audited.push(...e) });
+  const out = await engine.syncOffice({ tenantSlug: 'carein', office: 'roland', pool: db, trigger: 'nightly', odGet, audit: async (e) => audited.push(...e) });
   assert.equal(out.summary.raced, 1);
   assert.equal(out.summary.completed, 0);
   assert.equal(caseRow(db, caseId).status, 'lost');
@@ -444,7 +452,7 @@ test('REVIEW: a re-link during the sweep wins — the old appointment\'s signal 
     handoffRow(db, handoffId).appt_num = 6001;
     return { ok: true, status: 200, data: apt({ AptStatus: 'Complete' }) };
   };
-  const out = await engine.syncOffice({ office: 'roland', pool: db, trigger: 'nightly', odGet, audit: async () => {} });
+  const out = await engine.syncOffice({ tenantSlug: 'carein', office: 'roland', pool: db, trigger: 'nightly', odGet, audit: async () => {} });
   assert.equal(out.summary.raced, 1);
   assert.equal(caseRow(db, caseId).status, 'scheduled');
   assert.equal(caseRow(db, caseId).od_sync_action, null);
@@ -473,7 +481,7 @@ test('REVIEW: an audit write that fails rolls the change back, and the run says 
         },
       };
     };
-    await assert.rejects(engine.syncOffice({ office: 'roland', pool: db, trigger: 'nightly', audit }), /audit store down/);
+    await assert.rejects(engine.syncOffice({ tenantSlug: 'carein', office: 'roland', pool: db, trigger: 'nightly', audit }), /audit store down/);
   });
   assert.equal(caseRow(db, caseId).status, 'scheduled', 'no change stands without its audit row');
   assert.equal(caseRow(db, caseId).od_sync_action, null);
@@ -491,7 +499,7 @@ test('REVIEW: a 200 that is not the appointment, or a 404 saying the key cannot 
   ]) {
     const db = new FakeTenantDb();
     const { caseId } = seedCase(db);
-    const out = await engine.syncOffice({ office: 'roland', pool: db, trigger: 'nightly', odGet: async () => res, audit: async () => {} });
+    const out = await engine.syncOffice({ tenantSlug: 'carein', office: 'roland', pool: db, trigger: 'nightly', odGet: async () => res, audit: async () => {} });
     assert.equal(out.status, 'failed', JSON.stringify(res));
     assert.equal(caseRow(db, caseId).od_sync_flag, null, 'not read as "gone from Open Dental"');
   }
@@ -505,7 +513,7 @@ test('REVIEW: switched off while the sweep is reading → nothing is applied', a
     process.env.TC_OD_SYNC_ENABLED_ROLAND = 'false';
     return { ok: true, status: 200, data: apt({ AptStatus: 'Complete' }) };
   };
-  const out = await engine.syncOffice({ office: 'roland', pool: db, trigger: 'nightly', odGet, audit: async () => {} });
+  const out = await engine.syncOffice({ tenantSlug: 'carein', office: 'roland', pool: db, trigger: 'nightly', odGet, audit: async () => {} });
   assert.equal(out.status, 'skipped');
   assert.equal(out.reason, 'SWITCH_OFF');
   assert.equal(caseRow(db, caseId).status, 'scheduled');
@@ -577,7 +585,7 @@ test('REVIEW 2: an Undo clicked while a sweep is reading keeps its hold (the swe
     assert.equal(undone.ok, true);
     return { ok: true, status: 200, data: apt({ AptDateTime: '2026-11-06 13:30:00' }) };
   };
-  const out = await engine.syncOffice({ office: 'roland', pool: db, trigger: 'nightly', odGet, audit: async () => {} });
+  const out = await engine.syncOffice({ tenantSlug: 'carein', office: 'roland', pool: db, trigger: 'nightly', odGet, audit: async () => {} });
   assert.equal(out.summary.raced, 1);
   assert.ok(obj(caseRow(db, caseId).od_sync_undone).fingerprint, 'the hold survives');
   assert.equal(handoffRow(db, handoffId).appt_at_local, '2026-11-04 09:00:00');
@@ -617,7 +625,7 @@ test('REVIEW 2: a re-link during the sweep wins on the flag path too', async () 
     handoffRow(db, handoffId).appt_num = 6001;
     return { ok: false, status: 404, data: null, error: 'Appointment not found' };
   };
-  const out = await engine.syncOffice({ office: 'roland', pool: db, trigger: 'nightly', odGet, audit: async () => {} });
+  const out = await engine.syncOffice({ tenantSlug: 'carein', office: 'roland', pool: db, trigger: 'nightly', odGet, audit: async () => {} });
   assert.equal(out.summary.raced, 1);
   assert.equal(caseRow(db, caseId).od_sync_flag, null, 'the old appointment\'s 404 says nothing about the new link');
 });
@@ -630,7 +638,7 @@ test('REVIEW 2: a failure before the apply phase (the read audit) still finishes
     const audit = async () => {
       throw new Error('audit store down');
     };
-    await assert.rejects(engine.syncOffice({ office: 'roland', pool: db, trigger: 'nightly', audit }), /audit store down/);
+    await assert.rejects(engine.syncOffice({ tenantSlug: 'carein', office: 'roland', pool: db, trigger: 'nightly', audit }), /audit store down/);
   });
   assert.equal(db.table('tc_od_sync_runs')[0].status, 'failed');
   assert.equal(db.table('tc_od_sync_runs')[0].error_code, 'RUN_ERRORED');

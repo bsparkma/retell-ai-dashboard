@@ -489,6 +489,48 @@ function servedOffices(tenantSlug = CODE_MAP_TENANT_SLUG) {
 }
 
 /**
+ * THE office keys tenant T has, for the per-office SETTINGS (MT-1c, in MT-2b).
+ * Synchronous, never reads, never throws.
+ *
+ * A key is known for T only when T has an ACTIVE office row that
+ * servedOffices(T) is willing to serve (read, last read succeeded, younger
+ * than 3 refresh windows). Otherwise:
+ *   - T is the code-map tenant ('carein'): the CODE maps answer (roland,
+ *     valley), exactly as the getters already fall back;
+ *   - any other tenant: NO offices. Fail closed: nothing can be switched on
+ *     for an office we cannot see.
+ * 'unknown' is never an office (the schema refuses the row; it is dropped here
+ * regardless). Order: the registry's sort_order, then the key; the code maps'
+ * own order for the fallback. For 'carein' both are roland, valley — pinned by
+ * platform/officeSettingsServe.test.js.
+ *
+ * @param {unknown} tenantSlug
+ * @returns {string[]}
+ */
+function tenantOfficeKeys(tenantSlug) {
+  if (typeof tenantSlug !== 'string' || tenantSlug === '') return [];
+  const served = servedOffices(tenantSlug);
+  if (served.byKey) {
+    return [...served.byKey.values()]
+      .filter((o) => o.status === 'active' && o.officeKey !== 'unknown')
+      .sort((a, b) => a.sortOrder - b.sortOrder || (a.officeKey < b.officeKey ? -1 : a.officeKey > b.officeKey ? 1 : 0))
+      .map((o) => o.officeKey);
+  }
+  if (tenantSlug !== CODE_MAP_TENANT_SLUG) return [];
+  return codeOffices().map((o) => o.officeKey);
+}
+
+/**
+ * Is `officeKey` one of tenant T's offices? See tenantOfficeKeys.
+ * @param {unknown} tenantSlug
+ * @param {unknown} officeKey
+ * @returns {boolean}
+ */
+function isTenantOffice(tenantSlug, officeKey) {
+  return typeof officeKey === 'string' && officeKey !== 'unknown' && tenantOfficeKeys(tenantSlug).includes(officeKey);
+}
+
+/**
  * Refresh if stale, then answer.
  * @param {string} [tenantSlug]
  * @returns {Promise<OfficesRead>}
@@ -534,6 +576,8 @@ module.exports = {
   ensureFresh,
   cachedOffices,
   servedOffices,
+  tenantOfficeKeys,
+  isTenantOffice,
   getOffices,
   startRefreshTimer,
   stopRefreshTimer,

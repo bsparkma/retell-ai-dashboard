@@ -54,6 +54,7 @@ const tenantDb = require('../../platform/tenantDb');
 const { audit } = require('../../platform/audit');
 const checkoutStore = require('./checkoutStore');
 const store = require('../../services/tc/printTemplateStore');
+const { sessionTenantSlug } = require('../../platform/sessionTenant');
 const assets = require('../../services/tc/printAssetStore');
 const { prepareLogo } = require('../../services/tc/printImage');
 const { renderPrintPdf } = require('../../services/tc/printPdf');
@@ -134,7 +135,7 @@ function mount(router, { enter }) {
       if (!row) return undefined;
       const office = req.tcOffice;
       const facts = await resolvedFactsOf(row, office);
-      const prefill = await store.prefillFor(office);
+      const prefill = await store.prefillFor(sessionTenantSlug(req), office);
       const saved = await tenantDb.withTenantDb(req, (pool) => store.rowFor(pool, office, 'excuse'));
       const officeName = store.effective('excuse', saved, prefill).letterheadName;
       return res.json({
@@ -161,7 +162,7 @@ function mount(router, { enter }) {
       const office = req.tcOffice;
       const type = body.templateType;
 
-      const prefill = await store.prefillFor(office);
+      const prefill = await store.prefillFor(sessionTenantSlug(req), office);
       const saved = await tenantDb.withTenantDb(req, (pool) => store.rowFor(pool, office, type));
       const template = store.effective(type, saved, prefill);
       const facts = await resolvedFactsOf(row, office);
