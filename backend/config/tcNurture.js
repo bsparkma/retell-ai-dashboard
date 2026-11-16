@@ -31,12 +31,16 @@
  *                                             OFF, whatever is stored. It can
  *                                             only ever turn nurture off.
  *     ↓ (anything else)
- *   platform_setting['tc_nurture_enabled']    `{"roland": true, "valley": false}`.
- *                                             An office is ON only when mapped
- *                                             to the literal `true`. NO ROW =
- *                                             every office OFF. A non-boolean is
- *                                             OFF. An unreadable control plane is
- *                                             OFF (stuck-off is the safe side).
+ *   office_setting(tenant, office, 'tc_nurture_enabled')
+ *                                             MT-2b: the served layer, per TENANT.
+ *                                             An office is ON only when its row
+ *                                             holds the literal `true`. NO ROW =
+ *                                             OFF. A non-boolean is OFF. An
+ *                                             unreadable control plane is OFF
+ *                                             (stuck-off is the safe side). Only
+ *                                             the tenant's own offices count.
+ *                                             (platform_setting is still written
+ *                                             alongside, for rollback.)
  *
  * There is deliberately NO env var that turns nurture ON (unlike texting's
  * TC_SMS_ENABLED fallback): absent = off, and the only way on is the stored
@@ -52,7 +56,7 @@ const contract = require('../tc/contract.gen.cjs');
 const { OFFICES } = require('./officeAgents');
 const odOffices = require('./odOffices');
 const acsConfig = require('./acsEmail');
-const officeSettingsParity = require('../platform/officeSettingsParity');
+const officeSettings = require('../platform/officeSettings');
 
 /** The `platform_setting` key. */
 const SETTING_KEY = 'tc_nurture_enabled';
@@ -105,42 +109,31 @@ function officesOnIn(value) {
 }
 
 /**
- * The offices switched ON right now, read from the control plane. Never
+ * The offices of ONE TENANT switched ON right now, read fresh from
+ * office_setting (MT-2b; platform/officeSettings.switchedOnFromDb). Never
  * throws: an unreadable control plane is "nothing is on".
- * @param {{ getPlatformSetting: (key: string) => Promise<{ value: unknown }|null> }} registry
+ *
+ * The tenant is the session tenant on a request path, or the one TC tenant a
+ * scheduler resolved from registry.listTenants() — never client input.
+ *
+ * @param {{ listOfficeSettings?: (slug: string) => Promise<Array<{ office_key: string, setting_key: string, value: unknown }>> }} registry
+ *        the control-plane registry (injectable for tests)
+ * @param {string} tenantSlug
  * @returns {Promise<{ offices: string[], reason: string|null }>}
  */
-async function switchedOnOffices(registry) {
+async function switchedOnOffices(registry, tenantSlug) {
   if (isKilled()) return { offices: [], reason: 'KILLED_BY_ENV' };
-  let row;
-  try {
-    row = await registry.getPlatformSetting(SETTING_KEY);
-  } catch (err) {
-    return { offices: [], reason: `CONTROL_PLANE_UNREADABLE: ${(err && err.message) || err}` };
-  }
-  // MT-2a parity tripwire: ON only for a stored literal true. LOGS only, never
-  // awaited, never changes an answer.
-  const on = officesOnIn(row ? row.value : null);
-  void officeSettingsParity.compare(
-    SETTING_KEY,
-    Object.fromEntries(
-      Object.keys(OFFICES)
-        .filter((k) => k !== 'unknown')
-        .map((o) => [o, on.includes(o)])
-    )
-  );
-  if (!row) return { offices: [], reason: 'NO_SETTING_ROW' };
-  const offices = officesOnIn(row.value);
-  return { offices, reason: offices.length ? null : 'NO_OFFICE_SWITCHED_ON' };
+  return officeSettings.switchedOnFromDb(tenantSlug, SETTING_KEY, registry);
 }
 
 /**
- * Is nurture on for ONE office? Same rules, same failure direction.
+ * Is nurture on for ONE tenant's office? Same rules, same failure direction.
  * @param {Parameters<typeof switchedOnOffices>[0]} registry
+ * @param {string} tenantSlug
  * @param {string} office
  */
-async function isOfficeOn(registry, office) {
-  const { offices } = await switchedOnOffices(registry);
+async function isOfficeOn(registry, tenantSlug, office) {
+  const { offices } = await switchedOnOffices(registry, tenantSlug);
   return offices.includes(office);
 }
 
@@ -149,12 +142,13 @@ async function isOfficeOn(registry, office) {
  * CONFIG (config/officeAgents, TC_EMAIL_PRACTICE_PHONE_<OFFICE>) — never from
  * Open Dental. With no phone configured, copy that says "call {{officePhone}}"
  * reads "call the office" rather than "call  and".
+ * @param {string} tenantSlug whose saved identity answers (MT-2b)
  * @param {string} office
  * @returns {{ officeName: string, officePhone: string, phoneConfigured: boolean, telHref: string|null }}
  */
-function officeMergeValues(office) {
+function officeMergeValues(tenantSlug, office) {
   const officeName = odOffices.describeOffice(office).officeName;
-  const phone = acsConfig.practiceDetailsFor(office).phone;
+  const phone = acsConfig.practiceDetailsFor(tenantSlug, office).phone;
   const digits = phone ? phone.replace(/\D/g, '') : '';
   const ten = digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits;
   return {

@@ -1,18 +1,20 @@
 'use strict';
 
 /**
- * A PER-OFFICE dark-launch switch for a TC feature, read at RUN time.
+ * A PER-OFFICE dark-launch switch for a TC feature, read at RUN time, for ONE
+ * TENANT's office (MT-2b).
  *
  * The checkout handoff (queue item 49) and referrals (item 52) both ship dark,
  * office by office. This is config/tcEmail.js's precedence, generalised from
- * one boolean to a map keyed by office, and nothing else:
+ * one boolean to a map keyed by office:
  *
- *     <ENV_PREFIX><OFFICE>=false            <- break-glass. Forces OFF. Always.
+ *     <ENV_PREFIX><OFFICE>=false            <- break-glass. Forces OFF. Always,
+ *       |                                      for EVERY tenant's office with that key.
  *       | (anything else)
- *     platform_setting[<key>][<office>]     <- {"roland": true, "valley": false}
- *       | (no row, a row that is not a map, or an office absent from it)
- *     <ENV_PREFIX><OFFICE>=true             <- the env FALLBACK
- *       | (unset / unparseable)
+ *     office_setting(tenant, office, key)   <- MT-2b: the served stored layer
+ *       | (no row, not served — never read, last read failed, stale)
+ *     <ENV_PREFIX><OFFICE>=true             <- the env FALLBACK, tenant 'carein' ONLY
+ *       | (unset / unparseable / any other tenant)
  *     false                                 <- the hardcoded floor
  *
  * WHY THE ENV CAN ENABLE ONLY AS A FALLBACK. `=false` beats a stored `true`, so
@@ -21,42 +23,65 @@
  * office somebody switched off in the database. The safety override may only
  * DISABLE; the fallback answers only when nobody has chosen.
  *
- * WHY AN OFFICE ABSENT FROM A USABLE ROW FALLS THROUGH. Unlike hygPilot (where
- * a row answers for every office), an office the row does not name is treated
- * as "nobody chose" and goes to the env fallback, then OFF. Either way the
- * answer for an unnamed office is OFF unless an env var deliberately says
- * otherwise, which is the stuck-off-safe property this exists for.
+ * WHY THE FALLBACK IS 'carein' ONLY (MT-2b, the one PRD change). The env vars
+ * are keyed by office key alone and are this deployment's settings for
+ * tenant 'carein's offices. Another tenant with an office keyed 'roland' must
+ * not be switched on by them. The `=false` break-glass still applies to every
+ * tenant: a lever that can only turn things OFF is safe to share.
  *
- * FRESHNESS WITHOUT A BOOT HOOK. The request paths call `isEnabled(office)`,
- * which refreshes the cache first when it is older than the refresh window
- * (default 5 minutes, `TC_SWITCH_REFRESH_MINUTES`). Concurrent callers share
- * one read. A failed read keeps the previous cache: a control-plane blip must
- * not flip a feature either way. Never read at all => env fallback, then OFF.
+ * WHICH OFFICES. A key is an office of tenant T only if T has an ACTIVE row in
+ * the office registry (platform/officeRegistry.tenantOfficeKeys); for 'carein'
+ * with an unreadable registry, the code maps (roland, valley). Anything else —
+ * 'unknown', a typo, another tenant's office — is OFF.
+ *
+ * FRESHNESS WITHOUT A BOOT HOOK. The request paths call
+ * `isEnabled(tenant, office)`, which refreshes that tenant's office_setting
+ * read first when it is older than the window (platform/officeSettings.js,
+ * default 5 minutes, `TC_SWITCH_REFRESH_MINUTES`). Concurrent callers share one
+ * read. A failed read is NOT served on: the answer falls to the env fallback
+ * (carein only) and then OFF.
+ *
+ * WRITES. platform_setting is still written, with office_setting in the same
+ * transaction (registry.setPlatformSetting, MT-2a), so a rollback is a source
+ * flip. platform_setting has no tenant dimension and holds 'carein's settings,
+ * so in this slice only tenant 'carein' can be written; any other tenant is
+ * refused (OFFICE_SETTING_TENANT_NOT_WRITABLE) rather than written into
+ * carein's rows. MT-2d removes that.
  */
 
 const registry = require('../platform/registry');
-const officeSettingsParity = require('../platform/officeSettingsParity');
-const { OFFICES } = require('./officeAgents');
+const officeSettings = require('../platform/officeSettings');
+const officeRegistry = require('../platform/officeRegistry');
+const { MT2A_TENANT_SLUG } = require('../platform/officeSettingKeys');
 
 /**
- * The practice's real offices: every key of officeAgents.OFFICES except the
- * `unknown` system bucket, which is where an unattributable call lands and is
- * never a location a feature can be switched on for.
+ * One tenant's real offices (MT-1c). Never includes the `unknown` bucket.
+ * @param {unknown} tenantSlug
  * @returns {string[]}
  */
-function realOffices() {
-  return Object.keys(OFFICES).filter((k) => k !== 'unknown');
+function realOffices(tenantSlug) {
+  return officeRegistry.tenantOfficeKeys(tenantSlug);
 }
 
-/** @param {unknown} officeKey @returns {boolean} */
-function isKnownOffice(officeKey) {
-  return typeof officeKey === 'string' && realOffices().includes(officeKey);
+/** @param {unknown} tenantSlug @param {unknown} officeKey @returns {boolean} */
+function isKnownOffice(tenantSlug, officeKey) {
+  return officeRegistry.isTenantOffice(tenantSlug, officeKey);
 }
 
-/** Minutes a cached read stays fresh (default 5). @returns {number} */
-function refreshMinutes() {
-  const raw = Number(String(process.env.TC_SWITCH_REFRESH_MINUTES ?? '').trim());
-  return Number.isFinite(raw) && raw > 0 ? raw : 5;
+/** The only tenant whose env `=true` fallback answers. @param {unknown} tenantSlug */
+function fallbackApplies(tenantSlug) {
+  return tenantSlug === MT2A_TENANT_SLUG;
+}
+
+/**
+ * @param {string} message
+ * @param {string} code
+ * @returns {Error & { code: string }}
+ */
+function codedError(message, code) {
+  const err = /** @type {Error & { code: string }} */ (new Error(message));
+  err.code = code;
+  return err;
 }
 
 /**
@@ -65,14 +90,6 @@ function refreshMinutes() {
  * @param {{ settingKey: string, envPrefix: string, label: string }} spec
  */
 function createOfficeSwitch({ settingKey, envPrefix, label }) {
-  /** @type {{ loaded: boolean, byOffice: Record<string, boolean>|null, loadedAt: number,
-   *           updatedAt: string|null, updatedBy: string|null }} */
-  let cache = { loaded: false, byOffice: null, loadedAt: 0, updatedAt: null, updatedBy: null };
-  /** @type {string|null} */
-  let lastLoggedError = null;
-  /** @type {Promise<unknown>|null} */
-  let inFlight = null;
-
   /** @param {string} officeKey */
   function envVarFor(officeKey) {
     return envPrefix + String(officeKey).toUpperCase();
@@ -93,131 +110,96 @@ function createOfficeSwitch({ settingKey, envPrefix, label }) {
   }
 
   /**
-   * A stored jsonb value -> the per-office map, or null when it is not a map.
-   * Junk entries are dropped loudly; the rest of the map still applies.
-   * @param {unknown} value
-   * @returns {Record<string, boolean>|null}
+   * The SERVED stored-layer answer: the office's row, or null (nobody chose,
+   * or nothing is served). Synchronous.
+   * @param {string} tenantSlug
+   * @param {string} officeKey
+   * @returns {boolean|null}
    */
-  function parseStored(value) {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-    /** @type {Record<string, boolean>} */
-    const byOffice = {};
-    for (const [key, raw] of Object.entries(/** @type {Record<string, unknown>} */ (value))) {
-      if (!isKnownOffice(key) || typeof raw !== 'boolean') {
-        console.warn(
-          `[${label}] platform_setting['${settingKey}']['${key}'] = ${JSON.stringify(raw)} is ignored ` +
-            '(not an office, or not a boolean)'
-        );
-        continue;
-      }
-      byOffice[key] = raw;
-    }
-    return byOffice;
+  function storedFor(tenantSlug, officeKey) {
+    const cell = officeSettings.servedCell(tenantSlug, officeKey, settingKey);
+    return cell && typeof cell.value === 'boolean' ? cell.value : null;
   }
 
   /**
-   * Is the feature on for this office, right now, from the cache? Synchronous.
-   * An unknown office is always OFF.
+   * Is the feature on for this tenant's office, right now, from the cache?
+   * Synchronous. An office that is not the tenant's is always OFF.
+   * @param {string} tenantSlug
    * @param {string} officeKey
    * @returns {boolean}
    */
-  function enabledFor(officeKey) {
-    if (!isKnownOffice(officeKey)) return false;
+  function enabledFor(tenantSlug, officeKey) {
+    if (!isKnownOffice(tenantSlug, officeKey)) return false;
     if (envValue(officeKey) === false) return false;
-    if (cache.loaded && cache.byOffice && typeof cache.byOffice[officeKey] === 'boolean') {
-      return cache.byOffice[officeKey];
-    }
-    return envValue(officeKey) === true;
-  }
-
-  /** Which layer answered. @param {string} officeKey @returns {'env'|'db'|'default'} */
-  function sourceFor(officeKey) {
-    if (envValue(officeKey) === false) return 'env';
-    if (cache.loaded && cache.byOffice && typeof cache.byOffice[officeKey] === 'boolean') return 'db';
-    return envValue(officeKey) === true ? 'env' : 'default';
+    const stored = storedFor(tenantSlug, officeKey);
+    if (stored !== null) return stored;
+    return fallbackApplies(tenantSlug) && envValue(officeKey) === true;
   }
 
   /**
-   * Re-read the stored map. NEVER THROWS; a failed read keeps the previous cache.
-   * @returns {Promise<{ ok: boolean, error: string|null }>}
+   * Which layer answered.
+   * @param {string} tenantSlug
+   * @param {string} officeKey
+   * @returns {'env'|'db'|'default'}
    */
-  async function refreshFromDb() {
-    try {
-      const row = await registry.getPlatformSetting(settingKey);
-      lastLoggedError = null;
-      const byOffice = row ? parseStored(row.value) : null;
-      if (row && byOffice === null) {
-        console.warn(
-          `[${label}] platform_setting['${settingKey}'] is ${JSON.stringify(row.value)}, not a map — ` +
-            'ignoring it (the env fallback, then OFF, answers)'
-        );
-      }
-      cache = {
-        loaded: true,
-        byOffice,
-        loadedAt: Date.now(),
-        updatedAt: row && byOffice && row.updated_at ? new Date(row.updated_at).toISOString() : null,
-        updatedBy: row && byOffice ? row.updated_by || null : null,
-      };
-      // MT-2a parity tripwire: LOGS only, never awaited, never changes an answer.
-      // The stored-layer answer: the office's boolean, or null (nobody chose).
-      void officeSettingsParity.compare(
-        settingKey,
-        Object.fromEntries(
-          realOffices().map((o) => [o, byOffice && typeof byOffice[o] === 'boolean' ? byOffice[o] : null])
-        )
-      );
-      return { ok: true, error: null };
-    } catch (err) {
-      const message = err && err.message ? err.message : String(err);
-      if (message !== lastLoggedError) {
-        console.error(`[${label}] could not read the switch: ${message}`);
-        lastLoggedError = message;
-      }
-      // Stamp the attempt so a down control plane is not re-asked on every request.
-      cache = { ...cache, loadedAt: Date.now() };
-      return { ok: false, error: message };
-    }
+  function sourceFor(tenantSlug, officeKey) {
+    if (envValue(officeKey) === false) return 'env';
+    if (isKnownOffice(tenantSlug, officeKey) && storedFor(tenantSlug, officeKey) !== null) return 'db';
+    return fallbackApplies(tenantSlug) && isKnownOffice(tenantSlug, officeKey) && envValue(officeKey) === true
+      ? 'env'
+      : 'default';
   }
 
-  /** Refresh when the cache is older than the window. Concurrent callers share one read. */
-  async function ensureFresh() {
-    if (cache.loadedAt && Date.now() - cache.loadedAt < refreshMinutes() * 60 * 1000) return;
-    if (!inFlight) {
-      inFlight = refreshFromDb().finally(() => {
-        inFlight = null;
-      });
+  /**
+   * Re-read the tenant's office_setting rows. NEVER THROWS.
+   * @param {string} tenantSlug
+   * @returns {Promise<{ ok: boolean, error: string|null }>}
+   */
+  async function refreshFromDb(tenantSlug) {
+    if (tenantSlug !== officeRegistry.CODE_MAP_TENANT_SLUG && typeof tenantSlug === 'string' && tenantSlug) {
+      await officeRegistry.refreshFromDb(tenantSlug).catch(() => {});
     }
-    await inFlight;
+    // A failure is logged once per distinct message by platform/officeSettings.js.
+    return officeSettings.refreshFromDb(tenantSlug);
+  }
+
+  /** Refresh when the read is older than the window. @param {string} tenantSlug */
+  async function ensureFresh(tenantSlug) {
+    await officeSettings.ensureTenantFresh(tenantSlug);
   }
 
   /**
    * THE request-path accessor: refresh if stale, then answer.
+   * @param {string} tenantSlug
    * @param {string} officeKey
    * @returns {Promise<boolean>}
    */
-  async function isEnabled(officeKey) {
-    await ensureFresh();
-    return enabledFor(officeKey);
+  async function isEnabled(tenantSlug, officeKey) {
+    await ensureFresh(tenantSlug);
+    return enabledFor(tenantSlug, officeKey);
   }
 
   /**
    * Store a new value for ONE office (read-modify-write against the DATABASE),
-   * then refresh FROM the database so what is reported is what was persisted.
+   * then refresh FROM office_setting and confirm the SERVED row reads back as
+   * asked, so what is reported is what is served.
+   * @param {string} tenantSlug
    * @param {string} officeKey
    * @param {boolean} enabled
    * @param {string|null} [updatedBy]
    */
-  async function persist(officeKey, enabled, updatedBy = null) {
-    if (!isKnownOffice(officeKey)) {
-      const err = /** @type {Error & { code?: string }} */ (new Error(`'${officeKey}' is not an office`));
-      err.code = 'INVALID_OFFICE';
-      throw err;
+  async function persist(tenantSlug, officeKey, enabled, updatedBy = null) {
+    if (tenantSlug !== MT2A_TENANT_SLUG) {
+      throw codedError(
+        `per-office settings can only be written for tenant '${MT2A_TENANT_SLUG}' until platform_setting is retired (MT-2d)`,
+        'OFFICE_SETTING_TENANT_NOT_WRITABLE'
+      );
+    }
+    if (!isKnownOffice(tenantSlug, officeKey)) {
+      throw codedError(`'${officeKey}' is not an office`, 'INVALID_OFFICE');
     }
     if (typeof enabled !== 'boolean') {
-      const err = /** @type {Error & { code?: string }} */ (new Error('enabled must be a boolean'));
-      err.code = 'INVALID_BODY';
-      throw err;
+      throw codedError('enabled must be a boolean', 'INVALID_BODY');
     }
     const current = await registry.getPlatformSetting(settingKey);
     const base =
@@ -225,41 +207,40 @@ function createOfficeSwitch({ settingKey, envPrefix, label }) {
         ? { .../** @type {Record<string, unknown>} */ (current.value) }
         : {};
     base[officeKey] = enabled;
-    // MT-2a: the registry also mirrors this map into office_setting, in the same
+    // The registry writes platform_setting AND office_setting in one
     // transaction, and refuses (OFFICE_SETTING_READBACK_MISMATCH) if either
     // table does not read back as asked.
     await registry.setPlatformSetting(settingKey, base, updatedBy, { officeKey });
-    const read = await refreshFromDb();
-    if (!read.ok) {
-      const err = /** @type {Error & { code?: string }} */ (
-        new Error('The switch was written but could not be read back')
-      );
-      err.code = 'SWITCH_READBACK_FAILED';
-      throw err;
+    const read = await refreshFromDb(tenantSlug);
+    if (!read.ok || storedFor(tenantSlug, officeKey) !== enabled) {
+      throw codedError('The switch was written but could not be read back', 'SWITCH_READBACK_FAILED');
     }
-    return officeState(officeKey);
+    return officeState(tenantSlug, officeKey);
   }
 
-  /** What is in force for one office, and why. @param {string} officeKey */
-  function officeState(officeKey) {
+  /**
+   * What is in force for one office, and why.
+   * @param {string} tenantSlug
+   * @param {string} officeKey
+   */
+  function officeState(tenantSlug, officeKey) {
+    const cell = isKnownOffice(tenantSlug, officeKey) ? officeSettings.servedCell(tenantSlug, officeKey, settingKey) : null;
     return {
       office: officeKey,
-      enabled: enabledFor(officeKey),
-      source: sourceFor(officeKey),
-      policyKnown: cache.loaded,
+      enabled: enabledFor(tenantSlug, officeKey),
+      source: sourceFor(tenantSlug, officeKey),
+      policyKnown: officeSettings.isServed(tenantSlug),
       envValue: envValue(officeKey),
       settingKey,
       envVar: envVarFor(officeKey),
-      updatedAt: cache.updatedAt,
-      updatedBy: cache.updatedBy,
+      updatedAt: cell ? cell.updatedAt : null,
+      updatedBy: cell ? cell.updatedBy : null,
     };
   }
 
-  /** TESTS ONLY. */
+  /** TESTS ONLY: forget every tenant's office_setting read. */
   function resetCacheForTests() {
-    cache = { loaded: false, byOffice: null, loadedAt: 0, updatedAt: null, updatedBy: null };
-    lastLoggedError = null;
-    inFlight = null;
+    officeSettings.resetCacheForTests();
   }
 
   return Object.freeze({

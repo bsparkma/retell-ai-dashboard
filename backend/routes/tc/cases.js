@@ -36,6 +36,7 @@ const caseStatus = require('./caseStatus');
 const nextTouch = require('./nextTouch');
 const checkoutStore = require('./checkoutStore');
 const tcCheckout = require('../../config/tcCheckout');
+const { sessionTenantSlug } = require('../../platform/sessionTenant');
 // (item 47) A case leaving TC work stops its nurture enrollment: routes/tc/caseStatus.js.
 // CO-4b: the card's Open Dental sync badge / flag.
 const odPipelineSync = require('../../services/tc/odPipelineSync');
@@ -351,7 +352,7 @@ router.get(
     // attested as entered in Open Dental (the card's "Tx not in OD" badge).
     // Only where checkout is switched on for the office; dark otherwise.
     let unentered = new Set();
-    if (ids.length > 0 && (await tcCheckout.isEnabled(req.tcOffice))) {
+    if (ids.length > 0 && (await tcCheckout.isEnabled(sessionTenantSlug(req), req.tcOffice))) {
       unentered = await tenantDb.withTenantDb(req, async (pool) => {
         const handoffs = await checkoutStore.listForCases(pool, req.tcOffice, ids);
         const atts = await checkoutStore.listAttestations(

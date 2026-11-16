@@ -75,6 +75,7 @@ const tenantDb = require('../platform/tenantDb');
 const { audit } = require('../platform/audit');
 const { normalizeIp } = require('../middleware/rateLimit');
 const acsConfig = require('../config/acsEmail');
+const { sessionTenantSlug } = require('../platform/sessionTenant');
 const odOffices = require('../config/odOffices');
 const referralLetter = require('../services/messaging/referralLetter');
 const { withTenantTx } = require('./tc/tx');
@@ -217,11 +218,16 @@ function longDate(ymd) {
 
 // ── what a live link's pages say ────────────────────────────────────────────
 
-/** The names a page may show: first name, practice names. Nothing else. */
-function namesOf(office, referral, entry) {
+/**
+ * The names a page may show: first name, practice names. Nothing else.
+ * `tenantSlug` is the tenant attachTenant() resolved from TC_EMAIL_TENANT_SLUG
+ * (a public page carries no user; MT-3 replaces this).
+ * @param {string|null} tenantSlug
+ */
+function namesOf(tenantSlug, office, referral, entry) {
   return {
     first: letterText.nameParts(referral.patient_name).first || 'the patient',
-    office: acsConfig.practiceNameFor(office) || odOffices.describeOffice(office).officeName,
+    office: acsConfig.practiceNameFor(tenantSlug, office) || odOffices.describeOffice(office).officeName,
     practice: (entry && (entry.practice_name || entry.specialist_name)) || 'the specialist',
   };
 }
@@ -434,7 +440,7 @@ function createReferralLinkRouter({ perClientMax = PER_CLIENT_MAX, allClientsMax
       await auditHit(req, { action: 'READ', resourceType: 'tc_referral.link_view', result: live ? 'SUCCESS' : 'UNAUTHORIZED', live });
       if (!live) return send(res, 200, NEUTRAL_PAGE);
       res.locals.referralLinkLive = true;
-      const names = namesOf(live.link.office_id, live.referral, live.entry);
+      const names = namesOf(sessionTenantSlug(req), live.link.office_id, live.referral, live.entry);
       return send(res, 200, landingPage(token, live.link, names, at));
     } catch (err) {
       console.error('[referral-link] view FAILED (503):', err && err.message ? err.message : err);
@@ -463,7 +469,7 @@ function createReferralLinkRouter({ perClientMax = PER_CLIENT_MAX, allClientsMax
     const { link, referral, entry, hash } = live;
     const office = link.office_id;
     const referralId = String(link.referral_id);
-    const names = namesOf(office, referral, entry);
+    const names = namesOf(sessionTenantSlug(req), office, referral, entry);
 
     // A "scheduled" link may carry a date; a bad one re-asks and uses nothing up.
     let date = null;

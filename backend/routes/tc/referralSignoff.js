@@ -47,6 +47,7 @@ const express = require('express');
 const { contract, requireOffice, parseBody, h, auditTc } = require('./helpers');
 const tenantDb = require('../../platform/tenantDb');
 const tcReferrals = require('../../config/tcReferrals');
+const { sessionTenantSlug } = require('../../platform/sessionTenant');
 const store = require('./referralStore');
 const transitions = require('./referralTransitions');
 const attachments = require('./referralAttachments');
@@ -71,7 +72,7 @@ router.get(
   '/summary',
   h(async (req, res) => {
     const office = req.tcOffice;
-    if (!(await tcReferrals.isEnabled(office))) {
+    if (!(await tcReferrals.isEnabled(sessionTenantSlug(req), office))) {
       return res.json({ success: true, office, enabled: false, waiting: 0, newest: null });
     }
     const rows = await tenantDb.withTenantDb(req, (pool) =>
@@ -101,7 +102,7 @@ router.get(
 // (Plain middleware, not h(): h() does not pass `next`.)
 router.use(async (req, res, next) => {
   try {
-    if (await tcReferrals.isEnabled(req.tcOffice)) return next();
+    if (await tcReferrals.isEnabled(sessionTenantSlug(req), req.tcOffice)) return next();
     return res.status(403).json({
       success: false,
       error: 'Referrals are not switched on for this office.',

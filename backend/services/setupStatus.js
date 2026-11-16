@@ -129,9 +129,9 @@ async function guarded(meta, compute) {
 
 // ── P1 office details ───────────────────────────────────────────────────────
 
-async function officeDetails(office) {
+async function officeDetails(tenantSlug, office) {
   // The exact prefill the print templates letterhead starts from.
-  const prefill = await printTemplateStore.prefillFor(office);
+  const prefill = await printTemplateStore.prefillFor(tenantSlug, office);
   const parts = [
     ['display name', prefill.name],
     ['address', prefill.address],
@@ -202,16 +202,16 @@ async function directories(pool, office) {
 // ── P5 email identity ───────────────────────────────────────────────────────
 
 /** Is an email feature that signs with this identity switched on for the office? */
-async function emailFeatureOn(office) {
-  const referralEmail = await tcReferralEmail.isEnabled(office);
+async function emailFeatureOn(tenantSlug, office) {
+  const referralEmail = await tcReferralEmail.isEnabled(tenantSlug, office);
   return referralEmail || tcEmail.emailEnabled() === true;
 }
 
-async function emailIdentityStep(office) {
+async function emailIdentityStep(tenantSlug, office) {
   // Settings → Email identity's own readout, re-read first as the print
   // prefill does. Only the SOURCE of each field leaves this function.
-  await emailIdentity.refreshFromDb().catch(() => undefined);
-  const fields = acsEmail.identityStateFor(office);
+  await emailIdentity.refreshFromDb(tenantSlug).catch(() => undefined);
+  const fields = acsEmail.identityStateFor(tenantSlug, office);
   const stored = [];
   const fallback = [];
   const none = [];
@@ -234,8 +234,8 @@ async function emailIdentityStep(office) {
 
 // ── P6 print templates ──────────────────────────────────────────────────────
 
-async function printTemplates(pool, office) {
-  const prefill = await printTemplateStore.prefillFor(office);
+async function printTemplates(tenantSlug, pool, office) {
+  const prefill = await printTemplateStore.prefillFor(tenantSlug, office);
   const rows = await printTemplateStore.rowsFor(pool, office);
   const storage = printAssetStore.isConfigured();
   let done = true;
@@ -281,9 +281,9 @@ async function hygNoteTemplates() {
 
 // ── P9 features ─────────────────────────────────────────────────────────────
 
-async function features(office) {
-  const checkout = await tcCheckout.isEnabled(office);
-  const referrals = await tcReferrals.isEnabled(office);
+async function features(tenantSlug, office) {
+  const checkout = await tcCheckout.isEnabled(tenantSlug, office);
+  const referrals = await tcReferrals.isEnabled(tenantSlug, office);
   const onOff = (v) => (v ? 'on' : 'off');
   return {
     // Informational: a switch being off is a choice, not a gap.
@@ -295,24 +295,25 @@ async function features(office) {
 // ── the whole card ──────────────────────────────────────────────────────────
 
 /**
- * @param {{ office: string, tenantId: string, modules: readonly string[], pool: Pool }} input
+ * @param {{ office: string, tenantId: string, tenantSlug: string|null, modules: readonly string[], pool: Pool }} input
+ *   tenantSlug: the SESSION tenant (MT-2b), whose per-office settings are read
  * @returns {Promise<SetupStatus>}
  */
-async function computeSetupStatus({ office, tenantId, modules, pool }) {
+async function computeSetupStatus({ office, tenantId, tenantSlug, modules, pool }) {
   const hygEntitled = Array.isArray(modules) && modules.includes('hyg');
 
   // P5's required flag is itself read from the switches; if THEY cannot be
   // read, the step stays required — the safe direction for a status card.
   let emailOn = true;
   try {
-    emailOn = await emailFeatureOn(office);
+    emailOn = await emailFeatureOn(tenantSlug, office);
   } catch (err) {
     console.error('[setupStatus] email switches could not be read:', err && err.message ? err.message : err);
   }
 
   /** @type {Array<Promise<SetupStep>>} */
   const pending = [
-    guarded({ id: 'P1', title: 'Office details', required: true, link: LINKS.emailIdentity }, () => officeDetails(office)),
+    guarded({ id: 'P1', title: 'Office details', required: true, link: LINKS.emailIdentity }, () => officeDetails(tenantSlug, office)),
     guarded({ id: 'P2', title: 'Team & roles', required: true, link: LINKS.users }, () => teamAndRoles(tenantId)),
   ];
   if (hygEntitled) {
@@ -325,10 +326,10 @@ async function computeSetupStatus({ office, tenantId, modules, pool }) {
       directories(pool, office)
     ),
     guarded({ id: 'P5', title: 'Email identity', required: emailOn, link: LINKS.emailIdentity }, () =>
-      emailIdentityStep(office)
+      emailIdentityStep(tenantSlug, office)
     ),
     guarded({ id: 'P6', title: 'Print templates', required: true, link: LINKS.printTemplates }, () =>
-      printTemplates(pool, office)
+      printTemplates(tenantSlug, pool, office)
     ),
     guarded({ id: 'P7', title: 'Referral templates', required: false, link: LINKS.referrals }, () =>
       referralTemplates(pool, office)
@@ -339,7 +340,7 @@ async function computeSetupStatus({ office, tenantId, modules, pool }) {
       guarded({ id: 'P8', title: 'Hygiene note templates', required: true, link: LINKS.hygDay }, () => hygNoteTemplates())
     );
   }
-  pending.push(guarded({ id: 'P9', title: 'Features', required: false, link: LINKS.platform }, () => features(office)));
+  pending.push(guarded({ id: 'P9', title: 'Features', required: false, link: LINKS.platform }, () => features(tenantSlug, office)));
 
   const steps = await Promise.all(pending);
   const requiredSteps = steps.filter((s) => s.required);

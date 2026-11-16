@@ -25,6 +25,7 @@
 
 const { audit, auditMany, AuditError } = require('../../platform/audit');
 const odOffices = require('../../config/odOffices');
+const { sessionTenantSlug } = require('../../platform/sessionTenant');
 
 /**
  * Frozen internal office keys — the same two the rest of the platform uses. A
@@ -72,15 +73,19 @@ function requireOffice(req, res, next) {
  * body verbatim. Not a middleware, so a route can audit the refusal with its
  * own resource type before answering.
  *
+ * MT-2b: the switch is read for the SESSION tenant (platform/sessionTenant.js),
+ * never for a tenant the request names.
+ *
+ * @param {{ tenant?: { slug?: unknown } | null }} req
  * @param {string} office
  * @returns {{ ok: true, od: { officeKey: string, officeName: string, client: any } }
  *          | { ok: false, status: number, body: Record<string, unknown> }}
  */
-function resolveHygOd(office) {
+function resolveHygOd(req, office) {
   // The hygiene module's own per-office switch, asked FIRST because it is the
   // narrower question: it defers to odBlockReason internally, so a switched-off
   // or unkeyed office still comes back with its own precise code.
-  const blocked = odOffices.hygOdBlockReason(office);
+  const blocked = odOffices.hygOdBlockReason(sessionTenantSlug(req), office);
   if (blocked) {
     return {
       ok: false,

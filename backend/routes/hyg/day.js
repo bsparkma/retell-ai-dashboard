@@ -198,7 +198,7 @@ router.get(
     // Office readiness BEFORE anything else. Unknown office, hygiene not
     // switched on here, switch on but no customer key — each has its own
     // `reason`, and none of them falls back to another practice's client.
-    const resolved = resolveHygOd(office);
+    const resolved = resolveHygOd(req, office);
     if (!resolved.ok) {
       // Best effort, and UNAUTHORIZED rather than ERROR: the caller was refused
       // access to this office's day, and nothing was read.
@@ -361,7 +361,7 @@ router.get(
       });
     }
 
-    const resolved = resolveHygOd(office);
+    const resolved = resolveHygOd(req, office);
     if (!resolved.ok) {
       await auditHygDenial(req, 'hyg_day', date, { office, result: 'UNAUTHORIZED' });
       return res.status(resolved.status).json(resolved.body);

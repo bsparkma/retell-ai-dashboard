@@ -70,7 +70,8 @@
  *   toAddress: string, body: string, subject: string|null, templateId: string|null,
  *   html?: string, unsubscribeUrl?: string|null,
  * }} AdapterMessage
- * @typedef {{ officeKey: string, officeName: string }} AdapterOffice
+ * @typedef {{ officeKey: string, officeName: string, tenantSlug?: string|null }} AdapterOffice
+ *   tenantSlug (MT-2b): whose saved email identity answers (the email adapter's Reply-To).
  * @typedef {{ provider: string, providerMessageId: string, status: 'sent'|'queued', fromAddress?: string|null }} AdapterResult
  */
 

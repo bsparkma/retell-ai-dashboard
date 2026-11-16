@@ -25,11 +25,29 @@
  * PRECEDENCE
  * ═════════════════════════════════════════════════════════════════════════════
  *
- *     HYG_OD_ENABLED_<OFFICE>=false        ← break-glass. Forces OFF. Always.
+ *     HYG_OD_ENABLED_<OFFICE>=false        ← break-glass. Forces OFF. Always,
+ *                                            for every tenant's office with that key.
  *       ↓ (unset, `=true`, or unparseable — none of which can ENABLE anything)
- *     platform_setting['hyg_od_enabled']   ← the console writes this
- *       ↓ (no row, or a row this module cannot parse)
- *     OFFICE_OD_SETTINGS[x].hygOdEnabled   ← hardcoded, and it stays FALSE
+ *     office_setting(tenant, *, 'hyg_od_enabled')
+ *                                          ← MT-2b: the SERVED stored layer. The
+ *                                            console still writes platform_setting
+ *                                            too, in the same transaction.
+ *       ↓ (the tenant holds no row, or nothing is served: never read, last read
+ *          failed, or stale — platform/officeSettings.js)
+ *     OFFICE_OD_SETTINGS[x].hygOdEnabled   ← hardcoded, and it stays FALSE.
+ *                                            Tenant 'carein' only (its code map);
+ *                                            every other tenant's floor is OFF.
+ *
+ * MT-2b, READ FIRST: every accessor takes the TENANT first. An office is one of
+ * tenant T's only if T has an active office row (platform/officeRegistry
+ * tenantOfficeKeys); anything else is OFF. Since MT-2b a failed control-plane
+ * read is NOT served on — "keep using what we read" in FAIL CLOSED below is
+ * superseded: a failed read, or one older than three refresh windows, answers
+ * "nobody chose", which is the floor, which is OFF. The office_setting cache is
+ * shared by all ten readers (platform/officeSettings.js) and refreshed for
+ * every active tenant by this module's timer. "A row" below now means the
+ * tenant's office_setting rows for the key: when it holds ANY, an office
+ * without one is OFF, exactly as an office absent from the old map was.
  *
  * Shaped after config/retention.js, which already solved this for the call
  * retention window and is proven in production. Read that file first; the
@@ -109,41 +127,16 @@
  */
 
 const registry = require('../platform/registry');
-const officeSettingsParity = require('../platform/officeSettingsParity');
+const officeSettings = require('../platform/officeSettings');
+const officeRegistry = require('../platform/officeRegistry');
+const { MT2A_TENANT_SLUG, answerFromRows } = require('../platform/officeSettingKeys');
 const { OFFICES } = require('./officeAgents');
 
-/** The `platform_setting` key the whole map is stored under. */
+/** The setting key the per-office values are stored under. */
 const SETTING_KEY = 'hyg_od_enabled';
 
 /** Per-office break-glass env override, e.g. `HYG_OD_ENABLED_ROLAND`. */
 const ENV_PREFIX = 'HYG_OD_ENABLED_';
-
-/**
- * The cached view of the stored row.
- *
- * `loaded` records whether the control DB has EVER been read successfully,
- * which is a different question from whether a row exists. `byOffice: null`
- * with `loaded: true` means "asked, and nobody has chosen" — the state that
- * hands control to the environment. `byOffice: {}` means somebody stored an
- * empty map, which switches every office OFF and is a decision, not an absence.
- *
- * @type {{ loaded: boolean, byOffice: Record<string, boolean>|null,
- *          raw: Record<string, unknown>|null, updatedAt: string|null, updatedBy: string|null }}
- */
-let cache = { loaded: false, byOffice: null, raw: null, updatedAt: null, updatedBy: null };
-
-/**
- * The last refresh failure we logged.
- *
- * A DEVIATION from config/retention.js, which logs every failed read. Retention
- * refreshes a handful of times a day (boot, the nightly prune, a settings page
- * view). This one refreshes on a timer forever, so an unreachable control plane
- * would print the same line every few minutes until somebody muted the log —
- * which is how the eConnector alert flood happened. The first occurrence and
- * any CHANGE are still logged; a repeat of the identical message is not.
- * @type {string|null}
- */
-let lastLoggedError = null;
 
 /** @type {NodeJS.Timeout|null} */
 let refreshTimer = null;
@@ -162,61 +155,13 @@ function refreshMinutes() {
 }
 
 /**
- * Is this a real office of this practice group?
- *
- * Deliberately `officeAgents.OFFICES` rather than `odOffices.OFFICE_OD_SETTINGS`:
- * odOffices requires THIS module, so reaching back into it would be a cycle.
- * The two maps carry the same keys and officeAgents is the one that defines
- * them.
- *
+ * Is this one of tenant T's real offices (MT-1c)? 'unknown' never is.
+ * @param {unknown} tenantSlug
  * @param {unknown} officeKey
  * @returns {boolean}
  */
-function isKnownOffice(officeKey) {
-  return (
-    typeof officeKey === 'string' &&
-    Object.prototype.hasOwnProperty.call(OFFICES, officeKey)
-  );
-}
-
-/**
- * A stored jsonb value → the per-office map this module will honour.
- *
- * Returns null when the value is not a usable map at all, which is treated
- * exactly like an absent row: the environment and then the hardcoded floor
- * answer instead. Falling back is defined behaviour; guessing is not.
- *
- * A value that IS a map but contains junk is not discarded wholesale — an
- * unknown office key or a non-boolean value is dropped, loudly, and the rest of
- * the map still applies. One typo must not be able to make the whole switch
- * unreadable and take a live pilot office down with it.
- *
- * @param {unknown} value
- * @returns {{ byOffice: Record<string, boolean>, raw: Record<string, unknown> }|null}
- */
-function parseStored(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-
-  /** @type {Record<string, boolean>} */
-  const byOffice = {};
-  for (const [key, raw] of Object.entries(/** @type {Record<string, unknown>} */ (value))) {
-    if (!isKnownOffice(key)) {
-      console.warn(
-        `[hygPilot] platform_setting['${SETTING_KEY}'] names '${key}', which is not an office — ignoring that entry`
-      );
-      continue;
-    }
-    if (typeof raw !== 'boolean') {
-      console.warn(
-        `[hygPilot] platform_setting['${SETTING_KEY}']['${key}'] is ${JSON.stringify(raw)}, not a boolean — ` +
-          'treating that office as ABSENT, which means OFF'
-      );
-      continue;
-    }
-    byOffice[key] = raw;
-  }
-
-  return { byOffice, raw: /** @type {Record<string, unknown>} */ (value) };
+function isKnownOffice(tenantSlug, officeKey) {
+  return officeRegistry.isTenantOffice(tenantSlug, officeKey);
 }
 
 /** The env var name for an office. @param {string} officeKey @returns {string} */
@@ -234,9 +179,6 @@ function envVarFor(officeKey) {
  *
  * This reports what was SET, not what takes effect. `true` is a legal value
  * here and still cannot enable an office — see `hygEnabledFor` and the header.
- * Parsing and honouring are kept separate on purpose: the console has to be
- * able to say "you set this to true and it is doing nothing", which it cannot
- * do if an inert value is indistinguishable from an unset one.
  *
  * @param {string} officeKey
  * @returns {boolean|null}
@@ -256,11 +198,9 @@ function envOverrideFor(officeKey) {
  * `HYG_OD_ENABLED_ROLAND=true` is accepted as input and cannot turn anything
  * on. Silently ignoring it would be the worse failure of the two: somebody set
  * it during an incident, expecting an effect, and would be left watching a
- * module stay dark with no explanation anywhere. A variable that quietly does
- * nothing is its own incident.
+ * module stay dark with no explanation anywhere.
  *
- * Called from server.js at boot, after the first refresh. Idempotent per
- * process — this must not become a line the log prints on a timer.
+ * Called from server.js at boot. Idempotent per process.
  *
  * @returns {string[]} the offices warned about (empty when there are none)
  */
@@ -280,155 +220,133 @@ function warnAboutInertEnvOverrides() {
 }
 
 /**
- * Is the hygiene module switched on for this office, right now?
+ * The SERVED stored-layer answer for one office: when the tenant holds ANY
+ * served row for the key, an office without one is false; no served rows at
+ * all is null ("nobody chose"). Synchronous.
+ * @param {string} tenantSlug
+ * @param {string} officeKey
+ * @returns {boolean|null}
+ */
+function storedFor(tenantSlug, officeKey) {
+  const answer = answerFromRows(SETTING_KEY, officeSettings.servedRows(tenantSlug, SETTING_KEY), officeKey);
+  return typeof answer === 'boolean' ? answer : null;
+}
+
+/**
+ * Is the hygiene module switched on for this tenant's office, right now?
  *
- * THE accessor. Synchronous, over the boot-loaded cache — see the header.
+ * THE accessor. Synchronous, over the shared office_setting cache.
  *
  * `hardcodedFallback` is passed IN rather than read from odOffices, because
- * odOffices requires this module. It is the floor of the precedence chain and
- * it ships `false` for every office; the parameter exists so the layering has
- * no cycle in it, not so anybody can raise the floor.
+ * odOffices requires this module. It is the floor of the precedence chain, it
+ * ships `false` for every office, and it is tenant 'carein's code map — so it
+ * is honoured for 'carein' only. Every other tenant's floor is OFF.
  *
+ * @param {string} tenantSlug
  * @param {string} officeKey
  * @param {boolean} [hardcodedFallback] `OFFICE_OD_SETTINGS[officeKey].hygOdEnabled`
  * @returns {boolean}
  */
-function hygEnabledFor(officeKey, hardcodedFallback = false) {
+function hygEnabledFor(tenantSlug, officeKey, hardcodedFallback = false) {
+  if (!isKnownOffice(tenantSlug, officeKey)) return false;
   // Break-glass, and it only points one way: `=false` forces OFF whatever the
-  // stored row says, and no env value can enable anything. See the header.
+  // stored rows say, and no env value can enable anything. See the header.
   if (envOverrideFor(officeKey) === false) return false;
 
-  // A usable stored row answers for EVERY office; absent from it means false.
-  if (cache.loaded && cache.byOffice) return cache.byOffice[officeKey] === true;
+  const stored = storedFor(tenantSlug, officeKey);
+  if (stored !== null) return stored;
 
-  return hardcodedFallback === true;
+  return tenantSlug === MT2A_TENANT_SLUG && hardcodedFallback === true;
 }
 
 /**
  * Which layer answered `hygEnabledFor` for this office.
  *
- * Only a DISABLING env var can be the answer. A `=true` never is — reporting
- * `env` for a value that cannot take effect would tell an operator the app
- * setting is in charge at the exact moment they need to know it is inert.
+ * Only a DISABLING env var can be the answer. A `=true` never is.
  *
+ * @param {string} tenantSlug
  * @param {string} officeKey
  * @returns {'db'|'env'|'default'}
  */
-function sourceFor(officeKey) {
+function sourceFor(tenantSlug, officeKey) {
   if (envOverrideFor(officeKey) === false) return 'env';
-  if (cache.loaded && cache.byOffice) return 'db';
+  if (isKnownOffice(tenantSlug, officeKey) && storedFor(tenantSlug, officeKey) !== null) return 'db';
   return 'default';
 }
 
 /**
- * Has the control DB been read successfully at least once since boot?
+ * Is the tenant's office_setting read being SERVED right now (read, last read
+ * succeeded, fresh)? Reported by the console so "off because somebody turned it
+ * off" and "off because we cannot ask" are not the same sentence on screen.
  *
- * Reported by the console so "off because somebody turned it off" and "off
- * because we have never been able to ask" are not the same sentence on screen.
- * Unlike retention's `policyKnown()`, nothing REFUSES to act on a false here:
- * the honest response to not knowing is OFF, and OFF is already what the
- * precedence chain produces.
- *
+ * @param {string} tenantSlug
  * @returns {boolean}
  */
-function policyKnown() {
-  return cache.loaded;
+function policyKnown(tenantSlug) {
+  return officeSettings.isServed(tenantSlug);
 }
 
 /**
- * MT-2a parity tripwire: hand the stored-layer answer per REAL office to the
- * comparison. A usable row answers for every office (absent = false); no usable
- * row is null. LOGS only, never awaited, never changes an answer.
- * @param {Record<string, boolean>|null} byOffice
- */
-function parityCompare(byOffice) {
-  const offices = Object.keys(OFFICES).filter((k) => k !== 'unknown');
-  void officeSettingsParity.compare(
-    SETTING_KEY,
-    Object.fromEntries(offices.map((o) => [o, byOffice ? byOffice[o] === true : null]))
-  );
-}
-
-/**
- * Re-read the stored map from the control DB.
+ * Re-read the tenant's office_setting rows from the control DB.
  *
  * NEVER THROWS. It is called from a timer, from a warm pass, and from request
- * paths that have their own error reporting; an exception here would take down
- * a scheduled job or turn a settings page into a 500 over a transient blip.
+ * paths that have their own error reporting.
  *
- * A failed refresh LEAVES THE PREVIOUS CACHE in place. A database blip must not
- * switch a practice's chairside screen off mid-morning, any more than it should
- * switch one on.
+ * `byOffice` is the SERVED stored layer after the read: the tenant's offices
+ * that hold a row, office -> boolean, or null when it holds none (or nothing
+ * is served) — the same shape this returned before MT-2b.
  *
+ * @param {string} tenantSlug
  * @returns {Promise<{ ok: boolean, byOffice: Record<string, boolean>|null, error: string|null }>}
  */
-async function refreshFromDb() {
-  try {
-    const row = await registry.getPlatformSetting(SETTING_KEY);
-    lastLoggedError = null;
-
-    if (!row) {
-      // Nobody has chosen. Hands control to the environment, then the floor.
-      cache = { loaded: true, byOffice: null, raw: null, updatedAt: null, updatedBy: null };
-      parityCompare(null);
-      return { ok: true, byOffice: null, error: null };
-    }
-
-    const parsed = parseStored(row.value);
-    if (!parsed) {
-      console.warn(
-        `[hygPilot] platform_setting['${SETTING_KEY}'] holds an unusable value ` +
-          `(${JSON.stringify(row.value)}) — ignoring it and falling back to the environment`
-      );
-      cache = { loaded: true, byOffice: null, raw: null, updatedAt: null, updatedBy: null };
-      parityCompare(null);
-      return { ok: true, byOffice: null, error: null };
-    }
-
-    cache = {
-      loaded: true,
-      byOffice: parsed.byOffice,
-      raw: parsed.raw,
-      updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null,
-      updatedBy: row.updated_by || null,
-    };
-    parityCompare(parsed.byOffice);
-    return { ok: true, byOffice: parsed.byOffice, error: null };
-  } catch (err) {
-    const message = err && err.message ? err.message : String(err);
-    // See lastLoggedError: this runs on a timer, so an unreachable control
-    // plane must not print the same line every few minutes forever.
-    if (message !== lastLoggedError) {
-      console.error(`[hygPilot] could not read the hygiene switch: ${message}`);
-      lastLoggedError = message;
-    }
-    return { ok: false, byOffice: cache.byOffice, error: message };
+async function refreshFromDb(tenantSlug) {
+  if (tenantSlug !== officeRegistry.CODE_MAP_TENANT_SLUG && typeof tenantSlug === 'string' && tenantSlug) {
+    await officeRegistry.refreshFromDb(tenantSlug).catch(() => {});
   }
+  const read = await officeSettings.refreshFromDb(tenantSlug);
+  const rows = officeSettings.servedRows(tenantSlug, SETTING_KEY);
+  /** @type {Record<string, boolean>|null} */
+  let byOffice = null;
+  if (rows && rows.size > 0) {
+    byOffice = {};
+    for (const [officeKey, value] of rows) if (typeof value === 'boolean') byOffice[officeKey] = value;
+  }
+  return { ok: read.ok, byOffice, error: read.error };
 }
 
 /**
  * Store a new value for ONE office and adopt it immediately.
  *
- * READ-MODIFY-WRITE against the DATABASE, not against this module's cache: a
- * runbook may have written the row directly since the last refresh, and
- * flipping roland must not silently revert valley to whatever we last saw.
- * Unknown office keys already in the row are PRESERVED rather than dropped —
- * this module ignores them when reading, which is not the same as being
- * entitled to delete somebody's data.
+ * READ-MODIFY-WRITE against the DATABASE, not against a cache: a runbook may
+ * have written the row directly since the last refresh, and flipping roland
+ * must not silently revert valley to whatever we last saw. Unknown office keys
+ * already in the platform_setting map are PRESERVED rather than dropped.
  *
- * The cache is then refreshed FROM THE DATABASE rather than set from the
- * argument, so what the console reports back is what was actually persisted. A
- * write that succeeded and a write we merely believe succeeded must not look
- * the same. (config/retention.js, same rule, same reason.)
+ * The registry writes platform_setting AND office_setting in one transaction
+ * (MT-2a, kept for rollback). The cache is then refreshed FROM office_setting
+ * and the served row must read back as asked, so what the console reports is
+ * what is served.
  *
+ * Tenant 'carein' only until MT-2d: platform_setting holds no other tenant's
+ * settings, and writing another tenant's switch into it would write carein's.
+ *
+ * @param {string} tenantSlug
  * @param {string} officeKey
  * @param {boolean} enabled
  * @param {string|null} [updatedBy] actor email
  * @returns {Promise<{ officeKey: string, enabled: boolean, updatedAt: string|null, updatedBy: string|null }>}
- * @throws {Error & { code?: string }} INVALID_OFFICE | INVALID_HYG_ENABLED | HYG_SWITCH_READBACK_FAILED
+ * @throws {Error & { code?: string }} OFFICE_SETTING_TENANT_NOT_WRITABLE | INVALID_OFFICE |
+ *         INVALID_HYG_ENABLED | HYG_SWITCH_READBACK_FAILED
  */
-async function persistHygEnabled(officeKey, enabled, updatedBy = null) {
-  if (!isKnownOffice(officeKey)) {
+async function persistHygEnabled(tenantSlug, officeKey, enabled, updatedBy = null) {
+  if (tenantSlug !== MT2A_TENANT_SLUG) {
+    const err = /** @type {Error & { code?: string }} */ (
+      new Error(`per-office settings can only be written for tenant '${MT2A_TENANT_SLUG}' until MT-2d`)
+    );
+    err.code = 'OFFICE_SETTING_TENANT_NOT_WRITABLE';
+    throw err;
+  }
+  if (!isKnownOffice(tenantSlug, officeKey)) {
     const err = /** @type {Error & { code?: string }} */ (
       new Error(`'${officeKey}' is not an office of this practice group`)
     );
@@ -436,9 +354,7 @@ async function persistHygEnabled(officeKey, enabled, updatedBy = null) {
     throw err;
   }
   if (typeof enabled !== 'boolean') {
-    const err = /** @type {Error & { code?: string }} */ (
-      new Error('enabled must be true or false')
-    );
+    const err = /** @type {Error & { code?: string }} */ (new Error('enabled must be true or false'));
     err.code = 'INVALID_HYG_ENABLED';
     throw err;
   }
@@ -450,25 +366,25 @@ async function persistHygEnabled(officeKey, enabled, updatedBy = null) {
       : {};
   base[officeKey] = enabled;
 
-  // MT-2a: the registry also mirrors this map into office_setting, in the same
-  // transaction, and refuses (OFFICE_SETTING_READBACK_MISMATCH) if either table
-  // does not read back as asked.
   await registry.setPlatformSetting(SETTING_KEY, base, updatedBy, { officeKey });
 
-  const refreshed = await refreshFromDb();
-  if (!refreshed.ok) {
+  const refreshed = await refreshFromDb(tenantSlug);
+  if (!refreshed.ok || storedFor(tenantSlug, officeKey) !== enabled) {
     const err = /** @type {Error & { code?: string }} */ (
-      new Error(`stored the switch but could not read it back: ${refreshed.error}`)
+      new Error(
+        `stored the switch but could not read it back: ${refreshed.error || 'office_setting does not hold it'}`
+      )
     );
     err.code = 'HYG_SWITCH_READBACK_FAILED';
     throw err;
   }
 
+  const cell = officeSettings.servedCell(tenantSlug, officeKey, SETTING_KEY);
   return {
     officeKey,
-    enabled: hygEnabledFor(officeKey),
-    updatedAt: cache.updatedAt,
-    updatedBy: cache.updatedBy,
+    enabled: hygEnabledFor(tenantSlug, officeKey),
+    updatedAt: cell ? cell.updatedAt : null,
+    updatedBy: cell ? cell.updatedBy : null,
   };
 }
 
@@ -476,46 +392,35 @@ async function persistHygEnabled(officeKey, enabled, updatedBy = null) {
  * Everything the console needs to render ONE office honestly, including WHY the
  * effective value is what it is and whether the layers disagree.
  *
- * `envEffect` is the incident field, and it has to be reported rather than
- * derived by the caller, because the two disagreements read in OPPOSITE
- * directions now that the override is one-directional:
+ * `envEffect`: `disables` — the var says false, so this office is off no matter
+ * what is stored; `inert` — the var says true, which can never enable anything.
  *
- *   `disables` — the var says false, so this office is off no matter what the
- *                stored row says. The app setting is in charge.
- *   `inert`    — the var says true, which can never enable anything. Somebody
- *                set it and is watching nothing happen; say so.
+ * `inRow`: whether the tenant holds a served row FOR THIS office. A tenant
+ * holding rows that do not name an office reads as `db: false`, exactly like
+ * one that says `false` outright; they are the same effective value and a
+ * different sentence.
  *
- * `disagreesWithEnv` stays as the narrower "the database answered and the env
- * var says the opposite" fact, which is the pair a console shows side by side.
- *
+ * @param {string} tenantSlug
  * @param {string} officeKey
  * @param {boolean} [hardcodedFallback]
- * `inRow` is the OTHER honest distinction, and it is not cosmetic: a stored row
- * that does not NAME an office reads as `db: false`, exactly like one that says
- * `false` outright. They are the same effective value and a different sentence —
- * "turned off by somebody on Tuesday" is a claim about a person, and printing it
- * over an office nobody has ever touched is a lie the console would tell every
- * time a second office existed.
- *
  * @returns {{ officeKey: string, enabled: boolean, source: 'db'|'env'|'default',
  *             db: boolean|null, inRow: boolean|null, env: boolean|null,
  *             envVar: string, envRaw: string|null, envEffect: 'disables'|'inert'|null,
  *             hardcoded: boolean, disagreesWithEnv: boolean }}
  */
-function officeState(officeKey, hardcodedFallback = false) {
-  const db = cache.loaded && cache.byOffice ? cache.byOffice[officeKey] === true : null;
-  const inRow =
-    cache.loaded && cache.byOffice
-      ? Object.prototype.hasOwnProperty.call(cache.byOffice, officeKey)
-      : null;
+function officeState(tenantSlug, officeKey, hardcodedFallback = false) {
+  const known = isKnownOffice(tenantSlug, officeKey);
+  const db = known ? storedFor(tenantSlug, officeKey) : null;
+  const rows = officeSettings.servedRows(tenantSlug, SETTING_KEY);
+  const inRow = known && rows && rows.size > 0 ? rows.has(officeKey) : null;
   const env = envOverrideFor(officeKey);
   const rawEnv = process.env[envVarFor(officeKey)];
-  const enabled = hygEnabledFor(officeKey, hardcodedFallback);
+  const enabled = hygEnabledFor(tenantSlug, officeKey, hardcodedFallback);
 
   return {
     officeKey,
     enabled,
-    source: sourceFor(officeKey),
+    source: sourceFor(tenantSlug, officeKey),
     db,
     inRow,
     env,
@@ -523,30 +428,39 @@ function officeState(officeKey, hardcodedFallback = false) {
     envRaw: rawEnv === undefined ? null : String(rawEnv),
     envEffect: env === false ? 'disables' : env === true ? 'inert' : null,
     hardcoded: hardcodedFallback === true,
-    // The narrower fact: both layers answered and they said different things.
-    // Which one is in force is `envEffect`'s job to say.
     disagreesWithEnv: db !== null && env !== null && db !== env,
   };
 }
 
-/** Provenance of the stored row, for the console's "who set this" line. */
-function settingMeta() {
+/**
+ * Provenance of the stored rows, for the console's "who set this" line: the
+ * most recently changed of the tenant's served rows for this key.
+ * @param {string} tenantSlug
+ */
+function settingMeta(tenantSlug) {
+  const rows = officeSettings.servedRows(tenantSlug, SETTING_KEY);
+  /** @type {{ updatedAt: string|null, updatedBy: string|null }} */
+  let latest = { updatedAt: null, updatedBy: null };
+  for (const officeKey of rows ? rows.keys() : []) {
+    const cell = officeSettings.servedCell(tenantSlug, officeKey, SETTING_KEY);
+    if (cell && cell.updatedAt && (!latest.updatedAt || cell.updatedAt > latest.updatedAt)) {
+      latest = { updatedAt: cell.updatedAt, updatedBy: cell.updatedBy };
+    }
+  }
   return {
-    policyKnown: cache.loaded,
-    hasRow: Boolean(cache.loaded && cache.byOffice),
-    updatedAt: cache.updatedAt,
-    updatedBy: cache.updatedBy,
+    policyKnown: policyKnown(tenantSlug),
+    hasRow: Boolean(rows && rows.size > 0),
+    updatedAt: latest.updatedAt,
+    updatedBy: latest.updatedBy,
     settingKey: SETTING_KEY,
   };
 }
 
 /**
- * Refresh in the background, so a value written straight into the control DB by
- * a runbook reaches the request path without a restart.
- *
- * A console write does NOT depend on this: it refreshes inline and, with
- * `maxReplicas` at 1, is in force for the very next request. This timer is for
- * the other ways the row can change.
+ * Refresh every ACTIVE tenant's office_setting read in the background, so a
+ * value written straight into the control DB by a runbook reaches the
+ * synchronous request path without a restart, and no tenant's served read goes
+ * stale (stale = OFF).
  *
  * @returns {boolean} true when a timer was armed by this call
  */
@@ -554,10 +468,8 @@ function startRefreshTimer() {
   if (refreshTimer) return false;
   const minutes = refreshMinutes();
   refreshTimer = setInterval(() => {
-    refreshFromDb().catch(() => {});
+    officeSettings.refreshActiveTenants().catch(() => {});
   }, minutes * 60 * 1000);
-  // Never the reason a shutdown hangs — the listening socket keeps the process
-  // alive, not a settings refresh.
   if (typeof refreshTimer.unref === 'function') refreshTimer.unref();
   return true;
 }
@@ -571,15 +483,12 @@ function stopRefreshTimer() {
 }
 
 /**
- * Drop the cached database view, returning this module to its never-loaded
- * state. FOR TESTS — in the app, forgetting the switch means falling back to
- * the environment and then to a hardcoded `false`, which would turn a live
- * pilot office off.
+ * Drop every cached office_setting read, returning to the never-loaded state.
+ * FOR TESTS.
  * @returns {void}
  */
 function resetCacheForTests() {
-  cache = { loaded: false, byOffice: null, raw: null, updatedAt: null, updatedBy: null };
-  lastLoggedError = null;
+  officeSettings.resetCacheForTests();
   inertEnvWarned = false;
   stopRefreshTimer();
 }

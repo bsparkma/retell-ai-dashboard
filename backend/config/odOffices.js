@@ -558,10 +558,24 @@ function isOdReady(officeKey) {
  * Returns null when the office IS ready. Pure — no network call, no client
  * construction — so a roster endpoint and the UI can both ask it.
  *
+ * MT-2b: the TENANT comes first, and it is the session tenant (or the one TC
+ * tenant a job resolved) — never client input. The Open Dental handles in this
+ * module are tenant 'carein's (the code-map tenant); for any other tenant the
+ * answer is OFFICE_NOT_OD_CONNECTED before anything else is consulted, so a
+ * second tenant with an office keyed like one of carein's can never reach
+ * carein's charts through the hygiene switch.
+ *
+ * @param {string} tenantSlug
  * @param {string} officeKey
  * @returns {{ code: string, message: string } | null}
  */
-function hygOdBlockReason(officeKey) {
+function hygOdBlockReason(tenantSlug, officeKey) {
+  if (tenantSlug !== officeRegistry.CODE_MAP_TENANT_SLUG) {
+    return {
+      code: 'OFFICE_NOT_OD_CONNECTED',
+      message: 'Open Dental is not connected for this practice yet',
+    };
+  }
   // Everything the voice path refuses, the hygiene path refuses identically and
   // with the same code: unknown office, no registry entry, switch off, no key.
   const base = odBlockReason(officeKey);
@@ -569,14 +583,14 @@ function hygOdBlockReason(officeKey) {
 
   const settings = OFFICE_OD_SETTINGS[officeKey];
   // Read at RUN TIME, through the precedence chain in config/hygPilot.js:
-  // a disabling HYG_OD_ENABLED_<OFFICE> narrows first, then platform_setting,
-  // then the hardcoded floor passed in here. (Nothing in the environment can
+  // a disabling HYG_OD_ENABLED_<OFFICE> narrows first, then the tenant's
+  // office_setting rows (MT-2b), then the hardcoded floor passed in here. (Nothing in the environment can
   // ENABLE an office — see that module's header.) Synchronous over a cached
   // value, because this function is on every
   // /api/hyg request. A console write updates that cache inline, so an office
   // turned OFF is refused on the VERY NEXT request — which is the only thing
   // that makes this a kill switch rather than a deployment.
-  if (!hygPilot.hygEnabledFor(officeKey, hygFloorFor(settings))) {
+  if (!hygPilot.hygEnabledFor(tenantSlug, officeKey, hygFloorFor(settings))) {
     return {
       code: 'OFFICE_HYG_NOT_ENABLED',
       message: `The hygiene module is not switched on for ${nameOf(officeKey)} yet`,
@@ -606,17 +620,19 @@ function hygOdBlockReason(officeKey) {
  *                   envVar: string, envRaw: string|null, hardcoded: boolean,
  *                   disagreesWithEnv: boolean, ready: boolean,
  *                   blockedBy: { code: string, message: string }|null }>}
+ *
+ * @param {string} tenantSlug the session tenant (MT-2b)
  */
-function hygSwitchState() {
+function hygSwitchState(tenantSlug) {
   return Object.keys(OFFICE_OD_SETTINGS).map((officeKey) => {
     const settings = OFFICE_OD_SETTINGS[officeKey];
-    const state = hygPilot.officeState(officeKey, hygFloorFor(settings));
+    const state = hygPilot.officeState(tenantSlug, officeKey, hygFloorFor(settings));
     // Everything the VOICE path already refuses, independent of this switch.
     const base = odBlockReason(officeKey);
     return {
       ...state,
       officeName: describeOffice(officeKey).officeName,
-      ready: isHygOdReady(officeKey),
+      ready: isHygOdReady(tenantSlug, officeKey),
       blockedBy: base,
     };
   });
@@ -625,11 +641,12 @@ function hygSwitchState() {
 /**
  * Whether an office can serve the hygiene module right now.
  * Strictly narrower than isOdReady() — see hygOdBlockReason.
+ * @param {string} tenantSlug
  * @param {string} officeKey
  * @returns {boolean}
  */
-function isHygOdReady(officeKey) {
-  return hygOdBlockReason(officeKey) === null;
+function isHygOdReady(tenantSlug, officeKey) {
+  return hygOdBlockReason(tenantSlug, officeKey) === null;
 }
 
 /**

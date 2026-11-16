@@ -43,6 +43,7 @@
 const cron = require('node-cron');
 
 const config = require('../../config/tcOpportunities');
+const officeRegistry = require('../../platform/officeRegistry');
 const odOffices = require('../../config/odOffices');
 const odPatientCache = require('../odPatientCache');
 const { syncOffice } = require('./sync');
@@ -132,17 +133,20 @@ class TcOpportunitiesScheduler {
     const sw = this.deps.odSyncSwitch || require('../../config/tcOdSync');
     const engine = this.deps.pipelineSync || require('../tc/odPipelineSync');
     try {
-      await sw.refreshFromDb();
-      const { realOffices } = require('../../config/tcOfficeSwitch');
-      const offices = realOffices().filter((o) => sw.enabledFor(o));
-      if (offices.length === 0) {
-        console.log('[tc/od-sync] nightly sync skipped: NO_OFFICE_SWITCHED_ON');
-        return { skipped: 'NO_OFFICE_SWITCHED_ON', offices: [] };
-      }
+      // MT-2b: the switch is per TENANT — the one active, tc-entitled tenant
+      // registry.listTenants() names (resolveTenant) — so it is resolved first.
       const { tenant, reason } = await this.resolveTenant();
       if (!tenant) {
         console.warn(`[tc/od-sync] nightly sync skipped: ${reason}`);
         return { skipped: reason || 'NO_TC_TENANT', offices: [] };
+      }
+      const tenantSlug = typeof tenant.slug === 'string' ? tenant.slug : null;
+      await sw.refreshFromDb(tenantSlug);
+      const { realOffices } = require('../../config/tcOfficeSwitch');
+      const offices = realOffices(tenantSlug).filter((o) => sw.enabledFor(tenantSlug, o));
+      if (offices.length === 0) {
+        console.log('[tc/od-sync] nightly sync skipped: NO_OFFICE_SWITCHED_ON');
+        return { skipped: 'NO_OFFICE_SWITCHED_ON', offices: [] };
       }
       const pool = await this.tenantDb.getTenantPool(tenant.tenant_id);
       const { auditForTenant } = this.deps.audit || require('../../platform/audit');
@@ -151,6 +155,7 @@ class TcOpportunitiesScheduler {
       for (const office of offices) {
         try {
           const r = await engine.syncOffice({
+            tenantSlug,
             office,
             pool,
             trigger: 'nightly',
@@ -181,9 +186,10 @@ class TcOpportunitiesScheduler {
   async runOpportunities(at) {
     try {
       const oo = this.deps.odOffices || odOffices;
-      const sw = await this.cfg.switchedOnOffices(this.registry);
-      if (sw.offices.length === 0) {
-        const r = { skipped: sw.reason || 'NO_OFFICE_SWITCHED_ON', offices: [], at };
+      // MT-2b: the switch is per TENANT, so the tenant comes first. The kill
+      // switch still answers before anything is read.
+      if (this.cfg.isKilled()) {
+        const r = { skipped: 'KILLED_BY_ENV', offices: [], at };
         this.lastRun = r;
         console.log(`[tcopps] nightly sync skipped: ${r.skipped}`);
         return r;
@@ -193,6 +199,22 @@ class TcOpportunitiesScheduler {
         const r = { skipped: reason || 'NO_TC_TENANT', offices: [], at };
         this.lastRun = r;
         console.warn(`[tcopps] nightly sync skipped: ${r.skipped}`);
+        return r;
+      }
+      const tenantSlug = typeof tenant.slug === 'string' ? tenant.slug : null;
+      // The Open Dental handles are tenant 'carein's (config/odOffices.js): any
+      // other tenant is refused before its switch is even read.
+      if (tenantSlug !== officeRegistry.CODE_MAP_TENANT_SLUG) {
+        const r = { skipped: 'OD_NOT_TENANT_BOUND', offices: [], at };
+        this.lastRun = r;
+        console.warn(`[tcopps] nightly sync skipped: ${r.skipped}`);
+        return r;
+      }
+      const sw = await this.cfg.switchedOnOffices(this.registry, tenantSlug);
+      if (sw.offices.length === 0) {
+        const r = { skipped: sw.reason || 'NO_OFFICE_SWITCHED_ON', offices: [], at };
+        this.lastRun = r;
+        console.log(`[tcopps] nightly sync skipped: ${r.skipped}`);
         return r;
       }
 

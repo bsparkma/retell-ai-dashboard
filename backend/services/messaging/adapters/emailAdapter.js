@@ -170,12 +170,13 @@ module.exports = {
    * (R5) The size, in bytes, of the request send() would POST for this
    * message from this office — attachments' base64 included. No I/O.
    * @param {import('./index').AdapterMessage & { attachments?: unknown }} message
+   * @param {string|null} tenantSlug whose saved Reply-To is used (MT-2b)
    * @param {string} officeKey
    * @returns {number}
    */
-  requestBytes(message, officeKey) {
+  requestBytes(message, tenantSlug, officeKey) {
     const from = acsConfig.fromAddressFor(officeKey) || '';
-    return bytesOf(payloadFor(message, from, acsConfig.replyToFor(officeKey)));
+    return bytesOf(payloadFor(message, from, acsConfig.replyToFor(tenantSlug, officeKey)));
   },
 
   /**
@@ -209,7 +210,8 @@ module.exports = {
     }
 
     const acsCfg = { mode: cfg.mode, endpoint: cfg.endpoint, accessKey: cfg.accessKey };
-    const replyTo = acsConfig.replyToFor(office.officeKey);
+    // MT-2b: the Reply-To is the office's TENANT's saved identity (AdapterOffice.tenantSlug).
+    const replyTo = acsConfig.replyToFor(office.tenantSlug ?? null, office.officeKey);
     const payload = payloadFor(message, from, replyTo);
     // (R5) Never past ACS's cap: refused here, so nothing is attempted.
     if (bytesOf(payload) > acsConfig.ACS_MAX_REQUEST_BYTES) {

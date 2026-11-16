@@ -129,6 +129,7 @@ const { findOpenCase } = require('./intakeFromCall');
 const nurtureHooks = require('../../services/tcNurture/hooks');
 const { localDayKey } = require('../../services/localDayClock');
 const tcCheckout = require('../../config/tcCheckout');
+const { sessionTenantSlug } = require('../../platform/sessionTenant');
 const odManualPatient = require('./odManualPatient');
 const checkoutAppointments = require('./checkoutAppointments');
 const odOffices = require('../../config/odOffices');
@@ -268,7 +269,7 @@ async function sweep(req, office, today) {
 
 /** Gate + sweep for the action/read routes. Returns today, or null having answered. */
 async function enter(req, res) {
-  if (!(await tcCheckout.isEnabled(req.tcOffice))) {
+  if (!(await tcCheckout.isEnabled(sessionTenantSlug(req), req.tcOffice))) {
     disabled(res);
     return null;
   }
@@ -433,7 +434,7 @@ router.get(
   '/summary',
   h(async (req, res) => {
     const office = req.tcOffice;
-    if (!(await tcCheckout.isEnabled(office))) {
+    if (!(await tcCheckout.isEnabled(sessionTenantSlug(req), office))) {
       return res.json({ success: true, office, enabled: false, today: null, waiting: 0, newest: null });
     }
     const today = officeToday();
@@ -471,14 +472,14 @@ router.get(
  * @param {{ force?: boolean }} [opts]
  */
 async function kickScheduleSweep(req, office, { force = false } = {}) {
-  if (!(await autoCheckout.isOn(office))) return false;
+  if (!(await autoCheckout.isOn(sessionTenantSlug(req), office))) return false;
   const today = officeToday();
   const asSystem = Object.assign(Object.create(req), { user: { email: autoCheckout.SYSTEM_ACTOR } });
   const running = autoCheckout.ensureFresh(
     office,
     () =>
       tenantDb.withTenantDb(req, (pool) =>
-        autoCheckout.sweepOffice({ office, today, pool, audit: (entry) => audit(asSystem, entry) })
+        autoCheckout.sweepOffice({ tenantSlug: sessionTenantSlug(req), office, today, pool, audit: (entry) => audit(asSystem, entry) })
       ),
     { force }
   );
@@ -498,7 +499,7 @@ router.get(
     if (today === null) return undefined;
     const office = req.tcOffice;
     // Checkout is on (enter() answered otherwise), so this is both switches.
-    const enabled = await autoCheckout.isOn(office);
+    const enabled = await autoCheckout.isOn(sessionTenantSlug(req), office);
     if (enabled) await kickScheduleSweep(req, office);
     return res.json({ success: true, office, ...autoCheckout.statusOf(office, enabled) });
   })

@@ -29,6 +29,7 @@ const { auditTc, actorEmail } = require('./helpers');
 const { withTenantTx } = require('./tx');
 const { isEntitledModule } = require('../../middleware/tenantContext');
 const tcReferrals = require('../../config/tcReferrals');
+const { sessionTenantSlug } = require('../../platform/sessionTenant');
 const store = require('./referralStore');
 const transitions = require('./referralTransitions');
 
@@ -54,7 +55,7 @@ function entitlementGate(req) {
 async function referralsGate(req, office) {
   const notEntitled = entitlementGate(req);
   if (notEntitled) return notEntitled;
-  if (!(await tcReferrals.isEnabled(office))) {
+  if (!(await tcReferrals.isEnabled(sessionTenantSlug(req), office))) {
     return [
       403,
       { success: false, error: 'Referrals are not switched on for this office.', code: 'REFERRALS_DISABLED' },

@@ -21,10 +21,11 @@
  */
 
 /**
- * The tenant every MT-2a dual-write and parity check is for. The per-office
- * maps in platform_setting have no tenant dimension; today they are this
- * tenant's settings, so this is the only tenant they can be mirrored for.
- * Tenant threading through the readers is MT-2b.
+ * The tenant every dual-write and parity check is for. The per-office maps in
+ * platform_setting have no tenant dimension; they are this tenant's settings,
+ * so this is the only tenant they can be mirrored for, and (MT-2b) the only
+ * tenant whose readers honour an env `=true` FALLBACK and whose settings can
+ * be WRITTEN until MT-2d stops writing platform_setting.
  */
 const MT2A_TENANT_SLUG = 'carein';
 
@@ -61,10 +62,14 @@ function isOfficeSettingKey(key) {
   return typeof key === 'string' && Object.prototype.hasOwnProperty.call(KIND, key);
 }
 
-/** The practice's real offices (officeAgents.OFFICES minus 'unknown'). @returns {string[]} */
-function realOffices() {
-  const { OFFICES } = require('../config/officeAgents');
-  return Object.keys(OFFICES).filter((k) => k !== 'unknown');
+/**
+ * One tenant's real offices (MT-1c): platform/officeRegistry.tenantOfficeKeys.
+ * The default is the dual-write tenant, whose answer is roland, valley.
+ * @param {unknown} [tenantSlug]
+ * @returns {string[]}
+ */
+function realOffices(tenantSlug = MT2A_TENANT_SLUG) {
+  return require('./officeRegistry').tenantOfficeKeys(tenantSlug);
 }
 
 /** @param {unknown} v @returns {v is Record<string, unknown>} */
@@ -102,7 +107,7 @@ function normalizeIdentity(raw) {
 function mirrorEntries(settingKey, value) {
   const kind = KIND[settingKey];
   if (!kind || !isMap(value)) return [];
-  const offices = realOffices();
+  const offices = realOffices(MT2A_TENANT_SLUG);
   /** @type {Array<{ officeKey: string, value: boolean | Record<string, string> }>} */
   const out = [];
   for (const [officeKey, raw] of Object.entries(value)) {
@@ -116,7 +121,44 @@ function mirrorEntries(settingKey, value) {
   return out;
 }
 
+/**
+ * THE stored-layer answer one reader serves for one office, from the SERVED
+ * office_setting rows of its key (MT-2b). Every reader resolves through this,
+ * and the parity tripwire uses it for the office_setting side, so "what is
+ * served" and "what is compared" cannot drift apart.
+ *
+ *   switch    the office's boolean row, else null (nobody chose -> env fallback)
+ *   map       hygPilot: when the tenant holds ANY row for the key, an office
+ *             without one is false; no rows at all is null (-> the floor)
+ *   on        nurture / opportunities: true only for a row holding true
+ *   identity  every stored field, normalized by emailIdentity's own rules, or null
+ *
+ * `rows` null means nothing is served (never read, last read failed, stale):
+ * the same answer as "no rows", so it can never be ON.
+ *
+ * @param {string} settingKey
+ * @param {Map<string, unknown>|null} rows officeKey -> stored value (this key, this tenant)
+ * @param {string} officeKey
+ * @returns {unknown}
+ */
+function answerFromRows(settingKey, rows, officeKey) {
+  const kind = KIND[settingKey];
+  const have = rows || new Map();
+  const raw = have.has(officeKey) ? have.get(officeKey) : undefined;
+  if (kind === 'switch') return typeof raw === 'boolean' ? raw : null;
+  if (kind === 'map') return have.size > 0 ? raw === true : null;
+  if (kind === 'on') return raw === true;
+  // identity
+  const emailIdentity = require('../config/emailIdentity');
+  const identity = isMap(raw) ? normalizeIdentity(raw) : {};
+  /** @type {Record<string, string|null>} */
+  const out = {};
+  for (const f of emailIdentity.STORED_FIELDS) out[f] = typeof identity[f] === 'string' ? identity[f] : null;
+  return out;
+}
+
 module.exports = {
+  answerFromRows,
   MT2A_TENANT_SLUG,
   KIND,
   OFFICE_SETTING_KEYS,
