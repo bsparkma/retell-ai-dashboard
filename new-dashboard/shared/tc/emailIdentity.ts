@@ -26,8 +26,21 @@ export const EMAIL_IDENTITY_LIMITS = {
   replyTo: 254,
   practiceName: 120,
   practicePhone: 40,
+  practiceAddress: 300,
   referralBcc: 254,
 } as const;
+
+/**
+ * Setup polish: the practice ADDRESS, for the print letterhead, the referral
+ * letter and the email footer / {{practice.address}}. Like the three below it
+ * has an app-setting fallback (TC_EMAIL_PRACTICE_ADDRESS_<OFFICE>) and a saved
+ * value beats it. Unlike them it may span lines (street, then city), and it is
+ * OPTIONAL in the request (absent = unchanged), so a client that predates it
+ * can never clear it. Kept out of TcEmailIdentityField so the three single-line
+ * fields keep their required shape.
+ */
+export const TC_EMAIL_IDENTITY_ADDRESS = "practiceAddress" as const;
+export const TC_EMAIL_IDENTITY_ADDRESS_LABEL = "Practice address";
 
 /** The three contact details, each with an app-setting fallback. */
 export const TcEmailIdentityField = z.enum(["replyTo", "practiceName", "practicePhone"]);
@@ -40,7 +53,11 @@ export type TcEmailIdentityField = z.infer<typeof TcEmailIdentityField>;
  * is blind-copied to. Unlike the three above it has NO app-setting fallback:
  * an empty box means no copy, and nothing else can turn copies on.
  */
-export const TcEmailIdentityStoredField = z.enum([...TcEmailIdentityField.options, "referralBcc"]);
+export const TcEmailIdentityStoredField = z.enum([
+  ...TcEmailIdentityField.options,
+  TC_EMAIL_IDENTITY_ADDRESS,
+  "referralBcc",
+]);
 export type TcEmailIdentityStoredField = z.infer<typeof TcEmailIdentityStoredField>;
 
 export const TC_EMAIL_IDENTITY_FIELD_LABELS: Record<TcEmailIdentityField, string> = {
@@ -74,6 +91,8 @@ export const TcEmailIdentityResponse = z.object({
     replyTo: TcEmailIdentityFieldState,
     practiceName: TcEmailIdentityFieldState,
     practicePhone: TcEmailIdentityFieldState,
+    /** Setup polish. Absent from an older server = the address is not editable here. */
+    practiceAddress: TcEmailIdentityFieldState.optional(),
   }),
   /**
    * R6.3: the address every referral letter from this office is blind-copied
@@ -108,6 +127,12 @@ function line(max: number) {
     .regex(SINGLE_LINE, "must be a single line of plain text");
 }
 
+/**
+ * Line breaks allowed, every other control character refused (the server
+ * normalizes CRLF to LF, trims each line and drops blank ones).
+ */
+const MULTI_LINE = /^[^\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f]*$/;
+
 /** One plain address: no display name, no list. */
 const ONE_ADDRESS = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/;
 
@@ -124,6 +149,15 @@ export const TcEmailIdentityRequest = z
     practiceName: line(EMAIL_IDENTITY_LIMITS.practiceName).nullable(),
     practicePhone: line(EMAIL_IDENTITY_LIMITS.practicePhone).nullable(),
     referralBcc: line(EMAIL_IDENTITY_LIMITS.referralBcc).regex(ONE_ADDRESS, "must be one plain email address").nullable().optional(),
+    // Setup polish: optional; absent = unchanged, null = back to the app setting.
+    practiceAddress: z
+      .string()
+      .trim()
+      .min(1)
+      .max(EMAIL_IDENTITY_LIMITS.practiceAddress)
+      .regex(MULTI_LINE, "must be plain text")
+      .nullable()
+      .optional(),
   })
   .strict();
 export type TcEmailIdentityRequest = z.infer<typeof TcEmailIdentityRequest>;

@@ -14987,6 +14987,8 @@ __export(contract_entry_exports, {
   TC_CHECKOUT_WAITING: () => TC_CHECKOUT_WAITING,
   TC_CHECKOUT_WORKUP_SECTIONS: () => TC_CHECKOUT_WORKUP_SECTIONS,
   TC_CHECKOUT_WORKUP_SECTION_LABELS: () => TC_CHECKOUT_WORKUP_SECTION_LABELS,
+  TC_EMAIL_IDENTITY_ADDRESS: () => TC_EMAIL_IDENTITY_ADDRESS,
+  TC_EMAIL_IDENTITY_ADDRESS_LABEL: () => TC_EMAIL_IDENTITY_ADDRESS_LABEL,
   TC_EMAIL_IDENTITY_FIELD_LABELS: () => TC_EMAIL_IDENTITY_FIELD_LABELS,
   TC_INTAKE_KIND_LABELS: () => TC_INTAKE_KIND_LABELS,
   TC_NOTIFICATION_EVENT_LABELS: () => TC_NOTIFICATION_EVENT_LABELS,
@@ -18822,10 +18824,17 @@ var EMAIL_IDENTITY_LIMITS = {
   replyTo: 254,
   practiceName: 120,
   practicePhone: 40,
+  practiceAddress: 300,
   referralBcc: 254
 };
+var TC_EMAIL_IDENTITY_ADDRESS = "practiceAddress";
+var TC_EMAIL_IDENTITY_ADDRESS_LABEL = "Practice address";
 var TcEmailIdentityField = import_zod12.z.enum(["replyTo", "practiceName", "practicePhone"]);
-var TcEmailIdentityStoredField = import_zod12.z.enum([...TcEmailIdentityField.options, "referralBcc"]);
+var TcEmailIdentityStoredField = import_zod12.z.enum([
+  ...TcEmailIdentityField.options,
+  TC_EMAIL_IDENTITY_ADDRESS,
+  "referralBcc"
+]);
 var TC_EMAIL_IDENTITY_FIELD_LABELS = {
   replyTo: "Reply-to address",
   practiceName: "Practice name",
@@ -18849,7 +18858,9 @@ var TcEmailIdentityResponse = import_zod12.z.object({
   fields: import_zod12.z.object({
     replyTo: TcEmailIdentityFieldState,
     practiceName: TcEmailIdentityFieldState,
-    practicePhone: TcEmailIdentityFieldState
+    practicePhone: TcEmailIdentityFieldState,
+    /** Setup polish. Absent from an older server = the address is not editable here. */
+    practiceAddress: TcEmailIdentityFieldState.optional()
   }),
   /**
    * R6.3: the address every referral letter from this office is blind-copied
@@ -18873,12 +18884,15 @@ var SINGLE_LINE = /^[^\u0000-\u001f\u007f]*$/;
 function line(max) {
   return import_zod12.z.string().trim().min(1).max(max).regex(SINGLE_LINE, "must be a single line of plain text");
 }
+var MULTI_LINE = /^[^\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f]*$/;
 var ONE_ADDRESS = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/;
 var TcEmailIdentityRequest = import_zod12.z.object({
   replyTo: line(EMAIL_IDENTITY_LIMITS.replyTo).regex(ONE_ADDRESS, "must be one plain email address").nullable(),
   practiceName: line(EMAIL_IDENTITY_LIMITS.practiceName).nullable(),
   practicePhone: line(EMAIL_IDENTITY_LIMITS.practicePhone).nullable(),
-  referralBcc: line(EMAIL_IDENTITY_LIMITS.referralBcc).regex(ONE_ADDRESS, "must be one plain email address").nullable().optional()
+  referralBcc: line(EMAIL_IDENTITY_LIMITS.referralBcc).regex(ONE_ADDRESS, "must be one plain email address").nullable().optional(),
+  // Setup polish: optional; absent = unchanged, null = back to the app setting.
+  practiceAddress: import_zod12.z.string().trim().min(1).max(EMAIL_IDENTITY_LIMITS.practiceAddress).regex(MULTI_LINE, "must be plain text").nullable().optional()
 }).strict();
 
 // shared/tc/providers.ts
@@ -20805,6 +20819,8 @@ function odToothText(tooth) {
   TC_CHECKOUT_WAITING,
   TC_CHECKOUT_WORKUP_SECTIONS,
   TC_CHECKOUT_WORKUP_SECTION_LABELS,
+  TC_EMAIL_IDENTITY_ADDRESS,
+  TC_EMAIL_IDENTITY_ADDRESS_LABEL,
   TC_EMAIL_IDENTITY_FIELD_LABELS,
   TC_INTAKE_KIND_LABELS,
   TC_NOTIFICATION_EVENT_LABELS,

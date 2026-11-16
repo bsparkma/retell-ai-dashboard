@@ -10,6 +10,8 @@
  *   replyTo         platform_setting, below      ACS_EMAIL_REPLY_TO_<OFFICE>
  *   practiceName                                 TC_EMAIL_PRACTICE_NAME_<OFFICE>
  *   practicePhone                                TC_EMAIL_PRACTICE_PHONE_<OFFICE>
+ *   practiceAddress                              TC_EMAIL_PRACTICE_ADDRESS_<OFFICE>
+ *                                                (the one field that may span lines)
  *
  * PRECEDENCE, per field, read at send time by config/acsEmail.js (which owns
  * the env half, unchanged from before this file existed):
@@ -58,6 +60,9 @@ const FIELDS = Object.freeze({
   replyTo: Object.freeze({ envPrefix: 'ACS_EMAIL_REPLY_TO_', max: 254 }),
   practiceName: Object.freeze({ envPrefix: 'TC_EMAIL_PRACTICE_NAME_', max: 120 }),
   practicePhone: Object.freeze({ envPrefix: 'TC_EMAIL_PRACTICE_PHONE_', max: 40 }),
+  // Setup polish: the letterhead / footer address. MULTI-LINE (a street line and
+  // a city line), so it is the one field whose normalizer keeps line breaks.
+  practiceAddress: Object.freeze({ envPrefix: 'TC_EMAIL_PRACTICE_ADDRESS_', max: 300, multiline: true }),
 });
 const FIELD_NAMES = Object.freeze(Object.keys(FIELDS));
 
@@ -73,7 +78,7 @@ const REFERRAL_BCC_MAX = 254;
 /** Everything saved per office: the identity fields plus the copy inbox. */
 const STORED_FIELDS = Object.freeze([...FIELD_NAMES, REFERRAL_BCC]);
 
-/** @typedef {'replyTo'|'practiceName'|'practicePhone'} IdentityField */
+/** @typedef {'replyTo'|'practiceName'|'practicePhone'|'practiceAddress'} IdentityField */
 /** @typedef {IdentityField|'referralBcc'} StoredField */
 /** @typedef {Partial<Record<StoredField, string>>} OfficeIdentity */
 
@@ -110,10 +115,22 @@ function isEmailAddress(v) {
  */
 function normalizeField(field, raw) {
   if (typeof raw !== 'string') return null;
-  const v = raw.trim();
-  const max = field === REFERRAL_BCC ? REFERRAL_BCC_MAX : FIELDS[field].max;
+  const spec = field === REFERRAL_BCC ? null : FIELDS[field];
+  const multiline = Boolean(spec && 'multiline' in spec && spec.multiline);
+  // A multi-line field (the address) keeps its line breaks as plain \n, each
+  // line trimmed and blank lines dropped; every other control character is
+  // still refused, so nothing but a line break can reach a footer.
+  const v = multiline
+    ? raw
+        .replace(/\r\n?/g, '\n')
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .join('\n')
+    : raw.trim();
+  const max = spec ? spec.max : REFERRAL_BCC_MAX;
   if (!v || v.length > max) return null;
-  if (/[\u0000-\u001f\u007f]/.test(v)) return null;
+  if (multiline ? /[\u0000-\u0009\u000b-\u001f\u007f]/.test(v) : /[\u0000-\u001f\u007f]/.test(v)) return null;
   if (field === 'replyTo' || field === REFERRAL_BCC) return isEmailAddress(v) ? v.toLowerCase() : null;
   return v;
 }
@@ -266,7 +283,7 @@ async function readStoredFromDb(officeKey) {
   const parsed = parseStored({ [officeKey]: all[officeKey] && typeof all[officeKey] === 'object' ? all[officeKey] : {} });
   const mine = (parsed && parsed[officeKey]) || {};
   /** @type {Record<StoredField, string|null>} */
-  const office = { replyTo: null, practiceName: null, practicePhone: null, referralBcc: null };
+  const office = { replyTo: null, practiceName: null, practicePhone: null, practiceAddress: null, referralBcc: null };
   for (const f of STORED_FIELDS) office[/** @type {StoredField} */ (f)] = mine[/** @type {StoredField} */ (f)] ?? null;
   return { all, office };
 }

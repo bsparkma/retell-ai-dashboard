@@ -123,7 +123,7 @@ test('C: a clean comparison of all ten keys logs the OK line ONCE per process', 
   const clean = (k) => {
     const kind = require('./officeSettingKeys').KIND[k];
     if (kind === 'identity') {
-      const empty = { replyTo: null, practiceName: null, practicePhone: null, referralBcc: null };
+      const empty = { replyTo: null, practiceName: null, practicePhone: null, practiceAddress: null, referralBcc: null };
       return { roland: empty, valley: empty };
     }
     if (kind === 'on') return { roland: false, valley: false };

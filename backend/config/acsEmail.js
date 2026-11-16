@@ -46,7 +46,8 @@
  *                                 every email the office sends, not only the
  *                                 referral letter: one identity per office.)
  *
- * (R5c) IN-APP EMAIL IDENTITY. Reply-To, practice name and practice phone can
+ * (R5c) IN-APP EMAIL IDENTITY. Reply-To, practice name, practice phone and
+ * (setup polish) practice address can
  * also be saved per office in Settings -> Email identity
  * (config/emailIdentity.js). A SAVED value beats the app setting above; the
  * app setting is the fallback when nothing is saved. The From address is NOT
@@ -240,6 +241,19 @@ function envPracticePhoneFor(officeKey) {
   return phone ? phone.slice(0, 40) : null;
 }
 
+/**
+ * The APP SETTING's practice address for an office (the fallback), or null.
+ * Unchanged from before the address could be saved in the app: plain text, up
+ * to 300 characters.
+ * @param {string} officeKey
+ * @returns {string|null}
+ */
+function envPracticeAddressFor(officeKey) {
+  if (!isKnownOffice(officeKey)) return null;
+  const address = envValue(`TC_EMAIL_PRACTICE_ADDRESS_${officeEnvSuffix(officeKey)}`);
+  return address ? address.slice(0, 300) : null;
+}
+
 /** The APP SETTING's practice name for an office (the fallback), or null. @param {string} officeKey @returns {string|null} */
 function envPracticeNameFor(officeKey) {
   if (!isKnownOffice(officeKey)) return null;
@@ -256,9 +270,11 @@ function replyToFor(officeKey) {
 /** @param {string} officeKey */
 function practiceDetailsFor(officeKey) {
   if (!isKnownOffice(officeKey)) return { address: null, phone: null };
-  const address = envValue(`TC_EMAIL_PRACTICE_ADDRESS_${officeEnvSuffix(officeKey)}`);
   return {
-    address: address ? address.slice(0, 300) : null,
+    // Saved in the app, else the app setting (the same precedence as the phone).
+    // Every reader of the address (the print letterhead prefill, the referral
+    // letter, the email footer and {{practice.address}}) comes through here.
+    address: emailIdentity.storedValue(officeKey, 'practiceAddress') ?? envPracticeAddressFor(officeKey),
     // (R5c) saved in the app, else the app setting.
     phone: emailIdentity.storedValue(officeKey, 'practicePhone') ?? envPracticePhoneFor(officeKey),
   };
@@ -287,6 +303,7 @@ function identityStateFor(officeKey) {
     replyTo: envReplyToFor(officeKey),
     practiceName: envPracticeNameFor(officeKey),
     practicePhone: envPracticePhoneFor(officeKey),
+    practiceAddress: envPracticeAddressFor(officeKey),
   };
   /** @type {Record<string, { value: string|null, source: 'stored'|'env'|'none', stored: string|null, fallback: string|null, fallbackSetting: string }>} */
   const fields = {};
@@ -337,6 +354,7 @@ module.exports = {
   envReplyToFor,
   envPracticeNameFor,
   envPracticePhoneFor,
+  envPracticeAddressFor,
   identityStateFor,
   unsubscribeUrl,
 };
