@@ -147,14 +147,33 @@ export const OFFICE_TIME_ZONE = "America/Chicago";
  * anything about it yet — and it already lives in `TreatmentStatus`. A watch
  * with an urgency would be two contradictory sentences on one row.
  */
-export const TreatmentPrioritySchema = z.enum(["urgent", "preventative", "cosmetic"]);
+export const TreatmentPrioritySchema = z.enum(["urgent", "preventative", "cosmetic", "holding"]);
 export type TreatmentPriority = z.infer<typeof TreatmentPrioritySchema>;
+
+/**
+ * "HOLDING" IS NOT AN URGENCY — Beau's ruling.
+ *
+ * It marks an alternative or secondary option to the proposed treatment (a
+ * bridge held as the alternative to the proposed implant). So a holding item
+ * NEVER raises, and never determines, the urgency of a visit, a checkout card
+ * or a TC case: every visit-level priority is computed from the non-holding
+ * items only, and a visit whose items are all holding reads exactly as a visit
+ * with no items. It is an ITEM-level value only — no visit-level field ever
+ * holds it. Last in the order, so it sorts after the three real urgencies.
+ */
+export const HOLDING_PRIORITY = "holding" as const satisfies TreatmentPriority;
+
+/** Whether this item counts toward a visit's urgency (every value but holding). */
+export function countsTowardUrgency(priority: TreatmentPriority): boolean {
+  return priority !== HOLDING_PRIORITY;
+}
 
 /** Display order and labels, so no screen invents its own. */
 export const TREATMENT_PRIORITY_LABELS: Record<TreatmentPriority, string> = {
   urgent: "Urgent",
   preventative: "Preventative",
   cosmetic: "Cosmetic",
+  holding: "Holding",
 };
 
 /**

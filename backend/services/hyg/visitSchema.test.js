@@ -28,6 +28,8 @@ const path = require('node:path');
 const migration = require('../../migrations-tenant/1788200000000_hyg_visit.js');
 /** Item 13 added `Amending`; the CHECK the database carries now is this one's. */
 const amendMigration = require('../../migrations-tenant/1788600000000_hyg_perio_amend.js');
+/** 1794800000000 added `holding`; the priority CHECK the database carries now is this one's. */
+const holdingMigration = require('../../migrations-tenant/1794800000000_hyg_priority_holding.js');
 const contract = require('../../hyg/contract.gen.cjs');
 
 const MIGRATION_PATH = path.join(
@@ -41,9 +43,14 @@ const SOURCE = fs.readFileSync(MIGRATION_PATH, 'utf8');
 
 test('the database enforces exactly the vocabularies the contract does', () => {
   assert.deepEqual(
-    migration.TREATMENT_PRIORITIES,
+    holdingMigration.TREATMENT_PRIORITIES,
     contract.TreatmentPrioritySchema.options,
     'priority'
+  );
+  assert.deepEqual(
+    holdingMigration.TREATMENT_PRIORITIES.slice(0, migration.TREATMENT_PRIORITIES.length),
+    migration.TREATMENT_PRIORITIES,
+    'the original priorities are still the first three, in order'
   );
   assert.deepEqual(
     migration.TREATMENT_CATEGORIES,
