@@ -16,15 +16,24 @@
  *   - Concurrent callers share one read.
  *   - Never read at all => nothing is served ("nobody chose").
  *
- * WHAT IS SERVED, AND WHEN (MT-2b) — officeRegistry.servedOffices' rule,
- * copied. servedRows() / servedCell() hand out the cached rows only while ALL
- * of these hold, and otherwise answer "nobody chose" (null):
+ * WHAT IS SERVED, AND WHEN (MT-2b). servedRows() / servedCell() hand out the
+ * rows of the LAST SUCCESSFUL read while both of these hold, and otherwise
+ * answer "nobody chose" (null):
  *   - a read has succeeded at least once;
- *   - the MOST RECENT read succeeded. A failed read does NOT keep serving the
- *     previous rows: after an error the readers fall to their env fallback
- *     (tenant 'carein' only) and then to the floor, OFF;
  *   - that success is younger than 3 x the refresh window (15 minutes by
  *     default).
+ * A FAILED refresh therefore keeps serving the last good read, up to that
+ * bound. This is the original tcOfficeSwitch rule: a control-plane blip must
+ * not flip a feature either way. Serving nothing after a few-second blip would
+ * switch tc_checkout_enabled / tc_referrals_enabled (and every other switch)
+ * OFF for a refresh window, and drop tc_email_identity to the app-setting
+ * fallback, so a letter sent in the blip would carry the wrong reply-to.
+ * The staleness is BOUNDED: when every refresh keeps failing past 3 windows,
+ * nothing is served, and the readers fall to their env fallback (tenant
+ * 'carein' only), then to the floor, OFF. (officeRegistry.servedOffices drops
+ * its rows on the first failed read instead. That suits the registry, because
+ * its fallback, the code maps, gives the same answer. Settings have no such
+ * fallback.)
  * And only rows for one of the tenant's OWN offices are served
  * (officeRegistry.isTenantOffice): a key is an office of tenant T only if T has
  * an active office row (or, for 'carein' with an unreadable registry, the code
@@ -51,7 +60,7 @@ const officeRegistry = require('./officeRegistry');
 /**
  * @typedef {Object} TenantCache
  * @property {boolean} loaded       ever read successfully
- * @property {boolean} lastOk       the most recent attempt succeeded
+ * @property {boolean} lastOk       the most recent attempt succeeded (diagnostics; NOT the served rule)
  * @property {number} loadedAt      last attempt (ms); 0 = never
  * @property {number} lastSuccessAt last SUCCESSFUL read (ms); 0 = never (MT-2b)
  * @property {Map<string, OfficeSettingValue>} byKey  `${officeKey}\u0000${settingKey}` -> value
@@ -120,8 +129,9 @@ function onRefresh(listener) {
 }
 
 /**
- * Re-read every row of one tenant. NEVER THROWS. A failed read keeps the rows
- * in memory (for diagnostics) but they are no longer SERVED — see the header.
+ * Re-read every row of one tenant. NEVER THROWS. A failed read keeps the
+ * previous rows, and they stay SERVED until the last success is older than
+ * maxServedAgeMs() — see the header.
  * @param {string} tenantSlug
  * @returns {Promise<{ ok: boolean, error: string|null }>}
  */
@@ -160,10 +170,13 @@ async function refreshFromDb(tenantSlug) {
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
     if (message !== c.lastLoggedError) {
-      console.error(
-        `[officeSettings] could not read office_setting for '${tenantSlug}': ${message} ` +
-          '(nothing is served for this tenant until a read succeeds; the readers fall back, then OFF)'
-      );
+      const servingUntil = c.lastSuccessAt ? c.lastSuccessAt + maxServedAgeMs() : 0;
+      const what =
+        servingUntil > Date.now()
+          ? `serving the last good read (${new Date(c.lastSuccessAt).toISOString()}) until ` +
+            `${new Date(servingUntil).toISOString()} unless a read succeeds first; after that the readers fall back, then OFF`
+          : 'no good read to serve: the readers fall back, then OFF, until a read succeeds';
+      console.error(`[officeSettings] could not read office_setting for '${tenantSlug}': ${message} (${what})`);
       c.lastLoggedError = message;
     }
     // Stamp the attempt so a down control plane is not re-asked on every call.
@@ -221,7 +234,6 @@ function notServedReason(tenantSlug) {
   if (!isSlug(tenantSlug)) return 'no tenant';
   const c = caches.get(tenantSlug);
   if (!c || !c.loaded) return 'office_setting has never been read';
-  if (!c.lastOk) return 'the last office_setting read failed';
   if (Date.now() - c.lastSuccessAt > maxServedAgeMs()) return 'the last good office_setting read is stale';
   return null;
 }

@@ -279,9 +279,7 @@ test('a leftover app setting cannot re-open an office somebody shut down', () =>
     }
   ));
 
-// MT-2b CHANGED THIS RULE (brief item 1: never serve a stale cache after a failed
-// read — officeRegistry.servedOffices' rule): a failed read is "nobody chose" -> OFF.
-test('read once and then unreachable: NOT served on (MT-2b) — the floor, OFF', () =>
+test('read once and then unreachable: the last known value STAYS', () =>
   withControlPlane({ row: row({ roland: true }) }, async (store) => {
     await hygPilot.refreshFromDb('carein');
     assert.equal(hygPilot.hygEnabledFor('carein', 'roland', false), true);
@@ -293,8 +291,8 @@ test('read once and then unreachable: NOT served on (MT-2b) — the floor, OFF',
     };
     const res = await hygPilot.refreshFromDb('carein');
     assert.equal(res.ok, false);
-    assert.equal(hygPilot.hygEnabledFor('carein', 'roland', false), false, 'MT-2b: not served after a failed read');
-    assert.equal(hygPilot.policyKnown('carein'), false, 'MT-2b: the console says we cannot ask');
+    assert.equal(hygPilot.hygEnabledFor('carein', 'roland', false), true);
+    assert.equal(hygPilot.policyKnown('carein'), true);
     assert.equal(store.writes.length, 0);
   }));
 

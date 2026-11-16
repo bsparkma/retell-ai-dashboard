@@ -14,8 +14,8 @@ Builds on [MT2A_OFFICE_SETTINGS.md](MT2A_OFFICE_SETTINGS.md).
 | Env `=true` fallback (switches) | any caller | tenant `carein` only |
 | Env `=false` break-glass | forces OFF | forces OFF, for every tenant's office with that key |
 | Email identity app-setting fallback | any caller | tenant `carein` only (see below) |
-| A failed control-plane read | kept serving the previous read | **not** served on: "nobody chose" → env fallback (carein) → OFF |
-| A read older than 3 × the refresh window | served | not served → OFF |
+| A failed control-plane read | kept serving the previous read | **still** keeps serving the last good read (a blip must not flip a feature), but only while that read is younger than 3 × the refresh window (15 min) |
+| Every refresh failing for more than 3 × the refresh window | served, indefinitely | not served: "nobody chose" → env fallback (carein) → OFF |
 | Which keys are offices | `officeAgents.OFFICES` minus `unknown` | the tenant's ACTIVE registry rows (MT-1c); `carein` falls back to the code maps (roland, valley) when the registry cannot be read; any other tenant gets **no** offices |
 | Writes | carein's map | carein only; any other tenant is refused `OFFICE_SETTING_TENANT_NOT_WRITABLE` (409) and nothing is written |
 | Parity tripwire | served `platform_setting`, compared `office_setting` | served `office_setting`, compares `platform_setting` (same phrase, "office settings parity") |

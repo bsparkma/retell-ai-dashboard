@@ -133,7 +133,7 @@ function mirrorEntries(settingKey, value) {
  *   on        nurture / opportunities: true only for a row holding true
  *   identity  every stored field, normalized by emailIdentity's own rules, or null
  *
- * `rows` null means nothing is served (never read, last read failed, stale):
+ * `rows` null means nothing is served (never read, or no good read in 3 windows):
  * the same answer as "no rows", so it can never be ON.
  *
  * @param {string} settingKey

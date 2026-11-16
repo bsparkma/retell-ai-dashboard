@@ -44,8 +44,9 @@ function iso(v) {
 
 /**
  * The office's own letterhead details, from config that already exists.
- * Re-reads the tenant's saved email identity first (MT-2b: a failed read is
- * not served on, so the app settings answer — tenant 'carein' only).
+ * Re-reads the tenant's saved email identity first (MT-2b: a failed read keeps
+ * the last good read for up to 3 refresh windows; with none, the app settings
+ * answer — tenant 'carein' only).
  * @param {string|null} tenantSlug the SESSION tenant
  * @param {string} office
  * @returns {Promise<{ name: string, address: string, phone: string }>}

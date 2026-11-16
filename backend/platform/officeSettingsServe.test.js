@@ -8,7 +8,9 @@
  *   2. Stuck-off-safe: no row / unreadable / stale / unknown office / unknown
  *      tenant => OFF; the env `=true` fallback answers for 'carein' ONLY.
  *   3. The env `=false` break-glass beats everything, for any tenant.
- *   4. A failed read is NOT served on (officeRegistry.servedOffices' rule).
+ *   4. A failed refresh keeps serving the last GOOD read (a blip must not flip
+ *      a feature), bounded: past 3 refresh windows with every refresh failing,
+ *      nothing is served => OFF / the app-setting fallback.
  *   5. Office keys per tenant (MT-1c): known only with an ACTIVE registry row;
  *      'carein' = roland, valley whether or not the registry is readable.
  *   6. Writes for any tenant but 'carein' are refused, and write nothing.
@@ -258,32 +260,101 @@ test('unknown office, unknown tenant, no tenant => OFF everywhere', async () => 
   assert.deepEqual((await nurture.switchedOnOffices(registry, /** @type {string} */ (/** @type {unknown} */ (null)))).offices, []);
 });
 
-test('unreadable office_setting => OFF, and the rows read before are NOT served on', async () => {
+test('a failed refresh keeps serving the last good read; never read + unreadable => OFF', async () => {
+  // Never read, control plane down: nothing to serve.
   fake.seedOffice('main', 'tc_checkout_enabled', true, ACME_ID);
   fake.seedOffice('roland', 'tc_checkout_enabled', true, TENANT_ID);
-  await readAll();
-  assert.equal(tcCheckout.enabledFor('acme', 'main'), true);
-  assert.equal(tcCheckout.enabledFor('carein', 'roland'), true);
-
   fake.fail.listOfficeSettings = true;
+  await officeRegistry.refreshFromDb('acme');
   assert.equal((await officeSettings.refreshFromDb('acme')).ok, false);
-  assert.equal((await officeSettings.refreshFromDb('carein')).ok, false);
-  assert.equal(tcCheckout.enabledFor('acme', 'main'), false, 'not served after a failed read');
-  assert.equal(tcCheckout.enabledFor('carein', 'roland'), false);
+  assert.equal(tcCheckout.enabledFor('acme', 'main'), false, 'never read => nobody chose');
+  assert.equal(await tcCheckout.isEnabled('carein', 'roland'), false);
   assert.equal(tcCheckout.officeState('carein', 'roland').policyKnown, false);
-  assert.deepEqual((await nurture.switchedOnOffices(registry, 'acme')).offices, []);
-  assert.match(String((await opps.switchedOnOffices(registry, 'acme')).reason), /^CONTROL_PLANE_UNREADABLE/);
-
-  // The carein env fallback still answers when nothing is served — and only for carein.
+  // The carein env fallback answers when nothing is served — and only for carein.
   process.env.TC_CHECKOUT_ENABLED_ROLAND = 'true';
   process.env.TC_CHECKOUT_ENABLED_MAIN = 'true';
   assert.equal(tcCheckout.enabledFor('carein', 'roland'), true);
   assert.equal(tcCheckout.enabledFor('acme', 'main'), false);
+  delete process.env.TC_CHECKOUT_ENABLED_ROLAND;
+  delete process.env.TC_CHECKOUT_ENABLED_MAIN;
 
-  // A read that succeeds again is served again.
+  // A good read, then a blip: the good read stays served, per tenant.
   fake.fail.listOfficeSettings = false;
+  await readAll();
+  fake.fail.listOfficeSettings = true;
+  assert.equal((await officeSettings.refreshFromDb('acme')).ok, false);
+  assert.equal((await officeSettings.refreshFromDb('carein')).ok, false);
+  assert.equal(tcCheckout.enabledFor('acme', 'main'), true, 'a blip does not flip it');
+  assert.equal(tcCheckout.enabledFor('carein', 'roland'), true);
+  assert.equal(tcCheckout.officeState('carein', 'roland').policyKnown, true);
+  // nurture / opportunities read fresh each pass (no cache), as before MT-2b:
+  // an unreadable control plane is "nothing is on" for that pass.
+  assert.deepEqual((await nurture.switchedOnOffices(registry, 'acme')).offices, []);
+  assert.match(String((await opps.switchedOnOffices(registry, 'acme')).reason), /^CONTROL_PLANE_UNREADABLE/);
+
+  // A read that succeeds again replaces what is served.
+  fake.fail.listOfficeSettings = false;
+  fake.seedOffice('main', 'tc_checkout_enabled', false, ACME_ID);
   assert.equal((await officeSettings.refreshFromDb('acme')).ok, true);
-  assert.equal(tcCheckout.enabledFor('acme', 'main'), true);
+  assert.equal(tcCheckout.enabledFor('acme', 'main'), false);
+});
+
+// The PM-review bound (MT-2b fix round): one switch and the email identity.
+test('the bound: a failed refresh at t+1 min still serves the last good read; at t+16 min, every refresh failing, nothing is served', async () => {
+  fake.seedOffice('roland', 'tc_checkout_enabled', true, TENANT_ID);
+  fake.seedOffice('roland', 'tc_email_identity', { replyTo: 'office@roland.example.test' }, TENANT_ID);
+  process.env.ACS_EMAIL_REPLY_TO_ROLAND = 'env@roland.example.test';
+  assert.equal(officeSettings.maxServedAgeMs(), 15 * 60 * 1000, 'default bound: 3 x 5 minutes');
+
+  const realNow = Date.now;
+  const t0 = realNow();
+  /** @type {string[]} */
+  const errors = [];
+  const quietError = console.error;
+  console.error = (...a) => {
+    errors.push(a.map(String).join(' '));
+  };
+  const reads = () => fake.log.filter((q) => q.includes('FROM office_setting s')).length;
+  try {
+    Date.now = () => t0;
+    assert.equal((await officeSettings.refreshFromDb('carein')).ok, true);
+    assert.equal(tcCheckout.enabledFor('carein', 'roland'), true);
+    assert.equal(acs.replyToFor('carein', 'roland'), 'office@roland.example.test');
+
+    // t+1 min: the refresh fails. Still served — the switch and the reply-to.
+    fake.fail.listOfficeSettings = true;
+    Date.now = () => t0 + 60 * 1000;
+    assert.equal((await officeSettings.refreshFromDb('carein')).ok, false);
+    assert.equal(officeSettings.isServed('carein'), true);
+    assert.equal(tcCheckout.enabledFor('carein', 'roland'), true, 'the switch does not flip OFF in a blip');
+    assert.equal(await tcCheckout.isEnabled('carein', 'roland'), true);
+    assert.equal(acs.replyToFor('carein', 'roland'), 'office@roland.example.test', 'the reply-to does not drop to the app setting');
+    assert.equal(errors.length, 1, 'the failed refresh is logged once');
+    assert.match(errors[0], /could not read office_setting for 'carein'/);
+    assert.match(errors[0], /serving the last good read \(\S+\) until \S+/);
+    assert.ok(errors[0].includes(new Date(t0 + 15 * 60 * 1000).toISOString()), 'says until when');
+    assert.doesNotMatch(errors[0], /@/, 'no value in the log');
+
+    // t+16 min, every refresh failing: nothing is served.
+    Date.now = () => t0 + 16 * 60 * 1000;
+    const before = reads();
+    assert.equal(await tcCheckout.isEnabled('carein', 'roland'), false, 'OFF past the bound');
+    assert.ok(reads() > before, 'a refresh was attempted (and failed) at t+16');
+    assert.equal(officeSettings.isServed('carein'), false);
+    assert.equal(tcCheckout.enabledFor('carein', 'roland'), false);
+    assert.equal(tcCheckout.officeState('carein', 'roland').policyKnown, false);
+    assert.equal(acs.replyToFor('carein', 'roland'), 'env@roland.example.test', 'the app-setting fallback answers');
+    assert.equal(errors.length, 1, 'the same failure is not logged again');
+
+    // A read that succeeds again is served again.
+    fake.fail.listOfficeSettings = false;
+    assert.equal((await officeSettings.refreshFromDb('carein')).ok, true);
+    assert.equal(tcCheckout.enabledFor('carein', 'roland'), true);
+    assert.equal(acs.replyToFor('carein', 'roland'), 'office@roland.example.test');
+  } finally {
+    Date.now = realNow;
+    console.error = quietError;
+  }
 });
 
 test('a read older than 3 refresh windows is stale => not served => OFF', async () => {

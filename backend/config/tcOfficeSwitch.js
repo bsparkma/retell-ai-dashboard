@@ -12,7 +12,7 @@
  *       |                                      for EVERY tenant's office with that key.
  *       | (anything else)
  *     office_setting(tenant, office, key)   <- MT-2b: the served stored layer
- *       | (no row, not served — never read, last read failed, stale)
+ *       | (no row, not served — never read, or no good read in 3 windows)
  *     <ENV_PREFIX><OFFICE>=true             <- the env FALLBACK, tenant 'carein' ONLY
  *       | (unset / unparseable / any other tenant)
  *     false                                 <- the hardcoded floor
@@ -38,8 +38,10 @@
  * `isEnabled(tenant, office)`, which refreshes that tenant's office_setting
  * read first when it is older than the window (platform/officeSettings.js,
  * default 5 minutes, `TC_SWITCH_REFRESH_MINUTES`). Concurrent callers share one
- * read. A failed read is NOT served on: the answer falls to the env fallback
- * (carein only) and then OFF.
+ * read. A failed read keeps serving the last good read — a control-plane blip
+ * must not flip a feature either way — until that read is older than three
+ * refresh windows; then the answer falls to the env fallback (carein only) and
+ * then OFF.
  *
  * WRITES. platform_setting is still written, with office_setting in the same
  * transaction (registry.setPlatformSetting, MT-2a), so a rollback is a source

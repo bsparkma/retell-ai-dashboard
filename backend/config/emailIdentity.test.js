@@ -113,9 +113,7 @@ test('junk saved values are ignored (the app setting answers), never used', asyn
   assert.equal(acs.practiceDetailsFor('carein', 'roland').phone, null);
 });
 
-// MT-2b CHANGED THIS RULE (brief item 1: never serve a stale cache after a failed
-// read): a failed read is NOT served on; the app setting answers (tenant carein).
-test('a failed read is not served on; never read => the app setting answers', async (t) => {
+test('a failed read keeps the previous cache; never read => the app setting answers', async (t) => {
   const cp = controlPlane(t, { roland: { replyTo: 'office@roland.example.test' } });
   process.env.ACS_EMAIL_REPLY_TO_ROLAND = 'env@roland.example.test';
   assert.equal(acs.replyToFor('carein', 'roland'), 'env@roland.example.test', 'never read');
@@ -124,7 +122,7 @@ test('a failed read is not served on; never read => the app setting answers', as
   cp.fail = true;
   const r = await identity.refreshFromDb('carein');
   assert.equal(r.ok, false);
-  assert.equal(acs.replyToFor('carein', 'roland'), 'env@roland.example.test', 'MT-2b: a failed read is not served on');
+  assert.equal(acs.replyToFor('carein', 'roland'), 'office@roland.example.test', 'a blip does not flip it');
 });
 
 test('ensureFresh re-reads only once the 5-minute window has passed', async (t) => {

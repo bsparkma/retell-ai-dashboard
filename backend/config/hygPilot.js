@@ -40,10 +40,11 @@
  *
  * MT-2b, READ FIRST: every accessor takes the TENANT first. An office is one of
  * tenant T's only if T has an active office row (platform/officeRegistry
- * tenantOfficeKeys); anything else is OFF. Since MT-2b a failed control-plane
- * read is NOT served on — "keep using what we read" in FAIL CLOSED below is
- * superseded: a failed read, or one older than three refresh windows, answers
- * "nobody chose", which is the floor, which is OFF. The office_setting cache is
+ * tenantOfficeKeys); anything else is OFF. "Keep using what we read" in FAIL
+ * CLOSED below still holds, now BOUNDED: a failed control-plane read keeps
+ * serving the last good read until it is older than three refresh windows;
+ * after that (or never read) the answer is "nobody chose", which is the floor,
+ * which is OFF. The office_setting cache is
  * shared by all ten readers (platform/officeSettings.js) and refreshed for
  * every active tenant by this module's timer. "A row" below now means the
  * tenant's office_setting rows for the key: when it holds ANY, an office

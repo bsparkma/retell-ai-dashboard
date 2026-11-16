@@ -18,7 +18,8 @@
  *
  *     office_setting(tenant, office, 'tc_email_identity')[<field>]  <- saved in the app
  *       | (no row, the field absent / null / unusable, or nothing is served:
- *       |  never read, last read failed, stale — platform/officeSettings.js)
+ *       |  never read, or no good read in 3 refresh windows — platform/officeSettings.js;
+ *       |  a failed refresh keeps serving the last good read until then)
  *     the app setting above                                     <- the env FALLBACK,
  *       |                                                          tenant 'carein' ONLY
  *       | (unset / unusable / any other tenant)
@@ -164,8 +165,9 @@ function parseIdentity(raw) {
 /**
  * The value SAVED IN THE APP for one tenant's office's field, from the SERVED
  * office_setting read (MT-2b), or null. Synchronous; this is what
- * config/acsEmail.js consults first. Not served (never read, last read failed,
- * stale) => null, and the app setting answers for tenant 'carein' only.
+ * config/acsEmail.js consults first. Not served (never read, or no good read
+ * in 3 refresh windows; a failed refresh keeps serving the last good read until
+ * then) => null, and the app setting answers for tenant 'carein' only.
  * @param {string} tenantSlug
  * @param {string} officeKey
  * @param {StoredField} field

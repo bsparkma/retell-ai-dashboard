@@ -69,8 +69,8 @@ router.use(requireOffice);
 // MT-2b: the hygiene switch is a SYNCHRONOUS read of the session tenant's
 // office_setting rows (config/hygPilot.js). Refresh them if they are older than
 // the window before any handler asks, so a tenant the background timer has not
-// reached yet is read rather than answered OFF. Never throws; a failed read is
-// "nobody chose", which is OFF.
+// reached yet is read rather than answered OFF. Never throws; a failed read
+// keeps the last good read (up to 3 refresh windows), else "nobody chose" = OFF.
 router.use((req, _res, next) => {
   officeSettings
     .ensureTenantFresh(sessionTenantSlug(req))
