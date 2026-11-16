@@ -11,16 +11,20 @@
  *    row is what the record says NOW, not a history of it,
  *  - a "This patient (other cases)" toggle that asks for scope=patient.
  *
- * READ-ONLY: nothing on this tab writes anywhere. "Load more" pages with the
- * server's cursor (keyset), so rows that arrive while you read never shift or
- * repeat what is already on screen.
+ * The one write (AT-2): a "Log to chart" button on chart-worthy items opens
+ * LogToChartDialog, and ONLY its Confirm click writes — one item, the exact
+ * text shown, to that office's Open Dental chart. Nothing else here writes.
+ * "Load more" pages with the server's cursor (keyset), so rows that arrive
+ * while you read never shift or repeat what is already on screen.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { OfficeId } from "@shared/tc/contract";
 import type {
   ActivityAudience,
+  ActivityChartWrite,
   ActivityScope,
   ActivitySource,
+  TcActivityChartWritten,
   TcActivityItem,
 } from "@shared/tc/activity";
 import { Badge } from "@/components/ui/badge";
@@ -40,8 +44,10 @@ import {
   Stethoscope,
   StickyNote,
   CalendarClock,
+  ClipboardPen,
 } from "lucide-react";
 import { getCaseActivity, tcErrorMessage } from "../api";
+import { LogToChartDialog } from "./LogToChartDialog";
 
 const PAGE_SIZE = 50;
 
@@ -72,7 +78,7 @@ const AUDIENCE_CLASS: Record<ActivityAudience, string> = {
   external: "border-transparent bg-violet-50 text-violet-800 dark:bg-violet-950 dark:text-violet-200",
 };
 
-const CHART_VIA_LABEL = { voice: "call note", referral: "referral note", hygiene: "hygiene" } as const;
+const CHART_VIA_LABEL = { voice: "call note", referral: "referral note", hygiene: "hygiene", tc: "TC note" } as const;
 
 export interface ActivityFeedProps {
   office: OfficeId;
@@ -89,6 +95,9 @@ export function ActivityFeed({ office, caseId, refreshKey = "" }: ActivityFeedPr
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [load, setLoad] = useState<Load>({ kind: "loading" });
   const [hidden, setHidden] = useState<ReadonlySet<ActivitySource>>(new Set());
+  // AT-2: whether this office's charts can take a TC note right now (from the first page).
+  const [chartWrite, setChartWrite] = useState<ActivityChartWrite | null>(null);
+  const [charting, setCharting] = useState<string | null>(null);
   // Each first-page read gets a number; a slower, older answer never overwrites a newer one.
   const generation = useRef(0);
 
@@ -102,12 +111,27 @@ export function ActivityFeed({ office, caseId, refreshKey = "" }: ActivityFeedPr
       if (gen !== generation.current) return;
       setItems(page.items);
       setNextCursor(page.nextCursor);
+      setChartWrite(page.chartWrite ?? null);
       setLoad({ kind: "idle" });
     } catch (e) {
       if (gen !== generation.current) return;
       setLoad({ kind: "error", message: tcErrorMessage(e) });
     }
   }, [office, caseId, scope]);
+
+  /** The server confirmed (and read back) a chart note: mark that row On chart, no button. */
+  const markCharted = (written: TcActivityChartWritten) =>
+    setItems((prev) =>
+      prev.map((i) =>
+        i.id === written.itemId
+          ? {
+              ...i,
+              chart: written.chart,
+              chartable: { eligible: false, code: "ALREADY_ON_CHART", reason: "Already on the chart." },
+            }
+          : i,
+      ),
+    );
 
   useEffect(() => {
     void loadFirst();
@@ -194,7 +218,13 @@ export function ActivityFeed({ office, caseId, refreshKey = "" }: ActivityFeedPr
       ) : (
         <ol className="space-y-0">
           {visible.map((it, idx) => (
-            <ActivityRow key={it.id} item={it} last={idx === visible.length - 1} />
+            <ActivityRow
+              key={it.id}
+              item={it}
+              last={idx === visible.length - 1}
+              chartWrite={chartWrite}
+              onLogToChart={() => setCharting(it.id)}
+            />
           ))}
         </ol>
       )}
@@ -211,11 +241,38 @@ export function ActivityFeed({ office, caseId, refreshKey = "" }: ActivityFeedPr
           Load more
         </Button>
       )}
+
+      {charting !== null && (
+        <LogToChartDialog
+          office={office}
+          caseId={caseId}
+          itemId={charting}
+          open
+          onOpenChange={(o) => {
+            if (!o) setCharting(null);
+          }}
+          onWritten={markCharted}
+        />
+      )}
     </div>
   );
 }
 
-function ActivityRow({ item, last }: { item: TcActivityItem; last: boolean }) {
+function ActivityRow({
+  item,
+  last,
+  chartWrite,
+  onLogToChart,
+}: {
+  item: TcActivityItem;
+  last: boolean;
+  /** Null when the server did not say (an older server): no button at all. */
+  chartWrite: ActivityChartWrite | null;
+  onLogToChart: () => void;
+}) {
+  // Only chart-worthy items get the button; one already on the chart never does.
+  const showChartButton = chartWrite !== null && item.chartable?.eligible === true && !item.chart.onChart;
+  const chartBlocked = chartWrite !== null && !chartWrite.available;
   const meta = SOURCE_META[item.source];
   const Icon = item.completeness === "current_value_only" ? History : meta.icon;
   return (
@@ -260,6 +317,27 @@ function ActivityRow({ item, last }: { item: TcActivityItem; last: boolean }) {
         </div>
         {item.body !== null && (
           <p className="text-sm text-foreground mt-1 whitespace-pre-line break-words">{item.body}</p>
+        )}
+        {showChartButton && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 px-2 text-xs"
+              disabled={chartBlocked}
+              title={chartBlocked ? (chartWrite?.message ?? undefined) : undefined}
+              onClick={onLogToChart}
+              data-testid="tc-activity-log-to-chart"
+            >
+              <ClipboardPen className="mr-1 h-3.5 w-3.5" /> Log to chart
+            </Button>
+            {chartBlocked && chartWrite?.message && (
+              <span className="text-xs text-muted-foreground" data-testid="tc-activity-log-to-chart-blocked">
+                {chartWrite.message}
+              </span>
+            )}
+          </div>
         )}
       </div>
     </li>

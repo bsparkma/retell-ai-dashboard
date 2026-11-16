@@ -230,6 +230,18 @@ jobs:
           MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
         run: node scripts/ref-templates-hyg-rx-verify-queries.js
 
+      # MT-2a (control migrations 1789600000000 + 1789600000001): office_setting's
+      # CHECKs, foreign key and two-tenant independence (one transaction, rolled
+      # back), the backfill over real rows (rolled back), then the real
+      # dual-write through the registry with a forced office_setting failure
+      # and the parity tripwire, committed and cleaned up. Part C runs only on a
+      # pristine control DB, which this ephemeral one is.
+      - name: mt2a office settings verification (real CHECKs, backfill, dual-write)
+        working-directory: backend
+        env:
+          CONTROL_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_control
+        run: node scripts/office-settings-verify-queries.js
+
       - name: spine smoke test (registry / tenantDb / append-only audit / entitlement)
         working-directory: backend
         env:

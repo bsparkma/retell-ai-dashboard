@@ -65,7 +65,7 @@ const CODE_MAP_TENANT_SLUG = 'carein';
  * @property {string[]} mangoDids          E.164
  * @property {string|null} odCustomerKeySecret  Key Vault secret NAME
  * @property {string|null} odCustomerKeyEnv     process.env variable NAME
- * @property {{ call: number|null, referral: number|null }} commTypeDefNums  null = unconfigured
+ * @property {{ call: number|null, referral: number|null, tc: number|null }} commTypeDefNums  null = unconfigured
  * @property {boolean} odEnabled
  * @property {boolean} hygOdEnabled        the hygiene FLOOR, not the live pilot switch
  * @property {'active'|'disabled'} status
@@ -125,7 +125,9 @@ function mapRow(row) {
     mangoDids: stringArray(row.mango_dids),
     odCustomerKeySecret: typeof row.od_customer_key_secret === 'string' ? row.od_customer_key_secret : null,
     odCustomerKeyEnv: typeof row.od_customer_key_env === 'string' ? row.od_customer_key_env : null,
-    commTypeDefNums: { call: defNum(defnums.call), referral: defNum(defnums.referral) },
+    // tc (AT-2, control migration 1789700000000): a row from before that
+    // migration has no member, which reads as UNCONFIGURED, never a guess.
+    commTypeDefNums: { call: defNum(defnums.call), referral: defNum(defnums.referral), tc: defNum(defnums.tc) },
     odEnabled: row.od_enabled === true,
     hygOdEnabled: row.hyg_od_enabled === true,
     status: row.status === 'disabled' ? 'disabled' : 'active',
@@ -164,6 +166,7 @@ function codeOffices() {
       commTypeDefNums: {
         call: od ? defNum(od.defaultCommTypeDefNum) : null,
         referral: od ? defNum(od.defaultReferralCommTypeDefNum) : null,
+        tc: od ? defNum(od.defaultTcCommTypeDefNum) : null,
       },
       odEnabled: od ? od.odEnabled === true : false,
       hygOdEnabled: od ? od.hygOdEnabled === true : false,
@@ -179,7 +182,7 @@ function codeOffices() {
  * the code maps but not the registry, or the reverse.
  * @typedef {'row'|'displayName'|'sortOrder'|'retellAgentIds'|'mangoDids'|'status'|
  *           'odCustomerKeySecret'|'odCustomerKeyEnv'|'commTypeDefNums.call'|
- *           'commTypeDefNums.referral'|'odEnabled'|'hygOdEnabled'} ParityField
+ *           'commTypeDefNums.referral'|'commTypeDefNums.tc'|'odEnabled'|'hygOdEnabled'} ParityField
  */
 
 /**
@@ -197,6 +200,8 @@ function fieldValue(o, field) {
       return o.commTypeDefNums.call;
     case 'commTypeDefNums.referral':
       return o.commTypeDefNums.referral;
+    case 'commTypeDefNums.tc':
+      return o.commTypeDefNums.tc;
     case 'retellAgentIds':
     case 'mangoDids':
       // Order carries no meaning in a set of ids; sort so it is not a divergence.

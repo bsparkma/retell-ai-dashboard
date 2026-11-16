@@ -242,6 +242,13 @@ The registry is `OFFICE_OD_SETTINGS` in `backend/config/odOffices.js:77`:
 Convention: Roland keeps the bare legacy name; every additional office gets a
 `_<OFFICE>` suffix. Adding an office is a config change, not new code.
 
+Each office has **three** commlog-type families, and no number is shared across offices or
+families: call (above), referral (`OPENDENTAL_REFERRAL_COMMTYPE_DEFNUM[_VALLEY]`, 491 / 452),
+and TC (`OPENDENTAL_TC_COMMTYPE_DEFNUM[_VALLEY]`, **492 / 453**, "CareIN TC", AT-2 "Log to
+chart"). The TC override is refused (null, `TC_COMMTYPE_NOT_CONFIGURED`) when it names a number
+another (office, type) owns. The registry mirrors all three in `office.commtype_defnums`
+(control migration `1789700000000`).
+
 **DefNums are practice-specific and must never cross** (`odOffices.js:44-50`): *"DefNum 486
 must therefore NEVER be written to Riley's database (486 is not a CommLogType there at
 all), and 451 must never be written to Roland's."* A non-numeric env override falls back
@@ -674,6 +681,7 @@ from Key Vault, never from a `.env`.
 | `OPENDENTAL_CUSTOMER_KEY_VALLEY` 🔒 | **Valley/Riley.** Absent ⇒ valley reports not-connected; it can never fall back to Roland's key. |
 | `OPENDENTAL_CAREIN_COMMTYPE_DEFNUM` | Override for Roland's CommLog DefNum (default 486). |
 | `OPENDENTAL_CAREIN_COMMTYPE_DEFNUM_VALLEY` | Override for Valley's (default 451). |
+| `OPENDENTAL_TC_COMMTYPE_DEFNUM` / `_VALLEY` | "CareIN TC" type for AT-2 "Log to chart" (defaults 492 / 453). A crossing value is refused, not served. |
 | `OPENDENTAL_API_BASE_URL` | Process-wide, not per-office. |
 | `OPENDENTAL_WRITE_DISABLED` | `'true'` blocks every OD mutation → 403 `OD_WRITE_DISABLED`. **Set this in dev.** |
 | `OPENDENTAL_ALLOW_MOCK` | `'true'` **and** `NODE_ENV !== 'production'`. Cannot be enabled in prod. |

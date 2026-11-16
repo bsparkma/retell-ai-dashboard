@@ -109,6 +109,7 @@
  */
 
 const registry = require('../platform/registry');
+const officeSettingsParity = require('../platform/officeSettingsParity');
 const { OFFICES } = require('./officeAgents');
 
 /** The `platform_setting` key the whole map is stored under. */
@@ -335,6 +336,20 @@ function policyKnown() {
 }
 
 /**
+ * MT-2a parity tripwire: hand the stored-layer answer per REAL office to the
+ * comparison. A usable row answers for every office (absent = false); no usable
+ * row is null. LOGS only, never awaited, never changes an answer.
+ * @param {Record<string, boolean>|null} byOffice
+ */
+function parityCompare(byOffice) {
+  const offices = Object.keys(OFFICES).filter((k) => k !== 'unknown');
+  void officeSettingsParity.compare(
+    SETTING_KEY,
+    Object.fromEntries(offices.map((o) => [o, byOffice ? byOffice[o] === true : null]))
+  );
+}
+
+/**
  * Re-read the stored map from the control DB.
  *
  * NEVER THROWS. It is called from a timer, from a warm pass, and from request
@@ -355,6 +370,7 @@ async function refreshFromDb() {
     if (!row) {
       // Nobody has chosen. Hands control to the environment, then the floor.
       cache = { loaded: true, byOffice: null, raw: null, updatedAt: null, updatedBy: null };
+      parityCompare(null);
       return { ok: true, byOffice: null, error: null };
     }
 
@@ -365,6 +381,7 @@ async function refreshFromDb() {
           `(${JSON.stringify(row.value)}) — ignoring it and falling back to the environment`
       );
       cache = { loaded: true, byOffice: null, raw: null, updatedAt: null, updatedBy: null };
+      parityCompare(null);
       return { ok: true, byOffice: null, error: null };
     }
 
@@ -375,6 +392,7 @@ async function refreshFromDb() {
       updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null,
       updatedBy: row.updated_by || null,
     };
+    parityCompare(parsed.byOffice);
     return { ok: true, byOffice: parsed.byOffice, error: null };
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
@@ -432,7 +450,10 @@ async function persistHygEnabled(officeKey, enabled, updatedBy = null) {
       : {};
   base[officeKey] = enabled;
 
-  await registry.setPlatformSetting(SETTING_KEY, base, updatedBy);
+  // MT-2a: the registry also mirrors this map into office_setting, in the same
+  // transaction, and refuses (OFFICE_SETTING_READBACK_MISMATCH) if either table
+  // does not read back as asked.
+  await registry.setPlatformSetting(SETTING_KEY, base, updatedBy, { officeKey });
 
   const refreshed = await refreshFromDb();
   if (!refreshed.ok) {
