@@ -54,7 +54,7 @@ describe("A2: one tooth mapping, everywhere", () => {
     );
     fireEvent.click(screen.getByTestId("hyg-dentition-primary"));
     fireEvent.click(screen.getByTestId("hyg-tooth-B"));
-    expect(screen.getByTestId("hyg-add-selection").textContent).toMatch(/^B — pick the work/);
+    expect(screen.getByTestId("hyg-add-selection").textContent).toBe("Tooth B");
     fireEvent.click(screen.getByTestId("hyg-add-SSC"));
     expect(adds).toHaveLength(1);
     expect(adds[0]).toMatchObject({ code: "SSC", category: "Restorative", teeth: [102] });

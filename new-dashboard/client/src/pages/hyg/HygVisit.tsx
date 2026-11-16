@@ -661,8 +661,10 @@ export default function HygVisit() {
    * lets this page create lazily without tracking whether it already has.
    */
   const run = useCallback(
-    async (fn: () => Promise<HygVisitMutation>) => {
-      if (!isOfficeId(office) || !page) return;
+    // Resolves to the server's answer, or null when there was none — so a
+    // caller that confirms ("Added Crown on #30") confirms only what landed.
+    async (fn: () => Promise<HygVisitMutation>): Promise<HygVisitMutation | null> => {
+      if (!isOfficeId(office) || !page) return null;
       setBusy(true);
       setRefusal(null);
       try {
@@ -672,8 +674,10 @@ export default function HygVisit() {
         // Through the same helper: adding a treatment item before touching the
         // slip must not silently un-pick the visit type she can see.
         setDraft(withSuggestedType(res.visit.slip, page.appointment));
+        return res;
       } catch (err) {
         if (err instanceof HygApiError) setError(err);
+        return null;
       } finally {
         setBusy(false);
       }
@@ -1135,12 +1139,14 @@ export default function HygVisit() {
                 plannedInOd={existingTx.status === "ready" ? existingTx.data.items : []}
                 busy={busy}
                 onAdd={(input: TreatmentItemInput) =>
-                  void run(() => addTreatmentItem(office, aptNum, input))
+                  run(() => addTreatmentItem(office, aptNum, input)).then((res) => res?.visit.items ?? null)
                 }
                 onPatch={(itemId, patch) =>
                   void run(() => updateTreatmentItem(office, aptNum, itemId, patch))
                 }
-                onRemove={(itemId) => void run(() => removeTreatmentItem(office, aptNum, itemId))}
+                onRemove={(itemId) =>
+                  run(() => removeTreatmentItem(office, aptNum, itemId)).then((res) => res !== null)
+                }
                 onReviewAndSend={() =>
                   trayRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
                 }

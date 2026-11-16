@@ -186,11 +186,11 @@ describe("the sticky tooth selection", () => {
     await waitFor(() => expect(server.items).toHaveLength(1));
     // Still selected, and the copy says so rather than leaving her to find out.
     expect(screen.getByTestId("hyg-add-selection").textContent).toMatch(/#30/);
-    expect(screen.getByTestId("hyg-add-selection").textContent).toMatch(/stays selected/i);
+    expect(screen.getByTestId("hyg-select-mode-hint").textContent).toMatch(/stays picked/i);
 
     fireEvent.click(screen.getByTestId("hyg-clear-selection"));
     await waitFor(() =>
-      expect(screen.getByTestId("hyg-add-selection").textContent).toMatch(/Pick teeth above/),
+      expect(screen.getByTestId("hyg-add-selection").textContent).toMatch(/No tooth picked/),
     );
     // And with nothing selected, a tooth-level code is disabled again.
     expect(screen.getByTestId("hyg-add-Crown").hasAttribute("disabled")).toBe(true);
@@ -202,7 +202,7 @@ describe("the sticky tooth selection", () => {
 
     fireEvent.click(screen.getByTestId("hyg-tooth-30"));
     fireEvent.click(screen.getByTestId("hyg-dentition-primary"));
-    expect(screen.getByTestId("hyg-add-selection").textContent).toMatch(/Pick teeth above/);
+    expect(screen.getByTestId("hyg-add-selection").textContent).toMatch(/No tooth picked/);
   });
 
   it("a whole-mouth code does not need a tooth and does not disturb the selection", async () => {
@@ -284,6 +284,7 @@ describe("the item list", () => {
     fireEvent.click(screen.getByTestId("hyg-clear-selection"));
     fireEvent.click(screen.getByTestId("hyg-tooth-3"));
     fireEvent.click(screen.getByTestId("hyg-add-Comp"));
+    fireEvent.click(screen.getByTestId("hyg-surfaces-add")); // Comp asks for surfaces; none is allowed
     await waitFor(() => expect(server.items).toHaveLength(3));
 
     const group30 = await screen.findByTestId("hyg-tooth-group-30");
