@@ -1,0 +1,2341 @@
+{
+  "_provenance": "Recorded by running every per-office reader at 82c7a5a (origin/develop before MT-2b) over platform/__fixtures__/mt2bCareinMatrix.js, with platform_setting stubbed per fixture. Do not regenerate from MT-2b code: it is the BEFORE half of the before/after pin.",
+  "switches": {
+    "tc_checkout_enabled": {
+      "none|unset": {
+        "roland": false,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "none|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "none|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "none|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|unset": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|unset": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|bothTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|oddCase": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|unset": {
+        "roland": false,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|unset": {
+        "roland": false,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|unset": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|oddCase": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|unset": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|oddCase": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      }
+    },
+    "tc_od_sync_enabled": {
+      "none|unset": {
+        "roland": false,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "none|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "none|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "none|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|unset": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|unset": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|bothTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|oddCase": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|unset": {
+        "roland": false,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|unset": {
+        "roland": false,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|unset": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|oddCase": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|unset": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|oddCase": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      }
+    },
+    "tc_auto_checkout_enabled": {
+      "none|unset": {
+        "roland": false,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "none|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "none|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "none|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|unset": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|unset": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|bothTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|oddCase": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|unset": {
+        "roland": false,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|unset": {
+        "roland": false,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|unset": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|oddCase": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|unset": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|oddCase": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      }
+    },
+    "tc_referrals_enabled": {
+      "none|unset": {
+        "roland": false,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "none|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "none|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "none|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|unset": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|unset": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|bothTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|oddCase": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|unset": {
+        "roland": false,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|unset": {
+        "roland": false,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|unset": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|oddCase": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|unset": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|oddCase": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      }
+    },
+    "tc_referral_email_enabled": {
+      "none|unset": {
+        "roland": false,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "none|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "none|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "none|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|unset": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|unset": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|bothTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|oddCase": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|unset": {
+        "roland": false,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|unset": {
+        "roland": false,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|unset": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|oddCase": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|unset": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|oddCase": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      }
+    },
+    "tc_referral_patient_email_enabled": {
+      "none|unset": {
+        "roland": false,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "none|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "none|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "none|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|unset": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "rolandOn|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|unset": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|bothTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "mixed|oddCase": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|unset": {
+        "roland": false,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "empty|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|unset": {
+        "roland": false,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "junk|oddCase": {
+        "roland": true,
+        "valley": false,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|unset": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "partlyJunk|oddCase": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|unset": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|bothTrue": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|rolandFalseValleyTrue": {
+        "roland": false,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      },
+      "bothOn|oddCase": {
+        "roland": true,
+        "valley": true,
+        "unknown": false,
+        "nope": false
+      }
+    }
+  },
+  "hyg": {
+    "none|unset": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "valley": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": true
+      }
+    },
+    "none|bothTrue": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "valley": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": true
+      }
+    },
+    "none|rolandFalseValleyTrue": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "valley": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": true
+      }
+    },
+    "none|oddCase": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "valley": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": true
+      }
+    },
+    "rolandOn|unset": {
+      "roland": {
+        "floorOff": true,
+        "floorOn": true
+      },
+      "valley": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": false
+      }
+    },
+    "rolandOn|bothTrue": {
+      "roland": {
+        "floorOff": true,
+        "floorOn": true
+      },
+      "valley": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": false
+      }
+    },
+    "rolandOn|rolandFalseValleyTrue": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "valley": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": false
+      }
+    },
+    "rolandOn|oddCase": {
+      "roland": {
+        "floorOff": true,
+        "floorOn": true
+      },
+      "valley": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": false
+      }
+    },
+    "mixed|unset": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "valley": {
+        "floorOff": true,
+        "floorOn": true
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": false
+      }
+    },
+    "mixed|bothTrue": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "valley": {
+        "floorOff": true,
+        "floorOn": true
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": false
+      }
+    },
+    "mixed|rolandFalseValleyTrue": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "valley": {
+        "floorOff": true,
+        "floorOn": true
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": false
+      }
+    },
+    "mixed|oddCase": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "valley": {
+        "floorOff": true,
+        "floorOn": true
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": false
+      }
+    },
+    "empty|unset": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "valley": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": false
+      }
+    },
+    "empty|bothTrue": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "valley": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": false
+      }
+    },
+    "empty|rolandFalseValleyTrue": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "valley": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": false
+      }
+    },
+    "empty|oddCase": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "valley": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": false
+      }
+    },
+    "junk|unset": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "valley": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": true
+      }
+    },
+    "junk|bothTrue": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "valley": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": true
+      }
+    },
+    "junk|rolandFalseValleyTrue": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "valley": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": true
+      }
+    },
+    "junk|oddCase": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "valley": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": true
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": true
+      }
+    },
+    "partlyJunk|unset": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "valley": {
+        "floorOff": true,
+        "floorOn": true
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": false
+      }
+    },
+    "partlyJunk|bothTrue": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "valley": {
+        "floorOff": true,
+        "floorOn": true
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": false
+      }
+    },
+    "partlyJunk|rolandFalseValleyTrue": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "valley": {
+        "floorOff": true,
+        "floorOn": true
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": false
+      }
+    },
+    "partlyJunk|oddCase": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "valley": {
+        "floorOff": true,
+        "floorOn": true
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": false
+      }
+    },
+    "bothOn|unset": {
+      "roland": {
+        "floorOff": true,
+        "floorOn": true
+      },
+      "valley": {
+        "floorOff": true,
+        "floorOn": true
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": false
+      }
+    },
+    "bothOn|bothTrue": {
+      "roland": {
+        "floorOff": true,
+        "floorOn": true
+      },
+      "valley": {
+        "floorOff": true,
+        "floorOn": true
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": false
+      }
+    },
+    "bothOn|rolandFalseValleyTrue": {
+      "roland": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "valley": {
+        "floorOff": true,
+        "floorOn": true
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": false
+      }
+    },
+    "bothOn|oddCase": {
+      "roland": {
+        "floorOff": true,
+        "floorOn": true
+      },
+      "valley": {
+        "floorOff": true,
+        "floorOn": true
+      },
+      "unknown": {
+        "floorOff": false,
+        "floorOn": false
+      },
+      "nope": {
+        "floorOff": false,
+        "floorOn": false
+      }
+    }
+  },
+  "nurture": {
+    "none|unset": [],
+    "none|killed": [],
+    "none|notKill": [],
+    "rolandOn|unset": [
+      "roland"
+    ],
+    "rolandOn|killed": [],
+    "rolandOn|notKill": [
+      "roland"
+    ],
+    "mixed|unset": [
+      "valley"
+    ],
+    "mixed|killed": [],
+    "mixed|notKill": [
+      "valley"
+    ],
+    "empty|unset": [],
+    "empty|killed": [],
+    "empty|notKill": [],
+    "junk|unset": [],
+    "junk|killed": [],
+    "junk|notKill": [],
+    "partlyJunk|unset": [
+      "valley"
+    ],
+    "partlyJunk|killed": [],
+    "partlyJunk|notKill": [
+      "valley"
+    ],
+    "bothOn|unset": [
+      "roland",
+      "valley"
+    ],
+    "bothOn|killed": [],
+    "bothOn|notKill": [
+      "roland",
+      "valley"
+    ]
+  },
+  "opportunities": {
+    "none|unset": [],
+    "none|killed": [],
+    "rolandOn|unset": [
+      "roland"
+    ],
+    "rolandOn|killed": [],
+    "mixed|unset": [
+      "valley"
+    ],
+    "mixed|killed": [],
+    "empty|unset": [],
+    "empty|killed": [],
+    "junk|unset": [],
+    "junk|killed": [],
+    "partlyJunk|unset": [
+      "valley"
+    ],
+    "partlyJunk|killed": [],
+    "bothOn|unset": [
+      "roland",
+      "valley"
+    ],
+    "bothOn|killed": []
+  },
+  "identity": {
+    "none|unset": {
+      "roland": {
+        "replyTo": null,
+        "practiceName": null,
+        "details": {
+          "address": null,
+          "phone": null
+        },
+        "referralBcc": null,
+        "state": {
+          "replyTo": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "ACS_EMAIL_REPLY_TO_ROLAND"
+          },
+          "practiceName": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_NAME_ROLAND"
+          },
+          "practicePhone": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_PHONE_ROLAND"
+          },
+          "practiceAddress": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_ADDRESS_ROLAND"
+          }
+        }
+      },
+      "valley": {
+        "replyTo": null,
+        "practiceName": null,
+        "details": {
+          "address": null,
+          "phone": null
+        },
+        "referralBcc": null,
+        "state": {
+          "replyTo": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "ACS_EMAIL_REPLY_TO_VALLEY"
+          },
+          "practiceName": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_NAME_VALLEY"
+          },
+          "practicePhone": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_PHONE_VALLEY"
+          },
+          "practiceAddress": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_ADDRESS_VALLEY"
+          }
+        }
+      },
+      "unknown": {
+        "replyTo": null,
+        "practiceName": null,
+        "details": {
+          "address": null,
+          "phone": null
+        },
+        "referralBcc": null,
+        "state": null
+      }
+    },
+    "none|some": {
+      "roland": {
+        "replyTo": "env@roland.example.test",
+        "practiceName": null,
+        "details": {
+          "address": null,
+          "phone": "555-0199"
+        },
+        "referralBcc": null,
+        "state": {
+          "replyTo": {
+            "value": "env@roland.example.test",
+            "source": "env",
+            "stored": null,
+            "fallback": "env@roland.example.test",
+            "fallbackSetting": "ACS_EMAIL_REPLY_TO_ROLAND"
+          },
+          "practiceName": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_NAME_ROLAND"
+          },
+          "practicePhone": {
+            "value": "555-0199",
+            "source": "env",
+            "stored": null,
+            "fallback": "555-0199",
+            "fallbackSetting": "TC_EMAIL_PRACTICE_PHONE_ROLAND"
+          },
+          "practiceAddress": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_ADDRESS_ROLAND"
+          }
+        }
+      },
+      "valley": {
+        "replyTo": "env@valley.example.test",
+        "practiceName": "Env Valley",
+        "details": {
+          "address": "2 Env Rd",
+          "phone": null
+        },
+        "referralBcc": null,
+        "state": {
+          "replyTo": {
+            "value": "env@valley.example.test",
+            "source": "env",
+            "stored": null,
+            "fallback": "env@valley.example.test",
+            "fallbackSetting": "ACS_EMAIL_REPLY_TO_VALLEY"
+          },
+          "practiceName": {
+            "value": "Env Valley",
+            "source": "env",
+            "stored": null,
+            "fallback": "Env Valley",
+            "fallbackSetting": "TC_EMAIL_PRACTICE_NAME_VALLEY"
+          },
+          "practicePhone": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_PHONE_VALLEY"
+          },
+          "practiceAddress": {
+            "value": "2 Env Rd",
+            "source": "env",
+            "stored": null,
+            "fallback": "2 Env Rd",
+            "fallbackSetting": "TC_EMAIL_PRACTICE_ADDRESS_VALLEY"
+          }
+        }
+      },
+      "unknown": {
+        "replyTo": null,
+        "practiceName": null,
+        "details": {
+          "address": null,
+          "phone": null
+        },
+        "referralBcc": null,
+        "state": null
+      }
+    },
+    "full|unset": {
+      "roland": {
+        "replyTo": "front@roland.example.test",
+        "practiceName": "Test Roland",
+        "details": {
+          "address": "1 Test St\nTesttown",
+          "phone": "555-0100"
+        },
+        "referralBcc": "copies@roland.example.test",
+        "state": {
+          "replyTo": {
+            "value": "front@roland.example.test",
+            "source": "stored",
+            "stored": "front@roland.example.test",
+            "fallback": null,
+            "fallbackSetting": "ACS_EMAIL_REPLY_TO_ROLAND"
+          },
+          "practiceName": {
+            "value": "Test Roland",
+            "source": "stored",
+            "stored": "Test Roland",
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_NAME_ROLAND"
+          },
+          "practicePhone": {
+            "value": "555-0100",
+            "source": "stored",
+            "stored": "555-0100",
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_PHONE_ROLAND"
+          },
+          "practiceAddress": {
+            "value": "1 Test St\nTesttown",
+            "source": "stored",
+            "stored": "1 Test St\nTesttown",
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_ADDRESS_ROLAND"
+          }
+        }
+      },
+      "valley": {
+        "replyTo": null,
+        "practiceName": null,
+        "details": {
+          "address": null,
+          "phone": null
+        },
+        "referralBcc": null,
+        "state": {
+          "replyTo": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "ACS_EMAIL_REPLY_TO_VALLEY"
+          },
+          "practiceName": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_NAME_VALLEY"
+          },
+          "practicePhone": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_PHONE_VALLEY"
+          },
+          "practiceAddress": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_ADDRESS_VALLEY"
+          }
+        }
+      },
+      "unknown": {
+        "replyTo": null,
+        "practiceName": null,
+        "details": {
+          "address": null,
+          "phone": null
+        },
+        "referralBcc": null,
+        "state": null
+      }
+    },
+    "full|some": {
+      "roland": {
+        "replyTo": "front@roland.example.test",
+        "practiceName": "Test Roland",
+        "details": {
+          "address": "1 Test St\nTesttown",
+          "phone": "555-0100"
+        },
+        "referralBcc": "copies@roland.example.test",
+        "state": {
+          "replyTo": {
+            "value": "front@roland.example.test",
+            "source": "stored",
+            "stored": "front@roland.example.test",
+            "fallback": "env@roland.example.test",
+            "fallbackSetting": "ACS_EMAIL_REPLY_TO_ROLAND"
+          },
+          "practiceName": {
+            "value": "Test Roland",
+            "source": "stored",
+            "stored": "Test Roland",
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_NAME_ROLAND"
+          },
+          "practicePhone": {
+            "value": "555-0100",
+            "source": "stored",
+            "stored": "555-0100",
+            "fallback": "555-0199",
+            "fallbackSetting": "TC_EMAIL_PRACTICE_PHONE_ROLAND"
+          },
+          "practiceAddress": {
+            "value": "1 Test St\nTesttown",
+            "source": "stored",
+            "stored": "1 Test St\nTesttown",
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_ADDRESS_ROLAND"
+          }
+        }
+      },
+      "valley": {
+        "replyTo": "env@valley.example.test",
+        "practiceName": "Env Valley",
+        "details": {
+          "address": "2 Env Rd",
+          "phone": null
+        },
+        "referralBcc": null,
+        "state": {
+          "replyTo": {
+            "value": "env@valley.example.test",
+            "source": "env",
+            "stored": null,
+            "fallback": "env@valley.example.test",
+            "fallbackSetting": "ACS_EMAIL_REPLY_TO_VALLEY"
+          },
+          "practiceName": {
+            "value": "Env Valley",
+            "source": "env",
+            "stored": null,
+            "fallback": "Env Valley",
+            "fallbackSetting": "TC_EMAIL_PRACTICE_NAME_VALLEY"
+          },
+          "practicePhone": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_PHONE_VALLEY"
+          },
+          "practiceAddress": {
+            "value": "2 Env Rd",
+            "source": "env",
+            "stored": null,
+            "fallback": "2 Env Rd",
+            "fallbackSetting": "TC_EMAIL_PRACTICE_ADDRESS_VALLEY"
+          }
+        }
+      },
+      "unknown": {
+        "replyTo": null,
+        "practiceName": null,
+        "details": {
+          "address": null,
+          "phone": null
+        },
+        "referralBcc": null,
+        "state": null
+      }
+    },
+    "mixed|unset": {
+      "roland": {
+        "replyTo": null,
+        "practiceName": null,
+        "details": {
+          "address": null,
+          "phone": null
+        },
+        "referralBcc": null,
+        "state": {
+          "replyTo": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "ACS_EMAIL_REPLY_TO_ROLAND"
+          },
+          "practiceName": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_NAME_ROLAND"
+          },
+          "practicePhone": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_PHONE_ROLAND"
+          },
+          "practiceAddress": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_ADDRESS_ROLAND"
+          }
+        }
+      },
+      "valley": {
+        "replyTo": null,
+        "practiceName": "Valley Test",
+        "details": {
+          "address": null,
+          "phone": "555-0101"
+        },
+        "referralBcc": null,
+        "state": {
+          "replyTo": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "ACS_EMAIL_REPLY_TO_VALLEY"
+          },
+          "practiceName": {
+            "value": "Valley Test",
+            "source": "stored",
+            "stored": "Valley Test",
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_NAME_VALLEY"
+          },
+          "practicePhone": {
+            "value": "555-0101",
+            "source": "stored",
+            "stored": "555-0101",
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_PHONE_VALLEY"
+          },
+          "practiceAddress": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_ADDRESS_VALLEY"
+          }
+        }
+      },
+      "unknown": {
+        "replyTo": null,
+        "practiceName": null,
+        "details": {
+          "address": null,
+          "phone": null
+        },
+        "referralBcc": null,
+        "state": null
+      }
+    },
+    "mixed|some": {
+      "roland": {
+        "replyTo": "env@roland.example.test",
+        "practiceName": null,
+        "details": {
+          "address": null,
+          "phone": "555-0199"
+        },
+        "referralBcc": null,
+        "state": {
+          "replyTo": {
+            "value": "env@roland.example.test",
+            "source": "env",
+            "stored": null,
+            "fallback": "env@roland.example.test",
+            "fallbackSetting": "ACS_EMAIL_REPLY_TO_ROLAND"
+          },
+          "practiceName": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_NAME_ROLAND"
+          },
+          "practicePhone": {
+            "value": "555-0199",
+            "source": "env",
+            "stored": null,
+            "fallback": "555-0199",
+            "fallbackSetting": "TC_EMAIL_PRACTICE_PHONE_ROLAND"
+          },
+          "practiceAddress": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_ADDRESS_ROLAND"
+          }
+        }
+      },
+      "valley": {
+        "replyTo": "env@valley.example.test",
+        "practiceName": "Valley Test",
+        "details": {
+          "address": "2 Env Rd",
+          "phone": "555-0101"
+        },
+        "referralBcc": null,
+        "state": {
+          "replyTo": {
+            "value": "env@valley.example.test",
+            "source": "env",
+            "stored": null,
+            "fallback": "env@valley.example.test",
+            "fallbackSetting": "ACS_EMAIL_REPLY_TO_VALLEY"
+          },
+          "practiceName": {
+            "value": "Valley Test",
+            "source": "stored",
+            "stored": "Valley Test",
+            "fallback": "Env Valley",
+            "fallbackSetting": "TC_EMAIL_PRACTICE_NAME_VALLEY"
+          },
+          "practicePhone": {
+            "value": "555-0101",
+            "source": "stored",
+            "stored": "555-0101",
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_PHONE_VALLEY"
+          },
+          "practiceAddress": {
+            "value": "2 Env Rd",
+            "source": "env",
+            "stored": null,
+            "fallback": "2 Env Rd",
+            "fallbackSetting": "TC_EMAIL_PRACTICE_ADDRESS_VALLEY"
+          }
+        }
+      },
+      "unknown": {
+        "replyTo": null,
+        "practiceName": null,
+        "details": {
+          "address": null,
+          "phone": null
+        },
+        "referralBcc": null,
+        "state": null
+      }
+    },
+    "junk|unset": {
+      "roland": {
+        "replyTo": null,
+        "practiceName": null,
+        "details": {
+          "address": null,
+          "phone": null
+        },
+        "referralBcc": null,
+        "state": {
+          "replyTo": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "ACS_EMAIL_REPLY_TO_ROLAND"
+          },
+          "practiceName": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_NAME_ROLAND"
+          },
+          "practicePhone": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_PHONE_ROLAND"
+          },
+          "practiceAddress": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_ADDRESS_ROLAND"
+          }
+        }
+      },
+      "valley": {
+        "replyTo": null,
+        "practiceName": null,
+        "details": {
+          "address": null,
+          "phone": null
+        },
+        "referralBcc": null,
+        "state": {
+          "replyTo": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "ACS_EMAIL_REPLY_TO_VALLEY"
+          },
+          "practiceName": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_NAME_VALLEY"
+          },
+          "practicePhone": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_PHONE_VALLEY"
+          },
+          "practiceAddress": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_ADDRESS_VALLEY"
+          }
+        }
+      },
+      "unknown": {
+        "replyTo": null,
+        "practiceName": null,
+        "details": {
+          "address": null,
+          "phone": null
+        },
+        "referralBcc": null,
+        "state": null
+      }
+    },
+    "junk|some": {
+      "roland": {
+        "replyTo": "env@roland.example.test",
+        "practiceName": null,
+        "details": {
+          "address": null,
+          "phone": "555-0199"
+        },
+        "referralBcc": null,
+        "state": {
+          "replyTo": {
+            "value": "env@roland.example.test",
+            "source": "env",
+            "stored": null,
+            "fallback": "env@roland.example.test",
+            "fallbackSetting": "ACS_EMAIL_REPLY_TO_ROLAND"
+          },
+          "practiceName": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_NAME_ROLAND"
+          },
+          "practicePhone": {
+            "value": "555-0199",
+            "source": "env",
+            "stored": null,
+            "fallback": "555-0199",
+            "fallbackSetting": "TC_EMAIL_PRACTICE_PHONE_ROLAND"
+          },
+          "practiceAddress": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_ADDRESS_ROLAND"
+          }
+        }
+      },
+      "valley": {
+        "replyTo": "env@valley.example.test",
+        "practiceName": "Env Valley",
+        "details": {
+          "address": "2 Env Rd",
+          "phone": null
+        },
+        "referralBcc": null,
+        "state": {
+          "replyTo": {
+            "value": "env@valley.example.test",
+            "source": "env",
+            "stored": null,
+            "fallback": "env@valley.example.test",
+            "fallbackSetting": "ACS_EMAIL_REPLY_TO_VALLEY"
+          },
+          "practiceName": {
+            "value": "Env Valley",
+            "source": "env",
+            "stored": null,
+            "fallback": "Env Valley",
+            "fallbackSetting": "TC_EMAIL_PRACTICE_NAME_VALLEY"
+          },
+          "practicePhone": {
+            "value": null,
+            "source": "none",
+            "stored": null,
+            "fallback": null,
+            "fallbackSetting": "TC_EMAIL_PRACTICE_PHONE_VALLEY"
+          },
+          "practiceAddress": {
+            "value": "2 Env Rd",
+            "source": "env",
+            "stored": null,
+            "fallback": "2 Env Rd",
+            "fallbackSetting": "TC_EMAIL_PRACTICE_ADDRESS_VALLEY"
+          }
+        }
+      },
+      "unknown": {
+        "replyTo": null,
+        "practiceName": null,
+        "details": {
+          "address": null,
+          "phone": null
+        },
+        "referralBcc": null,
+        "state": null
+      }
+    }
+  },
+  "offices": {
+    "realOffices": [
+      "roland",
+      "valley"
+    ],
+    "settingKeysRealOffices": [
+      "roland",
+      "valley"
+    ],
+    "isKnownOffice": {
+      "roland": true,
+      "valley": true,
+      "unknown": false,
+      "nope": false
+    },
+    "acsIsKnownOffice": {
+      "roland": true,
+      "valley": true,
+      "unknown": false,
+      "nope": false
+    }
+  }
+}
