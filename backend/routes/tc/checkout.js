@@ -183,8 +183,27 @@ function systemRequest(req) {
 /** Statuses the "Done today" view shows: every answer a human gave. */
 const DONE_STATUSES = Object.freeze(['scheduled', 'not_scheduled', 'nothing_needed', 'dismissed']);
 
-/** The visit's priority → TC urgency (the same mapping the treatment handoff uses). */
+/**
+ * The visit's priority → TC urgency (the same mapping the treatment handoff
+ * uses). VISIT-level: `snapshot.priority` is one of these three or null, never
+ * 'holding' — the hygiene side computes it from the non-holding items only.
+ */
 const URGENCY_BY_PRIORITY = Object.freeze({ urgent: 'high', preventative: 'medium', cosmetic: 'low' });
+
+/**
+ * A HOLDING procedure's urgency on the case's treatment plan: 'elective', TC's
+ * lowest step (neutral grey, never a warning). Holding marks an alternative or
+ * secondary option (Beau's ruling), not an urgency — so it takes the step that
+ * raises nothing, rather than falling through to the 'medium' default. The
+ * CASE's urgency is never read from an item; it comes from snapshot.priority.
+ */
+const HOLDING_ITEM_URGENCY = 'elective';
+
+/** One procedure's urgency on the case's treatment plan. */
+function itemUrgency(priority) {
+  if (priority === 'holding') return HOLDING_ITEM_URGENCY;
+  return URGENCY_BY_PRIORITY[priority] || 'medium';
+}
 
 /** Scalars for a case opened at checkout. */
 const CHECKOUT_CASE_DEFAULTS = Object.freeze({
@@ -310,7 +329,7 @@ function checkoutPhase(snapshot, handoff, position) {
       feeCents: 0,
       insuranceEstCents: 0,
       patientPortionCents: 0,
-      urgency: URGENCY_BY_PRIORITY[p.priority] || 'medium',
+      urgency: itemUrgency(p.priority),
       timeEstimate: '',
       benefits: [],
       risksOfDelay: [],
@@ -1506,5 +1525,6 @@ module.exports.kickScheduleSweep = kickScheduleSweep;
 // Exported for the tests: TC's own text for a hygiene procedure (feedback round 1
 // pins that a primary tooth prints as its letter here too).
 module.exports.procedureLines = procedureLines;
+module.exports.itemUrgency = itemUrgency;
 // CO-6: what the routing module is mounted with (its real-schema verifier uses it).
 module.exports.routeDeps = routeDeps;
