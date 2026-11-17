@@ -45,7 +45,8 @@ const BASE = {
 test('nothing set: not configured, and every missing NAME is listed (never a value)', () => {
   env({});
   assert.equal(acs.accountConfigured(), false);
-  assert.deepEqual(acs.missingAccountConfig(), ['ACS_EMAIL_ENDPOINT', 'TC_EMAIL_PUBLIC_BASE_URL', 'TC_EMAIL_TENANT_SLUG']);
+  // (MT-3) TC_EMAIL_TENANT_SLUG is a legacy fallback now, not part of "configured".
+  assert.deepEqual(acs.missingAccountConfig(), ['ACS_EMAIL_ENDPOINT', 'TC_EMAIL_PUBLIC_BASE_URL']);
 });
 
 test('managed identity is the default mode; endpoint must be an https origin', () => {

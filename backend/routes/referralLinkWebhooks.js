@@ -60,9 +60,17 @@
  * WHERE THIS SITS: like the unsubscribe link (routes/emailWebhooks.js) it is
  * mounted inside the /api/webhooks exemption from the SSO gate, the tenant
  * gate and the app-wide limiter, because a specialist's or patient's browser
- * carries no user identity — which is why it carries its OWN limiter. Its
- * tenant is TC_EMAIL_TENANT_SLUG, resolved through the registry (active and
- * entitled to 'tc'); anything else is 503 and nothing is read or written.
+ * carries no user identity — which is why it carries its OWN limiter.
+ *
+ * TENANT (MT-3): the TOKEN names it. Its hash is looked up in the control-plane
+ * public_link_index (platform/publicLinkIndex.js), written when the email was
+ * sent, and the tenant must be active and entitled to 'tc'. An unknown or
+ * expired token, or one whose tenant is refused, gets NEUTRAL_PAGE — the same
+ * page as a dead token — and nothing is read or written in any tenant (there
+ * is no tenant to audit into, so it is logged instead). Links sent before the
+ * index existed fall back to TC_EMAIL_TENANT_SLUG, logged, only while that
+ * setting is present. 503 now means only that the control plane or a database
+ * could not be reached.
  *
  * PHI: no log line here carries a token, a name or an address.
  */
@@ -70,7 +78,7 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 
-const registry = require('../platform/registry');
+const publicLinkIndex = require('../platform/publicLinkIndex');
 const tenantDb = require('../platform/tenantDb');
 const { audit } = require('../platform/audit');
 const { normalizeIp } = require('../middleware/rateLimit');
@@ -220,8 +228,8 @@ function longDate(ymd) {
 
 /**
  * The names a page may show: first name, practice names. Nothing else.
- * `tenantSlug` is the tenant attachTenant() resolved from TC_EMAIL_TENANT_SLUG
- * (a public page carries no user; MT-3 replaces this).
+ * `tenantSlug` is the tenant attachTenant() resolved from the link's token
+ * (MT-3; a public page carries no user).
  * @param {string|null} tenantSlug
  */
 function namesOf(tenantSlug, office, referral, entry) {
@@ -292,37 +300,18 @@ const RECEIVED_NOTE = "The specialist's office confirmed it received the referra
 // ── tenant, token, audit ────────────────────────────────────────────────────
 
 /**
- * Resolve the deployment's tenant (the same rule as routes/emailWebhooks.js)
- * and attach it. Returns false when it cannot.
+ * Resolve the tenant the token names (platform/publicLinkIndex.js) and attach
+ * it: 'attached', 'neutral' (every token that names no usable tenant) or
+ * 'unavailable' (the control plane could not be reached).
  * @param {import('express').Request} req
  */
-async function attachTenant(req) {
-  if (req.tenant) return true;
-  const slug = acsConfig.tenantSlug();
-  if (!slug) {
-    console.warn('[referral-link] REFUSED (503): TC_EMAIL_TENANT_SLUG is not configured');
-    return false;
-  }
-  let tenant;
-  let modules;
-  try {
-    tenant = await registry.getTenantBySlug(slug);
-    modules = tenant ? await registry.getEnabledModules(tenant.tenant_id) : [];
-  } catch (err) {
-    console.error('[referral-link] REFUSED (503): control plane unreachable:', err && err.message ? err.message : err);
-    return false;
-  }
-  if (!tenant || tenant.status !== 'active') {
-    console.warn('[referral-link] REFUSED (503): the configured tenant is not found or not active');
-    return false;
-  }
-  if (!Array.isArray(modules) || !modules.includes('tc')) {
-    console.warn("[referral-link] REFUSED (503): the configured tenant is not entitled to 'tc'");
-    return false;
-  }
-  req.tenant = { id: tenant.tenant_id, slug: tenant.slug, modules, clinics: [] };
-  req.user = { email: LINK_ACTOR };
-  return true;
+function attachTenant(req) {
+  return publicLinkIndex.attachLinkTenant(req, {
+    token: tokenOf(req),
+    kind: 'referral_link',
+    actor: LINK_ACTOR,
+    logTag: '[referral-link]',
+  });
 }
 
 /** The token from the form body, else the query string. Never logged. @param {import('express').Request} req */
@@ -374,7 +363,7 @@ function throttled(scope) {
     const info = req.rateLimit;
     if (info && info.used === info.limit + 1) {
       try {
-        if (await attachTenant(req)) {
+        if ((await attachTenant(req)) === 'attached') {
           await audit(req, {
             action: 'READ',
             resourceType: 'tc_referral.link_throttled',
@@ -432,7 +421,9 @@ function createReferralLinkRouter({ perClientMax = PER_CLIENT_MAX, allClientsMax
 
   // ── GET: show, never act ──────────────────────────────────────────────────
   router.get('/r', async (req, res) => {
-    if (!(await attachTenant(req))) return send(res, 503, UNAVAILABLE_PAGE);
+    const tenant = await attachTenant(req);
+    if (tenant === 'unavailable') return send(res, 503, UNAVAILABLE_PAGE);
+    if (tenant === 'neutral') return neutral(res, 'view');
     const at = transitions.clock();
     const token = tokenOf(req);
     try {
@@ -450,7 +441,9 @@ function createReferralLinkRouter({ perClientMax = PER_CLIENT_MAX, allClientsMax
 
   // ── POST: act, once ───────────────────────────────────────────────────────
   router.post('/r', async (req, res) => {
-    if (!(await attachTenant(req))) return send(res, 503, UNAVAILABLE_PAGE);
+    const tenant = await attachTenant(req);
+    if (tenant === 'unavailable') return send(res, 503, UNAVAILABLE_PAGE);
+    if (tenant === 'neutral') return neutral(res, 'use');
     const at = transitions.clock();
     const token = tokenOf(req);
     let live;
@@ -546,6 +539,16 @@ function createReferralLinkRouter({ perClientMax = PER_CLIENT_MAX, allClientsMax
   });
 
   return router;
+}
+
+/**
+ * A token that names no usable tenant: the dead-link page. There is no tenant
+ * to write an audit row into, so the hit is logged (no token, no hash).
+ * @param {import('express').Response} res @param {'view'|'use'} what
+ */
+function neutral(res, what) {
+  console.log(`[referral-link] ${what} unresolved: no tenant for this link`);
+  return send(res, 200, NEUTRAL_PAGE);
 }
 
 /** The use's audit row, inside the transaction. */
