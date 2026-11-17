@@ -1074,6 +1074,7 @@ async function close() {
 }
 
 module.exports = {
+  query,
   getTenantBySlug,
   getTenantById,
   listTenants,
