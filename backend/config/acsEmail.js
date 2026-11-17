@@ -66,14 +66,19 @@
  * refuses anything over it before a byte leaves.
  *
  * ═════════════════════════════════════════════════════════════════════════════
- * THE UNSUBSCRIBE LINK NEEDS TWO MORE
+ * THE UNSUBSCRIBE LINK NEEDS ONE MORE
  * ═════════════════════════════════════════════════════════════════════════════
  *   TC_EMAIL_PUBLIC_BASE_URL      https origin the patient's browser can reach
- *   TC_EMAIL_TENANT_SLUG          which tenant the public unsubscribe endpoint
- *                                 records into (it carries no user; same shape
- *                                 as TWILIO_TENANT_SLUG)
- * Without both, no email may be sent: an email whose unsubscribe link cannot
- * work is not an email we send. They are part of "configured".
+ * Without it, no email may be sent: an email whose unsubscribe link cannot
+ * work is not an email we send. It is part of "configured".
+ *
+ *   TC_EMAIL_TENANT_SLUG          (MT-3) LEGACY FALLBACK ONLY. The public link
+ *                                 routes now take the tenant from the link's
+ *                                 token (platform/publicLinkIndex.js). This
+ *                                 names the tenant only for links sent before
+ *                                 that index existed, and is no longer part of
+ *                                 "configured", so it can be removed when the
+ *                                 fallback is (see publicLinkIndex.js).
  */
 
 const { OFFICES } = require('./officeAgents');
@@ -190,7 +195,6 @@ function missingAccountConfig() {
   else if (c.mode === 'connection_string' && !c.endpoint) missing.push('ACS_EMAIL_CONNECTION');
   else if (c.mode === 'managed_identity' && !c.endpoint) missing.push('ACS_EMAIL_ENDPOINT');
   if (!publicBaseUrl()) missing.push('TC_EMAIL_PUBLIC_BASE_URL');
-  if (!tenantSlug()) missing.push('TC_EMAIL_TENANT_SLUG');
   return missing;
 }
 
@@ -265,8 +269,8 @@ function envPracticeNameFor(officeKey) {
 
 /*
  * THE IDENTITY GETTERS (MT-2b) take the TENANT first: the session tenant on a
- * request path, the one TC tenant a job resolved, or TC_EMAIL_TENANT_SLUG on a
- * public webhook — never client input. The saved value is the tenant's
+ * request path, the one TC tenant a job resolved, or on a public link the
+ * tenant its token names (MT-3) — never client input. The saved value is the tenant's
  * office_setting row (config/emailIdentity.js). The app-setting FALLBACK is
  * tenant 'carein's only: those settings are keyed by office key alone and are
  * this deployment's settings for carein's offices, so another tenant with an

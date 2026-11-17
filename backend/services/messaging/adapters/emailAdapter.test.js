@@ -92,8 +92,10 @@ test('readiness is per office and gives the closed reasons', () => {
   assert.equal(adapters.channelUnavailableReason('email', 'roland'), 'not_configured');
   setEnv({ TC_EMAIL_PUBLIC_BASE_URL: undefined });
   assert.equal(adapters.channelUnavailableReason('email', 'roland'), 'not_configured', 'no unsubscribe link, no email');
+  // (MT-3) TC_EMAIL_TENANT_SLUG is a legacy fallback now: links resolve their
+  // tenant from the public link index, so email is configured without it.
   setEnv({ TC_EMAIL_TENANT_SLUG: undefined });
-  assert.equal(adapters.channelUnavailableReason('email', 'roland'), 'not_configured');
+  assert.equal(adapters.channelUnavailableReason('email', 'roland'), null);
   setEnv({ ACS_EMAIL_FROM: 'donotreply@shared.example.test' });
   assert.equal(adapter.enabledFor('valley'), true, 'the shared sender serves an office with none of its own');
 });

@@ -10,6 +10,10 @@
  * stack (tenantContext + requireModule('tc')). The registry is stubbed and ACS
  * is a FAKE transport that records every request; nothing reaches a network.
  *
+ * (MT-3) The control-plane public_link_index is an in-memory fake
+ * (platform/publicLinkIndex.js createMemoryBackend) over the same stubbed
+ * tenant and modules, on the referral clock; `linkIndex` on the boot result.
+ *
  * Fixtures: roland 12827 / 12828, valley 7115. Names are synthetic; addresses
  * are @example.test.
  */
@@ -31,6 +35,8 @@ const consent = require('../services/messaging/consent');
 const adapters = require('../services/messaging/adapters');
 const acsClient = require('../services/messaging/acs/client');
 const tcEmail = require('../config/tcEmail');
+const publicLinkIndex = require('../platform/publicLinkIndex');
+const transitions = require('./tc/referralTransitions');
 
 const PUBLIC_BASE = 'https://dashboard.example.test';
 const ACS_ENDPOINT = 'https://acs-carein-test.communication.azure.com';
@@ -107,6 +113,12 @@ async function bootEmailApp({ env = {}, modules = ['tc'], tenant, acsStatus = 'S
     return fn(db);
   };
   tcEmail.resetCacheForTests();
+  const linkIndex = publicLinkIndex.createMemoryBackend({
+    tenants: (id) => (tenantRow && tenantRow.tenant_id === id ? tenantRow : null),
+    modules: () => modules,
+    now: () => transitions.clock(),
+  });
+  publicLinkIndex.setBackendForTests(linkIndex);
   messaging.setClockForTests(() => now);
   consent.setOdPatientReaderForTests(async (_office, patNum) => ({ PatNum: patNum, TxtMsgOk: 'Yes' }));
 
@@ -152,9 +164,11 @@ async function bootEmailApp({ env = {}, modules = ['tc'], tenant, acsStatus = 'S
         db,
         acsCalls,
         seenTenantIds,
+        linkIndex,
         close: () =>
           new Promise((r) => {
             for (const k of REGISTRY_KEYS) registry[k] = originals.registry[k];
+            publicLinkIndex.resetBackendForTests();
             tenantDb.withTenantDb = originals.withTenantDb;
             restoreOfficeSettingsMirror();
             officeSettings.resetCacheForTests();

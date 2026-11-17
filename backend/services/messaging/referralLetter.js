@@ -21,7 +21,7 @@
  *     saved in Settings -> Email identity (R5c), else ACS_EMAIL_REPLY_TO_<OFFICE>.
  * And what it keeps, unweakened:
  *   - the transport's own kill switch and "no unsubscribe config → no send"
- *     (accountConfigured needs TC_EMAIL_PUBLIC_BASE_URL + TC_EMAIL_TENANT_SLUG);
+ *     (accountConfigured needs TC_EMAIL_PUBLIC_BASE_URL);
  *   - an opted-out address is refused (consent rule 1) — the specialist's
  *     office can unsubscribe like anyone, and then referrals to that address
  *     go out by hand;
@@ -47,6 +47,12 @@
  *     the consent opt-out — carries its own unsubscribe link, and NEVER a BCC.
  * Whether either is sent is still decided in routes/tc/referralSend.js.
  *
+ * MT-3 — WHICH TENANT A LINK BELONGS TO. Every link an email carries (its
+ * unsubscribe link and its R5b links) is registered in the control-plane
+ * public_link_index (registerLinks below) BEFORE the email is handed to ACS.
+ * If that write fails the email is not sent: a link the public route could not
+ * resolve to its tenant is never issued.
+ *
  * PHI: the address, letter and attachments travel only in the request. No log
  * line here carries any of them; errors are the adapter's scrubbed sentences.
  */
@@ -63,6 +69,7 @@ const acsConfig = require('../../config/acsEmail');
 const tcEmail = require('../../config/tcEmail');
 const odOffices = require('../../config/odOffices');
 const emailIdentity = require('../../config/emailIdentity');
+const publicLinkIndex = require('../../platform/publicLinkIndex');
 
 /** @param {string} office */
 function suffix(office) {
@@ -239,6 +246,33 @@ function mintLinks(purposes) {
   });
 }
 
+/**
+ * (MT-3) How much longer the index keeps a referral link resolving than the
+ * tenant's own row. The tenant row's expiry is stamped after ACS accepts the
+ * email (a little later than this mint), and it stays the authority on
+ * whether the link is live; the index only has to outlast it.
+ */
+const INDEX_GRACE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * (MT-3) Register one email's links under the request's tenant, before the
+ * email leaves. Throws a MessagingError SEND_FAILED when the index write fails,
+ * so the caller's existing failure path records it and sends nothing.
+ * @param {import('express').Request} req
+ * @param {{ unsubscribe: { hash: string }, links: Array<{ hash: string }>, at: Date }} args
+ */
+async function registerLinks(req, { unsubscribe, links, at }) {
+  const linkExpiresAt = new Date(at.getTime() + LINK_TTL_MS + INDEX_GRACE_MS).toISOString();
+  try {
+    await publicLinkIndex.register(req, [
+      { hash: unsubscribe.hash, kind: 'unsubscribe', expiresAt: null },
+      ...links.map((l) => ({ hash: l.hash, kind: /** @type {const} */ ('referral_link'), expiresAt: linkExpiresAt })),
+    ]);
+  } catch {
+    throw new MessagingError('SEND_FAILED', "The email's links could not be registered, so nothing was sent.");
+  }
+}
+
 /** SHA-256 hex of a link token — how a link is looked up. @param {string} token */
 function hashLinkToken(token) {
   return crypto.createHash('sha256').update(String(token), 'utf8').digest('hex');
@@ -366,6 +400,8 @@ module.exports = {
   LINK_PATH,
   mintLinks,
   hashLinkToken,
+  INDEX_GRACE_MS,
+  registerLinks,
   patientMayEmail,
   renderPatientNotice,
   bccFor,

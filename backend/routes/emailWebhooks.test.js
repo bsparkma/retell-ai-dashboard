@@ -241,18 +241,22 @@ test('the kill switch does not stop an unsubscribe from being recorded', async (
   }
 });
 
-test('tenant: never guessed. No slug, unknown, suspended or unentitled → 503, nothing recorded, no DB opened', async () => {
+// (MT-3) The tenant now comes from the token, so an unresolvable tenant is a
+// property of the TOKEN and gets the bad-token page (200, DONE_PAGE), not the
+// deployment's 503. Still: nothing recorded, no tenant database opened.
+test('tenant: never guessed. Unknown token with no fallback, unknown fallback slug, suspended or unentitled → the bad-token page, nothing recorded, no DB opened', async () => {
   const cases = [
     { env: { TC_EMAIL_TENANT_SLUG: undefined } },
     { env: { TC_EMAIL_TENANT_SLUG: 'someone-else' } },
     { tenant: { tenant_id: 'T1', slug: 'carein', status: 'suspended' } },
+    { modules: ['voice'] },
   ];
   for (const opts of cases) {
     const { baseUrl, db, seenTenantIds, close } = await bootEmailApp(opts);
     try {
       const r = await postForm(baseUrl, crypto.randomBytes(32).toString('base64url'));
-      assert.equal(r.status, 503, JSON.stringify(opts));
-      assert.doesNotMatch(r.text, /Your request has been received/);
+      assert.equal(r.status, 200, JSON.stringify(opts));
+      assert.equal(r.text, DONE_PAGE);
       assert.equal(seenTenantIds.length, 0);
       assert.equal(db.table('tc_contact_consent').length, 0);
     } finally {
@@ -265,7 +269,8 @@ test('tenant: never guessed. No slug, unknown, suspended or unentitled → 503, 
   const { baseUrl, db, seenTenantIds, close } = await bootEmailApp({ modules: ['voice'] });
   try {
     const r = await postForm(baseUrl, crypto.randomBytes(32).toString('base64url'));
-    assert.equal(r.status, 503);
+    assert.equal(r.status, 200);
+    assert.equal(r.text, DONE_PAGE);
     assert.equal(seenTenantIds.length, 0);
     assert.equal(db.table('tc_contact_consent').length, 0);
   } finally {

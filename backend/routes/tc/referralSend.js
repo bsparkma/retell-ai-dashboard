@@ -566,6 +566,11 @@ async function sendReferral(req, { office, referralId, trigger }) {
     const files = await readFiles(await tenantDb.withTenantDb(req, (pool) => attachmentRows(pool, office, referralId)));
     unsubscribe = referralLetter.mintUnsubscribe();
     links = referralLetter.mintLinks(['received', 'scheduled']);
+    // (MT-3) The links' tenant is on the record before the letter can leave.
+    // Inside this try: a failed write is fail(err) — the claim released, a
+    // send_failed row, nothing sent. The claim above and the ACS-accept → CAS
+    // below are untouched.
+    await referralLetter.registerLinks(req, { unsubscribe, links, at: now });
     packed = composeAndPack({
       tenantSlug: sessionTenantSlug(req),
       office,
@@ -855,6 +860,9 @@ async function notifyPatient(req, { office, row, entry, withFiles, contact: lett
     if (mayEmail !== true) throw new MessagingError('SEND_FAILED', 'Whether the patient may be emailed could not be checked.');
     unsubscribe = referralLetter.mintUnsubscribe();
     [link] = referralLetter.mintLinks(['scheduled']);
+    // (MT-3) Registered before the notice can leave; a failed write is a
+    // patient_email_failed row and no notice.
+    await referralLetter.registerLinks(req, { unsubscribe, links: [link], at: transitions.clock() });
     const details = officeDetails(sessionTenantSlug(req), office);
     const composed = letterText.composePatientNotice({
       patientName: String(row.patient_name ?? ''),
