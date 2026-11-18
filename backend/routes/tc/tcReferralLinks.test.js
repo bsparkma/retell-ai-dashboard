@@ -36,6 +36,7 @@ const { randomUUID } = require('node:crypto');
 
 const contract = require('../../tc/contract.gen.cjs');
 const registry = require('../../platform/registry');
+const publicLinkIndex = require('../../platform/publicLinkIndex');
 const tcReferrals = require('../../config/tcReferrals');
 const tcReferralEmail = require('../../config/tcReferralEmail');
 const tcReferralPatientEmail = require('../../config/tcReferralPatientEmail');
@@ -918,18 +919,102 @@ test('F: a failed view audit → 503 and no names shown', async (t) => {
   assert.doesNotMatch(res.html, /Stedi/);
 });
 
-test('F: no tenant configured, or not entitled to tc → 503 before any token is looked at', async (t) => {
-  const { baseUrl, db, acsCalls } = await boot(t);
+// (MT-3) The tenant comes from the token's index row, so TC_EMAIL_TENANT_SLUG
+// no longer gates a link the index knows; a refused tenant is the dead-link
+// page (NEUTRAL_PAGE), and no token row is read.
+test('F: the link resolves without TC_EMAIL_TENANT_SLUG; a tenant not entitled to tc → NEUTRAL_PAGE before any token row is read', async (t) => {
+  const { baseUrl, db, acsCalls, linkIndex } = await boot(t);
   const { links } = await sent(baseUrl, db, acsCalls);
   const reads = () => db.log.filter((l) => /tc_referral_link_tokens/.test(l.sql)).length;
-  const before = reads();
   delete process.env.TC_EMAIL_TENANT_SLUG;
-  assert.equal((await getPage(baseUrl, links.received)).status, 503);
-  assert.equal((await postPage(baseUrl, { t: tokenOf(links.received) })).status, 503);
+  const view = await getPage(baseUrl, links.received);
+  assert.equal(view.status, 200);
+  assert.notEqual(view.html, linkRouter.NEUTRAL_PAGE, 'the index resolves it with no env tenant');
   process.env.TC_EMAIL_TENANT_SLUG = 'carein';
-  registry.getEnabledModules = async () => ['voice'];
-  assert.equal((await postPage(baseUrl, { t: tokenOf(links.received) })).status, 503);
-  assert.equal(reads(), before);
+  // The same index rows, but their tenant has lost 'tc'.
+  const unentitled = publicLinkIndex.createMemoryBackend({
+    tenants: () => ({ tenant_id: 'T1', slug: 'carein', status: 'active' }),
+    modules: () => ['voice'],
+  });
+  for (const [h, r] of linkIndex.rows) unentitled.rows.set(h, r);
+  publicLinkIndex.setBackendForTests(unentitled);
+  t.after(() => publicLinkIndex.setBackendForTests(linkIndex));
+  const before = reads();
+  const res = await postPage(baseUrl, { t: tokenOf(links.received) });
+  assert.equal(res.status, 200);
+  assert.equal(res.html, linkRouter.NEUTRAL_PAGE);
+  assert.equal(reads(), before, 'no token row read for a refused tenant (and no fallback for a known hash)');
+});
+
+// ── M: MT-3, the public link index ──────────────────────────────────────────
+
+test('M: a send registers every link it carries under its tenant — the letter (unsubscribe + 2 links) and the notice (unsubscribe + 1)', async (t) => {
+  const { baseUrl, db, acsCalls, linkIndex } = await boot(t);
+  const { links } = await sent(baseUrl, db, acsCalls);
+  const entries = [...linkIndex.rows.entries()];
+  assert.equal(entries.length, 5);
+  assert.ok(entries.every(([, e]) => e.tenant_id === 'T1'));
+  assert.equal(entries.filter(([, e]) => e.kind === 'unsubscribe' && e.expires_at === null).length, 2);
+  const tokenRows = db.table('tc_referral_link_tokens');
+  for (const url of [links.received, links.scheduled, links.patient]) {
+    const hash = referralLetter.hashLinkToken(tokenOf(url));
+    const e = linkIndex.rows.get(hash);
+    assert.equal(e && e.kind, 'referral_link');
+    const row = tokenRows.find((r) => r.token_hash === hash);
+    assert.ok(new Date(e.expires_at).getTime() >= new Date(row.expires_at).getTime(), 'the index outlasts the tenant row');
+  }
+  // No PHI in the index: only these four fields per row.
+  for (const [, e] of entries) assert.deepEqual(Object.keys(e).sort(), ['created_at', 'expires_at', 'kind', 'tenant_id']);
+});
+
+test('M: single use is unchanged through the index — the first click acts, the second is the neutral page', async (t) => {
+  const { baseUrl, db, acsCalls } = await boot(t);
+  const { id, links } = await sent(baseUrl, db, acsCalls);
+  const first = await postPage(baseUrl, { t: tokenOf(links.received) });
+  assert.equal(first.status, 200);
+  assert.notEqual(first.html, linkRouter.NEUTRAL_PAGE);
+  assert.equal(referralRow(db, id).status, 'acknowledged');
+  const second = await postPage(baseUrl, { t: tokenOf(links.received) });
+  assert.equal(second.html, linkRouter.NEUTRAL_PAGE);
+  assert.equal(eventsOf(db, id).filter((e) => e.verb === 'mark_acknowledged').length, 1);
+});
+
+test('M: the letter fails closed when the index write fails — nothing sent, no token rows, a send_failed row, still approved', async (t) => {
+  const { baseUrl, db, acsCalls, linkIndex } = await boot(t);
+  const { id } = await approved(baseUrl, db);
+  linkIndex.state.failInsert = true;
+  const r = await apiJson(baseUrl, 'POST', REF(`/${id}/send-email`), {});
+  assert.equal(r.status, 502, JSON.stringify(r.body));
+  assert.equal(r.body.code, 'SEND_FAILED');
+  assert.equal(acsCalls.filter((c) => c.method === 'POST').length, 0, 'nothing handed to ACS');
+  assert.equal(db.table('tc_referral_link_tokens').length, 0, 'no token row left behind');
+  assert.equal(linkIndex.rows.size, 0);
+  assert.equal(referralRow(db, id).status, 'approved');
+  assert.equal(eventsOf(db, id).filter((e) => e.verb === 'send_failed').length, 1);
+
+  // The claim was released: a retry once the control plane is back goes out.
+  linkIndex.state.failInsert = false;
+  const again = await apiJson(baseUrl, 'POST', REF(`/${id}/send-email`), {});
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.equal(referralRow(db, id).status, 'sent');
+});
+
+test("M: the notice fails closed on its own when ITS index write fails — the letter stands, no notice, no patient link", async (t) => {
+  const { baseUrl, db, acsCalls, linkIndex } = await boot(t);
+  const realInsert = linkIndex.insert;
+  let calls = 0;
+  linkIndex.insert = async (...args) => {
+    calls += 1;
+    if (calls === 2) throw new Error('fake control plane: insert refused');
+    return realInsert(...args);
+  };
+  const { id } = await approved(baseUrl, db);
+  const r = await apiJson(baseUrl, 'POST', REF(`/${id}/send-email`), {});
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.outcome.patientEmail.status, 'failed');
+  assert.deepEqual(messagesByRecipient(acsCalls), { [SPECIALIST]: 1 }, 'the letter only');
+  assert.ok(!db.table('tc_referral_link_tokens').some((x) => x.audience === 'patient'), 'no patient link row');
+  assert.equal(eventsOf(db, id).filter((e) => e.verb === 'patient_email_failed').length, 1);
 });
 
 // ── G: guards ───────────────────────────────────────────────────────────────

@@ -230,6 +230,18 @@ jobs:
           MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
         run: node scripts/ref-templates-hyg-rx-verify-queries.js
 
+      # Tenant migration 1794800000000: "holding" as a 4th hygiene treatment-
+      # item priority. The widened CHECK through the real store (a holding item
+      # saves and reads back; unknown values still refused) in one rolled-back
+      # transaction — then this migration's REAL down() and up() with a
+      # 'holding' row present: down() rewrites it to 'cosmetic' before it
+      # restores the three-value CHECK. Leaves the schema as it found it.
+      - name: hyg priority holding verification (real CHECK, real down/up)
+        working-directory: backend
+        env:
+          MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
+        run: node scripts/hyg-priority-holding-verify-queries.js
+
       # MT-2a (control migrations 1789600000000 + 1789600000001): office_setting's
       # CHECKs, foreign key and two-tenant independence (one transaction, rolled
       # back), the backfill over real rows (rolled back), then the real

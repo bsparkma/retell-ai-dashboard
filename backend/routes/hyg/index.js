@@ -58,11 +58,24 @@
 const express = require('express');
 
 const { requireOffice } = require('./helpers');
+const officeSettings = require('../../platform/officeSettings');
+const { sessionTenantSlug } = require('../../platform/sessionTenant');
 
 const router = express.Router();
 
 /** Office scoping is router-wide. See note 1 above before adding a mount. */
 router.use(requireOffice);
+
+// MT-2b: the hygiene switch is a SYNCHRONOUS read of the session tenant's
+// office_setting rows (config/hygPilot.js). Refresh them if they are older than
+// the window before any handler asks, so a tenant the background timer has not
+// reached yet is read rather than answered OFF. Never throws; a failed read
+// keeps the last good read (up to 3 refresh windows), else "nobody chose" = OFF.
+router.use((req, _res, next) => {
+  officeSettings
+    .ensureTenantFresh(sessionTenantSlug(req))
+    .then(() => next(), () => next());
+});
 
 // CO-7: the ask-hygiene badges (GET only, counts per AptNum). Above /day so
 // day.js stays the day, the names and the progress pill.

@@ -45,7 +45,8 @@ const BASE = {
 test('nothing set: not configured, and every missing NAME is listed (never a value)', () => {
   env({});
   assert.equal(acs.accountConfigured(), false);
-  assert.deepEqual(acs.missingAccountConfig(), ['ACS_EMAIL_ENDPOINT', 'TC_EMAIL_PUBLIC_BASE_URL', 'TC_EMAIL_TENANT_SLUG']);
+  // (MT-3) TC_EMAIL_TENANT_SLUG is a legacy fallback now, not part of "configured".
+  assert.deepEqual(acs.missingAccountConfig(), ['ACS_EMAIL_ENDPOINT', 'TC_EMAIL_PUBLIC_BASE_URL']);
 });
 
 test('managed identity is the default mode; endpoint must be an https origin', () => {
@@ -116,8 +117,8 @@ test('practice details and reply-to are optional and per office', () => {
     TC_EMAIL_PRACTICE_PHONE_ROLAND: '(918) 555-0100',
     ACS_EMAIL_REPLY_TO_ROLAND: 'Front@Roland.example.test',
   });
-  assert.deepEqual(acs.practiceDetailsFor('roland'), { address: '1 Example St, Roland OK', phone: '(918) 555-0100' });
-  assert.deepEqual(acs.practiceDetailsFor('valley'), { address: null, phone: null });
-  assert.equal(acs.replyToFor('roland'), 'front@roland.example.test');
-  assert.equal(acs.replyToFor('valley'), null);
+  assert.deepEqual(acs.practiceDetailsFor('carein', 'roland'), { address: '1 Example St, Roland OK', phone: '(918) 555-0100' });
+  assert.deepEqual(acs.practiceDetailsFor('carein', 'valley'), { address: null, phone: null });
+  assert.equal(acs.replyToFor('carein', 'roland'), 'front@roland.example.test');
+  assert.equal(acs.replyToFor('carein', 'valley'), null);
 });

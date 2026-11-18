@@ -73,10 +73,12 @@ const templates = require('./templates');
 const twilioStatus = require('./twilio/status');
 const acsSmsStatus = require('./acs/smsStatus');
 const emailContent = require('./emailContent');
+const { sessionTenantSlug } = require('../../platform/sessionTenant');
 // (item 47) The nurture exit hooks. They only ever stop drafting; nothing in
 // them sends.
 const nurtureHooks = require('../tcNurture/hooks');
 const acsConfig = require('../../config/acsEmail');
+const publicLinkIndex = require('../../platform/publicLinkIndex');
 
 const MESSAGE_COLS = [
   'message_id',
@@ -418,7 +420,7 @@ async function draftMessage(req, office, input) {
       }
       const tpl = await loadEmailTemplate(q, office, input.emailTemplateId);
       if (!tpl) throw new MessagingError('EMAIL_TEMPLATE_NOT_FOUND', 'Email template not found');
-      const snap = emailContent.snapshotTemplate(tpl, office, {
+      const snap = emailContent.snapshotTemplate(tpl, sessionTenantSlug(req), office, {
         patientName: tcCase.patient_name,
         senderName: actorNameOf(req),
       });
@@ -620,6 +622,19 @@ async function sendMessage(req, office, messageId) {
   const unsubscribeToken = channel === 'email' ? crypto.randomBytes(32).toString('base64url') : null;
   const unsubscribeHash = unsubscribeToken ? hashUnsubscribeToken(unsubscribeToken) : null;
 
+  // (MT-3) The link's tenant goes on the record (platform/publicLinkIndex.js)
+  // BEFORE the row is claimed: a failed write leaves the draft a draft and
+  // sends nothing, so no email ever carries a link the public route cannot
+  // resolve. Should the claim below then lose a race, the index row names a
+  // hash no tenant row holds — it resolves to the same page as a bad token.
+  if (unsubscribeHash) {
+    try {
+      await publicLinkIndex.register(req, [{ hash: unsubscribeHash, kind: 'unsubscribe', expiresAt: null }]);
+    } catch {
+      throw new MessagingError('SEND_FAILED', "The email's unsubscribe link could not be registered, so nothing was sent.");
+    }
+  }
+
   // draft → sending. Conditional on still being a draft, so two clicks (or two
   // tabs) cannot both proceed: exactly one UPDATE matches.
   const claimed = await db(req, (q) =>
@@ -656,13 +671,13 @@ async function sendMessage(req, office, messageId) {
       // Rendered HERE, from the stored row, by the one shared renderer. The
       // adapter only transports it.
       const unsubscribeUrl = acsConfig.unsubscribeUrl(/** @type {string} */ (unsubscribeToken));
-      const rendered = emailContent.renderRow(sending, office, unsubscribeUrl);
+      const rendered = emailContent.renderRow(sending, sessionTenantSlug(req), office, unsubscribeUrl);
       outgoing.subject = rendered.subject;
       outgoing.body = rendered.text;
       outgoing.html = rendered.html;
       outgoing.unsubscribeUrl = unsubscribeUrl;
     }
-    const raw = await adapter.send(outgoing, { officeKey: office, officeName: officeNameOf(office) });
+    const raw = await adapter.send(outgoing, { officeKey: office, officeName: officeNameOf(office), tenantSlug: sessionTenantSlug(req) });
     result = adapters.checkResult(raw);
     if (!result) {
       failure = 'The provider returned a response that did not confirm the hand-off.';
@@ -722,7 +737,7 @@ async function renderMessage(req, office, messageId) {
     throw new MessagingError('MESSAGE_NOT_FOUND', 'Only an outbound email can be previewed.');
   }
   await auditMessage(req, 'READ', 'tc_email_render', messageId, office);
-  return emailContent.renderRow(row, office, null);
+  return emailContent.renderRow(row, sessionTenantSlug(req), office, null);
 }
 
 /**
@@ -737,13 +752,14 @@ async function renderTemplateForCase(req, office, caseId, templateId) {
   }));
   if (!tcCase) throw new MessagingError('CASE_NOT_FOUND', 'Case not found');
   if (!tpl) throw new MessagingError('EMAIL_TEMPLATE_NOT_FOUND', 'Email template not found');
-  const snap = emailContent.snapshotTemplate(tpl, office, {
+  const snap = emailContent.snapshotTemplate(tpl, sessionTenantSlug(req), office, {
     patientName: tcCase.patient_name,
     senderName: actorNameOf(req),
   });
   await auditMessage(req, 'READ', 'tc_email_render', caseId, office);
   return emailContent.renderRow(
     { subject: snap.subject, email_blocks: snap.blocks, email_preheader: snap.preheader, body: snap.body },
+    sessionTenantSlug(req),
     office,
     null
   );

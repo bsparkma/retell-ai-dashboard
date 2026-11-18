@@ -8,15 +8,16 @@
  * ═════════════════════════════════════════════════════════════════════════════
  *   1. TC_OPPS_SYNC_DISABLED=true            break-glass: nothing runs. Can only
  *                                            ever turn the sync OFF.
- *   2. platform_setting['tc_opportunities_sync']
- *                                            `{"roland": true, "valley": false}`.
- *                                            NO ROW = every office OFF. An office
- *                                            absent from the row is OFF. A
- *                                            non-boolean is OFF. An unreachable
- *                                            control plane is OFF (a nightly job
- *                                            that skips one night costs nothing;
- *                                            one that reads a practice nobody
- *                                            switched on costs a lot).
+ *   2. office_setting(tenant, office, 'tc_opportunities_sync')
+ *                                            MT-2b: the served layer, per TENANT.
+ *                                            NO ROW = OFF. A non-boolean is OFF.
+ *                                            Only the tenant's own offices count.
+ *                                            An unreachable control plane is OFF
+ *                                            (a nightly job that skips one night
+ *                                            costs nothing; one that reads a
+ *                                            practice nobody switched on costs a
+ *                                            lot). platform_setting is still
+ *                                            written alongside, for rollback.
  *   3. The tenant must be entitled to `tc` and the office must be
  *      `odOffices.isOdReady` — checked by the scheduler, per pass.
  *
@@ -29,7 +30,7 @@
  */
 
 const { OFFICES } = require('./officeAgents');
-const officeSettingsParity = require('../platform/officeSettingsParity');
+const officeSettings = require('../platform/officeSettings');
 
 /** The `platform_setting` key. */
 const SETTING_KEY = 'tc_opportunities_sync';
@@ -123,33 +124,21 @@ function officesOnIn(value) {
 }
 
 /**
- * The offices switched ON right now, read from the control plane.
- * Never throws: an unreadable control plane is "nothing is on".
- * @param {{ getPlatformSetting: (key: string) => Promise<{ value: unknown }|null> }} registry
+ * The offices of ONE TENANT switched ON right now, read fresh from
+ * office_setting (MT-2b; platform/officeSettings.switchedOnFromDb). Never
+ * throws: an unreadable control plane is "nothing is on".
+ *
+ * The tenant is the session tenant on a request path, or the one TC tenant a
+ * scheduler resolved from registry.listTenants() — never client input.
+ *
+ * @param {{ listOfficeSettings?: (slug: string) => Promise<Array<{ office_key: string, setting_key: string, value: unknown }>> }} registry
+ *        the control-plane registry (injectable for tests)
+ * @param {string} tenantSlug
  * @returns {Promise<{ offices: string[], reason: string|null }>}
  */
-async function switchedOnOffices(registry) {
+async function switchedOnOffices(registry, tenantSlug) {
   if (isKilled()) return { offices: [], reason: 'KILLED_BY_ENV' };
-  let row;
-  try {
-    row = await registry.getPlatformSetting(SETTING_KEY);
-  } catch (err) {
-    return { offices: [], reason: `CONTROL_PLANE_UNREADABLE: ${(err && err.message) || err}` };
-  }
-  // MT-2a parity tripwire: ON only for a stored literal true. LOGS only, never
-  // awaited, never changes an answer.
-  const on = officesOnIn(row ? row.value : null);
-  void officeSettingsParity.compare(
-    SETTING_KEY,
-    Object.fromEntries(
-      Object.keys(OFFICES)
-        .filter((k) => k !== 'unknown')
-        .map((o) => [o, on.includes(o)])
-    )
-  );
-  if (!row) return { offices: [], reason: 'NO_SETTING_ROW' };
-  const offices = officesOnIn(row.value);
-  return { offices, reason: offices.length ? null : 'NO_OFFICE_SWITCHED_ON' };
+  return officeSettings.switchedOnFromDb(tenantSlug, SETTING_KEY, registry);
 }
 
 module.exports = {

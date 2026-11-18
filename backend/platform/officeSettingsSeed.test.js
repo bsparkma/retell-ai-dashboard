@@ -121,11 +121,11 @@ async function runAll(t, fixture, mutate = (r) => r) {
 
   const warn = t.mock.method(console, 'warn', () => {});
   const log = t.mock.method(console, 'log', () => {});
-  for (const sw of SWITCHES) assert.equal((await sw.refreshFromDb()).ok, true);
-  assert.equal((await hygPilot.refreshFromDb()).ok, true);
-  assert.equal((await emailIdentity.refreshFromDb()).ok, true);
-  await tcNurture.switchedOnOffices(registry);
-  await tcOpportunities.switchedOnOffices(registry);
+  for (const sw of SWITCHES) assert.equal((await sw.refreshFromDb('carein')).ok, true);
+  assert.equal((await hygPilot.refreshFromDb('carein')).ok, true);
+  assert.equal((await emailIdentity.refreshFromDb('carein')).ok, true);
+  await tcNurture.switchedOnOffices(registry, 'carein');
+  await tcOpportunities.switchedOnOffices(registry, 'carein');
   await parity.settled();
 
   return {

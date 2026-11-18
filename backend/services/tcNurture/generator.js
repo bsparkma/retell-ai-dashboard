@@ -236,12 +236,14 @@ async function processEnrollment(pool, office, e, { tz, now, merge }) {
 /**
  * One office's pass. Never throws per enrollment: one bad row is counted as
  * an error and the rest of the office still runs.
- * @param {{ pool: { query: Function, connect: Function }, office: string, now?: Date, tz?: string }} input
+ * `tenantSlug` (MT-2b): the one TC tenant the scheduler resolved; its saved
+ * email identity supplies the office phone in the touch copy.
+ * @param {{ pool: { query: Function, connect: Function }, tenantSlug: string|null, office: string, now?: Date, tz?: string }} input
  */
-async function runForOffice({ pool, office, now = new Date(), tz = cfg.timezone() }) {
+async function runForOffice({ pool, tenantSlug, office, now = new Date(), tz = cfg.timezone() }) {
   const started = Date.now();
   const counts = { due: 0, queued: 0, completed: 0, deferred: 0, stopped: 0, lost_claim: 0, errors: 0 };
-  const merge = cfg.officeMergeValues(office);
+  const merge = cfg.officeMergeValues(tenantSlug, office);
   const due = await store.listDue(pool, office, now.toISOString());
   counts.due = due.length;
   for (const e of due) {

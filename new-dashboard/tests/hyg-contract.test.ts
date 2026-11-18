@@ -50,7 +50,7 @@ const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 
 describe("TreatmentPriority vs TreatmentCategory", () => {
   it("is the vocabulary Beau's offices actually use", () => {
-    expect(TreatmentPrioritySchema.options).toEqual(["urgent", "preventative", "cosmetic"]);
+    expect(TreatmentPrioritySchema.options).toEqual(["urgent", "preventative", "cosmetic", "holding"]);
   });
 
   it("cannot be assigned across, in either direction", () => {

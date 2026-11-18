@@ -1,11 +1,13 @@
 'use strict';
 
 /**
- * MT-2a parity tripwire + the office_setting reader's cache rules.
+ * MT-2a parity tripwire + the office_setting reader's cache rules — INVERTED by
+ * MT-2b: office_setting is the SERVED side; platform_setting is the rollback
+ * copy the tripwire checks (more in officeSettingsParityInverted.test.js).
  *
  *   D  a divergence logs "office settings parity" ONCE per (key, office),
- *      names the served side (platform_setting), and the reader still SERVES
- *      platform_setting
+ *      names the served side (office_setting since MT-2b), and the reader
+ *      SERVES office_setting
  *   C  a clean run logs the OK line once per process
  *   I  tc_email_identity divergences name FIELDS only, never a value
  *   U  unarmed (no server.js boot) compares nothing; an unreadable
@@ -63,40 +65,42 @@ function setup(t, { arm = true } = {}) {
   };
 }
 
-test('D: a divergence warns once per (key, office), names the served side, and platform_setting is still served', async (t) => {
+// MT-2b INVERTED this test (brief item 2): office_setting is the SERVED side now,
+// and the warning names it. Same fixture, same once-per-(key, office) rule.
+test('D: a divergence warns once per (key, office), names the served side, and office_setting is served (MT-2b)', async (t) => {
   const { cp, warns } = setup(t);
   cp.seedPlatform('tc_checkout_enabled', { roland: true, valley: false });
   cp.seedOffice('roland', 'tc_checkout_enabled', false); // drift
   cp.seedOffice('valley', 'tc_checkout_enabled', false);
 
-  await tcCheckout.refreshFromDb();
+  await tcCheckout.refreshFromDb('carein');
   await parity.settled();
-  assert.equal(tcCheckout.enabledFor('roland'), true, 'platform_setting is served');
-  assert.equal(tcCheckout.officeState('roland').source, 'db');
+  assert.equal(tcCheckout.enabledFor('carein', 'roland'), false, 'office_setting is served');
+  assert.equal(tcCheckout.officeState('carein', 'roland').source, 'db');
   assert.deepEqual(warns(), [
     "[officeSettings] office settings parity: 'tc_checkout_enabled' for 'roland' differs — " +
-      'platform_setting=true office_setting=false. Serving platform_setting (MT-2a).',
+      'office_setting=false platform_setting=true. Serving office_setting (MT-2b); platform_setting is the rollback copy.',
   ]);
 
   // The same drift on later reads: no second line.
-  await tcCheckout.refreshFromDb();
-  await tcCheckout.refreshFromDb();
+  await tcCheckout.refreshFromDb('carein');
+  await tcCheckout.refreshFromDb('carein');
   await parity.settled();
   assert.equal(warns().length, 1);
 
   // A NEW divergent office for the same key gets its own (single) line.
   cp.seedOffice('valley', 'tc_checkout_enabled', true);
-  await tcCheckout.refreshFromDb();
+  await tcCheckout.refreshFromDb('carein');
   await parity.settled();
   assert.equal(warns().length, 2);
-  assert.match(warns()[1], /'tc_checkout_enabled' for 'valley' differs — platform_setting=false office_setting=true/);
-  assert.equal(tcCheckout.enabledFor('valley'), false, 'still platform_setting');
+  assert.match(warns()[1], /'tc_checkout_enabled' for 'valley' differs — office_setting=true platform_setting=false/);
+  assert.equal(tcCheckout.enabledFor('carein', 'valley'), true, 'office_setting is served');
 });
 
 test('D: an office absent from office_setting where platform_setting chose is a divergence (switch: null)', async (t) => {
   const { cp, warns } = setup(t);
   cp.seedPlatform('tc_checkout_enabled', { roland: true });
-  await tcCheckout.refreshFromDb();
+  await tcCheckout.refreshFromDb('carein');
   await parity.settled();
   assert.deepEqual(parity.lastResult('tc_checkout_enabled').map((d) => [d.officeKey, d.platform, d.office]), [
     ['roland', true, null],
@@ -111,29 +115,29 @@ test('D: a divergence is confirmed against a FRESH office_setting read before it
   // A runbook then writes BOTH tables.
   cp.seedPlatform('tc_checkout_enabled', { roland: true });
   cp.seedOffice('roland', 'tc_checkout_enabled', true);
-  await tcCheckout.refreshFromDb();
+  await tcCheckout.refreshFromDb('carein');
   await parity.settled();
   assert.deepEqual(parity.lastResult('tc_checkout_enabled'), []);
   assert.deepEqual(warns(), []);
 });
 
+// MT-2b INVERTED this test (brief item 2): the readers no longer hand answers to
+// compare(); the tripwire compares a key on its own (compare(key)) against the
+// SERVED office_setting read. Same rule: not until all ten are clean, then once.
 test('C: a clean comparison of all ten keys logs the OK line ONCE per process', async (t) => {
   const { logs, warns } = setup(t);
   const all = require('./officeSettingKeys').OFFICE_SETTING_KEYS;
-  const clean = (k) => {
-    const kind = require('./officeSettingKeys').KIND[k];
-    if (kind === 'identity') {
-      const empty = { replyTo: null, practiceName: null, practicePhone: null, referralBcc: null };
-      return { roland: empty, valley: empty };
-    }
-    if (kind === 'on') return { roland: false, valley: false };
-    return { roland: null, valley: null };
-  };
-  for (const k of all.slice(0, -1)) await parity.compare(k, clean(k));
+  // Both tables empty and clean; a served read without the listener's own sweep.
+  parity.resetForTests();
+  await officeSettings.refreshFromDb('carein');
+  parity.arm();
+  for (const k of all.slice(0, -1)) await parity.compare(k);
   assert.deepEqual(logs(), [], 'not until every key has compared');
-  await parity.compare(all[all.length - 1], clean(all[all.length - 1]));
-  for (const k of all) await parity.compare(k, clean(k));
-  assert.deepEqual(logs(), ['[officeSettings] office settings parity OK — 2 office(s), 10 setting(s)']);
+  await parity.compare(all[all.length - 1]);
+  for (const k of all) await parity.compare(k);
+  assert.deepEqual(logs(), [
+    '[officeSettings] office settings parity OK — 2 office(s), 10 setting(s) (serving office_setting)',
+  ]);
   assert.deepEqual(warns(), []);
 });
 
@@ -143,9 +147,10 @@ test('I: an identity divergence names the differing FIELDS and never logs a valu
     roland: { replyTo: 'frontdesk@roland.example.test', practiceName: 'Roland Example Dental' },
   });
   cp.seedOffice('roland', 'tc_email_identity', { replyTo: 'other@roland.example.test', practiceName: 'Roland Example Dental' });
-  await emailIdentity.refreshFromDb();
+  await emailIdentity.refreshFromDb('carein');
   await parity.settled();
-  assert.equal(emailIdentity.storedValue('roland', 'replyTo'), 'frontdesk@roland.example.test', 'platform served');
+  // MT-2b INVERTED (brief item 2): office_setting is the served side.
+  assert.equal(emailIdentity.storedValue('carein', 'roland', 'replyTo'), 'other@roland.example.test', 'office_setting served');
   const w = warns();
   assert.equal(w.length, 1, JSON.stringify(w)); // valley holds nothing on either side
   assert.match(w[0], /'tc_email_identity' for 'roland' differs — field\(s\) replyTo differ/);
@@ -154,24 +159,29 @@ test('I: an identity divergence names the differing FIELDS and never logs a valu
   }
 });
 
-test('U: unarmed, nothing is compared; an unreadable office_setting compares nothing and changes no answer', async (t) => {
+// MT-2b CHANGED the second half (brief item 1): office_setting is SERVED, so an
+// unreadable office_setting is "nobody chose" — the read fails and hygiene is OFF.
+// Still: nothing is compared, nothing is warned, one error line.
+test('U: unarmed, nothing is compared; an unreadable office_setting compares nothing and answers OFF (MT-2b)', async (t) => {
   {
     const { cp, warns } = setup(t, { arm: false });
     cp.seedPlatform('tc_checkout_enabled', { roland: true });
-    await tcCheckout.refreshFromDb();
+    await tcCheckout.refreshFromDb('carein');
     await parity.settled();
     assert.equal(parity.lastResult('tc_checkout_enabled'), undefined);
-    assert.equal(cp.log.some((s) => s.includes('FROM office_setting')), false, 'office_setting never read');
+    // MT-2b INVERTED: the reader now reads office_setting (it is served); unarmed,
+    // the tripwire's side — platform_setting — is never read.
+    assert.equal(cp.log.some((s) => s.includes('FROM platform_setting')), false, 'platform_setting never read');
     assert.deepEqual(warns(), []);
   }
   {
     const { cp, warns, errors } = setup(t);
     cp.seedPlatform('hyg_od_enabled', { roland: true });
     cp.fail.listOfficeSettings = true;
-    const r = await hygPilot.refreshFromDb();
+    const r = await hygPilot.refreshFromDb('carein');
     await parity.settled();
-    assert.equal(r.ok, true);
-    assert.equal(hygPilot.hygEnabledFor('roland'), true);
+    assert.equal(r.ok, false, 'MT-2b: office_setting IS the read');
+    assert.equal(hygPilot.hygEnabledFor('carein', 'roland'), false, 'MT-2b: nothing served => OFF');
     assert.equal(parity.lastResult('hyg_od_enabled'), undefined);
     assert.deepEqual(warns(), []);
     assert.equal(errors().filter((l) => l.includes('could not read office_setting')).length, 1);

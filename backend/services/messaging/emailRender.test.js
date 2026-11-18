@@ -181,7 +181,7 @@ test('emailContent: a template snapshot fills the patient first name and nothing
       subject: 'Hi {{patient.firstName}}, about {{case.treatmentSummary}}',
       preheader: '{{practice.name}}',
       blocks: [{ id: 't', type: 'text', html: '<p>Dear {{patient.firstName}}</p>' }, { id: 'hl', type: 'highlight' }],
-    },
+    }, 'carein',
     'roland',
     { patientName: 'MangoTest Test', senderName: 'TC User' }
   );

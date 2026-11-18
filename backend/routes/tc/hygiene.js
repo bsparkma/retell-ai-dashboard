@@ -33,6 +33,7 @@ const registry = require('../../platform/registry');
 const store = require('./caseStore');
 const checkoutStore = require('./checkoutStore');
 const tcCheckout = require('../../config/tcCheckout');
+const { sessionTenantSlug } = require('../../platform/sessionTenant');
 
 const {
   z,
@@ -116,7 +117,7 @@ const CHECKOUT_CAS_ATTEMPTS = 5;
  * that a FINAL snapshot is never replaced by a non-final one.
  */
 async function submitCheckout(req, res) {
-  if (!(await tcCheckout.isEnabled(req.tcOffice))) {
+  if (!(await tcCheckout.isEnabled(sessionTenantSlug(req), req.tcOffice))) {
     return res.status(403).json({
       success: false,
       error: 'The checkout handoff is not switched on for this office',

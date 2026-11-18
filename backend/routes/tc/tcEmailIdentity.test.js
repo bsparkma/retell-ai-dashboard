@@ -130,12 +130,13 @@ test('P: a save is read back, in force for the next email, and null clears back 
       replyTo: ['frontdesk@roland.example.test', 'stored'],
       practiceName: ['Roland Example Dental', 'stored'],
       practicePhone: ['(918) 555-0142', 'stored'],
+      practiceAddress: [null, 'none'],
     }
   );
   assert.equal(r.body.updatedBy, 'tc@carein.ai');
   // The send path reads it right away — no wait for the 5-minute refresh.
-  assert.equal(acsConfig.replyToFor('roland'), 'frontdesk@roland.example.test');
-  assert.equal(acsConfig.practiceNameFor('roland'), 'Roland Example Dental');
+  assert.equal(acsConfig.replyToFor('carein', 'roland'), 'frontdesk@roland.example.test');
+  assert.equal(acsConfig.practiceNameFor('carein', 'roland'), 'Roland Example Dental');
 
   const cleared = await api(baseUrl, 'PUT', URL('roland'), { ...IDENTITY, replyTo: null });
   assert.equal(cleared.status, 200);
@@ -143,7 +144,7 @@ test('P: a save is read back, in force for the next email, and null clears back 
     [cleared.body.fields.replyTo.value, cleared.body.fields.replyTo.source],
     ['env@roland.example.test', 'env']
   );
-  assert.equal(acsConfig.replyToFor('roland'), 'env@roland.example.test');
+  assert.equal(acsConfig.replyToFor('carein', 'roland'), 'env@roland.example.test');
 });
 
 test('P: identities are per office — saving roland leaves valley untouched, and the other way round', async (t) => {
@@ -154,7 +155,7 @@ test('P: identities are per office — saving roland leaves valley untouched, an
   const valley = await api(baseUrl, 'GET', URL('valley'));
   assert.equal(valley.body.fields.replyTo.value, 'front@valley.example.test');
   assert.equal(valley.body.fields.practiceName.value, null);
-  assert.equal(acsConfig.replyToFor('valley'), 'front@valley.example.test');
+  assert.equal(acsConfig.replyToFor('carein', 'valley'), 'front@valley.example.test');
 });
 
 test('V: reply-to must be one plain address; caps and single-line rules are enforced; nothing is saved', async (t) => {
@@ -186,7 +187,7 @@ test('S: strict body — a smuggled from, office or extra key is a 400; a missin
   for (const body of [
     { ...IDENTITY, from: 'ceo@roland.example.test' },
     { ...IDENTITY, office: 'valley' },
-    { ...IDENTITY, practiceAddress: '1 Example St' },
+    { ...IDENTITY, practiceFax: '(918) 555-0199' },
     { replyTo: IDENTITY.replyTo, practiceName: IDENTITY.practiceName },
   ]) {
     const r = await api(baseUrl, 'PUT', URL('roland'), body);
@@ -279,6 +280,6 @@ test('guards: no Open Dental anywhere in the slice, and the From is not an edita
   const fs = require('node:fs');
   const src = fs.readFileSync(`${__dirname}/emailIdentity.js`, 'utf8') + fs.readFileSync(`${__dirname}/../../config/emailIdentity.js`, 'utf8');
   assert.doesNotMatch(src, /require\([^)]*(openDental|odOffices|odAccess|odClient)/i);
-  assert.deepEqual([...emailIdentity.FIELD_NAMES], ['replyTo', 'practiceName', 'practicePhone']);
+  assert.deepEqual([...emailIdentity.FIELD_NAMES], ['replyTo', 'practiceName', 'practicePhone', 'practiceAddress']);
   for (const f of emailIdentity.FIELD_NAMES) assert.doesNotMatch(emailIdentity.FIELDS[f].envPrefix, /FROM/);
 });

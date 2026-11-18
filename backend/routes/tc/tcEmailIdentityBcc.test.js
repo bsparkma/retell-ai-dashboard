@@ -68,8 +68,8 @@ test('a copy inbox is saved (lowercased), read back, and in force for the next s
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.referralBcc, 'referral-copies@roland.example.test');
   assert.equal(cp.row.value.roland.referralBcc, 'referral-copies@roland.example.test');
-  assert.equal(emailIdentity.referralBccFor('roland'), 'referral-copies@roland.example.test');
-  assert.equal(emailIdentity.referralBccFor('valley'), null, 'per office');
+  assert.equal(emailIdentity.referralBccFor('carein', 'roland'), 'referral-copies@roland.example.test');
+  assert.equal(emailIdentity.referralBccFor('carein', 'valley'), null, 'per office');
   const contract = require('../../tc/contract.gen.cjs');
   assert.equal(contract.TcEmailIdentityResponse.safeParse(r.body).success, true);
   assert.equal(acsConfig.fromAddressFor('roland'), 'donotreply@roland.example.test', 'the From never moves');
@@ -85,7 +85,7 @@ test('optional: absent leaves it as saved; null clears it (no copy); the other f
   assert.equal(kept.body.fields.practicePhone.value, '(918) 555-0142');
   const cleared = await api(baseUrl, 'PUT', URL('roland'), { ...IDENTITY, referralBcc: null });
   assert.equal(cleared.body.referralBcc, null);
-  assert.equal(emailIdentity.referralBccFor('roland'), null);
+  assert.equal(emailIdentity.referralBccFor('carein', 'roland'), null);
   assert.equal(cleared.body.fields.replyTo.value, 'frontdesk@roland.example.test');
 });
 
@@ -109,8 +109,8 @@ test('one plain address only; a refused value saves nothing', async (t) => {
 test('no app-setting fallback: no env var turns copies on, and clearing really means no copy', async (t) => {
   const { baseUrl } = await boot(t);
   // Not FIELD_NAMES (which each have an env fallback) — the copy inbox is its own field.
-  assert.deepEqual([...emailIdentity.FIELD_NAMES], ['replyTo', 'practiceName', 'practicePhone']);
-  assert.deepEqual([...emailIdentity.STORED_FIELDS], ['replyTo', 'practiceName', 'practicePhone', 'referralBcc']);
+  assert.deepEqual([...emailIdentity.FIELD_NAMES], ['replyTo', 'practiceName', 'practicePhone', 'practiceAddress']);
+  assert.deepEqual([...emailIdentity.STORED_FIELDS], ['replyTo', 'practiceName', 'practicePhone', 'practiceAddress', 'referralBcc']);
   const r = await api(baseUrl, 'GET', URL('roland'));
   assert.equal(r.body.fields.referralBcc, undefined, 'not presented as an env-backed field');
   assert.equal(r.body.referralBcc, null);

@@ -8,7 +8,9 @@
  *   PUT  /?office=   save the office's whole identity  { replyTo, practiceName,
  *                    practicePhone }, each a string or null (null = clear, back
  *                    to the app setting), and optionally (R6.3) referralBcc —
- *                    the referral copy inbox: absent = unchanged, null = no copy
+ *                    the referral copy inbox: absent = unchanged, null = no copy,
+ *                    and optionally practiceAddress (multi-line): absent =
+ *                    unchanged, null = clear back to the app setting
  *
  * WHO: `tc.notification_defaults` (admin + office), for reading AND saving —
  * the same people who run the office's alert defaults run what its email says.
@@ -40,6 +42,7 @@ const { contract, requireOffice, actorEmail, parseBody, h, auditTc } = require('
 const { withTenantTx } = require('./tx');
 const acsConfig = require('../../config/acsEmail');
 const emailIdentity = require('../../config/emailIdentity');
+const { sessionTenantSlug } = require('../../platform/sessionTenant');
 const { holdsPermission } = require('../../config/permissions');
 
 const { TcEmailIdentityRequest } = contract;
@@ -49,6 +52,8 @@ const FIELD_SLUG = Object.freeze({
   replyTo: 'reply_to',
   practiceName: 'practice_name',
   practicePhone: 'practice_phone',
+  // Setup polish (1794900000000 adds the slug to the CHECK).
+  practiceAddress: 'practice_address',
   // R6.3: the referral copy inbox (1792400000000 adds the slug to the CHECK).
   referralBcc: 'referral_bcc',
 });
@@ -65,27 +70,30 @@ router.use((req, res, next) => {
 });
 router.use(requireOffice);
 
-/** @param {string} office */
-function stateOf(office) {
+/**
+ * @param {string|null} tenantSlug the SESSION tenant (MT-2b)
+ * @param {string} office
+ */
+function stateOf(tenantSlug, office) {
   return {
     success: true,
     office,
-    fields: acsConfig.identityStateFor(office),
+    fields: acsConfig.identityStateFor(tenantSlug, office),
     // R6.3: saved here or not at all; there is no app-setting fallback.
-    referralBcc: emailIdentity.referralBccFor(office),
+    referralBcc: emailIdentity.referralBccFor(tenantSlug, office),
     from: {
       patientEmail: acsConfig.fromAddressFor(office),
       referral: acsConfig.ownFromAddressFor(office),
     },
-    ...emailIdentity.meta(),
+    ...emailIdentity.meta(tenantSlug, office),
   };
 }
 
 router.get(
   '/',
   h(async (req, res) => {
-    await emailIdentity.refreshFromDb();
-    res.json(stateOf(req.tcOffice));
+    await emailIdentity.refreshFromDb(sessionTenantSlug(req));
+    res.json(stateOf(sessionTenantSlug(req), req.tcOffice));
   })
 );
 
@@ -101,8 +109,9 @@ router.put(
     const next = {};
     for (const field of emailIdentity.STORED_FIELDS) {
       const raw = body[field];
-      // Only the optional copy inbox may be absent: absent = leave it as saved
-      // (resolved from `prior` below), so a client that predates it cannot clear it.
+      // Only the optional fields (the copy inbox, the address) may be absent:
+      // absent = leave it as saved (resolved from `prior` below), so a client
+      // that predates them cannot clear them.
       if (raw === undefined) {
         next[field] = undefined;
         continue;
@@ -120,8 +129,15 @@ router.put(
 
     let prior;
     try {
-      prior = (await emailIdentity.readStoredFromDb(office)).office;
+      prior = (await emailIdentity.readStoredFromDb(sessionTenantSlug(req), office)).office;
     } catch (err) {
+      if (err && err.code === 'OFFICE_SETTING_TENANT_NOT_WRITABLE') {
+        return res.status(409).json({
+          success: false,
+          error: "This practice's email identity cannot be changed here yet.",
+          code: 'OFFICE_SETTING_TENANT_NOT_WRITABLE',
+        });
+      }
       console.error('[tc/emailIdentity] could not read the saved identity:', err && err.message);
       return res.status(503).json({
         success: false,
@@ -135,7 +151,7 @@ router.put(
     }
 
     const changed = emailIdentity.STORED_FIELDS.filter((f) => prior[f] !== next[f]);
-    if (changed.length === 0) return res.json(stateOf(office));
+    if (changed.length === 0) return res.json(stateOf(sessionTenantSlug(req), office));
 
     try {
       await withTenantTx(req, async (client) => {
@@ -158,7 +174,7 @@ router.put(
         // window is one COMMIT wide, and the next GET re-reads the control
         // plane so the page shows what is in force, but the history (and
         // audit trail) can miss that change.
-        await emailIdentity.persist(office, next, actor);
+        await emailIdentity.persist(sessionTenantSlug(req), office, next, actor);
       });
     } catch (err) {
       if (err && err.code === 'IDENTITY_READBACK_FAILED') {
@@ -177,7 +193,7 @@ router.put(
         priorState: prior[field] === null ? 'unset' : 'stored',
       });
     }
-    res.json(stateOf(office));
+    res.json(stateOf(sessionTenantSlug(req), office));
   })
 );
 

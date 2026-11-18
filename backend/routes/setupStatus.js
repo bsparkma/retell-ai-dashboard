@@ -32,6 +32,7 @@ const { requireOffice } = require('./tc/helpers');
 const tenantDb = require('../platform/tenantDb');
 const { assignableOffices } = require('../services/tenantUsers');
 const { computeSetupStatus } = require('../services/setupStatus');
+const { sessionTenantSlug } = require('../platform/sessionTenant');
 
 const router = express.Router();
 
@@ -44,7 +45,7 @@ router.get('/', requireOffice, async (req, res) => {
   }
   try {
     const status = await tenantDb.withTenantDb(req, (pool) =>
-      computeSetupStatus({ office, tenantId, modules: req.tenant.modules || [], pool })
+      computeSetupStatus({ office, tenantId, tenantSlug: sessionTenantSlug(req), modules: req.tenant.modules || [], pool })
     );
     const offices = assignableOffices();
     const here = offices.find((o) => o.officeId === office);

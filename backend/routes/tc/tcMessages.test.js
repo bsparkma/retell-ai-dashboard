@@ -313,7 +313,8 @@ test('send happy path: sent only after the adapter confirms; second click → 40
 
     assert.equal(sent.length, 1);
     assert.equal(sent[0].message.toAddress, '+14795550101');
-    assert.deepEqual(sent[0].office, { officeKey: 'roland', officeName: sent[0].office.officeName });
+    // MT-2b: the handle also carries the SESSION tenant (whose saved Reply-To the email adapter uses).
+    assert.deepEqual(sent[0].office, { officeKey: 'roland', officeName: sent[0].office.officeName, tenantSlug: 'carein' });
 
     const again = await api(baseUrl, 'POST', `/api/tc/messages/${d.messageId}/send?office=roland`, {});
     assert.equal(again.status, 409);

@@ -14864,6 +14864,7 @@ __export(contract_entry_exports, {
   ExistingTxSaveViewSchema: () => ExistingTxSaveViewSchema,
   ExistingTxWaitSchema: () => ExistingTxWaitSchema,
   FlagSourceSchema: () => FlagSourceSchema,
+  HOLDING_PRIORITY: () => HOLDING_PRIORITY,
   HYG_DAY_SCOPES: () => HYG_DAY_SCOPES,
   HYG_ERROR_CODES: () => HYG_ERROR_CODES,
   HYG_PHARMACY_MAX: () => HYG_PHARMACY_MAX,
@@ -15056,6 +15057,7 @@ __export(contract_entry_exports, {
   countNotDiscussed: () => countNotDiscussed,
   countPerioChart: () => countPerioChart,
   countTcActionable: () => countTcActionable,
+  countsTowardUrgency: () => countsTowardUrgency,
   defaultPerioSweep: () => defaultPerioSweep,
   deriveCategory: () => deriveCategory,
   doneTodayChoices: () => doneTodayChoices,
@@ -16270,11 +16272,16 @@ function isOfficeId(value) {
   return OfficeIdSchema.safeParse(value).success;
 }
 var OFFICE_TIME_ZONE = "America/Chicago";
-var TreatmentPrioritySchema = import_zod4.z.enum(["urgent", "preventative", "cosmetic"]);
+var TreatmentPrioritySchema = import_zod4.z.enum(["urgent", "preventative", "cosmetic", "holding"]);
+var HOLDING_PRIORITY = "holding";
+function countsTowardUrgency(priority) {
+  return priority !== HOLDING_PRIORITY;
+}
 var TREATMENT_PRIORITY_LABELS = {
   urgent: "Urgent",
   preventative: "Preventative",
-  cosmetic: "Cosmetic"
+  cosmetic: "Cosmetic",
+  holding: "Holding"
 };
 var TreatmentCategorySchema = import_zod4.z.enum([
   "Restorative",
@@ -18577,6 +18584,7 @@ function odToothText(tooth) {
   ExistingTxSaveViewSchema,
   ExistingTxWaitSchema,
   FlagSourceSchema,
+  HOLDING_PRIORITY,
   HYG_DAY_SCOPES,
   HYG_ERROR_CODES,
   HYG_PHARMACY_MAX,
@@ -18769,6 +18777,7 @@ function odToothText(tooth) {
   countNotDiscussed,
   countPerioChart,
   countTcActionable,
+  countsTowardUrgency,
   defaultPerioSweep,
   deriveCategory,
   doneTodayChoices,

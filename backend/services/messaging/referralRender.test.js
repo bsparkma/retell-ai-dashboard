@@ -57,6 +57,7 @@ test('renderReferralLetter: the referral footer, the practice name override, no 
   process.env.TC_EMAIL_PRACTICE_NAME_ROLAND = 'Roland Family Dental';
   try {
     const out = emailContent.renderReferralLetter({
+      tenantSlug: 'carein',
       office: 'roland',
       subject: 'Referral from Roland Family Dental — Stedi T., <b>x</b>',
       text: 'Dear Dr. Example,\n\nVisit https://example.test and <script>alert(1)</script> {{keep}}',

@@ -8,7 +8,8 @@
  * ═════════════════════════════════════════════════════════════════════════════
  * PRIORITY AND CATEGORY ARE TWO CONTROLS BECAUSE THEY ARE TWO QUESTIONS
  * ═════════════════════════════════════════════════════════════════════════════
- * Priority is HOW SOON — urgent, preventative, cosmetic. Category is WHAT KIND
+ * Priority is HOW SOON — urgent, preventative, cosmetic — plus "holding", which
+ * marks an alternative option rather than an urgency. Category is WHAT KIND
  * — Restorative, Endo, Perio, Cosmetic and so on. They share the word
  * "cosmetic", and a screen that put them in one row of chips would be inviting
  * the mix-up that ends with "this can wait" printed on a chart.
@@ -189,6 +190,10 @@ const PRIORITY_ACTIVE: Record<TreatmentPriority, string> = {
   preventative:
     "border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-300",
   cosmetic: "border-border bg-muted text-foreground",
+  // Holding is an ALTERNATIVE option, not an urgency (Beau's ruling): neutral
+  // grey, never a warning colour.
+  holding:
+    "border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300",
 };
 
 function Chip({
@@ -341,7 +346,11 @@ function ItemCard({
         <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           How soon?
         </div>
-        <div role="group" aria-label="How soon?" className="grid grid-cols-3 gap-1">
+        {/*
+          Four options: 2×2 on a phone (four across does not fit "Preventative"
+          at 390px with 44px targets), one row of four from `sm` up.
+        */}
+        <div role="group" aria-label="How soon?" className="grid grid-cols-2 gap-1 sm:grid-cols-4">
           {TreatmentPrioritySchema.options.map((p: TreatmentPriority) => {
             const active = item.priority === p;
             return (

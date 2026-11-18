@@ -490,7 +490,7 @@ async function mirrorOfficeSettingInTx(client, key, value, updatedBy, forOffice)
         mirrorSkipWarned.add(id);
         console.warn(
           `[registry] office_setting not written for '${key}' / '${e.officeKey}': tenant ` +
-            `'${MT2A_TENANT_SLUG}' has no office row for it (platform_setting is still served)`
+            `'${MT2A_TENANT_SLUG}' has no office row for it (nothing is served for that office: MT-2b serves office_setting)`
         );
       }
       continue;
@@ -1074,6 +1074,7 @@ async function close() {
 }
 
 module.exports = {
+  query,
   getTenantBySlug,
   getTenantById,
   listTenants,

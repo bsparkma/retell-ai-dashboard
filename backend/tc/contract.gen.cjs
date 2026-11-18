@@ -14987,6 +14987,8 @@ __export(contract_entry_exports, {
   TC_CHECKOUT_WAITING: () => TC_CHECKOUT_WAITING,
   TC_CHECKOUT_WORKUP_SECTIONS: () => TC_CHECKOUT_WORKUP_SECTIONS,
   TC_CHECKOUT_WORKUP_SECTION_LABELS: () => TC_CHECKOUT_WORKUP_SECTION_LABELS,
+  TC_EMAIL_IDENTITY_ADDRESS: () => TC_EMAIL_IDENTITY_ADDRESS,
+  TC_EMAIL_IDENTITY_ADDRESS_LABEL: () => TC_EMAIL_IDENTITY_ADDRESS_LABEL,
   TC_EMAIL_IDENTITY_FIELD_LABELS: () => TC_EMAIL_IDENTITY_FIELD_LABELS,
   TC_INTAKE_KIND_LABELS: () => TC_INTAKE_KIND_LABELS,
   TC_NOTIFICATION_EVENT_LABELS: () => TC_NOTIFICATION_EVENT_LABELS,
@@ -15031,6 +15033,7 @@ __export(contract_entry_exports, {
   TcCheckoutCaseTreatment: () => TcCheckoutCaseTreatment,
   TcCheckoutDismissRequest: () => TcCheckoutDismissRequest,
   TcCheckoutHandoff: () => TcCheckoutHandoff,
+  TcCheckoutItemPriority: () => TcCheckoutItemPriority,
   TcCheckoutManualAddRequest: () => TcCheckoutManualAddRequest,
   TcCheckoutNextVisit: () => TcCheckoutNextVisit,
   TcCheckoutOutcome: () => TcCheckoutOutcome,
@@ -15179,6 +15182,7 @@ __export(contract_entry_exports, {
   fillPlaceholders: () => fillPlaceholders,
   fillReferralTemplate: () => fillReferralTemplate,
   galleryToRow: () => galleryToRow,
+  holdingLast: () => holdingLast,
   htmlToPlainText: () => htmlToPlainText,
   intensityFor: () => intensityFor,
   isContactAttemptDetail: () => isContactAttemptDetail,
@@ -17544,22 +17548,30 @@ var TC_INTAKE_KIND_LABELS = {
 };
 var TcIntakeSourceKey = import_zod8.z.string().min(8).max(200).regex(/^[A-Za-z0-9:_-]+$/, "a source key is letters, digits, ':', '_' and '-' only");
 var TcCheckoutPriority = import_zod8.z.enum(["urgent", "preventative", "cosmetic"]);
+var TcCheckoutItemPriority = import_zod8.z.enum(["urgent", "preventative", "cosmetic", "holding"]);
 var TC_CHECKOUT_PRIORITY_LABELS = {
   urgent: "Urgent",
   preventative: "Preventative",
-  cosmetic: "Cosmetic"
+  cosmetic: "Cosmetic",
+  holding: "Holding"
 };
 var TC_CHECKOUT_PRIORITY_ORDER = [
   "urgent",
   "preventative",
   "cosmetic"
 ];
+function holdingLast(rows, priorityOf) {
+  return [
+    ...rows.filter((r) => priorityOf(r) !== "holding"),
+    ...rows.filter((r) => priorityOf(r) === "holding")
+  ];
+}
 var TcCheckoutProcedure = import_zod8.z.object({
   /** Universal tooth numbers, or "mouth" for a whole-mouth item. */
   teeth: import_zod8.z.union([import_zod8.z.array(import_zod8.z.number().int()), import_zod8.z.literal("mouth")]),
   code: import_zod8.z.string().min(1).max(60),
   category: import_zod8.z.string().min(1).max(40),
-  priority: TcCheckoutPriority,
+  priority: TcCheckoutItemPriority,
   status: import_zod8.z.string().min(1).max(40),
   surfaces: import_zod8.z.array(import_zod8.z.string().max(4)).max(10),
   /** The hygienist marked this to schedule at the next visit. */
@@ -17594,7 +17606,10 @@ var TC_CHECKOUT_RECORDS_MAX = 60;
 var TcCheckoutRecord = import_zod8.z.object({ record: import_zod8.z.string().min(1).max(120), status: TcCheckoutRecordStatus }).strict();
 var TcCheckoutSnapshot = import_zod8.z.object({
   procedures: import_zod8.z.array(TcCheckoutProcedure).max(100),
-  /** The highest priority among the procedures; null when there are none. */
+  /**
+   * The highest priority among the NON-HOLDING procedures; null when there
+   * are none (no procedures, or only holding ones).
+   */
   priority: TcCheckoutPriority.nullable(),
   nextVisit: TcCheckoutNextVisit,
   /**
@@ -18822,10 +18837,17 @@ var EMAIL_IDENTITY_LIMITS = {
   replyTo: 254,
   practiceName: 120,
   practicePhone: 40,
+  practiceAddress: 300,
   referralBcc: 254
 };
+var TC_EMAIL_IDENTITY_ADDRESS = "practiceAddress";
+var TC_EMAIL_IDENTITY_ADDRESS_LABEL = "Practice address";
 var TcEmailIdentityField = import_zod12.z.enum(["replyTo", "practiceName", "practicePhone"]);
-var TcEmailIdentityStoredField = import_zod12.z.enum([...TcEmailIdentityField.options, "referralBcc"]);
+var TcEmailIdentityStoredField = import_zod12.z.enum([
+  ...TcEmailIdentityField.options,
+  TC_EMAIL_IDENTITY_ADDRESS,
+  "referralBcc"
+]);
 var TC_EMAIL_IDENTITY_FIELD_LABELS = {
   replyTo: "Reply-to address",
   practiceName: "Practice name",
@@ -18849,7 +18871,9 @@ var TcEmailIdentityResponse = import_zod12.z.object({
   fields: import_zod12.z.object({
     replyTo: TcEmailIdentityFieldState,
     practiceName: TcEmailIdentityFieldState,
-    practicePhone: TcEmailIdentityFieldState
+    practicePhone: TcEmailIdentityFieldState,
+    /** Setup polish. Absent from an older server = the address is not editable here. */
+    practiceAddress: TcEmailIdentityFieldState.optional()
   }),
   /**
    * R6.3: the address every referral letter from this office is blind-copied
@@ -18873,12 +18897,15 @@ var SINGLE_LINE = /^[^\u0000-\u001f\u007f]*$/;
 function line(max) {
   return import_zod12.z.string().trim().min(1).max(max).regex(SINGLE_LINE, "must be a single line of plain text");
 }
+var MULTI_LINE = /^[^\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f]*$/;
 var ONE_ADDRESS = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/;
 var TcEmailIdentityRequest = import_zod12.z.object({
   replyTo: line(EMAIL_IDENTITY_LIMITS.replyTo).regex(ONE_ADDRESS, "must be one plain email address").nullable(),
   practiceName: line(EMAIL_IDENTITY_LIMITS.practiceName).nullable(),
   practicePhone: line(EMAIL_IDENTITY_LIMITS.practicePhone).nullable(),
-  referralBcc: line(EMAIL_IDENTITY_LIMITS.referralBcc).regex(ONE_ADDRESS, "must be one plain email address").nullable().optional()
+  referralBcc: line(EMAIL_IDENTITY_LIMITS.referralBcc).regex(ONE_ADDRESS, "must be one plain email address").nullable().optional(),
+  // Setup polish: optional; absent = unchanged, null = back to the app setting.
+  practiceAddress: import_zod12.z.string().trim().min(1).max(EMAIL_IDENTITY_LIMITS.practiceAddress).regex(MULTI_LINE, "must be plain text").nullable().optional()
 }).strict();
 
 // shared/tc/providers.ts
@@ -20805,6 +20832,8 @@ function odToothText(tooth) {
   TC_CHECKOUT_WAITING,
   TC_CHECKOUT_WORKUP_SECTIONS,
   TC_CHECKOUT_WORKUP_SECTION_LABELS,
+  TC_EMAIL_IDENTITY_ADDRESS,
+  TC_EMAIL_IDENTITY_ADDRESS_LABEL,
   TC_EMAIL_IDENTITY_FIELD_LABELS,
   TC_INTAKE_KIND_LABELS,
   TC_NOTIFICATION_EVENT_LABELS,
@@ -20849,6 +20878,7 @@ function odToothText(tooth) {
   TcCheckoutCaseTreatment,
   TcCheckoutDismissRequest,
   TcCheckoutHandoff,
+  TcCheckoutItemPriority,
   TcCheckoutManualAddRequest,
   TcCheckoutNextVisit,
   TcCheckoutOutcome,
@@ -20997,6 +21027,7 @@ function odToothText(tooth) {
   fillPlaceholders,
   fillReferralTemplate,
   galleryToRow,
+  holdingLast,
   htmlToPlainText,
   intensityFor,
   isContactAttemptDetail,

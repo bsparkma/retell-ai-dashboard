@@ -63,6 +63,7 @@ const { randomUUID } = require('node:crypto');
 
 const tcCheckout = require('../../config/tcCheckout');
 const tcAutoCheckout = require('../../config/tcAutoCheckout');
+const officeRegistry = require('../../platform/officeRegistry');
 const checkoutStore = require('../../routes/tc/checkoutStore');
 const odDay = require('../hyg/odDay');
 const contract = require('../../tc/contract.gen.cjs');
@@ -104,9 +105,20 @@ function stateOf(office) {
   return offices.get(office);
 }
 
-/** Both switches: checkout itself, and cards from the schedule. */
-async function isOn(office) {
-  return (await tcCheckout.isEnabled(office)) && (await tcAutoCheckout.isEnabled(office));
+/**
+ * Both switches: checkout itself, and cards from the schedule — for the
+ * SESSION tenant's office (MT-2b).
+ *
+ * The sweep reads Open Dental through this deployment's office handles, which
+ * are tenant 'carein's (config/odOffices.js). So for any other tenant it is OFF
+ * before either switch is asked: a second tenant with an office keyed like one
+ * of carein's must never read carein's schedule.
+ * @param {string|null} tenantSlug
+ * @param {string} office
+ */
+async function isOn(tenantSlug, office) {
+  if (tenantSlug !== officeRegistry.CODE_MAP_TENANT_SLUG) return false;
+  return (await tcCheckout.isEnabled(tenantSlug, office)) && (await tcAutoCheckout.isEnabled(tenantSlug, office));
 }
 
 /** BEGIN/COMMIT on a dedicated client from the pool, ROLLBACK on any throw. */
@@ -190,6 +202,7 @@ async function labelsFor(odGet, office) {
  * touched nothing.
  *
  * @param {{
+ *   tenantSlug: string|null,             the SESSION tenant (MT-2b)
  *   office: string,
  *   today: string,                       the office's today, 'YYYY-MM-DD'
  *   pool: { query: Function, connect: Function },   the tenant database
@@ -201,8 +214,8 @@ async function labelsFor(odGet, office) {
  * @throws when the schedule read fails outright (nothing was made)
  */
 async function sweepOffice(opts) {
-  const { office, today, pool, audit } = opts;
-  if (!(await isOn(office))) return { status: 'off' };
+  const { tenantSlug, office, today, pool, audit } = opts;
+  if (!(await isOn(tenantSlug, office))) return { status: 'off' };
   const st = stateOf(office);
 
   const transport = opts.odGet || (opts.resolveOdGet || require('../../routes/tc/checkoutAppointments').odGetForOffice)(office);
@@ -273,13 +286,13 @@ async function sweepOffice(opts) {
 
   // A sweep naming 100 patients runs for minutes at the batch spacing; the
   // switch (and its env break-glass) is honoured mid-sweep, not only at start.
-  if (!(await isOn(office))) return { status: 'off' };
+  if (!(await isOn(tenantSlug, office))) return { status: 'off' };
   const names = await odDay.readPatients(odGet, batch.map((c) => c.patNum), { office, odBudget: cap });
   const labels = await labelsFor(odGet, office);
   const nextDeferred = new Set();
 
   for (const c of batch) {
-    if (!(await isOn(office))) return { status: 'off' };
+    if (!(await isOn(tenantSlug, office))) return { status: 'off' };
     const patient = names.byPatNum.get(c.patNum);
     const patientName = patient && typeof patient.displayName === 'string' ? patient.displayName.trim() : '';
     if (!patientName) {

@@ -34,16 +34,20 @@
  *     live token from a guess.
  *   - The page never names the practice or the address.
  *   - The ONLY other answer is 503 "could not process", and it depends on the
- *     DEPLOYMENT (no tenant configured, control plane or database unreachable),
- *     never on the token: the tenant is resolved BEFORE the token is looked at.
+ *     DEPLOYMENT (control plane or database unreachable), never on the token.
+ *     An unknown token, or one whose tenant is not active or not entitled to
+ *     'tc', gets the SAME 200 page as a bad token (MT-3).
  *   - Fails closed: a bad token records nothing; a failure records nothing.
  *   - Idempotent: a second click changes nothing (services/messaging
  *     recordUnsubscribeLink leaves an existing opt-out untouched).
  *
- * TENANT: like the Twilio webhooks (routes/twilioWebhooks.js attachTenant), a
- * public request has no SSO user, so TC_EMAIL_TENANT_SLUG names the tenant and
- * the control-plane registry resolves it: active, and entitled to 'tc'.
- * Anything else is 503 and nothing is recorded. Never a guessed tenant.
+ * TENANT (MT-3): a public request has no SSO user, so the TOKEN names the
+ * tenant. Its hash is looked up in the control-plane public_link_index
+ * (platform/publicLinkIndex.js), written when the email was sent; the tenant
+ * must be active and entitled to 'tc'. Anything else records nothing and gets
+ * the same page as a bad token. Never a guessed tenant. Links sent before the
+ * index existed fall back to TC_EMAIL_TENANT_SLUG, logged, only while that
+ * setting is present (see publicLinkIndex.js for when it is removed).
  *
  * The kill switch does NOT gate this. An unsubscribe arriving while email is
  * switched off must still be recorded (see config/tcEmail.js).
@@ -54,8 +58,7 @@
 
 const express = require('express');
 
-const registry = require('../platform/registry');
-const acsConfig = require('../config/acsEmail');
+const publicLinkIndex = require('../platform/publicLinkIndex');
 const messaging = require('../services/messaging');
 
 const router = express.Router();
@@ -126,39 +129,17 @@ function tokenOf(req) {
 }
 
 /**
- * Resolve the deployment's tenant (same rule as routes/twilioWebhooks.js
- * attachTenant) and attach it. Returns false when it cannot.
+ * Resolve the tenant the token names (platform/publicLinkIndex.js) and attach
+ * it. 'neutral' for every token that names no usable tenant.
  * @param {import('express').Request} req
  */
-async function attachTenant(req) {
-  const slug = acsConfig.tenantSlug();
-  if (!slug) {
-    console.warn('[email-unsubscribe] REFUSED (503): TC_EMAIL_TENANT_SLUG is not configured');
-    return false;
-  }
-  let tenant;
-  let modules;
-  try {
-    tenant = await registry.getTenantBySlug(slug);
-    modules = tenant ? await registry.getEnabledModules(tenant.tenant_id) : [];
-  } catch (err) {
-    console.error(
-      '[email-unsubscribe] REFUSED (503): control plane unreachable:',
-      err && err.message ? err.message : err
-    );
-    return false;
-  }
-  if (!tenant || tenant.status !== 'active') {
-    console.warn('[email-unsubscribe] REFUSED (503): the configured tenant is not found or not active');
-    return false;
-  }
-  if (!Array.isArray(modules) || !modules.includes('tc')) {
-    console.warn("[email-unsubscribe] REFUSED (503): the configured tenant is not entitled to 'tc'");
-    return false;
-  }
-  req.tenant = { id: tenant.tenant_id, slug: tenant.slug, modules, clinics: [] };
-  req.user = { email: WEBHOOK_ACTOR };
-  return true;
+function attachTenant(req) {
+  return publicLinkIndex.attachLinkTenant(req, {
+    token: tokenOf(req),
+    kind: 'unsubscribe',
+    actor: WEBHOOK_ACTOR,
+    logTag: '[email-unsubscribe]',
+  });
 }
 
 // ── GET: confirm, never act ─────────────────────────────────────────────────
@@ -182,7 +163,13 @@ router.get('/unsubscribe', (req, res) => {
 // ── POST: record it ─────────────────────────────────────────────────────────
 
 router.post('/unsubscribe', async (req, res) => {
-  if (!(await attachTenant(req))) return send(res, 503, UNAVAILABLE_PAGE);
+  const tenant = await attachTenant(req);
+  if (tenant === 'unavailable') return send(res, 503, UNAVAILABLE_PAGE);
+  if (tenant === 'neutral') {
+    // The same page a bad token gets: nothing to record, nothing to say.
+    console.log('[email-unsubscribe] outcome=no_match');
+    return send(res, 200, DONE_PAGE);
+  }
   let outcome;
   try {
     outcome = await messaging.recordUnsubscribeLink(req, tokenOf(req));

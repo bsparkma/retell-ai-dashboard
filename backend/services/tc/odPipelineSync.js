@@ -62,6 +62,7 @@
 const { randomUUID } = require('node:crypto');
 
 const tcOdSync = require('../../config/tcOdSync');
+const officeRegistry = require('../../platform/officeRegistry');
 const odReads = require('../../routes/tc/odReads');
 const caseStore = require('../../routes/tc/caseStore');
 const nurtureHooks = require('../tcNurture/hooks');
@@ -434,6 +435,7 @@ function isRunning(office) {
  * run); a database or audit failure propagates.
  *
  * @param {{
+ *   tenantSlug: string|null,           the session tenant, or the one TC tenant the nightly pass resolved (MT-2b)
  *   office: string,
  *   pool: { query: Function, connect: Function },
  *   trigger: 'manual'|'nightly',
@@ -441,19 +443,22 @@ function isRunning(office) {
  *   audit: (entries: object[]) => Promise<void>,
  *   odGet?: Function,                  the office's GET-only transport (resolved lazily when absent)
  *   resolveOdGet?: (office: string) => Function,
- *   sw?: { isEnabled: (office: string) => Promise<boolean> },
+ *   sw?: { isEnabled: (tenantSlug: string|null, office: string) => Promise<boolean> },
  *   clock?: () => Date,
  *   runId?: string,
  * }} opts
  * @returns {Promise<{ status: 'skipped'|'ok'|'failed', reason?: string, runId?: string, summary?: object, errorCode?: string }>}
  */
 async function syncOffice(opts) {
-  const { office, pool, trigger, audit } = opts;
+  const { tenantSlug, office, pool, trigger, audit } = opts;
   const sw = opts.sw || tcOdSync;
   const clock = opts.clock || (() => new Date());
 
+  // MT-2b: the Open Dental handles here are tenant 'carein's (config/odOffices.js).
+  // Any other tenant gets NOTHING, before the switch is even asked.
+  if (tenantSlug !== officeRegistry.CODE_MAP_TENANT_SLUG) return { status: 'skipped', reason: 'OD_NOT_TENANT_BOUND' };
   // SWITCH OFF ⇒ NOTHING: checked before any read or write.
-  if (!(await sw.isEnabled(office))) return { status: 'skipped', reason: 'SWITCH_OFF' };
+  if (!(await sw.isEnabled(tenantSlug, office))) return { status: 'skipped', reason: 'SWITCH_OFF' };
   if (running.has(office)) return { status: 'skipped', reason: 'ALREADY_RUNNING' };
   running.add(office);
 
@@ -541,7 +546,7 @@ async function syncOffice(opts) {
 
     // The switch is re-read before anything is applied: an office switched off
     // during the reads gets nothing written.
-    if (!(await sw.isEnabled(office))) {
+    if (!(await sw.isEnabled(tenantSlug, office))) {
       console.warn(`[tc/od-sync] office=${office} run=${runId} switched off mid-run; nothing applied`);
       await finishRun(pool, { runId, office, status: 'failed', summary: null, errorCode: 'SWITCHED_OFF', at: clock().toISOString() });
       return { status: 'skipped', reason: 'SWITCH_OFF', runId };

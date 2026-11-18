@@ -314,18 +314,19 @@ async function partC(client) {
   };
 
   try {
-    await tcCheckout.persist('roland', true, ACTOR);
-    await tcCheckout.persist('valley', false, ACTOR);
+    await tcCheckout.persist('carein', 'roland', true, ACTOR);
+    await tcCheckout.persist('carein', 'valley', false, ACTOR);
     assert.deepEqual(await platformValue('tc_checkout_enabled'), { roland: true, valley: false });
     assert.deepEqual(await officeValues('tc_checkout_enabled'), { roland: true, valley: false });
     console.log('  ok  tcCheckout.persist (PUT /tc-checkout-offices) wrote both tables identically');
 
-    await hygPilot.persistHygEnabled('valley', false, ACTOR);
+    await hygPilot.persistHygEnabled('carein', 'valley', false, ACTOR);
     assert.deepEqual(await platformValue('hyg_od_enabled'), { valley: false });
     assert.deepEqual(await officeValues('hyg_od_enabled'), { valley: false });
     console.log('  ok  hygPilot.persistHygEnabled (PUT /hyg-offices) wrote both tables identically');
 
     await emailIdentity.persist(
+      'carein',
       'roland',
       { replyTo: 'FrontDesk@Roland.example.test', practiceName: 'Roland Example Dental', practicePhone: null, referralBcc: null },
       ACTOR
@@ -343,7 +344,7 @@ async function partC(client) {
         FOR EACH ROW EXECUTE FUNCTION mt2a_verify_refuse();
     `);
     try {
-      await assert.rejects(tcCheckout.persist('valley', true, ACTOR), /forced office_setting failure/);
+      await assert.rejects(tcCheckout.persist('carein', 'valley', true, ACTOR), /forced office_setting failure/);
     } finally {
       await client.query('DROP TRIGGER IF EXISTS mt2a_verify_refuse ON office_setting; DROP FUNCTION IF EXISTS mt2a_verify_refuse();');
     }
@@ -361,12 +362,12 @@ async function partC(client) {
       require('../config/tcReferralEmail'),
       require('../config/tcReferralPatientEmail'),
     ]) {
-      assert.equal((await sw.refreshFromDb()).ok, true);
+      assert.equal((await sw.refreshFromDb('carein')).ok, true);
     }
-    assert.equal((await hygPilot.refreshFromDb()).ok, true);
-    assert.equal((await emailIdentity.refreshFromDb()).ok, true);
-    await require('../config/tcNurture').switchedOnOffices(registry);
-    await require('../config/tcOpportunities').switchedOnOffices(registry);
+    assert.equal((await hygPilot.refreshFromDb('carein')).ok, true);
+    assert.equal((await emailIdentity.refreshFromDb('carein')).ok, true);
+    await require('../config/tcNurture').switchedOnOffices(registry, 'carein');
+    await require('../config/tcOpportunities').switchedOnOffices(registry, 'carein');
     await parity.settled();
     for (const key of TEN) assert.deepEqual(parity.lastResult(key), [], key);
     console.log('  ok  every reader compared clean against office_setting');

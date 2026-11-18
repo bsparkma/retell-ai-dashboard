@@ -46,7 +46,8 @@
  *                                 every email the office sends, not only the
  *                                 referral letter: one identity per office.)
  *
- * (R5c) IN-APP EMAIL IDENTITY. Reply-To, practice name and practice phone can
+ * (R5c) IN-APP EMAIL IDENTITY. Reply-To, practice name, practice phone and
+ * (setup polish) practice address can
  * also be saved per office in Settings -> Email identity
  * (config/emailIdentity.js). A SAVED value beats the app setting above; the
  * app setting is the fallback when nothing is saved. The From address is NOT
@@ -65,18 +66,25 @@
  * refuses anything over it before a byte leaves.
  *
  * ═════════════════════════════════════════════════════════════════════════════
- * THE UNSUBSCRIBE LINK NEEDS TWO MORE
+ * THE UNSUBSCRIBE LINK NEEDS ONE MORE
  * ═════════════════════════════════════════════════════════════════════════════
  *   TC_EMAIL_PUBLIC_BASE_URL      https origin the patient's browser can reach
- *   TC_EMAIL_TENANT_SLUG          which tenant the public unsubscribe endpoint
- *                                 records into (it carries no user; same shape
- *                                 as TWILIO_TENANT_SLUG)
- * Without both, no email may be sent: an email whose unsubscribe link cannot
- * work is not an email we send. They are part of "configured".
+ * Without it, no email may be sent: an email whose unsubscribe link cannot
+ * work is not an email we send. It is part of "configured".
+ *
+ *   TC_EMAIL_TENANT_SLUG          (MT-3) LEGACY FALLBACK ONLY. The public link
+ *                                 routes now take the tenant from the link's
+ *                                 token (platform/publicLinkIndex.js). This
+ *                                 names the tenant only for links sent before
+ *                                 that index existed, and is no longer part of
+ *                                 "configured", so it can be removed when the
+ *                                 fallback is (see publicLinkIndex.js).
  */
 
 const { OFFICES } = require('./officeAgents');
 const emailIdentity = require('./emailIdentity');
+const officeRegistry = require('../platform/officeRegistry');
+const { MT2A_TENANT_SLUG } = require('../platform/officeSettingKeys');
 
 const AUTH_MODES = Object.freeze(['managed_identity', 'connection_string']);
 
@@ -187,7 +195,6 @@ function missingAccountConfig() {
   else if (c.mode === 'connection_string' && !c.endpoint) missing.push('ACS_EMAIL_CONNECTION');
   else if (c.mode === 'managed_identity' && !c.endpoint) missing.push('ACS_EMAIL_ENDPOINT');
   if (!publicBaseUrl()) missing.push('TC_EMAIL_PUBLIC_BASE_URL');
-  if (!tenantSlug()) missing.push('TC_EMAIL_TENANT_SLUG');
   return missing;
 }
 
@@ -240,6 +247,19 @@ function envPracticePhoneFor(officeKey) {
   return phone ? phone.slice(0, 40) : null;
 }
 
+/**
+ * The APP SETTING's practice address for an office (the fallback), or null.
+ * Unchanged from before the address could be saved in the app: plain text, up
+ * to 300 characters.
+ * @param {string} officeKey
+ * @returns {string|null}
+ */
+function envPracticeAddressFor(officeKey) {
+  if (!isKnownOffice(officeKey)) return null;
+  const address = envValue(`TC_EMAIL_PRACTICE_ADDRESS_${officeEnvSuffix(officeKey)}`);
+  return address ? address.slice(0, 300) : null;
+}
+
 /** The APP SETTING's practice name for an office (the fallback), or null. @param {string} officeKey @returns {string|null} */
 function envPracticeNameFor(officeKey) {
   if (!isKnownOffice(officeKey)) return null;
@@ -247,51 +267,100 @@ function envPracticeNameFor(officeKey) {
   return name ? name.replace(/[\r\n]+/g, ' ').slice(0, 120) : null;
 }
 
-/** (R5c) The office's Reply-To: saved in the app, else the app setting, else null. @param {string} officeKey @returns {string|null} */
-function replyToFor(officeKey) {
-  if (!isKnownOffice(officeKey)) return null;
-  return emailIdentity.storedValue(officeKey, 'replyTo') ?? envReplyToFor(officeKey);
+/*
+ * THE IDENTITY GETTERS (MT-2b) take the TENANT first: the session tenant on a
+ * request path, the one TC tenant a job resolved, or on a public link the
+ * tenant its token names (MT-3) — never client input. The saved value is the tenant's
+ * office_setting row (config/emailIdentity.js). The app-setting FALLBACK is
+ * tenant 'carein's only: those settings are keyed by office key alone and are
+ * this deployment's settings for carein's offices, so another tenant with an
+ * office keyed 'roland' must never sign with Roland's name, address or
+ * reply-to. An office that is not the tenant's answers nothing at all.
+ *
+ * NOT CHANGED HERE: the FROM address (fromAddressFor / ownFromAddressFor). It
+ * is bound to the DNS-verified sending domain, is not one of the per-office
+ * settings, and stays a process-wide app setting.
+ */
+
+/** @param {unknown} tenantSlug @param {unknown} officeKey */
+function isTenantIdentityOffice(tenantSlug, officeKey) {
+  return isKnownOffice(officeKey) && officeRegistry.isTenantOffice(tenantSlug, officeKey);
 }
 
-/** @param {string} officeKey */
-function practiceDetailsFor(officeKey) {
-  if (!isKnownOffice(officeKey)) return { address: null, phone: null };
-  const address = envValue(`TC_EMAIL_PRACTICE_ADDRESS_${officeEnvSuffix(officeKey)}`);
+/** Whether the app-setting fallback answers for this tenant. @param {unknown} tenantSlug */
+function envFallbackApplies(tenantSlug) {
+  return tenantSlug === MT2A_TENANT_SLUG;
+}
+
+/**
+ * (R5c) The office's Reply-To: saved in the app, else the app setting (carein
+ * only), else null.
+ * @param {string} tenantSlug
+ * @param {string} officeKey
+ * @returns {string|null}
+ */
+function replyToFor(tenantSlug, officeKey) {
+  if (!isTenantIdentityOffice(tenantSlug, officeKey)) return null;
+  return (
+    emailIdentity.storedValue(tenantSlug, officeKey, 'replyTo') ??
+    (envFallbackApplies(tenantSlug) ? envReplyToFor(officeKey) : null)
+  );
+}
+
+/**
+ * @param {string} tenantSlug
+ * @param {string} officeKey
+ */
+function practiceDetailsFor(tenantSlug, officeKey) {
+  if (!isTenantIdentityOffice(tenantSlug, officeKey)) return { address: null, phone: null };
+  const env = envFallbackApplies(tenantSlug);
   return {
-    address: address ? address.slice(0, 300) : null,
+    // Saved in the app, else the app setting (the same precedence as the phone).
+    // Every reader of the address (the print letterhead prefill, the referral
+    // letter, the email footer and {{practice.address}}) comes through here.
+    address:
+      emailIdentity.storedValue(tenantSlug, officeKey, 'practiceAddress') ??
+      (env ? envPracticeAddressFor(officeKey) : null),
     // (R5c) saved in the app, else the app setting.
-    phone: emailIdentity.storedValue(officeKey, 'practicePhone') ?? envPracticePhoneFor(officeKey),
+    phone: emailIdentity.storedValue(tenantSlug, officeKey, 'practicePhone') ?? (env ? envPracticePhoneFor(officeKey) : null),
   };
 }
 
 /**
  * The practice name an email signs with, or null (the caller uses the office
- * label). (R5c) Saved in the app, else the app setting. Read by the patient
- * email AND the referral letter: one identity per office.
+ * label). (R5c) Saved in the app, else the app setting (carein only). Read by
+ * the patient email AND the referral letter: one identity per office.
+ * @param {string} tenantSlug
  * @param {string} officeKey
  * @returns {string|null}
  */
-function practiceNameFor(officeKey) {
-  if (!isKnownOffice(officeKey)) return null;
-  return emailIdentity.storedValue(officeKey, 'practiceName') ?? envPracticeNameFor(officeKey);
+function practiceNameFor(tenantSlug, officeKey) {
+  if (!isTenantIdentityOffice(tenantSlug, officeKey)) return null;
+  return (
+    emailIdentity.storedValue(tenantSlug, officeKey, 'practiceName') ??
+    (envFallbackApplies(tenantSlug) ? envPracticeNameFor(officeKey) : null)
+  );
 }
 
 /**
  * (R5c) What is in force for one office's identity, field by field, and why,
  * for Settings -> Email identity. Plain contact details; none is a secret.
+ * @param {string} tenantSlug
  * @param {string} officeKey
  */
-function identityStateFor(officeKey) {
+function identityStateFor(tenantSlug, officeKey) {
+  const env = envFallbackApplies(tenantSlug) && isTenantIdentityOffice(tenantSlug, officeKey);
   /** @type {Record<import('./emailIdentity').IdentityField, string|null>} */
   const fallbacks = {
-    replyTo: envReplyToFor(officeKey),
-    practiceName: envPracticeNameFor(officeKey),
-    practicePhone: envPracticePhoneFor(officeKey),
+    replyTo: env ? envReplyToFor(officeKey) : null,
+    practiceName: env ? envPracticeNameFor(officeKey) : null,
+    practicePhone: env ? envPracticePhoneFor(officeKey) : null,
+    practiceAddress: env ? envPracticeAddressFor(officeKey) : null,
   };
   /** @type {Record<string, { value: string|null, source: 'stored'|'env'|'none', stored: string|null, fallback: string|null, fallbackSetting: string }>} */
   const fields = {};
   for (const field of emailIdentity.FIELD_NAMES) {
-    const stored = emailIdentity.storedValue(officeKey, field);
+    const stored = emailIdentity.storedValue(tenantSlug, officeKey, field);
     const fallback = fallbacks[field];
     fields[field] = {
       value: stored ?? fallback,
@@ -337,6 +406,7 @@ module.exports = {
   envReplyToFor,
   envPracticeNameFor,
   envPracticePhoneFor,
+  envPracticeAddressFor,
   identityStateFor,
   unsubscribeUrl,
 };

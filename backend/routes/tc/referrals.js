@@ -87,6 +87,7 @@ const { contract, requireOffice, actorEmail, parseBody, h, auditTc } = require('
 const tenantDb = require('../../platform/tenantDb');
 const { holdsPermission } = require('../../config/permissions');
 const tcReferrals = require('../../config/tcReferrals');
+const { sessionTenantSlug } = require('../../platform/sessionTenant');
 const store = require('./referralStore');
 const templateStore = require('./referralTemplateStore');
 const checkoutStore = require('./checkoutStore');
@@ -129,11 +130,11 @@ router.get(
   '/status',
   h(async (req, res) => {
     const office = req.tcOffice;
-    const enabled = await tcReferrals.isEnabled(office);
+    const enabled = await tcReferrals.isEnabled(sessionTenantSlug(req), office);
     // R5: referral email's own switch, and why an office with it on cannot
     // send yet. Only said when referrals itself is on; off answers as before.
     if (!enabled) return res.json({ success: true, office, enabled });
-    return res.json({ success: true, office, enabled, emailSend: await referralSend.emailSendStatus(office) });
+    return res.json({ success: true, office, enabled, emailSend: await referralSend.emailSendStatus(sessionTenantSlug(req), office) });
   })
 );
 
@@ -141,7 +142,7 @@ router.get(
 // (Plain middleware, not h(): h() does not pass `next`.)
 router.use(async (req, res, next) => {
   try {
-    if (await tcReferrals.isEnabled(req.tcOffice)) return next();
+    if (await tcReferrals.isEnabled(sessionTenantSlug(req), req.tcOffice)) return next();
     return res.status(403).json({
       success: false,
       error: 'Referrals are not switched on for this office.',

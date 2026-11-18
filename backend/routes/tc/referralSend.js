@@ -116,6 +116,7 @@ const { MessagingError } = require('../../services/messaging/errors');
 const patientContact = require('../../services/tc/referralPatientContact');
 const patientInsurance = require('../../services/tc/referralPatientInsurance');
 const tcReferralEmail = require('../../config/tcReferralEmail');
+const { sessionTenantSlug } = require('../../platform/sessionTenant');
 const tcReferralPatientEmail = require('../../config/tcReferralPatientEmail');
 const acsConfig = require('../../config/acsEmail');
 const odOffices = require('../../config/odOffices');
@@ -147,14 +148,18 @@ function refusal(status, code, error, extra = {}) {
   return { status, body: { success: false, error, code, ...extra }, outcome: { status: 'failed', message: error, code } };
 }
 
-/** Is email on for this office, and if so can it send right now? (GET /status) */
-async function emailSendStatus(office) {
-  const enabled = await tcReferralEmail.isEnabled(office);
+/**
+ * Is email on for this office, and if so can it send right now? (GET /status)
+ * @param {string|null} tenantSlug the SESSION tenant (MT-2b)
+ * @param {string} office
+ */
+async function emailSendStatus(tenantSlug, office) {
+  const enabled = await tcReferralEmail.isEnabled(tenantSlug, office);
   if (!enabled) return { enabled: false, unavailable: null };
   await referralLetter.refreshTransportSwitch();
-  const unavailable = referralLetter.unavailableReason(office);
+  const unavailable = referralLetter.unavailableReason(tenantSlug, office);
   if (unavailable === 'office_not_configured') {
-    return { enabled: true, unavailable, missing: referralLetter.officeMissing(office) };
+    return { enabled: true, unavailable, missing: referralLetter.officeMissing(tenantSlug, office) };
   }
   return { enabled: true, unavailable };
 }
@@ -197,14 +202,14 @@ async function readFiles(rows) {
   return files;
 }
 
-/** What the letter signs with, for this office. */
-function officeDetails(office) {
-  const details = acsConfig.practiceDetailsFor(office);
+/** What the letter signs with, for this office. @param {string|null} tenantSlug @param {string} office */
+function officeDetails(tenantSlug, office) {
+  const details = acsConfig.practiceDetailsFor(tenantSlug, office);
   return {
-    name: acsConfig.practiceNameFor(office) || odOffices.describeOffice(office).officeName,
+    name: acsConfig.practiceNameFor(tenantSlug, office) || odOffices.describeOffice(office).officeName,
     address: details.address,
     phone: details.phone,
-    replyTo: /** @type {string} */ (acsConfig.replyToFor(office)),
+    replyTo: /** @type {string} */ (acsConfig.replyToFor(tenantSlug, office)),
   };
 }
 
@@ -213,8 +218,8 @@ function officeDetails(office) {
  * Measured with the transport's own payload builder, so the size is the size
  * of what would go out.
  */
-function composeAndPack({ office, row, entry, files, attemptId, recipient, unsubscribeUrl, at, bcc = null, links = [], contact = null, insurance = null }) {
-  const details = officeDetails(office);
+function composeAndPack({ tenantSlug, office, row, entry, files, attemptId, recipient, unsubscribeUrl, at, bcc = null, links = [], contact = null, insurance = null }) {
+  const details = officeDetails(tenantSlug, office);
   // The stored row, with teeth read the way every referral read reads them.
   const referral = { ...row, teeth: store.toReferral(row).teeth };
   // (R5b) The two buttons, in the order the brief named them.
@@ -239,7 +244,7 @@ function composeAndPack({ office, row, entry, files, attemptId, recipient, unsub
         providerCode: 'LETTER_TOO_LONG',
       });
     }
-    const rendered = referralLetter.render({ office, subject: composed.subject, text: composed.text, unsubscribeUrl, actions });
+    const rendered = referralLetter.render({ tenantSlug, office, subject: composed.subject, text: composed.text, unsubscribeUrl, actions });
     const message = referralLetter.messageOf({
       office,
       attemptId,
@@ -249,7 +254,7 @@ function composeAndPack({ office, row, entry, files, attemptId, recipient, unsub
       attachments: attached,
       bccAddress: bcc,
     });
-    if (referralLetter.requestBytes(message, office) <= PACKING_BUDGET_BYTES) {
+    if (referralLetter.requestBytes(message, tenantSlug, office) <= PACKING_BUDGET_BYTES) {
       return {
         message,
         attached: attached.length,
@@ -451,7 +456,7 @@ async function recordConflict(req, { office, referralId, attemptId, accepted, re
 async function sendReferral(req, { office, referralId, trigger }) {
   const auto = trigger === 'auto';
 
-  if (!(await tcReferralEmail.isEnabled(office))) {
+  if (!(await tcReferralEmail.isEnabled(sessionTenantSlug(req), office))) {
     const out = refusal(403, 'REFERRAL_EMAIL_DISABLED', 'Referral email is not switched on for this office.');
     out.outcome = { status: 'skipped', message: out.body.error, code: out.body.code };
     return out;
@@ -508,9 +513,9 @@ async function sendReferral(req, { office, referralId, trigger }) {
     recipient = referralLetter.recipientOf(entry.email);
     if (!recipient) throw new MessagingError('NO_ADDRESS', `${contract.REFERRAL_NO_EMAIL_COPY}.`);
     await referralLetter.refreshTransportSwitch();
-    referralLetter.assertAvailable(office);
+    referralLetter.assertAvailable(sessionTenantSlug(req), office);
     await tenantDb.withTenantDb(req, (pool) => referralLetter.assertMayEmail(pool, { office, address: recipient }));
-    bcc = referralLetter.bccFor(office, recipient);
+    bcc = referralLetter.bccFor(sessionTenantSlug(req), office, recipient);
   } catch (err) {
     return fail(err);
   }
@@ -561,7 +566,13 @@ async function sendReferral(req, { office, referralId, trigger }) {
     const files = await readFiles(await tenantDb.withTenantDb(req, (pool) => attachmentRows(pool, office, referralId)));
     unsubscribe = referralLetter.mintUnsubscribe();
     links = referralLetter.mintLinks(['received', 'scheduled']);
+    // (MT-3) The links' tenant is on the record before the letter can leave.
+    // Inside this try: a failed write is fail(err) — the claim released, a
+    // send_failed row, nothing sent. The claim above and the ACS-accept → CAS
+    // below are untouched.
+    await referralLetter.registerLinks(req, { unsubscribe, links, at: now });
     packed = composeAndPack({
+      tenantSlug: sessionTenantSlug(req),
       office,
       row,
       entry,
@@ -575,7 +586,7 @@ async function sendReferral(req, { office, referralId, trigger }) {
       contact,
       insurance,
     });
-    accepted = await referralLetter.transport(packed.message, office);
+    accepted = await referralLetter.transport(packed.message, sessionTenantSlug(req), office);
   } catch (err) {
     return fail(err);
   }
@@ -802,7 +813,7 @@ async function notifyPatient(req, { office, row, entry, withFiles, contact: lett
   // no patient email and no Open Dental lookup for one. A failed read is off.
   let patientEmailOn = false;
   try {
-    patientEmailOn = await tcReferralPatientEmail.isEnabled(office);
+    patientEmailOn = await tcReferralPatientEmail.isEnabled(sessionTenantSlug(req), office);
   } catch {
     patientEmailOn = false;
   }
@@ -849,7 +860,10 @@ async function notifyPatient(req, { office, row, entry, withFiles, contact: lett
     if (mayEmail !== true) throw new MessagingError('SEND_FAILED', 'Whether the patient may be emailed could not be checked.');
     unsubscribe = referralLetter.mintUnsubscribe();
     [link] = referralLetter.mintLinks(['scheduled']);
-    const details = officeDetails(office);
+    // (MT-3) Registered before the notice can leave; a failed write is a
+    // patient_email_failed row and no notice.
+    await referralLetter.registerLinks(req, { unsubscribe, links: [link], at: transitions.clock() });
+    const details = officeDetails(sessionTenantSlug(req), office);
     const composed = letterText.composePatientNotice({
       patientName: String(row.patient_name ?? ''),
       referringProvider: row.referring_provider == null ? null : String(row.referring_provider),
@@ -862,6 +876,7 @@ async function notifyPatient(req, { office, row, entry, withFiles, contact: lett
     });
     noticeSnapshot = patientSnapshot(composed);
     const rendered = referralLetter.renderPatientNotice({
+      tenantSlug: sessionTenantSlug(req),
       office,
       subject: composed.subject,
       text: composed.text,
@@ -877,7 +892,7 @@ async function notifyPatient(req, { office, row, entry, withFiles, contact: lett
       rendered,
       unsubscribeUrl: unsubscribe.url,
     });
-    accepted = await referralLetter.transport(message, office);
+    accepted = await referralLetter.transport(message, sessionTenantSlug(req), office);
   } catch (err) {
     const failure = failureOf(err);
     await recordPatientEvent(req, {
@@ -967,7 +982,7 @@ async function notifyPatient(req, { office, row, entry, withFiles, contact: lett
  */
 async function sendAfterApproval(req, { office, referralId }) {
   try {
-    if (!(await tcReferralEmail.isEnabled(office))) return null;
+    if (!(await tcReferralEmail.isEnabled(sessionTenantSlug(req), office))) return null;
     const policyOn = await tenantDb.withTenantDb(req, (pool) => store.sendsOnApproval(pool, office));
     if (!policyOn) return null;
     const out = await sendReferral(req, { office, referralId, trigger: 'auto' });

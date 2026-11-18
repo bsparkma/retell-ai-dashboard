@@ -89,6 +89,7 @@ const hygStaff = require('../../config/hygStaff');
 const staffStore = require('../../services/hyg/staffStore');
 const tcHandoff = require('../../services/hyg/tcHandoffClient');
 const tcCheckout = require('../../config/tcCheckout');
+const { sessionTenantSlug } = require('../../platform/sessionTenant');
 const { snapshotFromAppointment } = require('../../services/hyg/appointmentSnapshot');
 const contract = require('../../hyg/contract.gen.cjs');
 const tcContract = require('../../tc/contract.gen.cjs');
@@ -253,7 +254,7 @@ function signatureFor(req, office, visit, roster) {
  * thing this module may never do.
  */
 async function resolveAppointment(req, { office, aptNum, date }) {
-  const resolved = resolveHygOd(office);
+  const resolved = resolveHygOd(req, office);
   if (!resolved.ok) return { ok: false, status: resolved.status, body: resolved.body };
 
   const odGet = (path, params, opts) =>
@@ -500,7 +501,7 @@ router.get(
       doctorOptions: hygStaff.doctorOptions(office),
       // Item 49: whether this office shows "Alert checkout" at all. The switch
       // is re-checked on every send; this only decides what the page draws.
-      checkoutEnabled: await tcCheckout.isEnabled(office),
+      checkoutEnabled: await tcCheckout.isEnabled(sessionTenantSlug(req), office),
     });
   })
 );
@@ -871,8 +872,8 @@ function procNumFrom(req) {
  * never an empty list, because an empty list reads as "this patient has no
  * treatment planned".
  */
-async function readExistingTxFor(visit, { refresh }) {
-  const resolved = resolveHygOd(visit.office);
+async function readExistingTxFor(req, visit, { refresh }) {
+  const resolved = resolveHygOd(req, visit.office);
   if (!resolved.ok) return { ok: false, status: resolved.status, body: resolved.body };
   const odGet = (path, params, opts) =>
     resolved.od.client.apiGetRaw(path, params, { ...(opts || {}), module: 'hyg' });
@@ -944,7 +945,7 @@ router.get(
     if (!visit) return undefined;
 
     const startedAt = Date.now();
-    const read = await readExistingTxFor(visit, { refresh: req.query.refresh === '1' });
+    const read = await readExistingTxFor(req, visit, { refresh: req.query.refresh === '1' });
     // SLICE 2b: REMEMBER WHAT THE READ SAID, so the Router can list every item
     // (answered or not) and can tell "never loaded" from "could not be loaded".
     // Only an Open Dental outcome is recorded — an office that is not ready
@@ -1052,7 +1053,7 @@ router.put(
     // THE PROCEDURE MUST BE IN THIS VISIT'S OWN READ — the stored office and
     // PatNum's plan — or there is nothing to answer about. A ProcNum from another
     // patient, or from the same number in the other office, is a 404 here.
-    const read = await readExistingTxFor(visit, { refresh: false });
+    const read = await readExistingTxFor(req, visit, { refresh: false });
     if (!read.ok) {
       await auditHygDenial(req, 'hyg_existing_tx', aptNum, {
         office,
@@ -1161,7 +1162,7 @@ router.put(
     );
     if (frozen) return res.status(409).json(frozenRefusal);
 
-    const read = await readExistingTxFor(visit, { refresh: false });
+    const read = await readExistingTxFor(req, visit, { refresh: false });
     if (!read.ok) {
       await auditHygDenial(req, 'hyg_existing_tx', aptNum, {
         office,
@@ -1851,7 +1852,7 @@ async function runPerioStep(req, office, aptNum, od, visit) {
 
 /** Office readiness and the visit, for the routes that continue a send. */
 async function perioContinuation(req, res, office, aptNum) {
-  const resolved = resolveHygOd(office);
+  const resolved = resolveHygOd(req, office);
   if (!resolved.ok) {
     await auditHygDenial(req, 'hyg_perio_send', aptNum, {
       office,
@@ -2345,7 +2346,7 @@ router.post(
     // none, and replaces the early alert's snapshot with the final one when
     // there is (TC's source key makes it the SAME handoff either way). Off for
     // this office → `checkout: null`, nothing sent.
-    const checkout = (await tcCheckout.isEnabled(office))
+    const checkout = (await tcCheckout.isEnabled(sessionTenantSlug(req), office))
       ? await deliverCheckout(req, { office, aptNum, final: true })
       : null;
 
@@ -2793,7 +2794,7 @@ router.post(
       });
     }
     if (parseBody(res, contract.CheckoutAlertRequestSchema, req.body ?? {}) === null) return undefined;
-    if (!(await tcCheckout.isEnabled(office))) return checkoutDisabled(res, office);
+    if (!(await tcCheckout.isEnabled(sessionTenantSlug(req), office))) return checkoutDisabled(res, office);
 
     const current = await tenantDb.withTenantDb(req, (pool) =>
       getVisitView(pool, { office, aptNum })
@@ -2852,7 +2853,7 @@ router.post(
       });
     }
     if (parseBody(res, contract.CheckoutAlertRequestSchema, req.body ?? {}) === null) return undefined;
-    if (!(await tcCheckout.isEnabled(office))) return checkoutDisabled(res, office);
+    if (!(await tcCheckout.isEnabled(sessionTenantSlug(req), office))) return checkoutDisabled(res, office);
 
     const result = await deliverCheckout(req, { office, aptNum, final: true });
     if (!result.ok) {
@@ -3115,7 +3116,7 @@ router.post(
 
 /** The visit's card and its thread, or the refusal answered and null. */
 async function checkoutThreadFor(req, res, office, aptNum) {
-  if (!(await tcCheckout.isEnabled(office))) {
+  if (!(await tcCheckout.isEnabled(sessionTenantSlug(req), office))) {
     res.status(403).json({
       success: false,
       error: 'The checkout handoff is not switched on for this office',

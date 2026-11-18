@@ -29,6 +29,7 @@ const tenantDb = require('../../platform/tenantDb');
 const visitProgress = require('../../services/hyg/visitProgress');
 const checkoutQuestions = require('../../services/hyg/checkoutQuestions');
 const tcCheckout = require('../../config/tcCheckout');
+const { sessionTenantSlug } = require('../../platform/sessionTenant');
 
 const router = express.Router();
 
@@ -44,7 +45,7 @@ router.get(
     if (!parsed.ok) {
       return res.status(400).json({ success: false, error: parsed.error, code: 'INVALID_APT_NUMS', office });
     }
-    if (!(await tcCheckout.isEnabled(office))) {
+    if (!(await tcCheckout.isEnabled(sessionTenantSlug(req), office))) {
       return res.json({ success: true, office, enabled: false, badges: [] });
     }
     const badges = await tenantDb.withTenantDb(req, (pool) =>

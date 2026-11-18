@@ -37,10 +37,11 @@ import { UrgencyBadge } from "@/features/tc/components/TcShell";
 import {
   TC_CHECKOUT_OUTCOME_LABELS,
   TC_CHECKOUT_PRIORITY_LABELS,
+  holdingLast,
   type TcCheckoutCaseTreatment,
   type TcCheckoutHandoff,
   type TcCheckoutPanelItem,
-  type TcCheckoutPriority,
+  type TcCheckoutItemPriority,
   type TcCheckoutProcedure,
 } from "@shared/tc/checkout";
 import type { OfficeId } from "@shared/tc/contract";
@@ -71,11 +72,17 @@ export function TxNotInOdChip() {
   );
 }
 
-/** The same priority → urgency map the server uses for the plan item. */
-const URGENCY_BY_PRIORITY: Record<TcCheckoutPriority, "high" | "medium" | "low"> = {
+/**
+ * The same priority → urgency map the server uses for the plan item
+ * (routes/tc/checkout.js itemUrgency). A HOLDING item is an alternative option,
+ * not an urgency: it takes TC's lowest step, "elective" (neutral grey), exactly
+ * as the plan item it becomes.
+ */
+const URGENCY_BY_PRIORITY: Record<TcCheckoutItemPriority, "high" | "medium" | "low" | "elective"> = {
   urgent: "high",
   preventative: "medium",
   cosmetic: "low",
+  holding: "elective",
 };
 
 function teethLine(p: TcCheckoutProcedure): string {
@@ -397,7 +404,7 @@ function VisitBlock({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {visit.items.map((item) => {
+            {holdingLast(visit.items, (i) => i.procedure.priority).map((item) => {
               const p = item.procedure;
               const key = `${h.handoffId}:${item.index}`;
               return (

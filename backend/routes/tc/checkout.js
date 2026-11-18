@@ -129,6 +129,7 @@ const { findOpenCase } = require('./intakeFromCall');
 const nurtureHooks = require('../../services/tcNurture/hooks');
 const { localDayKey } = require('../../services/localDayClock');
 const tcCheckout = require('../../config/tcCheckout');
+const { sessionTenantSlug } = require('../../platform/sessionTenant');
 const odManualPatient = require('./odManualPatient');
 const checkoutAppointments = require('./checkoutAppointments');
 const odOffices = require('../../config/odOffices');
@@ -183,8 +184,27 @@ function systemRequest(req) {
 /** Statuses the "Done today" view shows: every answer a human gave. */
 const DONE_STATUSES = Object.freeze(['scheduled', 'not_scheduled', 'nothing_needed', 'dismissed']);
 
-/** The visit's priority → TC urgency (the same mapping the treatment handoff uses). */
+/**
+ * The visit's priority → TC urgency (the same mapping the treatment handoff
+ * uses). VISIT-level: `snapshot.priority` is one of these three or null, never
+ * 'holding' — the hygiene side computes it from the non-holding items only.
+ */
 const URGENCY_BY_PRIORITY = Object.freeze({ urgent: 'high', preventative: 'medium', cosmetic: 'low' });
+
+/**
+ * A HOLDING procedure's urgency on the case's treatment plan: 'elective', TC's
+ * lowest step (neutral grey, never a warning). Holding marks an alternative or
+ * secondary option (Beau's ruling), not an urgency — so it takes the step that
+ * raises nothing, rather than falling through to the 'medium' default. The
+ * CASE's urgency is never read from an item; it comes from snapshot.priority.
+ */
+const HOLDING_ITEM_URGENCY = 'elective';
+
+/** One procedure's urgency on the case's treatment plan. */
+function itemUrgency(priority) {
+  if (priority === 'holding') return HOLDING_ITEM_URGENCY;
+  return URGENCY_BY_PRIORITY[priority] || 'medium';
+}
 
 /** Scalars for a case opened at checkout. */
 const CHECKOUT_CASE_DEFAULTS = Object.freeze({
@@ -249,7 +269,7 @@ async function sweep(req, office, today) {
 
 /** Gate + sweep for the action/read routes. Returns today, or null having answered. */
 async function enter(req, res) {
-  if (!(await tcCheckout.isEnabled(req.tcOffice))) {
+  if (!(await tcCheckout.isEnabled(sessionTenantSlug(req), req.tcOffice))) {
     disabled(res);
     return null;
   }
@@ -310,7 +330,7 @@ function checkoutPhase(snapshot, handoff, position) {
       feeCents: 0,
       insuranceEstCents: 0,
       patientPortionCents: 0,
-      urgency: URGENCY_BY_PRIORITY[p.priority] || 'medium',
+      urgency: itemUrgency(p.priority),
       timeEstimate: '',
       benefits: [],
       risksOfDelay: [],
@@ -414,7 +434,7 @@ router.get(
   '/summary',
   h(async (req, res) => {
     const office = req.tcOffice;
-    if (!(await tcCheckout.isEnabled(office))) {
+    if (!(await tcCheckout.isEnabled(sessionTenantSlug(req), office))) {
       return res.json({ success: true, office, enabled: false, today: null, waiting: 0, newest: null });
     }
     const today = officeToday();
@@ -452,14 +472,14 @@ router.get(
  * @param {{ force?: boolean }} [opts]
  */
 async function kickScheduleSweep(req, office, { force = false } = {}) {
-  if (!(await autoCheckout.isOn(office))) return false;
+  if (!(await autoCheckout.isOn(sessionTenantSlug(req), office))) return false;
   const today = officeToday();
   const asSystem = Object.assign(Object.create(req), { user: { email: autoCheckout.SYSTEM_ACTOR } });
   const running = autoCheckout.ensureFresh(
     office,
     () =>
       tenantDb.withTenantDb(req, (pool) =>
-        autoCheckout.sweepOffice({ office, today, pool, audit: (entry) => audit(asSystem, entry) })
+        autoCheckout.sweepOffice({ tenantSlug: sessionTenantSlug(req), office, today, pool, audit: (entry) => audit(asSystem, entry) })
       ),
     { force }
   );
@@ -479,7 +499,7 @@ router.get(
     if (today === null) return undefined;
     const office = req.tcOffice;
     // Checkout is on (enter() answered otherwise), so this is both switches.
-    const enabled = await autoCheckout.isOn(office);
+    const enabled = await autoCheckout.isOn(sessionTenantSlug(req), office);
     if (enabled) await kickScheduleSweep(req, office);
     return res.json({ success: true, office, ...autoCheckout.statusOf(office, enabled) });
   })
@@ -1506,5 +1526,6 @@ module.exports.kickScheduleSweep = kickScheduleSweep;
 // Exported for the tests: TC's own text for a hygiene procedure (feedback round 1
 // pins that a primary tooth prints as its letter here too).
 module.exports.procedureLines = procedureLines;
+module.exports.itemUrgency = itemUrgency;
 // CO-6: what the routing module is mounted with (its real-schema verifier uses it).
 module.exports.routeDeps = routeDeps;

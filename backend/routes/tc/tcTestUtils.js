@@ -19,8 +19,11 @@
 const express = require('express');
 
 const registry = require('../../platform/registry');
+const publicLinkIndex = require('../../platform/publicLinkIndex');
 const tenantDb = require('../../platform/tenantDb');
 const userContext = require('../../platform/userContext');
+const { mirrorPlatformStubIntoOfficeSettings } = require('../../platform/officeSettingsTestUtils');
+const officeSettings = require('../../platform/officeSettings');
 const { tenantContext, requireModule } = require('../../middleware/tenantContext');
 
 /** Columns stored as jsonb — real pg returns objects, so the fake must too. */
@@ -349,6 +352,12 @@ async function bootTcApp({
     withTenantDb: tenantDb.withTenantDb,
   };
 
+  // MT-2b: the per-office readers SERVE office_setting. Derive it from this
+  // suite's getPlatformSetting stub, exactly as the dual-write would store it
+  // (platform/officeSettingsTestUtils.js), and start every boot from a cold
+  // shared cache. Changes no stubbed value and no assertion.
+  const restoreOfficeSettingsMirror = mirrorPlatformStubIntoOfficeSettings(registry);
+  officeSettings.resetCacheForTests();
   registry.getUserByEmail = async () => ({
     user_id: 'U1',
     tenant_id: 'T1',
@@ -366,6 +375,13 @@ async function bootTcApp({
   // would answer this app's lookups with the previous test's role.
   userContext.clearCache();
   tenantDb.withTenantDb = async (_req, fn) => fn(db);
+  // (MT-3) The control-plane public_link_index an email send registers its
+  // unsubscribe link in: an in-memory fake over the same tenant and modules.
+  const linkIndex = publicLinkIndex.createMemoryBackend({
+    tenants: (id) => (id === 'T1' ? { tenant_id: 'T1', slug: 'carein', status: 'active' } : null),
+    modules: () => modules,
+  });
+  publicLinkIndex.setBackendForTests(linkIndex);
 
   const app = express();
   app.use(express.json({ limit: '5mb' }));
@@ -384,10 +400,14 @@ async function bootTcApp({
       resolve({
         baseUrl: `http://127.0.0.1:${port}`,
         db,
+        linkIndex,
         close: () =>
           new Promise((r) => {
             for (const k of REGISTRY_KEYS) registry[k] = originals.registry[k];
+            publicLinkIndex.resetBackendForTests();
             tenantDb.withTenantDb = originals.withTenantDb;
+            restoreOfficeSettingsMirror();
+            officeSettings.resetCacheForTests();
             server.close(r);
           }),
       });

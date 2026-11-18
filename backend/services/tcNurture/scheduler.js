@@ -58,7 +58,7 @@ class TcNurtureScheduler {
     return this.deps.config || config;
   }
 
-  /** @returns {Promise<{ tenant: { tenant_id: string }|null, reason: string|null }>} */
+  /** @returns {Promise<{ tenant: { tenant_id: string, slug?: string }|null, reason: string|null }>} */
   async resolveTenant() {
     let tenants;
     try {
@@ -90,9 +90,11 @@ class TcNurtureScheduler {
     if (this.running) return { skipped: 'ALREADY_RUNNING', offices: [], at };
     this.running = true;
     try {
-      const sw = await this.cfg.switchedOnOffices(this.registry);
-      if (sw.offices.length === 0) {
-        const r = { skipped: sw.reason || 'NO_OFFICE_SWITCHED_ON', offices: [], at };
+      // MT-2b: the switch is per TENANT, so the tenant comes first — the one
+      // active, tc-entitled tenant registry.listTenants() names (resolveTenant).
+      // The kill switch still answers before anything is read.
+      if (this.cfg.isKilled()) {
+        const r = { skipped: 'KILLED_BY_ENV', offices: [], at };
         this.lastRun = r;
         console.log(`[tcNurture] nightly pass skipped: ${r.skipped}`);
         return r;
@@ -104,12 +106,20 @@ class TcNurtureScheduler {
         console.warn(`[tcNurture] nightly pass skipped: ${r.skipped}`);
         return r;
       }
+      const tenantSlug = typeof tenant.slug === 'string' ? tenant.slug : null;
+      const sw = await this.cfg.switchedOnOffices(this.registry, tenantSlug);
+      if (sw.offices.length === 0) {
+        const r = { skipped: sw.reason || 'NO_OFFICE_SWITCHED_ON', offices: [], at };
+        this.lastRun = r;
+        console.log(`[tcNurture] nightly pass skipped: ${r.skipped}`);
+        return r;
+      }
       const pool = await this.tenantDb.getTenantPool(tenant.tenant_id);
       const run = this.deps.runForOffice || runForOffice;
       const results = [];
       for (const office of sw.offices) {
         try {
-          const outcome = await run({ pool, office, now, tz: this.cfg.timezone() });
+          const outcome = await run({ pool, tenantSlug, office, now, tz: this.cfg.timezone() });
           results.push(outcome);
           // ONE LINE PER OFFICE PER PASS. Counts only — never a name, a phone or a body.
           console.log(

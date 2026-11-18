@@ -10,6 +10,10 @@
  * stack (tenantContext + requireModule('tc')). The registry is stubbed and ACS
  * is a FAKE transport that records every request; nothing reaches a network.
  *
+ * (MT-3) The control-plane public_link_index is an in-memory fake
+ * (platform/publicLinkIndex.js createMemoryBackend) over the same stubbed
+ * tenant and modules, on the referral clock; `linkIndex` on the boot result.
+ *
  * Fixtures: roland 12827 / 12828, valley 7115. Names are synthetic; addresses
  * are @example.test.
  */
@@ -22,6 +26,8 @@ const express = require('express');
 const registry = require('../platform/registry');
 const tenantDb = require('../platform/tenantDb');
 const userContext = require('../platform/userContext');
+const { mirrorPlatformStubIntoOfficeSettings } = require('../platform/officeSettingsTestUtils');
+const officeSettings = require('../platform/officeSettings');
 const { tenantContext, requireModule } = require('../middleware/tenantContext');
 const { FakeTenantDb } = require('./tc/tcTestUtils');
 const messaging = require('../services/messaging');
@@ -29,6 +35,8 @@ const consent = require('../services/messaging/consent');
 const adapters = require('../services/messaging/adapters');
 const acsClient = require('../services/messaging/acs/client');
 const tcEmail = require('../config/tcEmail');
+const publicLinkIndex = require('../platform/publicLinkIndex');
+const transitions = require('./tc/referralTransitions');
 
 const PUBLIC_BASE = 'https://dashboard.example.test';
 const ACS_ENDPOINT = 'https://acs-carein-test.communication.azure.com';
@@ -91,6 +99,12 @@ async function bootEmailApp({ env = {}, modules = ['tc'], tenant, acsStatus = 'S
   registry.getPlatformAdminByEmail = async () => null;
   registry.getPlatformSetting = async () => null; // kill switch: the env fallback answers
   registry.touchUserLogin = async () => {};
+  // MT-2b: the per-office readers SERVE office_setting. Derive it from this
+  // suite's getPlatformSetting stub, exactly as the dual-write would store it
+  // (platform/officeSettingsTestUtils.js), and start every boot from a cold
+  // shared cache. Changes no stubbed value and no assertion.
+  const restoreOfficeSettingsMirror = mirrorPlatformStubIntoOfficeSettings(registry);
+  officeSettings.resetCacheForTests();
   userContext.clearCache();
   const seenTenantIds = [];
   tenantDb.withTenantDb = async (req, fn) => {
@@ -99,6 +113,12 @@ async function bootEmailApp({ env = {}, modules = ['tc'], tenant, acsStatus = 'S
     return fn(db);
   };
   tcEmail.resetCacheForTests();
+  const linkIndex = publicLinkIndex.createMemoryBackend({
+    tenants: (id) => (tenantRow && tenantRow.tenant_id === id ? tenantRow : null),
+    modules: () => modules,
+    now: () => transitions.clock(),
+  });
+  publicLinkIndex.setBackendForTests(linkIndex);
   messaging.setClockForTests(() => now);
   consent.setOdPatientReaderForTests(async (_office, patNum) => ({ PatNum: patNum, TxtMsgOk: 'Yes' }));
 
@@ -144,10 +164,14 @@ async function bootEmailApp({ env = {}, modules = ['tc'], tenant, acsStatus = 'S
         db,
         acsCalls,
         seenTenantIds,
+        linkIndex,
         close: () =>
           new Promise((r) => {
             for (const k of REGISTRY_KEYS) registry[k] = originals.registry[k];
+            publicLinkIndex.resetBackendForTests();
             tenantDb.withTenantDb = originals.withTenantDb;
+            restoreOfficeSettingsMirror();
+            officeSettings.resetCacheForTests();
             server.close(r);
           }),
       });

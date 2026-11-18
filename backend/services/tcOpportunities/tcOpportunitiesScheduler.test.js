@@ -13,15 +13,19 @@ const { fakeOdOffices } = require('./tcOppsTestUtils');
 
 function makeScheduler({ setting, tenants, modules, offices = { roland: {} }, getSettingThrows = false } = {}) {
   const ran = [];
-  const s = new TcOpportunitiesScheduler({
-    registry: {
-      getPlatformSetting: async () => {
-        if (getSettingThrows) throw new Error('control db down');
-        return setting === undefined ? null : { value: setting };
-      },
-      listTenants: async () => tenants || [{ tenant_id: 'T1', slug: 'carein', status: 'active' }],
-      getEnabledModules: async (id) => (modules ? modules[id] || [] : ['tc']),
+  // MT-2b: the switch reads office_setting; derive it from the stub (test infra).
+  const { mirrorPlatformStubIntoOfficeSettings: mirror } = require('../../platform/officeSettingsTestUtils');
+  const registry = {
+    getPlatformSetting: async () => {
+      if (getSettingThrows) throw new Error('control db down');
+      return setting === undefined ? null : { value: setting };
     },
+    listTenants: async () => tenants || [{ tenant_id: 'T1', slug: 'carein', status: 'active' }],
+    getEnabledModules: async (id) => (modules ? modules[id] || [] : ['tc']),
+  };
+  mirror(registry);
+  const s = new TcOpportunitiesScheduler({
+    registry,
     tenantDb: { getTenantPool: async () => ({ query: async () => ({ rows: [] }) }) },
     odOffices: fakeOdOffices(offices),
     syncOffice: async (d) => {

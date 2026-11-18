@@ -1,7 +1,8 @@
 # MT-2a — per-office settings in `office_setting` (dark)
 
-**Status:** dark. `platform_setting` is still what every reader serves. MT-2a only
-dual-writes and compares.
+**Status:** superseded by [MT-2b](MT2B_SERVE_OFFICE_SETTINGS.md): the readers now
+SERVE `office_setting`, and the tripwire is inverted. The dual-write below is
+unchanged and still runs. (Originally: dark — MT-2a only dual-wrote and compared.)
 
 ## What moved
 

@@ -48,6 +48,7 @@ import {
   checkoutCollectKey,
   checkoutHasHygieneData,
   checkoutItemKey,
+  holdingLast,
   checkoutPresentKey,
   checkoutWorkupProgress,
   checkoutWorkupProgressLabel,
@@ -212,7 +213,7 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
   };
 
   const copyAll = async () => {
-    const text = snap.procedures.map(workupLine).join("\n");
+    const text = holdingLast(snap.procedures, (p) => p.priority).map(workupLine).join("\n");
     try {
       await navigator.clipboard.writeText(text);
       toast.success("Treatment copied");
@@ -338,7 +339,10 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
                   </tr>
                 </thead>
                 <tbody>
-                  {snap.procedures.map((p, i) => {
+                  {holdingLast(
+                    snap.procedures.map((p, i) => ({ p, i })),
+                    (r) => r.p.priority,
+                  ).map(({ p, i }) => {
                     const mark = handoff.workup.workedUp[String(i)];
                     const current = Boolean(mark) && mark.key === checkoutItemKey(p);
                     const stale = Boolean(mark) && !current;
