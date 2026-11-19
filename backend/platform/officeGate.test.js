@@ -265,3 +265,35 @@ test('messaging.recordInbound refuses another tenant\'s real office before touch
     /frozen office key/
   );
 });
+
+test('isOfficeKeyFormat is the database format only, and is not a gate', () => {
+  for (const ok of ['roland', 'valley', 'fortsmith', 'office-3', 'tulsa_2', 'ab', 'a'.repeat(32)]) {
+    assert.equal(officeGate.isOfficeKeyFormat(ok), true, ok);
+  }
+  for (const bad of ['Roland', '', 'a', '1office', 'a'.repeat(33), 'Not An Office', null, undefined, 7, ['roland']]) {
+    assert.equal(officeGate.isOfficeKeyFormat(bad), false, String(bad));
+  }
+  assert.equal(officeGate.OFFICE_KEY_FORMAT.source, '^[a-z][a-z0-9_-]{1,31}$', 'the MT-2b2 CHECK pattern');
+});
+
+test('ruling scope: during a blip ONLY the unsubscribe recording path skips the registry; the gates and recordInbound still refuse', async () => {
+  rows.acme = new Error('control plane unreachable');
+  // The gate refuses acme's office...
+  assert.equal((await runGate(GATE, reqFor('acme', 'main'))).nexted, false);
+  // ...and so does inbound recording, the other messaging path.
+  const messaging = require('../services/messaging');
+  await assert.rejects(
+    messaging.recordInbound(reqFor('acme'), { office: 'main', channel: 'sms', fromAddress: '+15555550100', body: 'hi' }),
+    /frozen office key/
+  );
+  // The unsubscribe path's check would accept the row's office (pinned end to
+  // end in routes/publicLinkTenant.test.js).
+  assert.equal(officeGate.isOfficeKeyFormat('main'), true);
+  // And the source says which check each path uses.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, '../services/messaging/index.js'), 'utf8');
+  const unsub = src.slice(src.indexOf('async function recordUnsubscribeLink('), src.indexOf('async function recordInbound('));
+  assert.match(unsub, /isOfficeKeyFormat\(m\.office_id\)/);
+  assert.doesNotMatch(unsub, /isSessionOffice|ensureSessionOffices/);
+});

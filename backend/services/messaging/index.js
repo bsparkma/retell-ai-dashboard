@@ -74,7 +74,7 @@ const twilioStatus = require('./twilio/status');
 const acsSmsStatus = require('./acs/smsStatus');
 const emailContent = require('./emailContent');
 const { sessionTenantSlug } = require('../../platform/sessionTenant');
-const { isSessionOffice, isSessionOfficeFresh, ensureSessionOffices } = require('../../platform/officeGate');
+const { isSessionOfficeFresh, isOfficeKeyFormat } = require('../../platform/officeGate');
 // (item 47) The nurture exit hooks. They only ever stop drafting; nothing in
 // them sends.
 const nurtureHooks = require('../tcNurture/hooks');
@@ -794,7 +794,6 @@ const UNSUBSCRIBE_TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
 async function recordUnsubscribeLink(req, token) {
   if (typeof token !== 'string' || !UNSUBSCRIBE_TOKEN_RE.test(token)) return 'malformed';
   const hash = hashUnsubscribeToken(token);
-  await ensureSessionOffices(req);
   const out = await db(req, async (q) => {
     const res = await q.query(
       `SELECT message_id, office_id, channel, to_address FROM tc_messages
@@ -809,9 +808,10 @@ async function recordUnsubscribeLink(req, token) {
     const m = res.rows.length === 1 ? res.rows[0] : await referralEmailByToken(q, hash);
     if (!m) return { outcome: 'no_match' };
     const address = normalizeAddress('email', m.to_address);
-    // MT-2b3: the row's office must be one of the resolved tenant's offices
-    // (platform/officeGate.js), not a member of a hard-coded pair.
-    if (!address || !isSessionOffice(req, m.office_id)) return { outcome: 'no_match' };
+    // MT-2b3 (ruling): FORMAT only, never the registry gate. The tenant came
+    // from the link token and the office from this tenant's own row, so a
+    // registry blip must not drop the opt-out. See officeGate.isOfficeKeyFormat.
+    if (!address || !isOfficeKeyFormat(m.office_id)) return { outcome: 'no_match' };
     const existing = await consent.getConsentRow(q, m.office_id, 'email', address);
     if (existing && existing.state === 'opted_out') {
       return { outcome: 'already', office: m.office_id, messageId: m.message_id };

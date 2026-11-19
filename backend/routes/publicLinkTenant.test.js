@@ -28,7 +28,6 @@ const crypto = require('node:crypto');
 const tenantDb = require('../platform/tenantDb');
 const registry = require('../platform/registry');
 const publicLinkIndex = require('../platform/publicLinkIndex');
-const officeRegistry = require('../platform/officeRegistry');
 const { FakeTenantDb } = require('./tc/tcTestUtils');
 const { DONE_PAGE } = require('./emailWebhooks');
 const { NEUTRAL_PAGE } = require('./referralLinkWebhooks');
@@ -90,16 +89,6 @@ async function bootTwoTenants({ t2 = T2, t2Modules = ['tc'], env = {} } = {}) {
     modules: (id) => (id === 'T2' ? t2Modules : ['tc']),
   });
   publicLinkIndex.setBackendForTests(index);
-  // MT-2b3: a tenant other than carein has offices only when its office
-  // registry says so (platform/officeGate.js). Give bravo one active office,
-  // 'roland', the office its seeded email carries, so B's opt-out is B's own
-  // office and is recorded.
-  const harnessListTenantOffices = registry.listTenantOffices;
-  registry.listTenantOffices = async (slug) => {
-    if (slug === T2.slug) return [bravoOfficeRow('roland')];
-    return harnessListTenantOffices(slug);
-  };
-  officeRegistry.resetCacheForTests();
   return {
     ...app,
     dbA: app.db,
@@ -108,29 +97,8 @@ async function bootTwoTenants({ t2 = T2, t2Modules = ['tc'], env = {} } = {}) {
     index,
     close: async () => {
       tenantDb.withTenantDb = harnessWithTenantDb;
-      registry.listTenantOffices = harnessListTenantOffices;
-      officeRegistry.resetCacheForTests();
       await app.close();
     },
-  };
-}
-
-/** A control-plane office row, as registry.listTenantOffices returns it. */
-function bravoOfficeRow(officeKey) {
-  return {
-    office_key: officeKey,
-    display_name: officeKey,
-    sort_order: 1,
-    retell_agent_ids: [],
-    mango_dids: [],
-    od_customer_key_secret: null,
-    od_customer_key_env: null,
-    commtype_defnums: {},
-    od_enabled: false,
-    hyg_od_enabled: false,
-    status: 'active',
-    updated_at: new Date(0),
-    updated_by: null,
   };
 }
 
@@ -432,6 +400,36 @@ test('the fallback path: an unreachable control plane is 503 too, never a guess'
     assert.equal((await unsubscribe(app.baseUrl, newToken())).status, 503);
   } finally {
     registry.getTenantBySlug = orig;
+    await app.close();
+  }
+});
+
+// ── MT-2b3 ruling: an opt-out is RECORDED even while the registry is down ────
+
+test("registry unreadable + a valid token for a non-carein tenant: the opt-out is written and the done page shown", async () => {
+  const officeRegistry = require('../platform/officeRegistry');
+  const app = await bootTwoTenants();
+  const savedList = registry.listTenantOffices;
+  // Every registry read fails: bravo has NO offices the gates can confirm.
+  registry.listTenantOffices = async () => {
+    throw new Error('control plane unreachable');
+  };
+  officeRegistry.resetCacheForTests();
+  try {
+    assert.equal(officeRegistry.isTenantOffice('bravo', 'roland'), false, 'precondition: the registry cannot confirm the office');
+    const tokenB = await seedT2Email(app.dbB, app.index);
+    const r = await unsubscribe(app.baseUrl, tokenB);
+    assert.equal(r.status, 200);
+    assert.equal(r.text, DONE_PAGE);
+    const rows = app.dbB.table('tc_contact_consent');
+    assert.equal(rows.length, 1, "B's opt-out is recorded despite the blip");
+    assert.equal(rows[0].state, 'opted_out');
+    assert.equal(rows[0].office_id, 'roland', "the office is the one on B's own message row");
+    assert.equal(rows[0].source, 'unsubscribe_link');
+    assert.equal(app.dbA.table('tc_contact_consent').length, 0, "nothing in A's");
+  } finally {
+    registry.listTenantOffices = savedList;
+    officeRegistry.resetCacheForTests();
     await app.close();
   }
 });

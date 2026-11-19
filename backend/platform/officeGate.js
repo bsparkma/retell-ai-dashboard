@@ -29,6 +29,9 @@
  *   - any other tenant: NO offices during a blip, so every key is refused
  *     (fail closed). Before MT-2b3, every tenant's gate accepted roland and
  *     valley whatever the registry said. That was right for carein only.
+ *   - THE ONE EXCEPTION (ruling): recording an email unsubscribe checks the
+ *     office's FORMAT only (isOfficeKeyFormat below), so a blip never drops a
+ *     patient's opt-out.
  *
  * FRESHNESS. carein's registry read is kept fresh by officeRegistry's own
  * timer, so its gate answers synchronously, exactly as the old literal gates
@@ -150,7 +153,37 @@ function makeRequireOffice(reqField) {
   return requireOffice;
 }
 
+/**
+ * The office key FORMAT, exactly the tenant tables' CHECK since MT-2b2
+ * (migrations-tenant/1795000000000_office_format_checks.js).
+ */
+const OFFICE_KEY_FORMAT = /^[a-z][a-z0-9_-]{1,31}$/;
+
+/**
+ * Is `officeKey` well-formed? FORMAT ONLY: it says nothing about whose
+ * office it is, and it is NOT a gate.
+ *
+ * THE ONE PATH THAT USES IT INSTEAD OF isSessionOffice (ruling, MT-2b3):
+ * RECORDING an email unsubscribe (messaging.recordUnsubscribeLink). There:
+ *   - the tenant was resolved authoritatively from the link token
+ *     (platform/publicLinkIndex.js), not from the request;
+ *   - the office comes from that tenant's OWN sent-message or referral-event
+ *     row, never from client input.
+ * A registry blip must not drop a patient's opt-out (a silently lost opt-out
+ * is a dishonest state), so this path checks the format alone. Every other
+ * request path stays registry-backed. platform/officeGate.test.js and
+ * routes/publicLinkTenant.test.js pin both halves.
+ *
+ * @param {unknown} officeKey
+ * @returns {boolean}
+ */
+function isOfficeKeyFormat(officeKey) {
+  return typeof officeKey === 'string' && OFFICE_KEY_FORMAT.test(officeKey);
+}
+
 module.exports = {
+  OFFICE_KEY_FORMAT,
+  isOfficeKeyFormat,
   sessionOfficeKeys,
   isSessionOffice,
   ensureSessionOffices,
