@@ -141,7 +141,15 @@ test('T: the shared next-status table, verb × status, exactly (sign-off require
   const expected = {
     submit: { draft: 'pending_signoff' },
     withdraw: { pending_signoff: 'draft' },
-    cancel: { draft: 'cancelled', pending_signoff: 'cancelled' },
+    // Manual moves (PM-authorized): cancel from every unfinished status.
+    cancel: {
+      draft: 'cancelled',
+      pending_signoff: 'cancelled',
+      approved: 'cancelled',
+      sent: 'cancelled',
+      acknowledged: 'cancelled',
+      patient_seen: 'cancelled',
+    },
     approve: { pending_signoff: 'approved' },
     decline: { pending_signoff: 'declined' },
     reopen: { approved: 'pending_signoff' },

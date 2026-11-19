@@ -81,6 +81,18 @@ const VERB_WORDS = Object.freeze({
   send: 'emailed',
 });
 
+function sendInProgress(row) {
+  return {
+    status: 409,
+    body: {
+      success: false,
+      error: 'An email for this referral is going out right now. Refresh in a moment, then cancel it if you still need to.',
+      code: 'REFERRAL_SEND_IN_PROGRESS',
+      currentStatus: row.status,
+    },
+  };
+}
+
 function refusal(row, verb) {
   const label = contract.TC_REFERRAL_STATUS_LABELS[row.status] || row.status;
   return {
@@ -127,10 +139,33 @@ async function moveInTx(req, client, { office, referralId, verb, note = '' }) {
   });
   if (!to) return { refused: row };
 
-  const moved = await store.casStatus(client, { office, referralId, from: row.status, to, actor, at });
+  let moved;
+  if (verb === 'cancel') {
+    // Manual moves: cancel reaches approved now, where an email may be going
+    // out. Lock the row; a LIVE claim refuses (the email may already be with
+    // ACS), a stale one — left by a request that died — is cleared, and the
+    // move is conditional on no claim, so a send that claims in between loses
+    // to this cancel or wins over it, never both.
+    const claim = await store.lockSendClaim(client, office, referralId);
+    if (claim && store.sendClaimIsLive(claim, clock())) return { refused: row, inFlight: true };
+    if (claim && claim.send_attempt_id != null) {
+      await store.releaseStaleSendClaim(client, { office, referralId, staleBefore: store.sendClaimStaleBefore(clock()) });
+    }
+    moved = await store.casStatusUnclaimed(client, { office, referralId, from: row.status, to, actor, at });
+  } else {
+    moved = await store.casStatus(client, { office, referralId, from: row.status, to, actor, at });
+  }
   if (!moved) {
     const now = await store.findReferral(client, office, referralId);
-    return now ? { refused: now } : { missing: true };
+    if (!now) return { missing: true };
+    if (verb === 'cancel' && now.status === row.status) return { refused: now, inFlight: true };
+    return { refused: now };
+  }
+  if (verb === 'cancel') {
+    // The links in any email already sent stop working: they open the neutral
+    // page (the public routes are unchanged; their token simply no longer
+    // exists). The patient's unsubscribe link is not a link token and stays.
+    await store.deleteLinkTokens(client, office, referralId);
   }
   const autoApproved = verb === 'submit' && to === 'approved';
   await store.insertEvent(client, {
@@ -275,6 +310,7 @@ async function answer(req, outcome, { referralId, verb, office }) {
   if (outcome.missing) {
     return { status: 404, body: { success: false, error: 'Referral not found', code: 'NOT_FOUND' } };
   }
+  if (outcome.inFlight) return sendInProgress(outcome.refused);
   if (outcome.refused) return refusal(outcome.refused, verb);
   return { status: 200, body: { success: true, referral: await readBack(req, referralId, office) } };
 }

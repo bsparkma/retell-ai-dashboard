@@ -257,7 +257,7 @@ test('1/4: submit → pending sign-off → approved, each step one event and one
   ]);
 });
 
-test('1: illegal moves are 409 naming where it stands — approved is terminal; nothing moves twice', async (t) => {
+test('1: illegal moves are 409 naming where it stands — approved takes no TC/sign-off move but cancel; nothing moves twice', async (t) => {
   switchReferrals(t);
   const { baseUrl, db } = await boot(t); // admin: holds both surfaces
   const c = seedCase(db);
@@ -272,7 +272,8 @@ test('1: illegal moves are 409 naming where it stands — approved is terminal; 
   await api(baseUrl, 'POST', REF(`/${ref.referralId}/submit`));
   assert.equal((await api(baseUrl, 'POST', REF(`/${ref.referralId}/submit`))).status, 409, 'not twice');
   await api(baseUrl, 'POST', SIGN(`/${ref.referralId}/approve`));
-  for (const [path, base] of [['/submit', REF], ['/withdraw', REF], ['/cancel', REF], ['/approve', SIGN], ['/decline', SIGN]]) {
+  // Manual moves: /cancel now leaves approved (tcReferralManualMoves.test.js pins it).
+  for (const [path, base] of [['/submit', REF], ['/withdraw', REF], ['/approve', SIGN], ['/decline', SIGN]]) {
     const x = await api(baseUrl, 'POST', base(`/${ref.referralId}${path}`), path === '/decline' ? { reason: 'x' } : undefined);
     assert.equal(x.status, 409, `approved is terminal: ${path}`);
     assert.equal(x.body.currentStatus, 'approved');
