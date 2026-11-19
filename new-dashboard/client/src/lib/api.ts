@@ -426,6 +426,42 @@ export interface TcCheckoutSwitchState {
  */
 export type TcReferralsSwitchState = TcCheckoutSwitchState;
 
+/**
+ * MT-2c: the per-office switches have TWO doors over ONE set of handlers
+ * (backend routes/officeSwitches.js):
+ *   platform — /api/platform/*, the Developer Console (super_admin)
+ *   admin    — /api/admin/office-settings/*, the practice's /admin (admin.all)
+ */
+export type OfficeSwitchDoor = "platform" | "admin";
+
+/** The six TC switches, by URL segment. All answer TcCheckoutSwitchState. */
+export type TcOfficeSwitchPath =
+  | "tc-checkout-offices"
+  | "tc-od-sync-offices"
+  | "tc-auto-checkout-offices"
+  | "tc-referrals-offices"
+  | "tc-referral-email-offices"
+  | "tc-referral-patient-email-offices";
+
+/** GET /api/admin/office-settings/runbook-switches — nurture + opportunities, read-only. */
+export interface RunbookSwitchState {
+  offices: string[];
+  switches: Array<{
+    office: string;
+    settingKey: "tc_nurture_enabled" | "tc_opportunities_sync";
+    enabled: boolean;
+    updatedAt: string | null;
+    updatedBy: string | null;
+  }>;
+  /** false = the control plane has not been readable; every office reads OFF. */
+  policyKnown: boolean;
+}
+
+const OFFICE_SWITCH_BASE: Record<OfficeSwitchDoor, string> = {
+  platform: "/platform",
+  admin: "/admin/office-settings",
+};
+
 /** The nightly prune's result, from POST /api/admin/call-store/prune. */
 export interface PruneResult {
   scanned?: number;
@@ -2263,6 +2299,48 @@ export const api = {
       `/platform/tc-referral-patient-email-offices/${encodeURIComponent(office)}`,
       { method: "PUT", body: JSON.stringify({ enabled }) },
     );
+  },
+
+  // --- the same switches through either door (MT-2c) ------------------------
+  // The per-switch methods above stay the Developer Console's; these take the
+  // door, so the practice's /admin page reaches the same handlers behind its
+  // own admin.all gate. The tenant is never sent: the server takes it from the
+  // session.
+
+  /** One TC switch, every office, through `door`. */
+  async getTcOfficeSwitch(door: OfficeSwitchDoor, path: TcOfficeSwitchPath): Promise<TcCheckoutSwitchState> {
+    return request<TcCheckoutSwitchState>(`${OFFICE_SWITCH_BASE[door]}/${path}`);
+  },
+
+  /** Turn one TC switch on or off for ONE office, through `door`. Returns the state as stored. */
+  async setTcOfficeSwitch(
+    door: OfficeSwitchDoor,
+    path: TcOfficeSwitchPath,
+    office: string,
+    enabled: boolean,
+  ): Promise<TcCheckoutSwitchState> {
+    return request<TcCheckoutSwitchState>(
+      `${OFFICE_SWITCH_BASE[door]}/${path}/${encodeURIComponent(office)}`,
+      { method: "PUT", body: JSON.stringify({ enabled }) },
+    );
+  },
+
+  /** The hygiene pilot switch, every office, through `door`. */
+  async getHygOfficeSwitch(door: OfficeSwitchDoor): Promise<HygSwitchState> {
+    return request<HygSwitchState>(`${OFFICE_SWITCH_BASE[door]}/hyg-offices`);
+  },
+
+  /** Turn hygiene on or off for ONE office, through `door`. Returns the state as stored. */
+  async setHygOfficeSwitch(door: OfficeSwitchDoor, office: string, enabled: boolean): Promise<HygSwitchState> {
+    return request<HygSwitchState>(
+      `${OFFICE_SWITCH_BASE[door]}/hyg-offices/${encodeURIComponent(office)}`,
+      { method: "PUT", body: JSON.stringify({ enabled }) },
+    );
+  },
+
+  /** Nurture + opportunities, read-only — the practice's door only (no write exists). */
+  async getRunbookSwitches(): Promise<RunbookSwitchState> {
+    return request<RunbookSwitchState>(`${OFFICE_SWITCH_BASE.admin}/runbook-switches`);
   },
 
   // --- call-store jobs (existing /api/admin endpoints, super_admin-gated) ----

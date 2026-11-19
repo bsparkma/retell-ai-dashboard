@@ -24,6 +24,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import type { TcCheckoutOfficeSwitch, TcCheckoutSwitchState } from "@/lib/api";
+import type { OfficeSwitchPanelProps } from "./TcReferralsPanel";
 
 const OFFICE_LABELS: Record<string, string> = { roland: "Roland", valley: "Riley (valley)" };
 
@@ -33,7 +34,8 @@ const SOURCE_LABELS: Record<TcCheckoutOfficeSwitch["source"], string> = {
   default: "Default (off)",
 };
 
-export function TcCheckoutPanel() {
+/** `door` (MT-2c): the Developer Console by default; "admin" is the practice's /admin page. */
+export function TcCheckoutPanel({ door = "platform" }: OfficeSwitchPanelProps = {}) {
   const [state, setState] = useState<TcCheckoutSwitchState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
@@ -42,11 +44,13 @@ export function TcCheckoutPanel() {
   const load = useCallback(async () => {
     setError(null);
     try {
-      setState(await api.getTcCheckoutOffices());
+      setState(
+        door === "platform" ? await api.getTcCheckoutOffices() : await api.getTcOfficeSwitch(door, "tc-checkout-offices"),
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load the checkout switch");
     }
-  }, []);
+  }, [door]);
 
   useEffect(() => {
     void load();
@@ -55,7 +59,10 @@ export function TcCheckoutPanel() {
   const commit = async (office: string, enabled: boolean) => {
     setSaving(office);
     try {
-      const next = await api.setTcCheckoutOfficeEnabled(office, enabled);
+      const next =
+        door === "platform"
+          ? await api.setTcCheckoutOfficeEnabled(office, enabled)
+          : await api.setTcOfficeSwitch(door, "tc-checkout-offices", office, enabled);
       setState(next);
       const now = next.offices.find((o) => o.office === office);
       toast.success(`Checkout ${now?.enabled ? "on" : "off"} for ${OFFICE_LABELS[office] ?? office}`);

@@ -621,10 +621,19 @@ function hygOdBlockReason(tenantSlug, officeKey) {
  *                   disagreesWithEnv: boolean, ready: boolean,
  *                   blockedBy: { code: string, message: string }|null }>}
  *
+ * ONLY THE TENANT'S OWN OFFICES (MT-2c). OFFICE_OD_SETTINGS is process-wide,
+ * so without the filter another practice's session would be shown — and could
+ * aim a write at — this practice's offices and their switch state. That was
+ * harmless while only a super_admin could reach this; behind /admin's
+ * admin.all it would be a cross-tenant read. Same rule the TC switches get from
+ * realOffices(tenant): an office that is not the session tenant's is not
+ * listed, and the route answers it 404 INVALID_OFFICE.
+ *
  * @param {string} tenantSlug the session tenant (MT-2b)
  */
 function hygSwitchState(tenantSlug) {
-  return Object.keys(OFFICE_OD_SETTINGS).map((officeKey) => {
+  const own = officeRegistry.tenantOfficeKeys(tenantSlug);
+  return Object.keys(OFFICE_OD_SETTINGS).filter((officeKey) => own.includes(officeKey)).map((officeKey) => {
     const settings = OFFICE_OD_SETTINGS[officeKey];
     const state = hygPilot.officeState(tenantSlug, officeKey, hygFloorFor(settings));
     // Everything the VOICE path already refuses, independent of this switch.

@@ -56,7 +56,7 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
-import type { HygOfficeSwitch, HygSwitchState, Practice } from "@/lib/api";
+import type { HygOfficeSwitch, HygSwitchState, OfficeSwitchDoor, Practice } from "@/lib/api";
 import { loadError } from "../Platform";
 
 /** Where the module entitlement is actually changed. */
@@ -161,7 +161,19 @@ function TurnOnDialog({
   );
 }
 
-export default function HygienePanel({ practices }: { practices: Practice[] | null }) {
+/**
+ * `door` (MT-2c): the Developer Console by default. "admin" is the practice's
+ * /admin page, which talks to /api/admin/office-settings and drops the
+ * every-practice entitlement list — that comes from the console's practice
+ * catalog, which a practice admin cannot (and must not) read.
+ */
+export default function HygienePanel({
+  practices = null,
+  door = "platform",
+}: {
+  practices?: Practice[] | null;
+  door?: OfficeSwitchDoor;
+}) {
   const [state, setState] = useState<HygSwitchState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pendingOn, setPendingOn] = useState<HygOfficeSwitch | null>(null);
@@ -169,12 +181,12 @@ export default function HygienePanel({ practices }: { practices: Practice[] | nu
 
   const refresh = useCallback(async () => {
     try {
-      setState(await api.getHygOffices());
+      setState(door === "platform" ? await api.getHygOffices() : await api.getHygOfficeSwitch(door));
       setError(null);
     } catch (e) {
       setError(loadError(e));
     }
-  }, []);
+  }, [door]);
 
   useEffect(() => {
     void refresh();
@@ -188,7 +200,11 @@ export default function HygienePanel({ practices }: { practices: Practice[] | nu
   const commit = async (office: HygOfficeSwitch, enabled: boolean) => {
     setBusy(office.officeKey);
     try {
-      setState(await api.setHygOfficeEnabled(office.officeKey, enabled));
+      setState(
+        door === "platform"
+          ? await api.setHygOfficeEnabled(office.officeKey, enabled)
+          : await api.setHygOfficeSwitch(door, office.officeKey, enabled),
+      );
       toast.success(
         enabled
           ? `Hygiene is on for ${office.officeName}`
@@ -252,39 +268,41 @@ export default function HygienePanel({ practices }: { practices: Practice[] | nu
       )}
 
       {/* --- entitlement, read-only, as the OTHER axis --- */}
-      <section className="rounded-xl border border-border bg-card p-4">
-        <div className="mb-1 flex items-center gap-2">
-          <Sparkles className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold text-foreground">
-            Did the practice buy hygiene?
-          </h2>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          The <code className="text-[11px]">hyg</code> module entitlement, per practice. This is a{" "}
-          <strong>different question</strong> from the per-office switch below, and both must be
-          on. Change it on {ENTITLEMENT_HOME}.
-        </p>
-        <div className="mt-3 space-y-1.5" data-testid="hyg-entitlements">
-          {entitled.length === 0 && (
-            <p className="text-xs text-muted-foreground">No practices loaded.</p>
-          )}
-          {entitled.map(({ practice, hyg }) => (
-            <div
-              key={practice.tenantId}
-              className="flex items-center justify-between gap-3 rounded-lg border border-border/70 px-3 py-2"
-            >
-              <span className="text-sm text-foreground">{practice.displayName}</span>
-              <Badge
-                variant={hyg?.enabled ? "default" : "outline"}
-                className="text-[11px]"
-                data-testid={`hyg-entitlement-${practice.slug}`}
+      {door === "platform" && (
+        <section className="rounded-xl border border-border bg-card p-4">
+          <div className="mb-1 flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold text-foreground">
+              Did the practice buy hygiene?
+            </h2>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            The <code className="text-[11px]">hyg</code> module entitlement, per practice. This is a{" "}
+            <strong>different question</strong> from the per-office switch below, and both must be
+            on. Change it on {ENTITLEMENT_HOME}.
+          </p>
+          <div className="mt-3 space-y-1.5" data-testid="hyg-entitlements">
+            {entitled.length === 0 && (
+              <p className="text-xs text-muted-foreground">No practices loaded.</p>
+            )}
+            {entitled.map(({ practice, hyg }) => (
+              <div
+                key={practice.tenantId}
+                className="flex items-center justify-between gap-3 rounded-lg border border-border/70 px-3 py-2"
               >
-                {hyg?.enabled ? "entitled" : "not entitled"}
-              </Badge>
-            </div>
-          ))}
-        </div>
-      </section>
+                <span className="text-sm text-foreground">{practice.displayName}</span>
+                <Badge
+                  variant={hyg?.enabled ? "default" : "outline"}
+                  className="text-[11px]"
+                  data-testid={`hyg-entitlement-${practice.slug}`}
+                >
+                  {hyg?.enabled ? "entitled" : "not entitled"}
+                </Badge>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* --- the per-office switch --- */}
       <section className="rounded-xl border border-border bg-card p-4">
