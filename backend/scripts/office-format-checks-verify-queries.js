@@ -121,7 +121,18 @@ async function assertCatalog(client, defFor, label) {
   for (const [table, column] of migration.OFFICE_TABLES) {
     assert.equal(checks.get(table), defFor(column), `${label}: ${table}`);
   }
-  assert.equal(checks.size, migration.OFFICE_TABLES.length, `${label}: no extra office_check constraints`);
+  // A table created by a LATER migration (e.g. 1795200000000 hyg_visit_addendum)
+  // is not one of the 70 this migration rewrote — it was born with the format
+  // check. It is allowed ONLY in that form: a later table pinning the pair
+  // would be the regression this verifier exists to catch.
+  const ours = new Set(migration.OFFICE_TABLES.map(([t]) => t));
+  for (const [table, def] of checks) {
+    if (ours.has(table)) continue;
+    assert.ok(
+      def === formatDef('office') || def === formatDef('office_id'),
+      `${label}: ${table} (created after 1795000000000) carries the format check, not ${def}`
+    );
+  }
 }
 
 // ── PART A ──────────────────────────────────────────────────────────────────

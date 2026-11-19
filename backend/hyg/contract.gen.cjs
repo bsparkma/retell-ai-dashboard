@@ -14823,6 +14823,11 @@ var require_zod = __commonJS({
 // ../backend/hyg/contract.entry.ts
 var contract_entry_exports = {};
 __export(contract_entry_exports, {
+  ADDENDUM_TEXT_MAX: () => ADDENDUM_TEXT_MAX,
+  AddendumCreateRequestSchema: () => AddendumCreateRequestSchema,
+  AddendumSendRequestSchema: () => AddendumSendRequestSchema,
+  AddendumStateSchema: () => AddendumStateSchema,
+  AddendumWindowSchema: () => AddendumWindowSchema,
   COLLECT_AT_CHECKOUT_OPTIONS: () => COLLECT_AT_CHECKOUT_OPTIONS,
   COLLECT_OTHER_MAX: () => COLLECT_OTHER_MAX,
   CORRECTED_OPTION_SPELLINGS: () => CORRECTED_OPTION_SPELLINGS,
@@ -14872,6 +14877,7 @@ __export(contract_entry_exports, {
   HYG_STAFF_SIGN_IN_MAX: () => HYG_STAFF_SIGN_IN_MAX,
   HYG_VISIT_ERROR_CODES: () => HYG_VISIT_ERROR_CODES,
   HandoffCategorySchema: () => HandoffCategorySchema,
+  HygAddendumSchema: () => HygAddendumSchema,
   HygAppointmentSchema: () => HygAppointmentSchema,
   HygCheckoutAlertResponseSchema: () => HygCheckoutAlertResponseSchema,
   HygDayFlagsSchema: () => HygDayFlagsSchema,
@@ -14950,6 +14956,8 @@ __export(contract_entry_exports, {
   OrthoSendRequestSchema: () => OrthoSendRequestSchema,
   OrthoSendSchema: () => OrthoSendSchema,
   OrthoUpperApplianceSchema: () => OrthoUpperApplianceSchema,
+  PA_DETAILS_MAX: () => PA_DETAILS_MAX,
+  PA_XRAY: () => PA_XRAY,
   PERIO_ARCH_STRING_FIELDS: () => PERIO_ARCH_STRING_FIELDS,
   PERIO_ARCH_STRING_LABELS: () => PERIO_ARCH_STRING_LABELS,
   PERIO_ARCH_STRING_SITES: () => PERIO_ARCH_STRING_SITES,
@@ -15091,6 +15099,8 @@ __export(contract_entry_exports, {
   orthoConcernsText: () => orthoConcernsText,
   orthoScreeningRows: () => orthoScreeningRows,
   orthoScreeningSummary: () => orthoScreeningSummary,
+  paDetailsLine: () => paDetailsLine,
+  paDetailsText: () => paDetailsText,
   perioArchVerdict: () => perioArchVerdict,
   perioCal: () => perioCal,
   perioChangeLine: () => perioChangeLine,
@@ -15779,6 +15789,9 @@ function renderVisitNote(input) {
         out.push(`O:  Reviewed medical history with patient.${l.same ? "  Same" : ""}`);
         if (input.xrayTypes.length > 0) {
           out.push(`    Radiographs taken: ${input.xrayTypes.join(", ")}`);
+        }
+        if (input.paDetails && input.paDetails.trim()) {
+          out.push(`    PA details: ${input.paDetails.trim()}`);
         }
         break;
       case "assessment": {
@@ -16705,6 +16718,16 @@ function doneTodayChoices(picked) {
   return DONE_TODAY_OPTIONS.filter((o) => !o.retired || picked.includes(o.id));
 }
 var XRAY_OPTIONS = ["FMX", "PANO", "BW-4", "BW-2", "PA"];
+var PA_XRAY = "PA";
+var PA_DETAILS_MAX = 1e3;
+function paDetailsText(slip) {
+  if (!slip || !Array.isArray(slip.xrayTypes) || !slip.xrayTypes.includes(PA_XRAY)) return "";
+  return typeof slip.paDetails === "string" ? slip.paDetails.trim() : "";
+}
+function paDetailsLine(slip) {
+  const text = paDetailsText(slip);
+  return text ? `PA details: ${text}` : null;
+}
 var MEDICAL_HISTORY_MAX = 1e3;
 var MedicalHistorySchema = import_zod5.z.discriminatedUnion("status", [
   import_zod5.z.object({ status: import_zod5.z.literal("no_changes") }).strict(),
@@ -16842,7 +16865,13 @@ var HygSlipSchema = import_zod5.z.object({
    * superRefine below, so the SERVER refuses a bad pair (400), never only
    * the form.
    */
-  srpQuads: SrpQuadsSchema.default([])
+  srpQuads: SrpQuadsSchema.default([]),
+  /**
+   * Free-form PA details (which teeth, why), shown only while PAs is picked
+   * under X-rays taken. Defaulted for the same load-bearing reason as above.
+   * Prints only through `paDetailsLine`, which also requires PAs to be picked.
+   */
+  paDetails: import_zod5.z.string().max(PA_DETAILS_MAX).default("")
 }).strict().superRefine((slip, ctx) => {
   const problem = srpQuadsProblem(slip.visitType, slip.srpQuads);
   if (problem) ctx.addIssue({ code: "custom", path: ["srpQuads"], message: problem });
@@ -16872,7 +16901,8 @@ function emptySlip() {
     orthoScreening: null,
     medicalHistory: null,
     collectAtCheckout: emptyCollectAtCheckout(),
-    srpQuads: []
+    srpQuads: [],
+    paDetails: ""
   };
 }
 function slipNoteField(slip, id) {
@@ -16962,6 +16992,31 @@ var CheckoutSendSchema = import_zod5.z.object({
   sentBy: import_zod5.z.string(),
   finalAt: import_zod5.z.string().nullable()
 });
+var ADDENDUM_TEXT_MAX = 4e3;
+var AddendumStateSchema = import_zod5.z.enum(["Staged", "Sending", "Written", "Failed"]);
+var HygAddendumSchema = import_zod5.z.object({
+  id: import_zod5.z.string().min(1),
+  text: import_zod5.z.string(),
+  author: import_zod5.z.string(),
+  createdAt: import_zod5.z.string(),
+  state: AddendumStateSchema,
+  /** Exactly what "Send addendum" puts in the chart. Composed server-side. */
+  preview: import_zod5.z.array(import_zod5.z.string()),
+  previewFingerprint: import_zod5.z.string(),
+  writtenRef: import_zod5.z.string().nullable(),
+  errorMessage: import_zod5.z.string().nullable(),
+  sentBy: import_zod5.z.string().nullable(),
+  sentAt: import_zod5.z.string().nullable()
+});
+var AddendumWindowSchema = import_zod5.z.object({
+  open: import_zod5.z.boolean(),
+  reason: import_zod5.z.enum(["note_not_sent", "day_closed"]).nullable(),
+  day: import_zod5.z.string().nullable()
+});
+var AddendumCreateRequestSchema = import_zod5.z.object({
+  text: import_zod5.z.string().transform((s) => s.trim()).pipe(import_zod5.z.string().min(1, "An addendum needs some text").max(ADDENDUM_TEXT_MAX))
+}).strict();
+var AddendumSendRequestSchema = import_zod5.z.object({ previewFingerprint: import_zod5.z.string().min(1).max(200) }).strict();
 var HygVisitSchema = import_zod5.z.object({
   visitId: import_zod5.z.string().min(1),
   office: OfficeIdSchema,
@@ -16976,6 +17031,10 @@ var HygVisitSchema = import_zod5.z.object({
   orthoSend: OrthoSendSchema.nullable().default(null),
   /** Item 49. Defaulted so a response from an older server still parses. */
   checkoutSend: CheckoutSendSchema.nullable().default(null),
+  /** After-Send addenda, oldest first. Defaulted so an older server still parses. */
+  addenda: import_zod5.z.array(HygAddendumSchema).default([]),
+  /** Whether one may be added now. Null from a server that predates it. */
+  addendumWindow: AddendumWindowSchema.nullable().default(null),
   createdBy: import_zod5.z.string(),
   createdAt: import_zod5.z.string(),
   updatedBy: import_zod5.z.string().nullable(),
@@ -17144,7 +17203,12 @@ var HYG_VISIT_ERROR_CODES = [
   // Slice 2a: existing treatment dispositions.
   "INVALID_PROC_NUM",
   "PROC_NOT_IN_PLAN",
-  "EXISTING_TX_FROZEN"
+  "EXISTING_TX_FROZEN",
+  // The after-Send addendum.
+  "ADDENDUM_NOTE_NOT_SENT",
+  "ADDENDUM_WINDOW_CLOSED",
+  "ADDENDUM_NOT_FOUND",
+  "ADDENDUM_NOT_SENDABLE"
 ];
 
 // shared/hyg/records.ts
@@ -18547,6 +18611,11 @@ function odToothText(tooth) {
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  ADDENDUM_TEXT_MAX,
+  AddendumCreateRequestSchema,
+  AddendumSendRequestSchema,
+  AddendumStateSchema,
+  AddendumWindowSchema,
   COLLECT_AT_CHECKOUT_OPTIONS,
   COLLECT_OTHER_MAX,
   CORRECTED_OPTION_SPELLINGS,
@@ -18596,6 +18665,7 @@ function odToothText(tooth) {
   HYG_STAFF_SIGN_IN_MAX,
   HYG_VISIT_ERROR_CODES,
   HandoffCategorySchema,
+  HygAddendumSchema,
   HygAppointmentSchema,
   HygCheckoutAlertResponseSchema,
   HygDayFlagsSchema,
@@ -18674,6 +18744,8 @@ function odToothText(tooth) {
   OrthoSendRequestSchema,
   OrthoSendSchema,
   OrthoUpperApplianceSchema,
+  PA_DETAILS_MAX,
+  PA_XRAY,
   PERIO_ARCH_STRING_FIELDS,
   PERIO_ARCH_STRING_LABELS,
   PERIO_ARCH_STRING_SITES,
@@ -18815,6 +18887,8 @@ function odToothText(tooth) {
   orthoConcernsText,
   orthoScreeningRows,
   orthoScreeningSummary,
+  paDetailsLine,
+  paDetailsText,
   perioArchVerdict,
   perioCal,
   perioChangeLine,

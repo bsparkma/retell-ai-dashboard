@@ -911,6 +911,34 @@ export function doneTodayChoices(picked: readonly string[]): readonly { id: stri
 export const XRAY_OPTIONS = ["FMX", "PANO", "BW-4", "BW-2", "PA"] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PA DETAILS (hyg-pa-details-addendum)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The X-rays-taken chip the PA details box hangs off. One spelling, here. */
+export const PA_XRAY = "PA" as const satisfies (typeof XRAY_OPTIONS)[number];
+export const PA_DETAILS_MAX = 1000;
+
+/**
+ * Whether this slip's PA details are LIVE: PAs is ticked under X-rays taken.
+ *
+ * The box is only shown while PAs is selected, and the same predicate decides
+ * whether anything prints. Text typed and then left behind when PAs was
+ * un-ticked stays stored (re-ticking brings it back) but reaches nothing — not
+ * the note, not the slip, not the checkout card. A line about PAs on a visit
+ * that took none would be a false sentence in a chart.
+ */
+export function paDetailsText(slip: { xrayTypes: readonly string[]; paDetails?: string } | null | undefined): string {
+  if (!slip || !Array.isArray(slip.xrayTypes) || !slip.xrayTypes.includes(PA_XRAY)) return "";
+  return typeof slip.paDetails === "string" ? slip.paDetails.trim() : "";
+}
+
+/** The one labeled line every surface prints, or null when there is nothing live. */
+export function paDetailsLine(slip: { xrayTypes: readonly string[]; paDetails?: string } | null | undefined): string | null {
+  const text = paDetailsText(slip);
+  return text ? `PA details: ${text}` : null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MEDICAL HISTORY + COLLECT AT CHECKOUT (checkout v2)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1119,6 +1147,13 @@ export const HygSlipSchema = z
      * the form.
      */
     srpQuads: SrpQuadsSchema.default([]),
+
+    /**
+     * Free-form PA details (which teeth, why), shown only while PAs is picked
+     * under X-rays taken. Defaulted for the same load-bearing reason as above.
+     * Prints only through `paDetailsLine`, which also requires PAs to be picked.
+     */
+    paDetails: z.string().max(PA_DETAILS_MAX).default(""),
   })
   .strict()
   .superRefine((slip, ctx) => {
@@ -1160,6 +1195,7 @@ export function emptySlip(): HygSlip {
     medicalHistory: null,
     collectAtCheckout: emptyCollectAtCheckout(),
     srpQuads: [],
+    paDetails: "",
   };
 }
 
@@ -1346,6 +1382,86 @@ export const CheckoutSendSchema = z.object({
 });
 export type CheckoutSend = z.infer<typeof CheckoutSendSchema>;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AFTER-SEND ADDENDUM (hyg-pa-details-addendum)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** How long one addendum may be. The DB CHECK carries the same number. */
+export const ADDENDUM_TEXT_MAX = 4000;
+
+/**
+ * An addendum's own lifecycle — the staged write's, minus Draft.
+ *
+ *   Staged → Sending → Written | Failed
+ *
+ * An addendum is composed (its preview fixed) the moment it is added, so it is
+ * born Staged. It reaches the chart ONLY through a human-pressed "Send
+ * addendum" naming the fingerprint of the preview that person read. Never
+ * automatic. Read-only over the wire, like a staged write's state.
+ */
+export const AddendumStateSchema = z.enum(["Staged", "Sending", "Written", "Failed"]);
+export type AddendumState = z.infer<typeof AddendumStateSchema>;
+
+/**
+ * One addendum, as the server reports it. Additive: the visit note it follows
+ * is never edited — an addendum is its own GroupNote, beside it.
+ */
+export const HygAddendumSchema = z.object({
+  id: z.string().min(1),
+  text: z.string(),
+  author: z.string(),
+  createdAt: z.string(),
+  state: AddendumStateSchema,
+  /** Exactly what "Send addendum" puts in the chart. Composed server-side. */
+  preview: z.array(z.string()),
+  previewFingerprint: z.string(),
+  writtenRef: z.string().nullable(),
+  errorMessage: z.string().nullable(),
+  sentBy: z.string().nullable(),
+  sentAt: z.string().nullable(),
+});
+export type HygAddendum = z.infer<typeof HygAddendumSchema>;
+
+/**
+ * Whether an addendum may be added (or sent) RIGHT NOW. COMPUTED BY THE SERVER
+ * on every visit response, from the note's own sent time and the office's
+ * clock — never inferred by the client, which would only be a courtesy.
+ *
+ *   open: true            the visit note is in the chart and it is still the
+ *                         office-local calendar day it was sent on
+ *   note_not_sent         nothing to add to yet: the visit note is not Written
+ *   day_closed            the day the note was sent has ended; read-only forever
+ *
+ * `day` is that office-local date (YYYY-MM-DD), or null before a send.
+ */
+export const AddendumWindowSchema = z.object({
+  open: z.boolean(),
+  reason: z.enum(["note_not_sent", "day_closed"]).nullable(),
+  day: z.string().nullable(),
+});
+export type AddendumWindow = z.infer<typeof AddendumWindowSchema>;
+
+/** POST /api/hyg/visit/:aptNum/addenda — the words, and nothing else. */
+export const AddendumCreateRequestSchema = z
+  .object({
+    text: z
+      .string()
+      .transform((s) => s.trim())
+      .pipe(z.string().min(1, "An addendum needs some text").max(ADDENDUM_TEXT_MAX)),
+  })
+  .strict();
+export type AddendumCreateRequest = z.input<typeof AddendumCreateRequestSchema>;
+
+/**
+ * POST /api/hyg/visit/:aptNum/addenda/:addendumId/send — the fingerprint of
+ * the preview that was read. NO payload: what reaches the chart is the stored
+ * preview, re-checked against this fingerprint before anything is written.
+ */
+export const AddendumSendRequestSchema = z
+  .object({ previewFingerprint: z.string().min(1).max(200) })
+  .strict();
+export type AddendumSendRequest = z.infer<typeof AddendumSendRequestSchema>;
+
 /** The whole visit: the slip, the items, and what is staged. */
 export const HygVisitSchema = z.object({
   visitId: z.string().min(1),
@@ -1361,6 +1477,10 @@ export const HygVisitSchema = z.object({
   orthoSend: OrthoSendSchema.nullable().default(null),
   /** Item 49. Defaulted so a response from an older server still parses. */
   checkoutSend: CheckoutSendSchema.nullable().default(null),
+  /** After-Send addenda, oldest first. Defaulted so an older server still parses. */
+  addenda: z.array(HygAddendumSchema).default([]),
+  /** Whether one may be added now. Null from a server that predates it. */
+  addendumWindow: AddendumWindowSchema.nullable().default(null),
   createdBy: z.string(),
   createdAt: z.string(),
   updatedBy: z.string().nullable(),
@@ -1627,5 +1747,10 @@ export const HYG_VISIT_ERROR_CODES = [
   "INVALID_PROC_NUM",
   "PROC_NOT_IN_PLAN",
   "EXISTING_TX_FROZEN",
+  // The after-Send addendum.
+  "ADDENDUM_NOTE_NOT_SENT",
+  "ADDENDUM_WINDOW_CLOSED",
+  "ADDENDUM_NOT_FOUND",
+  "ADDENDUM_NOT_SENDABLE",
 ] as const;
 export type HygVisitErrorCode = (typeof HYG_VISIT_ERROR_CODES)[number];

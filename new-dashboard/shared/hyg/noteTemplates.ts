@@ -1004,6 +1004,12 @@ export interface RenderNoteInput {
    * caller written before it renders exactly what it did.
    */
   srpQuads?: readonly number[];
+  /**
+   * The slip's LIVE PA details (contract.paDetailsText: '' unless PAs is
+   * picked). Printed under the radiographs line. Optional so every caller
+   * written before it renders exactly what it did.
+   */
+  paDetails?: string;
 }
 
 /**
@@ -1055,6 +1061,11 @@ export function renderVisitNote(input: RenderNoteInput): string[] {
         // ticked FMX has recorded something a chart note must not lose.
         if (input.xrayTypes.length > 0) {
           out.push(`    Radiographs taken: ${input.xrayTypes.join(", ")}`);
+        }
+        // The same labeled line the slip and the checkout card print, right
+        // under the radiographs it describes. Nothing when it is not live.
+        if (input.paDetails && input.paDetails.trim()) {
+          out.push(`    PA details: ${input.paDetails.trim()}`);
         }
         break;
 

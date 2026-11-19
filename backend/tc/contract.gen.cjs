@@ -14978,6 +14978,7 @@ __export(contract_entry_exports, {
   SIGNATURE_SOURCE_TEXT: () => SIGNATURE_SOURCE_TEXT,
   SignatureBlock: () => SignatureBlock,
   TC_CHECKOUT_OUTCOME_LABELS: () => TC_CHECKOUT_OUTCOME_LABELS,
+  TC_CHECKOUT_PA_DETAILS_MAX: () => TC_CHECKOUT_PA_DETAILS_MAX,
   TC_CHECKOUT_PIPELINE_STATUSES: () => TC_CHECKOUT_PIPELINE_STATUSES,
   TC_CHECKOUT_PRIORITY_LABELS: () => TC_CHECKOUT_PRIORITY_LABELS,
   TC_CHECKOUT_PRIORITY_ORDER: () => TC_CHECKOUT_PRIORITY_ORDER,
@@ -17623,6 +17624,7 @@ var TC_CHECKOUT_RECORD_STATUS_LABELS = {
   taken_today: "Taken today"
 };
 var TC_CHECKOUT_RECORDS_MAX = 60;
+var TC_CHECKOUT_PA_DETAILS_MAX = 1e3;
 var TcCheckoutRecord = import_zod9.z.object({ record: import_zod9.z.string().min(1).max(120), status: TcCheckoutRecordStatus }).strict();
 var TcCheckoutSnapshot = import_zod9.z.object({
   procedures: import_zod9.z.array(TcCheckoutProcedure).max(100),
@@ -17663,7 +17665,13 @@ var TcCheckoutSnapshot = import_zod9.z.object({
    * needed and the pharmacy. IN-APP ONLY — never sent to Open Dental.
    * OPTIONAL and additive, like existingTx: absent when neither was filled in.
    */
-  prescriptions: HygPrescriptionsSchema.optional()
+  prescriptions: HygPrescriptionsSchema.optional(),
+  /**
+   * The slip's PA details (which PAs, why) — only while PAs is picked under
+   * X-rays taken. OPTIONAL and additive, like existingTx: absent when there
+   * are none, so a visit without them sends exactly the snapshot it did.
+   */
+  paDetails: import_zod9.z.string().min(1).max(TC_CHECKOUT_PA_DETAILS_MAX).optional()
 }).strict();
 var TcCheckoutSubmit = import_zod9.z.object({
   kind: import_zod9.z.literal("checkout"),
@@ -20912,6 +20920,7 @@ function odToothText(tooth) {
   SIGNATURE_SOURCE_TEXT,
   SignatureBlock,
   TC_CHECKOUT_OUTCOME_LABELS,
+  TC_CHECKOUT_PA_DETAILS_MAX,
   TC_CHECKOUT_PIPELINE_STATUSES,
   TC_CHECKOUT_PRIORITY_LABELS,
   TC_CHECKOUT_PRIORITY_ORDER,
