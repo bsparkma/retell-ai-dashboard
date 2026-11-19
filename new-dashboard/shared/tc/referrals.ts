@@ -675,6 +675,71 @@ export type TcReferralSendVerb = z.infer<typeof TcReferralSendVerb>;
 export type TcReferralMoveVerb = TcReferralVerb | TcReferralSendVerb;
 
 /**
+ * Where `cancel` may start (referral-manual-moves). Everything that is not
+ * finished. Cancelling is refused server-side while an email for the referral
+ * is in flight (REFERRAL_SEND_IN_PROGRESS), and cancelling one deletes its
+ * link tokens, so links already emailed open the neutral page.
+ */
+export const REFERRAL_CANCELLABLE_STATUSES: readonly TcReferralStatus[] = [
+  "draft",
+  "pending_signoff",
+  "approved",
+  "sent",
+  "acknowledged",
+  "patient_seen",
+];
+
+/**
+ * The history that makes a draft UNDELETABLE (referral-manual-moves). A draft
+ * can carry history from before it was a draft again (approved → reopen →
+ * send back), so "status is draft" is not enough: anything that reached
+ * outside the app — an email attempted or sent, a person's "sent", a link
+ * clicked, a patient email, a contact logged, and above all a note written to
+ * the Open Dental chart — keeps the referral; it can only be cancelled. An
+ * approve in the history does not block: nothing patient-facing happened.
+ */
+export const REFERRAL_DELETE_BLOCKING_EVENT_VERBS = [
+  "send",
+  "send_failed",
+  "send_conflict",
+  "mark_sent",
+  "patient_scheduled",
+  "patient_email_sent",
+  "patient_email_skipped",
+  "patient_email_failed",
+  "correspondence",
+  "chart_note_written",
+] as const satisfies readonly TcReferralEventVerb[];
+
+/** Why a referral cannot be deleted, or null when it can. The server applies the same rule. */
+export type TcReferralDeleteBlocker = "not_draft" | "has_history";
+
+export function referralDeleteBlocker(
+  status: TcReferralStatus,
+  events: readonly { verb?: string | null }[] | undefined,
+): TcReferralDeleteBlocker | null {
+  if (status !== "draft") return "not_draft";
+  const blocking: readonly string[] = REFERRAL_DELETE_BLOCKING_EVENT_VERBS;
+  if ((events ?? []).some((e) => e.verb != null && blocking.includes(e.verb))) return "has_history";
+  return null;
+}
+
+/** POST submit / withdraw / cancel — an optional note for the history line. */
+export const TcReferralMoveRequest = z.object({ note: z.string().trim().max(300).optional() }).strict();
+export type TcReferralMoveRequest = z.infer<typeof TcReferralMoveRequest>;
+
+/** DELETE /api/tc/referrals/:id — a never-sent draft is gone; its files were asked to go too. */
+export const TcReferralDeleteResponse = z.object({
+  success: z.literal(true),
+  referralId: z.string().uuid(),
+  /** Attachment files removed from storage. */
+  filesRemoved: z.number().int().nonnegative(),
+  /** Files storage did not confirm removing (left behind; no row points at them). */
+  filesLeft: z.number().int().nonnegative(),
+});
+export type TcReferralDeleteResponse = z.infer<typeof TcReferralDeleteResponse>;
+
+/**
  * THE transition table. Pure; the server enforces it, the client uses it only
  * to decide which buttons to draw. null = not allowed from here.
  */
@@ -692,8 +757,11 @@ export function referralNextStatus(
       return from === "draft" ? (opts.signoffRequired ? "pending_signoff" : "approved") : null;
     case "withdraw":
       return from === "pending_signoff" ? "draft" : null;
+    // Manual moves (referral-manual-moves): a referral can be cancelled at any
+    // point before it is finished — after it went out too, when the patient
+    // or the specialist calls it off. Never from closed / declined / cancelled.
     case "cancel":
-      return from === "draft" || from === "pending_signoff" ? "cancelled" : null;
+      return REFERRAL_CANCELLABLE_STATUSES.includes(from) ? "cancelled" : null;
     case "approve":
       return from === "pending_signoff" ? "approved" : null;
     case "decline":

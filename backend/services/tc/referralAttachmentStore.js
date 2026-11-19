@@ -154,6 +154,18 @@ async function getAttachment(key) {
   return getContainerClient().getBlockBlobClient(key).downloadToBuffer();
 }
 
+/**
+ * Remove the bytes (a never-sent draft was deleted). Resolves true once the
+ * service confirmed the blob is gone (or was never there), false when storage
+ * is unconfigured; anything else throws, and the caller counts it as left
+ * behind. Only ever called AFTER the row that pointed at it was deleted.
+ */
+async function deleteAttachment(key) {
+  if (!isConfigured()) return false;
+  await getContainerClient().getBlockBlobClient(key).deleteIfExists();
+  return true;
+}
+
 /** Test seam — reset the cached client. */
 function _resetForTests() {
   containerClient = null;
@@ -169,5 +181,6 @@ module.exports = {
   isMissingContainer,
   putAttachment,
   getAttachment,
+  deleteAttachment,
   _resetForTests,
 };

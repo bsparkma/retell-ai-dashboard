@@ -14943,7 +14943,9 @@ __export(contract_entry_exports, {
   PrintTemplateTypeSchema: () => PrintTemplateTypeSchema,
   PrintTemplatesResponse: () => PrintTemplatesResponse,
   REFERRAL_ATTACHMENT_HINT: () => REFERRAL_ATTACHMENT_HINT,
+  REFERRAL_CANCELLABLE_STATUSES: () => REFERRAL_CANCELLABLE_STATUSES,
   REFERRAL_CORRESPONDENCE_STATUSES: () => REFERRAL_CORRESPONDENCE_STATUSES,
+  REFERRAL_DELETE_BLOCKING_EVENT_VERBS: () => REFERRAL_DELETE_BLOCKING_EVENT_VERBS,
   REFERRAL_DOCTOR_EDITABLE_STATUSES: () => REFERRAL_DOCTOR_EDITABLE_STATUSES,
   REFERRAL_EDITABLE_STATUSES: () => REFERRAL_EDITABLE_STATUSES,
   REFERRAL_EMAIL_MISSING_COPY: () => REFERRAL_EMAIL_MISSING_COPY,
@@ -15112,6 +15114,7 @@ __export(contract_entry_exports, {
   TcReferralCorrespondenceRequest: () => TcReferralCorrespondenceRequest,
   TcReferralCreateRequest: () => TcReferralCreateRequest,
   TcReferralDeclineRequest: () => TcReferralDeclineRequest,
+  TcReferralDeleteResponse: () => TcReferralDeleteResponse,
   TcReferralDirectoryEntry: () => TcReferralDirectoryEntry,
   TcReferralDirectoryInput: () => TcReferralDirectoryInput,
   TcReferralDoctorEdit: () => TcReferralDoctorEdit,
@@ -15125,6 +15128,7 @@ __export(contract_entry_exports, {
   TcReferralLastCorrespondence: () => TcReferralLastCorrespondence,
   TcReferralMarkRequest: () => TcReferralMarkRequest,
   TcReferralMarkSentRequest: () => TcReferralMarkSentRequest,
+  TcReferralMoveRequest: () => TcReferralMoveRequest,
   TcReferralPatientEmailOutcome: () => TcReferralPatientEmailOutcome,
   TcReferralPatientEmailRecord: () => TcReferralPatientEmailRecord,
   TcReferralPolicy: () => TcReferralPolicy,
@@ -15223,6 +15227,7 @@ __export(contract_entry_exports, {
   referralChipTop: () => referralChipTop,
   referralCorrespondenceLabel: () => referralCorrespondenceLabel,
   referralDateLabel: () => referralDateLabel,
+  referralDeleteBlocker: () => referralDeleteBlocker,
   referralEditSummary: () => referralEditSummary,
   referralHubGroup: () => referralHubGroup,
   referralLastContactLine: () => referralLastContactLine,
@@ -18431,6 +18436,41 @@ var TcReferralVerb = import_zod11.z.enum([
   "close"
 ]);
 var TcReferralSendVerb = import_zod11.z.literal("send");
+var REFERRAL_CANCELLABLE_STATUSES = [
+  "draft",
+  "pending_signoff",
+  "approved",
+  "sent",
+  "acknowledged",
+  "patient_seen"
+];
+var REFERRAL_DELETE_BLOCKING_EVENT_VERBS = [
+  "send",
+  "send_failed",
+  "send_conflict",
+  "mark_sent",
+  "patient_scheduled",
+  "patient_email_sent",
+  "patient_email_skipped",
+  "patient_email_failed",
+  "correspondence",
+  "chart_note_written"
+];
+function referralDeleteBlocker(status, events) {
+  if (status !== "draft") return "not_draft";
+  const blocking = REFERRAL_DELETE_BLOCKING_EVENT_VERBS;
+  if ((events ?? []).some((e) => e.verb != null && blocking.includes(e.verb))) return "has_history";
+  return null;
+}
+var TcReferralMoveRequest = import_zod11.z.object({ note: import_zod11.z.string().trim().max(300).optional() }).strict();
+var TcReferralDeleteResponse = import_zod11.z.object({
+  success: import_zod11.z.literal(true),
+  referralId: import_zod11.z.string().uuid(),
+  /** Attachment files removed from storage. */
+  filesRemoved: import_zod11.z.number().int().nonnegative(),
+  /** Files storage did not confirm removing (left behind; no row points at them). */
+  filesLeft: import_zod11.z.number().int().nonnegative()
+});
 function referralNextStatus(from, verb, opts) {
   switch (verb) {
     // R5: only from approved, and only once ACS has accepted the email. The
@@ -18441,8 +18481,11 @@ function referralNextStatus(from, verb, opts) {
       return from === "draft" ? opts.signoffRequired ? "pending_signoff" : "approved" : null;
     case "withdraw":
       return from === "pending_signoff" ? "draft" : null;
+    // Manual moves (referral-manual-moves): a referral can be cancelled at any
+    // point before it is finished — after it went out too, when the patient
+    // or the specialist calls it off. Never from closed / declined / cancelled.
     case "cancel":
-      return from === "draft" || from === "pending_signoff" ? "cancelled" : null;
+      return REFERRAL_CANCELLABLE_STATUSES.includes(from) ? "cancelled" : null;
     case "approve":
       return from === "pending_signoff" ? "approved" : null;
     case "decline":
@@ -20788,7 +20831,9 @@ function odToothText(tooth) {
   PrintTemplateTypeSchema,
   PrintTemplatesResponse,
   REFERRAL_ATTACHMENT_HINT,
+  REFERRAL_CANCELLABLE_STATUSES,
   REFERRAL_CORRESPONDENCE_STATUSES,
+  REFERRAL_DELETE_BLOCKING_EVENT_VERBS,
   REFERRAL_DOCTOR_EDITABLE_STATUSES,
   REFERRAL_EDITABLE_STATUSES,
   REFERRAL_EMAIL_MISSING_COPY,
@@ -20957,6 +21002,7 @@ function odToothText(tooth) {
   TcReferralCorrespondenceRequest,
   TcReferralCreateRequest,
   TcReferralDeclineRequest,
+  TcReferralDeleteResponse,
   TcReferralDirectoryEntry,
   TcReferralDirectoryInput,
   TcReferralDoctorEdit,
@@ -20970,6 +21016,7 @@ function odToothText(tooth) {
   TcReferralLastCorrespondence,
   TcReferralMarkRequest,
   TcReferralMarkSentRequest,
+  TcReferralMoveRequest,
   TcReferralPatientEmailOutcome,
   TcReferralPatientEmailRecord,
   TcReferralPolicy,
@@ -21068,6 +21115,7 @@ function odToothText(tooth) {
   referralChipTop,
   referralCorrespondenceLabel,
   referralDateLabel,
+  referralDeleteBlocker,
   referralEditSummary,
   referralHubGroup,
   referralLastContactLine,
