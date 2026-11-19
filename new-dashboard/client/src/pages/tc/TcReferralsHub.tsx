@@ -110,6 +110,8 @@ import {
   hubCanDeleteDraft,
   hubCanLogCorrespondence,
   hubCanWriteChartNotes,
+  hubNotesWithVerbal,
+  hubVerbalVerbs,
   isMarkVerb,
   signoffViewHref,
   type HubAction,
@@ -117,6 +119,7 @@ import {
 } from "@/features/tc/referrals/hubActions";
 import { MoveMenu } from "@/features/tc/referrals/MoveMenu";
 import { SignoffActions, signoffDoneLine } from "@/features/tc/referrals/SignoffActions";
+import { VerbalSignoffActions } from "@/features/tc/referrals/VerbalSignoffActions";
 import { LogCorrespondence } from "@/features/tc/referrals/LogCorrespondence";
 import { ChartNotes } from "@/features/tc/referrals/ChartNotes";
 import {
@@ -155,6 +158,7 @@ import {
   type TcReferralAttachment,
   type TcReferralDirectoryEntry,
   type TcReferralHubQuery,
+  type TcReferralSignoffMode,
   type TcReferralSendOutcome,
   type TcReferralsStatus,
 } from "@shared/tc/referrals";
@@ -298,6 +302,8 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
   const [signoffRequired, setSignoffRequired] = useState<boolean | null>(null);
   /** The office's auto-send-on-approval policy, for Approve's question; null = unread. */
   const [autosend, setAutosend] = useState<boolean | null>(null);
+  /** The office's sign-off mode — 'verbal' offers recording the doctor's OK; null = unread (never offers it). */
+  const [signoffMode, setSignoffMode] = useState<TcReferralSignoffMode | null>(null);
   const viewer = useHubViewer();
 
   const load = useCallback(() => {
@@ -345,6 +351,7 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
         if (cancelled) return;
         setSignoffRequired(s.signoffRequired.value);
         setAutosend(s.autosendOnApproval.value);
+        setSignoffMode(s.signoffMode?.value ?? null);
       })
       .catch(() => undefined);
     return () => {
@@ -498,6 +505,7 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
         viewer={viewer}
         signoffRequired={signoffRequired}
         autosend={autosend}
+        signoffMode={signoffMode}
       />
     </div>
   );
@@ -690,6 +698,7 @@ export function HubDetail({
   viewer = { tcFull: true, signoff: false },
   signoffRequired = null,
   autosend = null,
+  signoffMode = null,
   reader = "hub",
   onSigned,
 }: {
@@ -705,6 +714,8 @@ export function HubDetail({
   signoffRequired?: boolean | null;
   /** The office's auto-send-on-approval policy, for Approve's question; null = unread (it asks). */
   autosend?: boolean | null;
+  /** The office's sign-off mode; only a READ 'verbal' offers recording a doctor's verbal OK. */
+  signoffMode?: TcReferralSignoffMode | null;
   reader?: HubDetailReader;
   /** After approve / decline / send back, with the server's read-back. */
   onSigned?: (next: TcReferral) => void;
@@ -874,6 +885,9 @@ export function HubDetail({
   // Through the sign-off routes nothing on the TC side is offered, whoever is looking.
   const asViewer: HubViewer = viaSignoff ? { tcFull: false, signoff: viewer.signoff } : viewer;
   const plan = r ? hubActionPlan(r.status, asViewer, signoffRequired) : null;
+  // Verbal sign-off: through the hub's own (tc.full) routes only.
+  const verbalVerbs = r && !viaSignoff ? hubVerbalVerbs(r.status, asViewer, signoffMode) : [];
+  const moveNotes = plan ? hubNotesWithVerbal(plan.notes, verbalVerbs) : [];
   const canDelete = r ? !viaSignoff && hubCanDeleteDraft(r.status, r.events, asViewer) : false;
   const editable = r ? asViewer.tcFull && REFERRAL_FIELD_EDITABLE_STATUSES.includes(r.status) : false;
   // R6.9: through the hub's own (tc.full) routes only.
@@ -1058,9 +1072,23 @@ export function HubDetail({
                     }}
                   />
                 )}
-                {plan && plan.notes.length > 0 && (
+                {/* Verbal sign-off: a tc.full user records a named doctor's OK, mode 'verbal' only. */}
+                {verbalVerbs.length > 0 && (
+                  <VerbalSignoffActions
+                    office={office}
+                    referral={r}
+                    verbs={verbalVerbs}
+                    autosend={autosend}
+                    onSigned={(next) => {
+                      setR(next);
+                      onChanged();
+                      onSigned?.(next);
+                    }}
+                  />
+                )}
+                {moveNotes.length > 0 && (
                   <div className="space-y-1 text-xs text-muted-foreground" data-testid="tc-hub-move-notes">
-                    {plan.notes.map((n) => (
+                    {moveNotes.map((n) => (
                       <p key={n}>{n}</p>
                     ))}
                   </div>
