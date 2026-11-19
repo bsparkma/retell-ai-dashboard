@@ -18,10 +18,18 @@
  * referral (auto-send on approval), so the panel asks first wherever that may
  * happen (see SignoffActions). Everyone else sees "Waiting for the doctor's
  * sign-off" and no doctor's move. Send and the marks are unchanged.
+ *
+ * MANUAL MOVES (referral-manual-moves): the TC side's moves are drawn as ONE
+ * "Move to…" menu listing exactly the plan's actions — the table decides,
+ * nothing is added here. Cancel reaches every unfinished status now (the
+ * shared table's change). A never-sent draft can also be DELETED
+ * (hubCanDeleteDraft) — not a move; the server re-checks it.
  */
 import {
   REFERRAL_MARK_LABELS,
+  TC_REFERRAL_STATUS_LABELS,
   referralCanLogCorrespondence,
+  referralDeleteBlocker,
   referralChartMilestones,
   referralNextStatus,
   type TcReferralEvent,
@@ -168,6 +176,24 @@ export function hubCanLogCorrespondence(status: TcReferralStatus, viewer: HubVie
  */
 export function hubCanWriteChartNotes(events: readonly TcReferralEvent[] | undefined, viewer: HubViewer): boolean {
   return viewer.tcFull && referralChartMilestones(events).length > 0;
+}
+
+/**
+ * Is "Delete draft" offered? To a tc.full viewer, on a draft whose history
+ * never reached outside the app — the shared rule the server applies (it
+ * re-checks, and refuses a live email claim too).
+ */
+export function hubCanDeleteDraft(
+  status: TcReferralStatus,
+  events: readonly TcReferralEvent[] | undefined,
+  viewer: HubViewer,
+): boolean {
+  return viewer.tcFull && referralDeleteBlocker(status, events) === null;
+}
+
+/** The "Move to…" item's second line: where it leads, or that the office decides. */
+export function hubMoveTargetLabel(action: HubAction): string {
+  return action.to ? `→ ${TC_REFERRAL_STATUS_LABELS[action.to]}` : "→ depends on the office's sign-off setting";
 }
 
 /** The button's words. Submit names where it goes when the policy is known. */

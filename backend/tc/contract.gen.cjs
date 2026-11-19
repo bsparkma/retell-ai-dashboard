@@ -18459,7 +18459,7 @@ var REFERRAL_DELETE_BLOCKING_EVENT_VERBS = [
 function referralDeleteBlocker(status, events) {
   if (status !== "draft") return "not_draft";
   const blocking = REFERRAL_DELETE_BLOCKING_EVENT_VERBS;
-  if ((events ?? []).some((e) => e.verb !== null && blocking.includes(e.verb))) return "has_history";
+  if ((events ?? []).some((e) => e.verb != null && blocking.includes(e.verb))) return "has_history";
   return null;
 }
 var TcReferralMoveRequest = import_zod11.z.object({ note: import_zod11.z.string().trim().max(300).optional() }).strict();

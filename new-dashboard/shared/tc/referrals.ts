@@ -716,11 +716,11 @@ export type TcReferralDeleteBlocker = "not_draft" | "has_history";
 
 export function referralDeleteBlocker(
   status: TcReferralStatus,
-  events: readonly { verb: string | null }[] | undefined,
+  events: readonly { verb?: string | null }[] | undefined,
 ): TcReferralDeleteBlocker | null {
   if (status !== "draft") return "not_draft";
   const blocking: readonly string[] = REFERRAL_DELETE_BLOCKING_EVENT_VERBS;
-  if ((events ?? []).some((e) => e.verb !== null && blocking.includes(e.verb))) return "has_history";
+  if ((events ?? []).some((e) => e.verb != null && blocking.includes(e.verb))) return "has_history";
   return null;
 }
 
