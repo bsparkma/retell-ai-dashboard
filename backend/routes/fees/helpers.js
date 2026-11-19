@@ -12,7 +12,7 @@
  *
  * Conventions enforced here (platform law):
  *  - Office context comes ONLY from the validated `?office=` query param
- *    ('roland' | 'valley'), never from the body and never from a header. Every
+ *    (one of the session tenant's offices, platform/officeGate.js), never from the body and never from a header. Every
  *    query filters by it, so a valley row is structurally unreachable in a
  *    roland context. See index.js for why the guard is router-wide.
  *  - Acting identity is the SSO session user (req.user.email), guaranteed by
@@ -20,46 +20,24 @@
  *  - Errors are structured: { success: false, error, code }. No internals.
  */
 
+const { makeRequireOffice } = require('../../platform/officeGate');
 const { audit, AuditError } = require('../../platform/audit');
-
-/**
- * Frozen internal office keys — the same two the fees_* CHECK constraints
- * accept (`office IN ('roland','valley')`, migrations-tenant/…_fees_import).
- * A third office is a migration, not an edit here.
- *
- * 'unknown' is NOT here and must never be. config/officeAgents.js carries it as
- * a bucket for Mango calls whose line is unmapped; it has no Open Dental
- * settings entry and it names no real practice. A fee schedule imported against
- * it would be a payer contract filed under no office at all.
- */
-const OFFICES = Object.freeze(['roland', 'valley']);
 
 /**
  * Middleware: validate `?office=` and attach it as req.feesOffice.
  *
- * 400, not 403 — a missing or unknown office is a malformed request, not an
- * entitlement failure. Entitlement is the mount-level requireModule('fees').
+ * MT-2b3: the key must be one of the SESSION tenant's offices
+ * (officeRegistry.isTenantOffice, via platform/officeGate.js), not a member of
+ * a hard-coded pair. 'unknown', '', an array and any casing variant are
+ * refused. For tenant carein the answer is roland/valley, whether or not the
+ * registry is readable, and the refusal body is byte-identical to the old one.
  *
- * FAIL CLOSED: anything that is not one of the two frozen keys is refused,
- * including 'unknown', the empty string, an array (`?office=a&office=b` arrives
- * as one in Express) and any casing variant. There is no default and no
- * fallback — the RCM and HYG modules both learned that an office that can be
- * omitted is an office that gets omitted.
+ * 400, not 403: a missing or unknown office is a malformed request, not an
+ * entitlement failure. Entitlement is the mount-level requireModule('fees').
  *
  * @type {import('express').RequestHandler}
  */
-function requireOffice(req, res, next) {
-  const office = req.query.office;
-  if (typeof office !== 'string' || !OFFICES.includes(office)) {
-    return res.status(400).json({
-      success: false,
-      error: `office query param is required and must be one of: ${OFFICES.join(', ')}`,
-      code: 'INVALID_OFFICE',
-    });
-  }
-  req.feesOffice = office;
-  return next();
-}
+const requireOffice = makeRequireOffice('feesOffice');
 
 /**
  * The acting user's SSO email. Always present under the /api auth gate +
@@ -184,7 +162,6 @@ function isUuid(value) {
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 module.exports = {
-  OFFICES,
   requireOffice,
   actorEmail,
   h,

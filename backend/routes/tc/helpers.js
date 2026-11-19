@@ -6,7 +6,7 @@
  * Conventions enforced here (platform law — see PHASE1_PRD_PLATFORM_SPINE.md
  * and the tc_schema migration):
  *  - Office context comes ONLY from the validated `?office=` query param
- *    ('roland' | 'valley'), never from the body. Every query filters by it, so
+ *    (one of the session tenant's offices, platform/officeGate.js), never from the body. Every query filters by it, so
  *    a valley record is structurally unreachable in a roland context.
  *  - Request bodies parse against the strict shared/tc contract (bundled at
  *    tc/contract.gen.cjs). Zod failures → 400, never a partial write.
@@ -18,30 +18,25 @@
  *    a recorded trail).
  */
 
+const { makeRequireOffice } = require('../../platform/officeGate');
 const { audit, AuditError } = require('../../platform/audit');
 const contract = require('../../tc/contract.gen.cjs');
 
-/** Frozen internal office keys (tc_* CHECK constraints). */
-const OFFICES = Object.freeze(['roland', 'valley']);
-
 /**
  * Middleware: validate `?office=` and attach it as req.tcOffice.
- * 400 (not 403) — a missing/unknown office is a malformed request, not an
- * entitlement failure; entitlement is the mount-level requireModule('tc').
+ *
+ * MT-2b3: the key must be one of the SESSION tenant's offices
+ * (officeRegistry.isTenantOffice, via platform/officeGate.js), not a member of
+ * a hard-coded pair. 'unknown', '', an array and any casing variant are
+ * refused. For tenant carein the answer is roland/valley, whether or not the
+ * registry is readable, and the refusal body is byte-identical to the old one.
+ *
+ * 400, not 403: a missing or unknown office is a malformed request, not an
+ * entitlement failure. Entitlement is the mount-level requireModule('tc').
+ *
  * @type {import('express').RequestHandler}
  */
-function requireOffice(req, res, next) {
-  const office = req.query.office;
-  if (typeof office !== 'string' || !OFFICES.includes(office)) {
-    return res.status(400).json({
-      success: false,
-      error: `office query param is required and must be one of: ${OFFICES.join(', ')}`,
-      code: 'INVALID_OFFICE',
-    });
-  }
-  req.tcOffice = office;
-  return next();
-}
+const requireOffice = makeRequireOffice('tcOffice');
 
 /**
  * The acting user's SSO email. Under the /api auth gate + tenantContext this
@@ -201,7 +196,6 @@ function notFound(res, what) {
 
 module.exports = {
   contract,
-  OFFICES,
   requireOffice,
   actorEmail,
   actorName,

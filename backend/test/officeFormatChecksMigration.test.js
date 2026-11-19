@@ -10,7 +10,10 @@
  * runs after migrate.
  *
  * This file also pins the guardrail that makes a looser database safe: the
- * SERVER gates still refuse a made-up office. This PR changes none of them.
+ * SERVER gates still refuse a made-up office. MT-2b3 moved those gates from a
+ * hard-coded pair to officeRegistry.isTenantOffice for the session tenant
+ * (platform/officeGate.js); the tests below pin the NEW rule. Every route is
+ * walked by test/officeGateWiring.test.js.
  */
 
 const assert = require('node:assert/strict');
@@ -149,10 +152,10 @@ test('the format (mirrored in JS): keys pass, garbage does not', () => {
   }
 });
 
-// ── The refusal layer stays the server. Nothing here changed; pin it. ────────
+// ── The refusal layer is the server. MT-2b3: the rule is isTenantOffice. ─────
 
-function runGate(requireOffice, office) {
-  const req = { query: office === undefined ? {} : { office } };
+function runGate(requireOffice, office, tenant = { id: 'T1', slug: 'carein' }) {
+  const req = { tenant, query: office === undefined ? {} : { office } };
   const out = { status: null, nexted: false };
   const res = {
     status(code) {
@@ -170,23 +173,37 @@ function runGate(requireOffice, office) {
 }
 
 for (const mod of ['tc', 'hyg', 'fees', 'rcm']) {
-  test(`routes/${mod} requireOffice: roland/valley pass; a made-up office is still 400`, () => {
-    const { requireOffice, OFFICES } = require(`../routes/${mod}/helpers`);
-    assert.deepEqual([...OFFICES], ['roland', 'valley'], 'the gate list is unchanged by MT-2b2');
-    for (const ok of ['roland', 'valley']) assert.equal(runGate(requireOffice, ok).nexted, true, ok);
-    // 'fortsmith' passes the NEW database format — the server must still refuse it.
+  test(`routes/${mod} requireOffice asks isTenantOffice: carein's roland/valley pass; a made-up office is still 400`, () => {
+    // MT-2b3 (was: the gate list is the literal pair). No list of its own now:
+    // the gate is platform/officeGate.js, and for carein the registry or its
+    // code-map fallback answers roland, valley.
+    const helpers = require(`../routes/${mod}/helpers`);
+    assert.equal(helpers.OFFICES, undefined, 'no hard-coded office list');
+    const SRC = fs.readFileSync(path.join(__dirname, '..', 'routes', mod, 'helpers.js'), 'utf8');
+    assert.match(SRC, /makeRequireOffice\(/);
+    for (const ok of ['roland', 'valley']) assert.equal(runGate(helpers.requireOffice, ok).nexted, true, ok);
+    // 'fortsmith' passes the NEW database format; the server must still refuse it.
     for (const bad of ['fortsmith', 'unknown', 'Roland', '', undefined]) {
-      const r = runGate(requireOffice, bad);
+      const r = runGate(helpers.requireOffice, bad);
       assert.equal(r.nexted, false, String(bad));
       assert.equal(r.status, 400, String(bad));
     }
+    // No tenant, no offices: fail closed even for roland.
+    assert.equal(runGate(helpers.requireOffice, 'roland', null).nexted, false);
   });
 }
 
-test('messaging.recordInbound still refuses an office outside the pair before touching anything', async () => {
+test("messaging.recordInbound still refuses an office that is not the tenant's before touching anything", async () => {
   const messaging = require('../services/messaging');
   await assert.rejects(
     messaging.recordInbound({}, { office: 'fortsmith', channel: 'sms', fromAddress: '+15555550100', body: 'hi' }),
+    /frozen office key/
+  );
+  await assert.rejects(
+    messaging.recordInbound(
+      { tenant: { id: 'T1', slug: 'carein' } },
+      { office: 'fortsmith', channel: 'sms', fromAddress: '+15555550100', body: 'hi' }
+    ),
     /frozen office key/
   );
 });

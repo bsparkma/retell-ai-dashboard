@@ -56,21 +56,15 @@
 const express = require('express');
 const { randomUUID } = require('node:crypto');
 
-const { contract, actorEmail, parseBody, h, auditTc, OFFICES } = require('./helpers');
+const { contract, actorEmail, parseBody, h, auditTc } = require('./helpers');
+const { ensureSessionOffices, sessionOfficeKeys } = require('../../platform/officeGate');
 const { withTenantTx } = require('./tx');
 const tenantDb = require('../../platform/tenantDb');
 const store = require('./caseStore');
 
-const { z, TcCase, OfficeId, OPEN_CASE_STATUSES, caseToRows } = contract;
+const { z, TcCase, OPEN_CASE_STATUSES, caseToRows } = contract;
 
 const router = express.Router();
-
-// The frozen office keys must be the SAME list the tc_* CHECK constraints use;
-// helpers.OFFICES and the contract's OfficeId are two spellings of it, and a
-// silent divergence would let a row through that the database then rejects.
-if (OFFICES.join(',') !== OfficeId.options.join(',')) {
-  throw new Error('[tc/from-call] OFFICES and contract OfficeId disagree — frozen office keys drifted');
-}
 
 /** Postgres unique_violation. */
 const PG_UNIQUE_VIOLATION = '23505';
@@ -79,20 +73,45 @@ const PG_UNIQUE_VIOLATION = '23505';
  * The frozen request contract. snake_case (the voice track's spelling), strict —
  * an unknown key is a 400, so a future field cannot be silently dropped on the
  * floor while the caller believes it was stored.
+ *
+ * MT-2b3: `office` is checked against the SESSION tenant's offices
+ * (platform/officeGate.js), not a hard-coded pair, so the schema is built per
+ * tenant office list. For carein that list is roland, valley in that order, so
+ * a refusal carries exactly the zod issue the static z.enum produced before.
+ * A tenant with no readable offices gets z.never(): every office is refused.
+ *
+ * @param {string[]} officeKeys
  */
-const FromCallBody = z
-  .object({
-    od_patient_id: z.number().int().positive(),
-    office: OfficeId,
-    call_id: z.string().min(1).max(200),
-    // REQUIRED: TC must be able to name the case without an OD round-trip, so
-    // the voice side supplies the name it already resolved.
-    patient_name: z.string().min(1).max(200),
-    patient_phone: z.string().max(200).optional(),
-    call_summary: z.string().max(8000).nullable().optional(),
-    call_url: z.string().max(500).optional(),
-  })
-  .strict();
+function fromCallBody(officeKeys) {
+  return z
+    .object({
+      od_patient_id: z.number().int().positive(),
+      office: officeKeys.length > 0 ? z.enum(/** @type {[string, ...string[]]} */ (officeKeys)) : z.never(),
+      call_id: z.string().min(1).max(200),
+      // REQUIRED: TC must be able to name the case without an OD round-trip, so
+      // the voice side supplies the name it already resolved.
+      patient_name: z.string().min(1).max(200),
+      patient_phone: z.string().max(200).optional(),
+      call_summary: z.string().max(8000).nullable().optional(),
+      call_url: z.string().max(500).optional(),
+    })
+    .strict();
+}
+
+/** One schema per distinct office list (a tenant's list changes rarely). */
+/** @type {Map<string, ReturnType<typeof fromCallBody>>} */
+const fromCallBodyByOffices = new Map();
+
+/** @param {string[]} officeKeys */
+function fromCallBodyFor(officeKeys) {
+  const k = officeKeys.join(',');
+  let schema = fromCallBodyByOffices.get(k);
+  if (!schema) {
+    schema = fromCallBody(officeKeys);
+    fromCallBodyByOffices.set(k, schema);
+  }
+  return schema;
+}
 
 /**
  * Scalars for a case opened by a handoff. Matches the manual New Case dialog's
@@ -192,7 +211,8 @@ async function findOpenCase(q, office, odPatientId) {
 router.post(
   '/',
   h(async (req, res) => {
-    const input = parseBody(res, FromCallBody, req.body);
+    await ensureSessionOffices(req);
+    const input = parseBody(res, fromCallBodyFor(sessionOfficeKeys(req)), req.body);
     if (!input) return;
 
     const office = input.office;

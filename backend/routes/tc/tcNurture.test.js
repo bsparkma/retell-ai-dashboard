@@ -220,7 +220,9 @@ test('a NON-terminal status change leaves the enrollment running', async (t) => 
 });
 
 /** A request shaped like the Twilio webhook's (tenant resolved, no SSO user). */
-const webhookReq = () => ({ tenant: { id: 'T1' }, headers: {}, originalUrl: '/api/webhooks/twilio/inbound' });
+// MT-2b3: a real webhook request carries the resolved tenant's slug; the office
+// gate reads the tenant's offices from it (platform/officeGate.js).
+const webhookReq = () => ({ tenant: { id: 'T1', slug: 'carein' }, headers: {}, originalUrl: '/api/webhooks/twilio/inbound' });
 
 test('an inbound text from the enrolled patient PAUSES the enrollment (same office only); nothing is sent', async (t) => {
   switchNurture(t, { roland: true, valley: true });

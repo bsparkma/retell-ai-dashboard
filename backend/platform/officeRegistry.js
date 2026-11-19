@@ -517,7 +517,23 @@ function tenantOfficeKeys(tenantSlug) {
       .map((o) => o.officeKey);
   }
   if (tenantSlug !== CODE_MAP_TENANT_SLUG) return [];
-  return codeOffices().map((o) => o.officeKey);
+  return codeOfficeKeys();
+}
+
+/**
+ * The code maps' office KEYS only, in codeOffices() order. MT-2b3: the request
+ * gates (platform/officeGate.js) answer from this during a registry blip, and a
+ * gate needs no Open Dental settings to know which keys are offices. So this
+ * reads officeAgents alone and never touches config/odOffices. The fees module's
+ * "no Open Dental on the read surface" tripwire (routes/fees/feesNoOdAccess.test.js)
+ * would otherwise fire on every gated request. Pinned equal to
+ * codeOffices().map(o => o.officeKey) by platform/officeGate.test.js.
+ * @returns {string[]}
+ */
+function codeOfficeKeys() {
+  // LAZY on purpose: see "NO CYCLE" in the header.
+  const officeAgents = require('../config/officeAgents');
+  return Object.keys(officeAgents.OFFICES).filter((k) => k !== officeAgents.UNMAPPED_OFFICE);
 }
 
 /**
@@ -568,6 +584,7 @@ module.exports = {
   CODE_MAP_TENANT_SLUG,
   mapRow,
   codeOffices,
+  codeOfficeKeys,
   diffOffices,
   createParityCheck,
   onRefresh,
