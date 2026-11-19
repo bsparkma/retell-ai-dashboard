@@ -52,13 +52,19 @@
  * edit; "Write to chart" writes the exact text shown above it to the patient's
  * Open Dental chart. Only that click writes — nothing here does on its own.
  *
+ * MANUAL MOVES (referral-manual-moves). The TC side's moves — submit,
+ * withdraw, reopen, the marks, cancel — are one "Move to…" menu
+ * (features/tc/referrals/MoveMenu) listing exactly the shared table's moves
+ * from here; each asks first, with an optional note. A never-sent draft offers
+ * "Delete draft", which asks first and closes the panel on the server's yes.
+ *
  * Every state shown is the server's answer: nothing reads as saved, moved,
  * marked or sent before the server confirms it.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearch } from "wouter";
 import { toast } from "sonner";
-import { ChevronDown, ChevronRight, Loader2, Mail, Paperclip, Pencil, RefreshCw } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, Mail, Paperclip, Pencil, RefreshCw, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -79,6 +85,7 @@ import {
   type WithOffice,
 } from "@/features/tc/officeScope";
 import {
+  deleteReferral,
   editReferralFields,
   getReferral,
   getReferralSettings,
@@ -98,14 +105,17 @@ import {
 } from "@/features/tc/referrals/referralsApi";
 import {
   HUB_MARK_VERBS,
-  hubActionLabel,
   hubActionPlan,
   hubCanAddFilesAfterSend,
+  hubCanDeleteDraft,
   hubCanLogCorrespondence,
   hubCanWriteChartNotes,
+  isMarkVerb,
   signoffViewHref,
+  type HubAction,
   type HubViewer,
 } from "@/features/tc/referrals/hubActions";
+import { MoveMenu } from "@/features/tc/referrals/MoveMenu";
 import { SignoffActions, signoffDoneLine } from "@/features/tc/referrals/SignoffActions";
 import { LogCorrespondence } from "@/features/tc/referrals/LogCorrespondence";
 import { ChartNotes } from "@/features/tc/referrals/ChartNotes";
@@ -711,18 +721,16 @@ export function HubDetail({
   const [editing, setEditing] = useState<Editing>(null);
   const [busy, setBusy] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
-  const [markText, setMarkText] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
     setR(null);
     setFiles([]);
     setEditing(null);
     setServerError(null);
-    setMarkText("");
     setLoadError(null);
-    setConfirmCancel(false);
+    setConfirmDelete(false);
     if (!referralId) return;
     let cancelled = false;
     (viaSignoff ? getSignoffReferral(office, referralId) : getReferral(office, referralId))
@@ -766,12 +774,11 @@ export function HubDetail({
   async function act(run: () => Promise<TcReferral>, ok: string | ((next: TcReferral) => string)) {
     setBusy(true);
     setServerError(null);
-    setConfirmCancel(false);
+    setConfirmDelete(false);
     try {
       const next = await run();
       setR(next);
       setEditing(null);
-      setMarkText("");
       toast.success(typeof ok === "string" ? ok : ok(next));
     } catch (e) {
       setServerError(tcErrorMessage(e));
@@ -814,11 +821,21 @@ export function HubDetail({
     }
   }
 
-  /** submit / withdraw / cancel, through the same routes the case panel uses. */
-  function move(verb: "submit" | "withdraw" | "cancel") {
+  /**
+   * One "Move to…" choice, through the route that move already had: the marks
+   * through their mark routes, submit / withdraw / cancel through theirs.
+   * Reopen never comes here — it is the edit form.
+   */
+  function move(action: HubAction, note: string) {
     if (!r) return;
+    const verb = action.verb;
+    if (verb === "reopen") return;
+    if (isMarkVerb(verb)) {
+      void act(() => markReferral(office, r.referralId, verb, note), `${REFERRAL_MARK_LABELS[verb]}: recorded`);
+      return;
+    }
     void act(
-      () => referralVerb(office, r.referralId, verb),
+      () => (note ? referralVerb(office, r.referralId, verb, note) : referralVerb(office, r.referralId, verb)),
       (next) =>
         verb === "submit"
           ? next.status === "approved"
@@ -830,15 +847,34 @@ export function HubDetail({
     );
   }
 
+  /** Delete a never-sent draft. The panel closes only on the server's yes. */
+  async function removeDraft() {
+    if (!r) return;
+    setBusy(true);
+    setServerError(null);
+    try {
+      const out = await deleteReferral(office, r.referralId);
+      toast.success(
+        out.filesLeft > 0
+          ? `Draft deleted (${out.filesLeft} attached file${out.filesLeft === 1 ? "" : "s"} could not be removed from storage)`
+          : "Draft deleted",
+      );
+      setConfirmDelete(false);
+      onChanged();
+      onClose();
+    } catch (e) {
+      setServerError(tcErrorMessage(e));
+      setConfirmDelete(false);
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // Through the sign-off routes nothing on the TC side is offered, whoever is looking.
   const asViewer: HubViewer = viaSignoff ? { tcFull: false, signoff: viewer.signoff } : viewer;
   const plan = r ? hubActionPlan(r.status, asViewer, signoffRequired) : null;
-  const offered = (verb: string) => plan?.actions.find((a) => a.verb === verb) ?? null;
-  const mark = HUB_MARK_VERBS.find((m) => offered(m) !== null) ?? null;
-  const submit = offered("submit");
-  const withdraw = offered("withdraw");
-  const cancel = offered("cancel");
-  const reopen = offered("reopen");
+  const canDelete = r ? !viaSignoff && hubCanDeleteDraft(r.status, r.events, asViewer) : false;
   const editable = r ? asViewer.tcFull && REFERRAL_FIELD_EDITABLE_STATUSES.includes(r.status) : false;
   // R6.9: through the hub's own (tc.full) routes only.
   const canLog = r ? !viaSignoff && hubCanLogCorrespondence(r.status, asViewer) : false;
@@ -947,38 +983,54 @@ export function HubDetail({
               </>
             ) : (
               <div className="space-y-3" data-testid="tc-hub-actions">
-                {(editable || submit || withdraw || cancel) && (
-                  <div className="flex flex-wrap items-center gap-2" data-testid="tc-hub-moves">
-                    {submit && (
-                      <Button size="sm" onClick={() => move("submit")} disabled={busy} data-testid="tc-hub-submit">
-                        {hubActionLabel(submit)}
-                      </Button>
-                    )}
+                {plan && (editable || canDelete || plan.actions.length > 0) && (
+                  <div className="flex flex-wrap items-start gap-2" data-testid="tc-hub-moves">
+                    {/* The TC side's moves: exactly the shared table's, in one menu. */}
+                    <MoveMenu
+                      status={r.status}
+                      actions={plan.actions}
+                      busy={busy}
+                      onMove={move}
+                      onReopen={() => startEdit("reopen")}
+                    />
                     {editable && (
                       <Button size="sm" variant="outline" className="gap-1" onClick={() => startEdit("fields")}>
                         <Pencil className="w-3.5 h-3.5" /> Edit
                       </Button>
                     )}
-                    {withdraw && (
-                      <Button size="sm" variant="outline" onClick={() => move("withdraw")} disabled={busy} data-testid="tc-hub-withdraw">
-                        {hubActionLabel(withdraw)}
-                      </Button>
-                    )}
-                    {cancel && !confirmCancel && (
-                      <Button size="sm" variant="ghost" onClick={() => setConfirmCancel(true)} disabled={busy} data-testid="tc-hub-cancel">
-                        {hubActionLabel(cancel)}
+                    {canDelete && !confirmDelete && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="gap-1 text-destructive"
+                        onClick={() => setConfirmDelete(true)}
+                        disabled={busy}
+                        data-testid="tc-hub-delete"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" /> Delete draft
                       </Button>
                     )}
                   </div>
                 )}
-                {cancel && confirmCancel && (
-                  <div className="space-y-2 rounded-lg border border-border p-3" data-testid="tc-hub-cancel-confirm">
-                    <p className="text-sm">Cancel this referral? It moves to Closed / declined / cancelled and cannot be reopened.</p>
+                {canDelete && confirmDelete && (
+                  <div
+                    role="alertdialog"
+                    aria-labelledby="hub-delete-title"
+                    className="space-y-2 rounded-lg border border-destructive/40 p-3"
+                    data-testid="tc-hub-delete-confirm"
+                  >
+                    <p id="hub-delete-title" className="text-sm font-medium">
+                      Delete this draft?
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      It was never sent, so it can be deleted outright: the referral, its history and its attached files
+                      ({files.length}). This cannot be undone.
+                    </p>
                     <div className="flex gap-2">
-                      <Button size="sm" variant="destructive" onClick={() => move("cancel")} disabled={busy}>
-                        {busy && <Loader2 className="w-4 h-4 animate-spin" />} Yes, cancel it
+                      <Button size="sm" variant="destructive" onClick={() => void removeDraft()} disabled={busy}>
+                        {busy && <Loader2 className="w-4 h-4 animate-spin" />} Yes, delete it
                       </Button>
-                      <Button size="sm" variant="outline" onClick={() => setConfirmCancel(false)} disabled={busy}>
+                      <Button size="sm" variant="outline" onClick={() => setConfirmDelete(false)} disabled={busy}>
                         Keep it
                       </Button>
                     </div>
@@ -1020,11 +1072,6 @@ export function HubDetail({
                     ) : (
                       <p className="text-xs font-medium text-emerald-700 dark:text-emerald-400">{REFERRAL_READY_TO_SEND_COPY}</p>
                     )}
-                    {reopen && (
-                      <Button size="sm" variant="outline" className="gap-1" onClick={() => startEdit("reopen")}>
-                        <Pencil className="w-3.5 h-3.5" /> {hubActionLabel(reopen)}
-                      </Button>
-                    )}
                   </>
                 )}
                 {!REFERRAL_FIELD_EDITABLE_STATUSES.includes(r.status) && r.status !== "approved" && (
@@ -1033,17 +1080,6 @@ export function HubDetail({
                       ? "This referral is finished and can no longer be edited."
                       : "This referral has gone to the specialist, so it can no longer be edited."}
                   </p>
-                )}
-                {mark && (
-                  <MarkBox
-                    mark={mark}
-                    text={markText}
-                    onText={setMarkText}
-                    busy={busy}
-                    onMark={() =>
-                      void act(() => markReferral(office, r.referralId, mark, markText.trim()), `${REFERRAL_MARK_LABELS[mark]}: recorded`)
-                    }
-                  />
                 )}
                 {canAddFiles && (
                   <AddAttachments
@@ -1136,51 +1172,6 @@ function SendBox({
           {blocker}
         </p>
       )}
-    </div>
-  );
-}
-
-const MARK_HINTS: Record<ReferralMark, string> = {
-  mark_sent:
-    "Only once it has actually gone — by fax, email or by hand, outside the app. This records it; it does not send anything.",
-  mark_acknowledged: "The specialist's office confirmed they have it. This records it; it contacts no one.",
-  mark_patient_seen: "The specialist has seen the patient. This records it; it contacts no one.",
-  close: "Nothing more to do on this referral.",
-};
-
-function MarkBox({
-  mark,
-  text,
-  onText,
-  busy,
-  onMark,
-}: {
-  mark: ReferralMark;
-  text: string;
-  onText: (v: string) => void;
-  busy: boolean;
-  onMark: () => void;
-}) {
-  const required = mark === "mark_sent";
-  return (
-    <div className="space-y-2 rounded-lg border border-dashed border-border p-3" data-testid="tc-hub-mark">
-      <p className="text-xs text-muted-foreground">{MARK_HINTS[mark]}</p>
-      <div className="space-y-1">
-        <Label htmlFor="hub-mark-text" className="text-xs">
-          {required ? "How and where was it sent? *" : "Note (optional)"}
-        </Label>
-        <Input
-          id="hub-mark-text"
-          value={text}
-          maxLength={300}
-          onChange={(e) => onText(e.target.value)}
-          placeholder={required ? "e.g. Faxed to their front desk" : ""}
-          disabled={busy}
-        />
-      </div>
-      <Button size="sm" onClick={onMark} disabled={busy || (required && !text.trim())}>
-        {busy && <Loader2 className="w-4 h-4 animate-spin" />} {REFERRAL_MARK_LABELS[mark]}
-      </Button>
     </div>
   );
 }

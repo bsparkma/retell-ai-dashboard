@@ -15,6 +15,7 @@ import {
   TcReferralAttachment,
   TcReferralSendOutcome,
   TcReferralChartMilestone,
+  TcReferralDeleteResponse,
   type TcReferralChartNoteRequest,
   type TcReferralCorrespondenceRequest,
   type TcReferralCreateRequest,
@@ -162,16 +163,33 @@ export async function updateReferral(office: OfficeId, referralId: string, refer
   ).referral;
 }
 
-/** submit / withdraw / cancel — the TC side's verbs. */
+/**
+ * submit / withdraw / cancel — the TC side's verbs. `note` (optional) goes on
+ * the history line; a blank one is not sent.
+ */
 export async function referralVerb(
   office: OfficeId,
   referralId: string,
   verb: "submit" | "withdraw" | "cancel",
+  note?: string,
 ): Promise<TcReferral> {
+  const body = note && note.trim() ? { note: note.trim() } : {};
   return parse(
     ReferralResponse,
-    await tcRequest<unknown>(`/tc/referrals/${referralId}/${verb}`, { office, method: "POST", body: {} }),
+    await tcRequest<unknown>(`/tc/referrals/${referralId}/${verb}`, { office, method: "POST", body }),
   ).referral;
+}
+
+/**
+ * Delete a never-sent DRAFT. The server refuses (409) every other status, and a
+ * draft that was ever sent, marked sent, emailed to the patient, logged or
+ * charted — those can only be cancelled.
+ */
+export async function deleteReferral(office: OfficeId, referralId: string): Promise<TcReferralDeleteResponse> {
+  return parse(
+    TcReferralDeleteResponse,
+    await tcRequest<unknown>(`/tc/referrals/${referralId}`, { office, method: "DELETE" }),
+  );
 }
 
 // The doctor's side (tc.referral_signoff).

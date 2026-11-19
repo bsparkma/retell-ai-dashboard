@@ -25,6 +25,7 @@ import Analytics from "./pages/Analytics";
 import Admin from "./pages/Admin";
 import AdminUsers from "./pages/AdminUsers";
 import AdminPrintTemplates from "./pages/AdminPrintTemplates";
+import AdminOfficeSettings from "./pages/AdminOfficeSettings";
 import Platform from "./pages/Platform";
 import Callbacks from "./pages/Callbacks";
 import RcmToday from "./pages/rcm/RcmToday";
@@ -135,6 +136,9 @@ export function Router() {
         {/* Print templates (CO-3): the excuse and appointment card wording, per
             office. Under /admin: admin.all, a card on the hub, no nav tab. */}
         <Route path="/admin/print-templates" component={AdminPrintTemplates} />
+        {/* MT-2c (ruling A): this practice's per-office switches. Under
+            /admin: admin.all, a card on the hub, no nav tab. */}
+        <Route path="/admin/office-settings" component={AdminOfficeSettings} />
         {/* SC-1: the TC settings page, moved here from /tc/settings so /admin
             is the practice's one settings hub. Gated by its OWN
             ROUTE_PERMISSIONS entry carrying tc.full, exactly what /tc/settings

@@ -8,6 +8,8 @@
  *    panel shows the SERVER's answer, and a refusal leaves it as it was),
  *    "Edit (re-approval needed)" on an approved one, the manual marks labelled
  *    as attestations (mark-sent needs how/where), sent+ read-only.
+ *    (referral-manual-moves, RE-PINNED: the reopen and the marks are now items
+ *    of the one "Move to…" menu; a mark's how/where is typed at its confirm.)
  *  - (The doctor's sign-off card — edit incl. the doctor's note, "Send back
  *    with a question" — moved with the sign-off page into the hub:
  *    tests/referrals-signoff-in-hub.test.tsx.)
@@ -335,14 +337,17 @@ describe("the detail panel", () => {
     expect(panel.textContent).toContain("Ready to send — sending ships in a later update.");
 
     // The mark: labelled as a record, needs how/where, sends nothing.
-    const mark = within(panel).getByTestId("tc-hub-mark");
+    const mark = chooseMove(panel, "mark_sent");
     expect(mark.textContent).toContain("it does not send anything");
-    const markBtn = within(mark).getByRole("button", { name: "Mark sent outside the app" }) as HTMLButtonElement;
+    const markBtn = within(mark).getByRole("button", { name: /Mark sent outside the app/ }) as HTMLButtonElement;
     expect(markBtn.disabled).toBe(true);
     fireEvent.change(within(mark).getByLabelText(/How and where/), { target: { value: "Faxed to their front desk" } });
     expect(markBtn.disabled).toBe(false);
+    fireEvent.click(within(mark).getByRole("button", { name: "Back" }));
 
-    fireEvent.click(within(panel).getByRole("button", { name: /Edit \(re-approval needed\)/ }));
+    fireEvent.click(within(panel).getByTestId("tc-hub-move-menu"));
+    expect(within(panel).getByTestId("tc-hub-move-reopen").textContent).toContain("Edit (re-approval needed)");
+    fireEvent.click(within(panel).getByTestId("tc-hub-move-reopen"));
     const form = await within(panel).findByTestId("referral-fields-form");
     expect(form.textContent).toContain("sends it back to the doctor for sign-off first");
     fireEvent.change(within(form).getByLabelText("Specialist"), { target: { value: ENTRY2 } });
@@ -356,13 +361,15 @@ describe("the detail panel", () => {
   it("the mark records the server's answer and moves on to the next one", async () => {
     const d = referral({ referralId: id(3), status: "approved", events: [ev({ verb: "approve" })] });
     const panel = await openCard("ready", d);
-    const mark = within(panel).getByTestId("tc-hub-mark");
+    const mark = chooseMove(panel, "mark_sent");
     fireEvent.change(within(mark).getByLabelText(/How and where/), { target: { value: "Emailed" } });
     ref.markReferral.mockResolvedValue({ ...d, status: "sent", events: [...(d.events ?? []), ev({ verb: "mark_sent", fromStatus: "approved", toStatus: "sent", note: "Sent outside the app: Emailed" })] });
-    fireEvent.click(within(mark).getByRole("button", { name: "Mark sent outside the app" }));
+    fireEvent.click(within(mark).getByRole("button", { name: /Mark sent outside the app/ }));
     await waitFor(() => expect(ref.markReferral).toHaveBeenCalledWith("roland", id(3), "mark_sent", "Emailed"));
-    await waitFor(() =>
-      expect(within(panel).getByRole("button", { name: "Specialist acknowledged (outside the app)" })).toBeTruthy(),
+    await waitFor(() => expect(within(panel).getByTestId("tc-referral-status").textContent).toBe("Sent"));
+    fireEvent.click(within(panel).getByTestId("tc-hub-move-menu"));
+    expect(within(panel).getByTestId("tc-hub-move-mark_acknowledged").textContent).toContain(
+      "Specialist acknowledged (outside the app)",
     );
     expect(within(panel).getByTestId("referral-timeline").textContent).toContain("Sent outside the app: Emailed");
   });
@@ -372,10 +379,18 @@ describe("the detail panel", () => {
     const panel = await openCard("sent", d);
     expect(within(panel).getByTestId("tc-hub-readonly").textContent).toContain("can no longer be edited");
     expect(within(panel).queryByRole("button", { name: /Edit/ })).toBeNull();
-    const next = within(panel).getByRole("button", { name: "Specialist acknowledged (outside the app)" }) as HTMLButtonElement;
+    const confirm = chooseMove(panel, "mark_acknowledged");
+    const next = within(confirm).getByRole("button", { name: /Specialist acknowledged \(outside the app\)/ }) as HTMLButtonElement;
     expect(next.disabled).toBe(false); // the note is optional
   });
 });
+
+/** Choose `verb` from the panel's "Move to…" menu; returns its confirm step. */
+function chooseMove(panel: HTMLElement, verb: string): HTMLElement {
+  fireEvent.click(within(panel).getByTestId("tc-hub-move-menu"));
+  fireEvent.click(within(panel).getByTestId(`tc-hub-move-${verb}`));
+  return within(panel).getByTestId("tc-hub-move-confirm");
+}
 
 // ── the doctor's sign-off card (now the hub's sign-off view; for the screenshot) ──
 

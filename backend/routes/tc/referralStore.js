@@ -828,7 +828,101 @@ async function setScheduledDate(q, { office, referralId, date }) {
   ]);
 }
 
+// ── Manual moves: cancel after send, delete a never-sent draft ─────────────
+
+/**
+ * How long an email claim is taken to be live. MIRRORS referralSend.js's
+ * CLAIM_STALE_MS (a test pins them equal): the moves may not require the send
+ * module (the messaging-gateway pin), so the number lives here as well.
+ */
+const SEND_CLAIM_STALE_MS = 5 * 60 * 1000;
+
+/** Is an email for this referral (probably) going out right now? `claim` from lockSendClaim. */
+function sendClaimIsLive(claim, now) {
+  if (claim.send_attempt_id == null) return false;
+  if (claim.send_attempt_at == null) return true;
+  return new Date(claim.send_attempt_at).getTime() >= now.getTime() - SEND_CLAIM_STALE_MS;
+}
+
+/** The instant before which a claim is stale, for releaseStaleSendClaim. */
+function sendClaimStaleBefore(now) {
+  return new Date(now.getTime() - SEND_CLAIM_STALE_MS).toISOString();
+}
+
+/**
+ * The referral's email claim (R5's send_attempt_id / _at), locked FOR UPDATE
+ * so a cancel or a delete and a send cannot interleave. null = no such row.
+ */
+async function lockSendClaim(q, office, referralId) {
+  const res = await q.query(
+    'SELECT referral_id, status, send_attempt_id, send_attempt_at FROM tc_referrals WHERE office_id = $1 AND referral_id = $2 FOR UPDATE',
+    [office, referralId]
+  );
+  return res.rows[0] || null;
+}
+
+/**
+ * casStatus, and ALSO conditional on no email claim being held: of a cancel
+ * and a send's claim, exactly one wins. null = it was not `from`, or a send
+ * claimed it.
+ */
+async function casStatusUnclaimed(q, { office, referralId, from, to, actor, at }) {
+  const res = await q.query(
+    `UPDATE tc_referrals SET status = $4, status_changed_at = $5, status_changed_by = $6, updated_at = now() WHERE office_id = $1 AND referral_id = $2 AND status = $3 AND send_attempt_id IS NULL RETURNING ${REFERRAL_COLS.join(', ')}`,
+    [office, referralId, from, to, at, actor]
+  );
+  return res.rows[0] || null;
+}
+
+/** Forget every link token of a referral (cancel): an emailed link then opens the neutral page. */
+async function deleteLinkTokens(q, office, referralId) {
+  const res = await q.query('DELETE FROM tc_referral_link_tokens WHERE office_id = $1 AND referral_id = $2', [office, referralId]);
+  return res.rowCount || 0;
+}
+
+/** The verbs on a referral's history — all the delete rule reads. */
+async function eventVerbs(q, office, referralId) {
+  const res = await q.query('SELECT verb FROM tc_referral_events WHERE office_id = $1 AND referral_id = $2', [office, referralId]);
+  return res.rows.map((r) => ({ verb: r.verb ?? null }));
+}
+
+/** The storage keys of a referral's attachments (server-side only; never sent to a client). */
+async function attachmentBlobKeys(q, office, referralId) {
+  const res = await q.query('SELECT blob_key FROM tc_referral_attachments WHERE office_id = $1 AND referral_id = $2', [
+    office,
+    referralId,
+  ]);
+  return res.rows.map((r) => String(r.blob_key));
+}
+
+/**
+ * Delete a DRAFT, conditional on it still being a draft with no email claim.
+ * The rows hanging off it go with it: ON DELETE CASCADE in Postgres, and the
+ * explicit deletes after (no-ops there) say so in code. false = it was not a
+ * draft any more; nothing was deleted.
+ */
+async function deleteDraftReferral(q, office, referralId) {
+  const res = await q.query(
+    'DELETE FROM tc_referrals WHERE office_id = $1 AND referral_id = $2 AND status = $3 AND send_attempt_id IS NULL RETURNING referral_id',
+    [office, referralId, 'draft']
+  );
+  if (res.rows.length !== 1) return false;
+  for (const table of ['tc_referral_events', 'tc_referral_attachments', 'tc_referral_link_tokens']) {
+    await q.query(`DELETE FROM ${table} WHERE office_id = $1 AND referral_id = $2`, [office, referralId]);
+  }
+  return true;
+}
+
 module.exports = {
+  SEND_CLAIM_STALE_MS,
+  sendClaimIsLive,
+  sendClaimStaleBefore,
+  lockSendClaim,
+  casStatusUnclaimed,
+  deleteLinkTokens,
+  eventVerbs,
+  attachmentBlobKeys,
+  deleteDraftReferral,
   insertLinkTokens,
   findLinkToken,
   consumeLinkToken,
