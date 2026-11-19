@@ -67,6 +67,7 @@ import {
 } from "@shared/tc/checkout";
 import type { OfficeId } from "@shared/tc/contract";
 
+import { isOfficeKey } from "@/lib/officeKeys";
 function DismissDialog({
   row,
   onClose,
@@ -237,7 +238,7 @@ export function CheckoutInbox({ offices, showOfficeBadges }: { offices: OfficeId
   useEffect(() => {
     const handoffId = query.get("handoff");
     const office = query.get("office");
-    if (handoffId && (office === "roland" || office === "valley") && offices.includes(office)) {
+    if (handoffId && isOfficeKey(office) && offices.includes(office)) {
       setOpened({ office, handoffId });
     }
   }, [query, offices]);

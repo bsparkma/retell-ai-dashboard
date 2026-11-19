@@ -13,6 +13,7 @@
  * today's free text — so nothing that reads those columns changes.
  */
 import { z } from "zod";
+import { OfficeKeySchema } from "../officeKey";
 
 export const TC_PROVIDER_NAME_MAX = 200;
 export const TC_PROVIDER_SUFFIX_MAX = 40;
@@ -31,7 +32,7 @@ export type TcProviderInput = z.infer<typeof TcProviderInput>;
 /** One provider, as the API returns it. */
 export const TcProviderEntry = z.object({
   providerId: z.string().uuid(),
-  officeId: z.enum(["roland", "valley"]),
+  officeId: OfficeKeySchema,
   name: z.string(),
   credentialSuffix: z.string(),
   active: z.boolean(),

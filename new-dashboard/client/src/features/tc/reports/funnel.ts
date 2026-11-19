@@ -10,6 +10,7 @@
  * without an explicit, reviewable cast.
  */
 import { z } from "zod";
+import { OfficeKeySchema } from "@shared/officeKey";
 import { CaseStatus, LostReason } from "@shared/tc/contract";
 import type { CaseStatusId } from "../status";
 
@@ -26,7 +27,7 @@ const PersonRow = z.object({
 });
 
 export const FunnelReportSchema = z.object({
-  office: z.enum(["roland", "valley"]),
+  office: OfficeKeySchema,
   timeZone: z.string(),
   window: z.object({
     requestedFrom: z.string(),

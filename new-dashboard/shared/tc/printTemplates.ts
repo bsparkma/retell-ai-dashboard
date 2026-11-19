@@ -21,6 +21,7 @@
  * and nothing switches on a type by name.
  */
 import { z } from "zod";
+import { OfficeKeySchema } from "../officeKey";
 
 import { PRINT_STYLING_DEFAULTS, PrintStyling } from "./printStyling";
 
@@ -279,7 +280,7 @@ export type PrintTemplateState = z.infer<typeof PrintTemplateState>;
 /** GET /api/platform/print-templates?office= */
 export const PrintTemplatesResponse = z.object({
   success: z.literal(true),
-  office: z.enum(["roland", "valley"]),
+  office: OfficeKeySchema,
   prefill: z.object({ name: z.string(), address: z.string(), phone: z.string() }),
   templates: z.array(PrintTemplateState),
   /** False: logo upload is refused here until the storage container exists. */

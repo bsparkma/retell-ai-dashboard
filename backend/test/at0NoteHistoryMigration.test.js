@@ -20,6 +20,11 @@ const migration = require('../migrations-tenant/1794300000000_at0_note_history.j
 const contract = require('../tc/contract.gen.cjs');
 const { buildTenantSchema, MIGRATIONS_DIR } = require('../scripts/lib/tenantSchemaReplay');
 
+// MT-2b3: the contract checks an office key's FORMAT now and has no list, so
+// this historical migration's CHECK is pinned to the list it was written with.
+// The live CHECK is the format one (migrations-tenant/1795000000000_office_format_checks.js).
+const HISTORICAL_OFFICE_LIST = ['roland', 'valley'];
+
 function capture(direction = 'up') {
   const calls = [];
   const rec = (op) => (...args) => calls.push({ op, args });
@@ -67,7 +72,7 @@ test('the widening is a strict superset: the previous list plus notes_updated, n
 
 test('tc_preauth_events CHECKs equal the shared contract (office, type)', () => {
   const calls = capture();
-  assert.deepEqual(inList(checkOf(calls, 'tc_preauth_events', 'tc_preauth_events_office_check')), contract.OfficeId.options);
+  assert.deepEqual(inList(checkOf(calls, 'tc_preauth_events', 'tc_preauth_events_office_check')), HISTORICAL_OFFICE_LIST);
   assert.deepEqual(inList(checkOf(calls, 'tc_preauth_events', 'tc_preauth_events_type_check')), contract.PreauthEventType.options);
   assert.equal(checkOf(calls, 'tc_preauth_events', 'tc_preauth_events_changes_check'), "jsonb_typeof(changes) = 'object'");
 });

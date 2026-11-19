@@ -115,6 +115,7 @@ import { useOffice } from "@/contexts/OfficeContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { can } from "@/lib/permissions";
 
+import { FALLBACK_OFFICE_KEYS } from "@/lib/officeKeys";
 export default function RemittanceDetailPage() {
   const [, params] = useRoute("/rcm/remittances/:id");
   const [search] = useSearchParams();
@@ -189,7 +190,9 @@ export default function RemittanceDetailPage() {
     let cancelled = false;
     setState({ kind: "loading" });
 
-    const offices = isRcmOfficeId(selected) ? [selected] : (["roland", "valley"] as const);
+    // MT-2b3: FALLBACK_OFFICE_KEYS, not the roster: this load does not wait for the
+    // roster, and changing that is a disclosed follow-up.
+    const offices = isRcmOfficeId(selected) ? [selected] : FALLBACK_OFFICE_KEYS;
 
     (async () => {
       let lastError: unknown = null;

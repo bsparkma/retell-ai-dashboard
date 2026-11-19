@@ -35,7 +35,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { canVisit } from "@/lib/permissions";
 import { hasModule } from "@/lib/modules";
-import { OfficeId } from "@shared/tc/contract";
+import { FALLBACK_OFFICE_KEYS } from "@/lib/officeKeys";
 import { fetchSetupStatus, type SetupStatus, type SetupStep } from "./setupStatusApi";
 import { howToFixFor, stepHasGo } from "./setupHowToFix";
 
@@ -47,7 +47,8 @@ export interface PracticeSetupCardProps {
 }
 
 /** The offices the picker offers before the first answer names them. */
-const FALLBACK_OFFICES: ReadonlyArray<{ officeId: string; officeName: string }> = OfficeId.options.map((id) => ({
+// MT-2b3: the roster-failure fallback (lib/officeKeys.ts), a disclosed follow-up.
+const FALLBACK_OFFICES: ReadonlyArray<{ officeId: string; officeName: string }> = FALLBACK_OFFICE_KEYS.map((id) => ({
   officeId: id,
   officeName: id.charAt(0).toUpperCase() + id.slice(1),
 }));

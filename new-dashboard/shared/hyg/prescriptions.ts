@@ -13,6 +13,7 @@
  * backend/routes/hyg/hygRxNeverToOd.test.js pins it.
  */
 import { z } from "zod";
+import { OfficeKeySchema } from "../officeKey";
 
 /** Caps, in characters. The DB CHECKs (1794600000000) carry the same. */
 export const HYG_RX_NEEDED_MAX = 1000;
@@ -41,7 +42,7 @@ export type HygPrescriptionsSaveRequest = z.infer<typeof HygPrescriptionsSaveReq
 /** GET and PUT /api/hyg/visit/:aptNum/prescriptions — what is stored, as read back. */
 export const HygPrescriptionsResponseSchema = z.object({
   success: z.literal(true),
-  office: z.enum(["roland", "valley"]),
+  office: OfficeKeySchema,
   aptNum: z.number().int().positive(),
   prescriptions: HygPrescriptionsSchema,
 });

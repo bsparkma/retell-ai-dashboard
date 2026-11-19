@@ -516,7 +516,11 @@ describe("the old path, the doctor's home and the route map", () => {
   it("/tc/referrals/signoff redirects to the sign-off view, keeping a deep link; a bogus office is dropped", () => {
     expect(signoffRedirectTarget("")).toBe("/tc/referrals?view=signoff");
     expect(signoffRedirectTarget(`office=valley&referral=${RID}`)).toBe(`/tc/referrals?view=signoff&office=valley&referral=${RID}`);
-    expect(signoffRedirectTarget(`office=elsewhere&referral=${RID}`)).toBe("/tc/referrals?view=signoff");
+    // MT-2b3 (was: office=elsewhere). The redirect checks the key's SHAPE; a
+    // well-formed key that is not an office is dropped by the hub (offices.includes)
+    // and refused by the server gate.
+    expect(signoffRedirectTarget(`office=Elsewhere&referral=${RID}`)).toBe("/tc/referrals?view=signoff");
+    expect(signoffRedirectTarget(`office=unknown&referral=${RID}`)).toBe("/tc/referrals?view=signoff");
   });
 
   it("the doctor's home is the sign-off view, and a doctor may open the hub's path but nothing else in TC", () => {

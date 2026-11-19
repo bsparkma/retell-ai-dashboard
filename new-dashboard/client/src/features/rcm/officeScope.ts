@@ -12,6 +12,7 @@
  * against the TC zod contract (@shared/tc/contract) and RCM has no business
  * depending on the TC bundle. The rule is the same; the type is RCM's own.
  */
+import { selectedServedOffice } from "@/lib/officeKeys";
 import { useMemo } from "react";
 import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
 import { isRcmOfficeId, type RcmOfficeId } from "@/features/rcm/api";
@@ -58,8 +59,10 @@ export function resolveRcmOfficeScope(input: {
     };
   }
 
+  // MT-2b3: well-formed AND on the roster once it has loaded (lib/officeKeys.ts).
+  const selected = selectedServedOffice(selection, roster);
   return {
-    offices: isRcmOfficeId(selection) ? [selection] : [],
+    offices: selected === null ? [] : [selected],
     isAllOffices: false,
     loading,
     error,

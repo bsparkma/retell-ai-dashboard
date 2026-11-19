@@ -125,8 +125,11 @@ test('office is NOT NULL and CHECKed on all three tables', () => {
       `${table} has no office CHECK`
     );
   }
-  // The frozen list, matching the contract's own office enum.
-  assert.deepEqual(contract.OfficeIdSchema.options, ['roland', 'valley']);
+  // The list this migration was written with. MT-2b3 (was: equal to the
+  // contract's office enum): the contract now checks an office key's FORMAT, so
+  // pin that it still admits exactly these two and refuses 'unknown'.
+  for (const office of ['roland', 'valley']) assert.equal(contract.OfficeIdSchema.safeParse(office).success, true);
+  assert.equal(contract.OfficeIdSchema.safeParse('unknown').success, false);
   assert.match(SOURCE, /office IN \('roland', 'valley'\)/);
 
   // The composite FK is what stops a child's office drifting from its parent's.

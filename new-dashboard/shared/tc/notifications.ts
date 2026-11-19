@@ -11,6 +11,7 @@
  * literals; test/notificationPrefsMigration.test.js pins them equal.
  */
 import { z } from "zod";
+import { OfficeKeySchema } from "../officeKey";
 
 export const TcNotificationEvent = z.enum(["checkout_handoff", "referral_signoff"]);
 export type TcNotificationEvent = z.infer<typeof TcNotificationEvent>;
@@ -58,7 +59,7 @@ export type TcNotificationPrefRow = z.infer<typeof TcNotificationPrefRow>;
 
 export const TcNotificationPrefsResponse = z.object({
   success: z.literal(true),
-  office: z.enum(["roland", "valley"]),
+  office: OfficeKeySchema,
   /** Whether the caller may change the office default (admin). */
   canEditOffice: z.boolean(),
   events: z.array(TcNotificationPrefRow),

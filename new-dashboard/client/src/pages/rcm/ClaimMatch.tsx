@@ -62,6 +62,7 @@ import MatchAnywayConfirm from "@/components/rcm/MatchAnywayConfirm";
 import { claimNumberAgrees, disagreements } from "@/features/rcm/matchWords";
 import { verdictBlock } from "@/features/rcm/verdictBlock";
 
+import { FALLBACK_OFFICE_KEYS } from "@/lib/officeKeys";
 /**
  * The three tones, as one map read by one element.
  *
@@ -213,7 +214,9 @@ export default function ClaimMatchPage() {
     let cancelled = false;
     setState({ kind: "loading" });
 
-    const offices = isRcmOfficeId(selected) ? [selected] : (["roland", "valley"] as const);
+    // MT-2b3: FALLBACK_OFFICE_KEYS, not the roster: this load does not wait for the
+    // roster, and changing that is a disclosed follow-up.
+    const offices = isRcmOfficeId(selected) ? [selected] : FALLBACK_OFFICE_KEYS;
 
     (async () => {
       let lastError: unknown = null;

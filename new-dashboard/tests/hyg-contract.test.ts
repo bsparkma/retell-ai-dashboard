@@ -28,7 +28,6 @@ import {
   HygSlipSchema,
   MOTIVATION_LABELS,
   MotivationCodeSchema,
-  OFFICE_IDS,
   TREATMENT_PRIORITY_LABELS,
   TreatmentCategorySchema,
   TreatmentItemSchema,
@@ -150,8 +149,10 @@ describe("the ported vocabularies", () => {
   });
 
   it("freezes the office keys and refuses anything else", () => {
-    expect(OFFICE_IDS).toEqual(["roland", "valley"]);
+    // MT-2b3 (was: OFFICE_IDS equals the pair). No frozen list any more; the
+    // server's hyg gate decides which keys are offices, per session tenant.
     expect(isOfficeId("roland")).toBe(true);
+    expect(isOfficeId("valley")).toBe(true);
     // `unknown` is the voice module's bucket for an unattributable call. It has
     // no Open Dental database, so it is not somewhere a day can be read from.
     expect(isOfficeId("unknown")).toBe(false);
