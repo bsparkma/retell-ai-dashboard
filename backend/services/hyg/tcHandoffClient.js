@@ -593,6 +593,9 @@ function buildCheckoutIntake({ visit, snapshot, date, final, existingTx, prescri
     pharmacy: capped(prescriptions && prescriptions.pharmacy, 200),
   };
   const carriesRx = rx.rxNeeded !== '' || rx.pharmacy !== '';
+  // PA details, LIVE only (PAs picked) — the same predicate the note and the
+  // slip print through, so the card never says more than the chart does.
+  const paDetails = capped(contract.paDetailsText(slip), 1000);
   return {
     ok: true,
     body: {
@@ -625,6 +628,7 @@ function buildCheckoutIntake({ visit, snapshot, date, final, existingTx, prescri
         ...(collect ? { collectAtCheckout: collect } : {}),
         ...(records ? { records } : {}),
         ...(carriesRx ? { prescriptions: rx } : {}),
+        ...(paDetails ? { paDetails } : {}),
       },
     },
   };

@@ -179,6 +179,8 @@ class FakeHygDb extends FakeAuditDb {
     this.hyg_existing_tx_disposition = [];
     /** @type {Array<Record<string, any>>} Practice staff */
     this.hyg_staff = [];
+    /** @type {Array<Record<string, any>>} After-Send addenda */
+    this.hyg_visit_addendum = [];
     this.seq = 0;
   }
 
@@ -461,6 +463,107 @@ class FakeHygDb extends FakeAuditDb {
     return res;
   }
 
+  /**
+   * hyg_visit_addendum, as the migration (1795200000000) defines it: the
+   * CHECKs that carry meaning, the composite FK's office match, the write-once
+   * trigger (no statement here can change what an addendum says) and no DELETE
+   * at all — an unrecognised addendum statement throws, like everything else.
+   */
+  queryAddendum(text, params) {
+    const STATES = ['Staged', 'Sending', 'Written', 'Failed'];
+    const check = (row) => {
+      if (!STATES.includes(row.state)) throw new Error('hyg_visit_addendum_state_check violated');
+      const written = row.written_ref !== null && row.sent_by !== null && row.sent_at !== null;
+      if ((row.state === 'Written') !== written) throw new Error('hyg_visit_addendum_written_check violated');
+      if ((row.state === 'Failed') !== (row.error_message !== null)) {
+        throw new Error('hyg_visit_addendum_error_check violated');
+      }
+    };
+
+    if (/^\s*SELECT[\s\S]*FROM hyg_visit_addendum\s+WHERE visit_id = \$1 AND office = \$2\s+ORDER BY created_at ASC, addendum_id ASC\s*$/i.test(text)) {
+      const [visitId, office] = params;
+      const rows = this.hyg_visit_addendum
+        .filter((r) => r.visit_id === visitId && r.office === office)
+        .map((r) => ({ ...r }));
+      return { rows, rowCount: rows.length };
+    }
+
+    if (/^\s*SELECT[\s\S]*FROM hyg_visit_addendum\s+WHERE addendum_id = \$1 AND visit_id = \$2 AND office = \$3\s*$/i.test(text)) {
+      const [id, visitId, office] = params;
+      const rows = this.hyg_visit_addendum
+        .filter((r) => r.addendum_id === id && r.visit_id === visitId && r.office === office)
+        .map((r) => ({ ...r }));
+      return { rows, rowCount: rows.length };
+    }
+
+    if (/^\s*INSERT INTO hyg_visit_addendum \(visit_id, office, body, author, preview\)\s+VALUES \(\$1, \$2, \$3, \$4, \$5::jsonb\)\s+RETURNING/i.test(text)) {
+      const [visitId, office, body, author, previewJson] = params;
+      this.checkOffice(office);
+      if (!this.hyg_visit.some((v) => v.visit_id === visitId && v.office === office)) {
+        throw new Error('hyg_visit_addendum_visit_fk violated');
+      }
+      const trimmed = String(body).trim();
+      if (trimmed.length < 1 || trimmed.length > 4000) throw new Error('hyg_visit_addendum_body_check violated');
+      if (String(author).trim().length < 1) throw new Error('hyg_visit_addendum_author_check violated');
+      const preview = JSON.parse(previewJson);
+      if (!Array.isArray(preview) || preview.length < 3) throw new Error('hyg_visit_addendum_preview_check violated');
+      this.seq += 1;
+      const now = new Date(Date.now() + this.seq); // strictly increasing, like created_at
+      const row = {
+        addendum_id: `00000000-0000-4000-8000-${String(this.seq).padStart(12, '0')}`,
+        visit_id: visitId,
+        office,
+        body,
+        author,
+        created_at: now,
+        preview,
+        state: 'Staged',
+        error_message: null,
+        written_ref: null,
+        sent_by: null,
+        sent_at: null,
+        updated_at: now,
+      };
+      check(row);
+      this.hyg_visit_addendum.push(row);
+      return { rows: [{ ...row }], rowCount: 1 };
+    }
+
+    const find = (id, visitId, office) =>
+      this.hyg_visit_addendum.find((r) => r.addendum_id === id && r.visit_id === visitId && r.office === office);
+
+    if (/^\s*UPDATE hyg_visit_addendum\s+SET state = 'Sending', error_message = NULL, updated_at = now\(\)\s+WHERE addendum_id = \$1 AND visit_id = \$2 AND office = \$3 AND state IN \('Staged', 'Failed'\)\s*$/i.test(text)) {
+      const row = find(...params);
+      if (!row || !['Staged', 'Failed'].includes(row.state)) return { rows: [], rowCount: 0 };
+      const next = { ...row, state: 'Sending', error_message: null, updated_at: new Date() };
+      check(next);
+      Object.assign(row, next);
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (/^\s*UPDATE hyg_visit_addendum\s+SET state = 'Written', sent_by = \$4, sent_at = now\(\), written_ref = \$5, updated_at = now\(\)\s+WHERE addendum_id = \$1 AND visit_id = \$2 AND office = \$3 AND state = 'Sending'\s*$/i.test(text)) {
+      const [id, visitId, office, actor, writtenRef] = params;
+      const row = find(id, visitId, office);
+      if (!row || row.state !== 'Sending') return { rows: [], rowCount: 0 };
+      const next = { ...row, state: 'Written', sent_by: actor, sent_at: new Date(), written_ref: writtenRef, updated_at: new Date() };
+      check(next);
+      Object.assign(row, next);
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (/^\s*UPDATE hyg_visit_addendum\s+SET state = 'Failed', error_message = \$4, updated_at = now\(\)\s+WHERE addendum_id = \$1 AND visit_id = \$2 AND office = \$3 AND state = 'Sending'\s*$/i.test(text)) {
+      const [id, visitId, office, error] = params;
+      const row = find(id, visitId, office);
+      if (!row || row.state !== 'Sending') return { rows: [], rowCount: 0 };
+      const next = { ...row, state: 'Failed', error_message: error, updated_at: new Date() };
+      check(next);
+      Object.assign(row, next);
+      return { rows: [], rowCount: 1 };
+    }
+
+    throw new Error('[hygTestUtils] unexpected SQL on hyg_visit_addendum: ' + text.trim().slice(0, 160));
+  }
+
   async queryInner(sql, params = []) {
     const text = String(sql);
     // Audit and its probe stay with the parent, unchanged.
@@ -476,6 +579,11 @@ class FakeHygDb extends FakeAuditDb {
 
     // ── Practice staff (services/hyg/staffStore.js) ────────────────────────
     if (/\bhyg_staff\b/.test(text)) return this.queryStaff(text, params);
+
+    // ── After-Send addenda (visitStore addendum statements) ────────────────
+    // Before every hyg_visit matcher below: `INSERT INTO hyg_visit` would
+    // otherwise swallow `INSERT INTO hyg_visit_addendum`.
+    if (/\bhyg_visit_addendum\b/.test(text)) return this.queryAddendum(text, params);
 
     // ── the day-card progress read (services/hyg/progressStore.js) ──────────
     // Four read-only statements, each keyed by office FIRST. Matched before the
@@ -1807,6 +1915,8 @@ async function bootHygApp({
         baseUrl: 'http://127.0.0.1:' + port,
         db,
         od,
+        // So a test can move the addendum window's clock: app.set('hygClock', fn).
+        app,
         close: () =>
           new Promise((r) => {
             for (const k of REGISTRY_KEYS) registry[k] = originals.registry[k];

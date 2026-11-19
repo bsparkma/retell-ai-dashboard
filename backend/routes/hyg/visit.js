@@ -101,6 +101,8 @@ const referralAttachments = require('../tc/referralAttachments');
 const transitions = require('../tc/referralTransitions');
 const checkoutQuestionStore = require('../tc/checkoutQuestionStore');
 const checkoutQuestions = require('../../services/hyg/checkoutQuestions');
+const addendumService = require('../../services/hyg/addendum');
+const hygWarm = require('../../config/hygWarm');
 
 const router = express.Router();
 
@@ -180,11 +182,31 @@ function parseBody(res, schema, body) {
   return null;
 }
 
+/**
+ * The clock the addendum window reads. Injectable (`app.set('hygClock', fn)`)
+ * so a test can stand on the next day; production reads the real time.
+ * @param {import('express').Request} req
+ * @returns {Date}
+ */
+function hygNow(req) {
+  const clock = req && req.app && req.app.get('hygClock');
+  return typeof clock === 'function' ? clock() : new Date();
+}
+
+/** The office's own zone — the same one the 07:45 warm reads its day in. */
+function hygTimeZone() {
+  return hygWarm.timezone();
+}
+
 /** The response shape every visit route answers with, so no screen sees two. */
-function visitPayload(visit) {
+function visitPayload(visit, { now = new Date() } = {}) {
   return {
     success: true,
-    visit,
+    // The addendum window is computed HERE, on every response, from the note's
+    // own sent time and the server's clock — never by the client.
+    visit: visit
+      ? { ...visit, addendumWindow: addendumService.addendumWindow(visit, { now, timeZone: hygTimeZone() }) }
+      : visit,
     // Computed rather than stored: RECORDS_MATRIX is the office's standard and
     // changing it must change what every open visit asks for, not only the ones
     // saved since.
@@ -402,7 +424,7 @@ async function viewPayload(req, visit) {
     visit && visit.stagedWrites.some((w) => w.existingTxStale === undefined)
       ? await tenantDb.withTenantDb(req, (pool) => existingTxStale.annotate(pool, visit))
       : visit;
-  return visitPayload(annotated);
+  return visitPayload(annotated, { now: hygNow(req) });
 }
 
 async function loadForMutation(req, res, office, aptNum) {
@@ -492,7 +514,8 @@ router.get(
       appointment: resolved.appointment,
       flagSources: resolved.day.flagSources,
       // null when nobody has started one. NOT an error, and NOT a created row.
-      visit,
+      // With the addendum window, computed here like on every other response.
+      visit: visit ? visitPayload(visit, { now: hygNow(req) }).visit : visit,
       recordsNeeded: visit ? contract.recordsNeededFor(visit.items) : [],
       handoffCategory: visit ? contract.deriveCategory(visit.items) : 'Other',
       // Present even before a visit row exists — the form draws the doctor row
@@ -2372,6 +2395,163 @@ router.post(
       failed,
       checkout: checkout ? checkout.delivery : null,
     });
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/hyg/visit/:aptNum/addenda                       (after-Send addendum)
+// POST /api/hyg/visit/:aptNum/addenda/:addendumId/send
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Add an addendum to a SENT visit — same office-local day only.
+ *
+ * ⚠️ ZERO OPEN DENTAL CALLS. ⚠️ It composes the preview server-side from the
+ * words and the signed-in user (never a request field for the author), stores
+ * it Staged, and answers with the visit. The chart is reached only by the send
+ * route below, on a human's press. ANY signed-in team member the module lets
+ * write may add one — not only whoever wrote the note.
+ */
+router.post(
+  '/:aptNum/addenda',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumOr400(req, res, office);
+    if (aptNum === null) return undefined;
+
+    const body = parseBody(res, contract.AddendumCreateRequestSchema, req.body);
+    if (body === null) return undefined;
+
+    const visit = await loadForMutation(req, res, office, aptNum);
+    if (!visit) return undefined;
+
+    const now = hygNow(req);
+    const added = await tenantDb.withTenantDb(req, (pool) =>
+      addendumService.addAddendum(pool, {
+        office,
+        visit,
+        text: body.text,
+        author: actorEmail(req),
+        now,
+        timeZone: hygTimeZone(),
+      })
+    );
+    if (!added.ok) {
+      await auditHygDenial(req, 'hyg_visit_addendum', aptNum, { office, result: 'UNAUTHORIZED' });
+      return res.status(added.status).json({ success: false, error: added.error, code: added.code, office });
+    }
+
+    await audit(req, {
+      action: 'CREATE',
+      resourceType: 'hyg_visit_addendum',
+      resourceId: aptNum,
+      result: 'SUCCESS',
+      office,
+      sourceRef: null,
+    });
+    const after = await tenantDb.withTenantDb(req, (pool) => getVisitView(pool, { office, aptNum }));
+    return res.status(201).json(await viewPayload(req, after));
+  })
+);
+
+/**
+ * Send one addendum to the chart — the human-approved write.
+ *
+ * The visit Send's shape, exactly: the body carries ONLY the fingerprint of
+ * the preview that was read; the office's Open Dental handle is resolved and
+ * office-matched first (fail closed: switched off, unkeyed or unreachable is
+ * its own refusal); the appointment is re-read so a visit whose appointment
+ * moved to another patient refuses; and one audit row records the attempt with
+ * its honest result. The write itself is the visit note's writer.
+ */
+router.post(
+  '/:aptNum/addenda/:addendumId/send',
+  h(async (req, res) => {
+    const office = req.hygOffice;
+    const aptNum = aptNumOr400(req, res, office);
+    if (aptNum === null) return undefined;
+    const addendumId = String(req.params.addendumId || '');
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(addendumId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'addendumId must be an addendum id',
+        code: 'INVALID_ID',
+        office,
+      });
+    }
+    const date = typeof req.query.date === 'string' ? req.query.date.trim() : '';
+    if (!isRealDate(date)) {
+      return res.status(400).json({
+        success: false,
+        error: 'date query param is required and must be a real calendar date (YYYY-MM-DD)',
+        code: 'INVALID_DATE',
+        office,
+      });
+    }
+    const body = parseBody(res, contract.AddendumSendRequestSchema, req.body);
+    if (body === null) return undefined;
+
+    // OFFICE READINESS FIRST — the visit Send's rule and reason.
+    const resolved = await resolveAppointment(req, { office, aptNum, date });
+    if (!resolved.ok) {
+      await auditHygDenial(req, 'hyg_visit_addendum_send', aptNum, {
+        office,
+        result: resolved.status >= 500 ? 'ERROR' : 'UNAUTHORIZED',
+      });
+      return res.status(resolved.status).json(resolved.body);
+    }
+
+    const visit = await loadForMutation(req, res, office, aptNum);
+    if (!visit) return undefined;
+    if (resolved.appointment.patNum !== visit.patNum) {
+      await auditHygDenial(req, 'hyg_visit_addendum_send', aptNum, { office, result: 'UNAUTHORIZED' });
+      return res.status(409).json({
+        success: false,
+        error:
+          'This appointment now belongs to a different patient in Open Dental than the visit ' +
+          'the addendum is on. Nothing was sent.',
+        code: 'PATIENT_CHANGED',
+        office,
+      });
+    }
+
+    const odGet = (path, params, opts) =>
+      resolved.od.client.apiGetRaw(path, params, { ...(opts || {}), module: 'hyg' });
+    const actor = actorEmail(req);
+    const sent = await tenantDb.withTenantDb(req, (pool) =>
+      addendumService.sendAddendum({
+        pool,
+        office,
+        visit,
+        appointment: resolved.appointment,
+        od: resolved.od,
+        odGet,
+        actor,
+        addendumId,
+        previewFingerprint: body.previewFingerprint,
+        now: hygNow(req),
+        timeZone: hygTimeZone(),
+      })
+    );
+    if (!sent.ok) {
+      await auditHygDenial(req, 'hyg_visit_addendum_send', aptNum, { office, result: 'UNAUTHORIZED' });
+      return res.status(sent.status).json({ success: false, error: sent.error, code: sent.code, office });
+    }
+
+    await audit(req, {
+      action: 'UPDATE',
+      resourceType: 'hyg_visit_addendum_send',
+      resourceId: aptNum,
+      result: sent.outcome.state === 'Written' ? 'SUCCESS' : 'ERROR',
+      office,
+      sourceRef: null,
+    });
+    console.log(`[hygaddendum] office=${office} apt=${aptNum} by=${actor} state=${sent.outcome.state}`);
+
+    const after = await tenantDb.withTenantDb(req, (pool) => getVisitView(pool, { office, aptNum }));
+    // 200 even when it failed — the visit Send's rule: the request did what it
+    // was asked and reports what happened, row by row.
+    return res.json({ ...(await viewPayload(req, after)), addendumId, outcome: sent.outcome });
   })
 );
 

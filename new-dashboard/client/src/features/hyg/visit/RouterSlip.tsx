@@ -31,6 +31,8 @@ import {
   doneTodayChoices,
   EXAM_STATUS_LABELS,
   ExamStatusSchema,
+  PA_DETAILS_MAX,
+  PA_XRAY,
   PERIO_STAGE_LABELS,
   PerioGradeSchema,
   PerioStageSchema,
@@ -175,16 +177,42 @@ export function RouterSlip({
         ))}
       </Row>
 
-      <Row label="X-rays taken">
+      <Row label="X-rays taken" testId="hyg-slip-xrays">
         {XRAY_OPTIONS.map((x) => (
           <Chip
             key={x}
             label={x}
             active={slip.xrayTypes.includes(x)}
             onClick={() => toggle("xrayTypes", x)}
+            testId={`hyg-slip-xray-${x}`}
           />
         ))}
       </Row>
+
+      {/*
+        PA DETAILS — only while PAs is picked. Un-ticking PAs hides the box and
+        stops it printing anywhere (contract.paDetailsText), but keeps what was
+        typed, so a mis-tap on the chip does not cost the hygienist her words.
+        Full width and text-base on a phone, so iOS does not zoom into it.
+      */}
+      {slip.xrayTypes.includes(PA_XRAY) ? (
+        <label className="block space-y-1.5" data-testid="hyg-slip-pa-details-field">
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            PA details
+          </span>
+          <textarea
+            className="min-h-[72px] w-full rounded-lg border border-border bg-background p-2 text-base sm:text-sm"
+            defaultValue={slip.paDetails}
+            maxLength={PA_DETAILS_MAX}
+            placeholder="Which PAs, and why"
+            onBlur={(e) => set("paDetails", e.target.value)}
+            data-testid="hyg-slip-pa-details"
+          />
+          <span className="block text-xs text-muted-foreground">
+            Prints on the visit note, the routing slip and the checkout card.
+          </span>
+        </label>
+      ) : null}
 
       <Row label="Doctor exam">
         {ExamStatusSchema.options.map((e: ExamStatus) => (

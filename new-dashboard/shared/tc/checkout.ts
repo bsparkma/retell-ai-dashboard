@@ -167,6 +167,8 @@ export const TC_CHECKOUT_RECORD_STATUS_LABELS: Record<TcCheckoutRecordStatus, st
   taken_today: "Taken today",
 };
 export const TC_CHECKOUT_RECORDS_MAX = 60;
+/** The hygiene slip's PA_DETAILS_MAX, restated (a test pins that they match). */
+export const TC_CHECKOUT_PA_DETAILS_MAX = 1000;
 /** One record the planned treatment needs ("Pre-op PA"), and where it stands. */
 export const TcCheckoutRecord = z
   .object({ record: z.string().min(1).max(120), status: TcCheckoutRecordStatus })
@@ -215,6 +217,12 @@ export const TcCheckoutSnapshot = z
      * OPTIONAL and additive, like existingTx: absent when neither was filled in.
      */
     prescriptions: HygPrescriptionsSchema.optional(),
+    /**
+     * The slip's PA details (which PAs, why) — only while PAs is picked under
+     * X-rays taken. OPTIONAL and additive, like existingTx: absent when there
+     * are none, so a visit without them sends exactly the snapshot it did.
+     */
+    paDetails: z.string().min(1).max(TC_CHECKOUT_PA_DETAILS_MAX).optional(),
   })
   .strict();
 export type TcCheckoutSnapshot = z.infer<typeof TcCheckoutSnapshot>;

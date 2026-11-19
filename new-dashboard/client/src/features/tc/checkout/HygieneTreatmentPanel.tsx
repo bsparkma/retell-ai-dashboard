@@ -386,6 +386,11 @@ function VisitBlock({
           <span className="font-medium text-foreground">Front desk note:</span> {h.snapshot.frontDeskNote}
         </p>
       )}
+      {h.snapshot.paDetails && (
+        <p className="text-xs text-muted-foreground whitespace-pre-wrap" data-testid="tc-hygiene-pa-details">
+          <span className="font-medium text-foreground">PA details:</span> {h.snapshot.paDetails}
+        </p>
+      )}
       {h.snapshot.existingTx && h.snapshot.existingTx.length > 0 ? (
         <ExistingTreatmentFromHygiene items={h.snapshot.existingTx} />
       ) : null}
