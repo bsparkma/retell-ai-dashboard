@@ -18,7 +18,6 @@ import {
   groupRowsByCode,
   sourceTypeFromFilename,
   isFeesOfficeId,
-  FEES_OFFICE_IDS,
   type FeesImportRow,
 } from "../client/src/features/fees/api";
 
@@ -195,10 +194,12 @@ describe("groupRowsByCode", () => {
 // ─── Office keys and file types ──────────────────────────────────────────────
 
 describe("office keys", () => {
-  it("admits exactly the two the server admits", () => {
-    expect([...FEES_OFFICE_IDS]).toEqual(["roland", "valley"]);
+  it("admits roland and valley; WHICH keys are offices is the server's call (MT-2b3)", () => {
+    // MT-2b3 (was: FEES_OFFICE_IDS equals the pair). There is no client list any
+    // more: the server's fees gate decides, per session tenant.
     expect(isFeesOfficeId("roland")).toBe(true);
     expect(isFeesOfficeId("valley")).toBe(true);
+    expect(isFeesOfficeId("fortsmith")).toBe(true);
   });
 
   it("refuses the system bucket and everything else", () => {

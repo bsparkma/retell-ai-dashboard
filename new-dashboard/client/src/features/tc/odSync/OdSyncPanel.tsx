@@ -28,7 +28,8 @@ import {
   type OdSyncStatus,
 } from "./odSyncApi";
 
-const OFFICE_LABELS: Record<OfficeId, string> = { roland: "Roland", valley: "Riley" };
+// MT-2b3: presentational; an office not named here renders as its key.
+const OFFICE_LABELS: Readonly<Record<string, string>> = { roland: "Roland", valley: "Riley" };
 const POLL_MS = 3000;
 
 export function OdSyncPanel({
@@ -128,7 +129,7 @@ export function OdSyncPanel({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
           <p className="font-medium text-foreground">
-            Open Dental sync{showOfficeName ? ` · ${OFFICE_LABELS[office]}` : ""}
+            Open Dental sync{showOfficeName ? ` · ${OFFICE_LABELS[office] ?? office}` : ""}
           </p>
           <p className="text-xs text-muted-foreground" data-testid={`od-sync-last-run-${office}`}>
             {status.running ? (

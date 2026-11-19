@@ -36,6 +36,7 @@
  * from a handoff reads Open Dental or the hygiene visit again.
  */
 import { z } from "zod";
+import { OfficeKeySchema } from "../officeKey";
 
 import { EXISTING_TX_HANDOFF_MAX, ExistingTxHandoffItemSchema } from "../hyg/existingTx";
 import { HygPrescriptionsSchema } from "../hyg/prescriptions";
@@ -527,7 +528,7 @@ export type TcCheckoutReopened = z.infer<typeof TcCheckoutReopened>;
 /** A checkout handoff as TC reads it back. */
 export const TcCheckoutHandoff = z.object({
   handoffId: z.string().uuid(),
-  officeId: z.enum(["roland", "valley"]),
+  officeId: OfficeKeySchema,
   odPatientId: z.number().int().positive(),
   patientName: z.string(),
   provider: z.string(),
@@ -614,7 +615,7 @@ export type TcCheckoutScheduleCheckStatus = z.infer<typeof TcCheckoutScheduleChe
 
 export const TcCheckoutScheduleCheck = z.object({
   success: z.literal(true),
-  office: z.enum(["roland", "valley"]),
+  office: OfficeKeySchema,
   status: TcCheckoutScheduleCheckStatus,
   running: z.boolean(),
   lastSuccessAt: z.string().nullable(),
@@ -677,7 +678,7 @@ export type TcCheckoutDismissRequest = z.infer<typeof TcCheckoutDismissRequest>;
  */
 export const TcCheckoutSummary = z.object({
   success: z.literal(true),
-  office: z.enum(["roland", "valley"]),
+  office: OfficeKeySchema,
   enabled: z.boolean(),
   /** The office's own day, `YYYY-MM-DD`, that "today" means here. */
   today: z.string().nullable(),

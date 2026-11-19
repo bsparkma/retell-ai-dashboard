@@ -37,7 +37,7 @@ import {
   TcPreauthCase,
   TcSmileSimulation,
   type LibrarySection,
-  type OfficeId,
+  OfficeId,
 } from "./contract";
 import { EmailBlocks } from "./emailBlocks";
 
@@ -53,9 +53,24 @@ export function dollarsToCents(dollars: number): number {
   return Math.round(dollars * 100);
 }
 
-/** Frozen internal office keys. Legacy 'riley' = Fort Smith = 'valley'. */
+/**
+ * The two locations the LEGACY app knew, as office keys. Historical data, not a
+ * list of offices (MT-2b3): the legacy export names no other location, so an
+ * import can only ever file under these. Legacy 'riley' = Fort Smith = 'valley'.
+ */
+const LEGACY_ROLAND = OfficeId.parse("roland");
+const LEGACY_VALLEY = OfficeId.parse("valley");
+export const LEGACY_OFFICES: readonly OfficeId[] = Object.freeze([LEGACY_ROLAND, LEGACY_VALLEY]);
+
+/** A legacy-import office from user input (the CLI), or a thrown error. */
+export function parseLegacyOffice(value: unknown): OfficeId {
+  const office = LEGACY_OFFICES.find((o) => o === value);
+  if (!office) throw new Error(`office must be one of: ${LEGACY_OFFICES.join(", ")}`);
+  return office;
+}
+
 export function legacyLocationToOffice(location: string | undefined | null): OfficeId {
-  return location === "riley" ? "valley" : "roland";
+  return location === "riley" ? LEGACY_VALLEY : LEGACY_ROLAND;
 }
 
 /** 'YYYY-MM-DD' | ISO timestamp | junk → 'YYYY-MM-DD' or null. */

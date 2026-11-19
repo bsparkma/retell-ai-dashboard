@@ -77,8 +77,8 @@ import {
 } from "@shared/tc/printTemplates";
 import type { OfficeId } from "@shared/tc/contract";
 
-const PRINT_OFFICES: readonly OfficeId[] = ["roland", "valley"];
 
+import { asOfficeKey, servedOfficeKeys } from "@/lib/officeKeys";
 /** The two fields a placeholder may go in; the picker inserts into the one last focused. */
 type PlaceholderField = "body" | "signatureLine";
 
@@ -675,13 +675,14 @@ function OfficeTemplates({ office }: { office: OfficeId }) {
 
 export default function AdminPrintTemplates() {
   const { office, offices, loading, error } = useOffice();
-  const inScope = PRINT_OFFICES.filter((o) => offices.some((r) => r.officeId === o));
+  // MT-2b3: the offices the server's roster names ('unknown' dropped), not a list.
+  const inScope = servedOfficeKeys(offices);
   const [chosen, setChosen] = useState<OfficeId | null>(null);
   const [generation, setGeneration] = useState(0);
   const nameOf = (id: string) => offices.find((o) => o.officeId === id)?.officeName ?? id;
 
   const active: OfficeId | null =
-    office === ALL_OFFICES ? (chosen && inScope.includes(chosen) ? chosen : inScope[0] ?? null) : PRINT_OFFICES.includes(office as OfficeId) ? (office as OfficeId) : null;
+    office === ALL_OFFICES ? (chosen && inScope.includes(chosen) ? chosen : inScope[0] ?? null) : asOfficeKey(office);
 
   return (
     <div className="mx-auto max-w-6xl p-6">

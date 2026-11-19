@@ -13,21 +13,27 @@
  */
 import { handleUnauthorized } from "@/lib/api";
 
+import { isOfficeKey, type OfficeKey } from "@shared/officeKey";
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:5000/api";
 
 /**
- * The frozen office keys the rcm_* CHECK constraints accept. Mirrors
- * backend/routes/rcm/helpers.js — a third office is a migration, not an edit.
+ * An office key (shared/officeKey.ts). MT-2b3: no frozen list here any more.
+ * Which keys are this practice's offices is the server's call, per session
+ * tenant (backend/platform/officeGate.js); 'unknown' is never one.
  */
-export const RCM_OFFICE_IDS = ["roland", "valley"] as const;
-export type RcmOfficeId = (typeof RCM_OFFICE_IDS)[number];
+export type RcmOfficeId = OfficeKey;
 
 export function isRcmOfficeId(value: unknown): value is RcmOfficeId {
-  return typeof value === "string" && (RCM_OFFICE_IDS as readonly string[]).includes(value);
+  return isOfficeKey(value);
 }
 
-/** Short labels for badges (roster display names are too long for a chip). */
-export const RCM_OFFICE_LABELS: Record<RcmOfficeId, string> = {
+/**
+ * Short labels for badges (roster display names are too long for a chip).
+ * Presentational only. An office not named here has NO short label at the
+ * lookups that index this map directly; a registry short name is the MT-2b3
+ * follow-up that retires it.
+ */
+export const RCM_OFFICE_LABELS: Readonly<Record<string, string>> = {
   roland: "Roland",
   valley: "Valley",
 };

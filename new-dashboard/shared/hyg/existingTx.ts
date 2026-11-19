@@ -23,6 +23,7 @@
  */
 
 import { z } from "zod";
+import { OfficeKeySchema } from "../officeKey";
 
 export const EXISTING_TX_CLINICAL = [
   "no_change",
@@ -196,7 +197,7 @@ export type ExistingTxItem = z.infer<typeof ExistingTxItemSchema>;
 /** GET /api/hyg/visit/:aptNum/existing-tx */
 export const ExistingTxResponseSchema = z.object({
   success: z.literal(true),
-  office: z.enum(["roland", "valley"]),
+  office: OfficeKeySchema,
   aptNum: z.number().int().positive(),
   /** The visit's note or slip has been sent: the answers are locked. */
   frozen: z.boolean(),
@@ -209,7 +210,7 @@ export type ExistingTxResponse = z.infer<typeof ExistingTxResponseSchema>;
 /** PUT …/existing-tx/:procNum — the stored row, read back. */
 export const ExistingTxSaveResponseSchema = z.object({
   success: z.literal(true),
-  office: z.enum(["roland", "valley"]),
+  office: OfficeKeySchema,
   aptNum: z.number().int().positive(),
   procNum: z.number().int().positive(),
   disposition: ExistingTxDispositionSchema,

@@ -67,7 +67,6 @@ import {
   sourceTypeFromFilename,
   formatBytes,
   FeesApiError,
-  FEES_OFFICE_IDS,
   FEES_OFFICE_LABELS,
   isFeesOfficeId,
   type FeesImportBatch,
@@ -75,6 +74,7 @@ import {
 } from "@/features/fees/api";
 import { cn } from "@/lib/utils";
 
+import { servedOfficeKeysOrFallback } from "@/lib/officeKeys";
 /** The server's own ceiling, restated for the hint text. Kept in one place. */
 const MAX_UPLOAD_MB = 10;
 
@@ -134,18 +134,15 @@ export default function FeesImports() {
    * The offices the LIST reads, in canonical order.
    *
    * Under "All" this is both; under a concrete selection it is the one. The
-   * roster is intersected with the module's own frozen keys rather than trusted
-   * wholesale, because the roster carries every office the platform knows about
-   * (including the `unknown` bucket) and this module serves exactly two.
+   * roster's `unknown` bucket is dropped (servedOfficeKeys), because it names no
+   * practice. MT-2b3: the roster, not a frozen list, says which offices exist.
    */
   const listOffices = useMemo<FeesOfficeId[]>(() => {
     if (!allSelected) return isFeesOfficeId(selection) ? [selection] : [];
-    const known = new Set(offices.map((o) => o.officeId));
-    // An empty roster must not silently mean "no offices": FEES_OFFICE_IDS is
-    // the fallback so a roster that failed to load still shows the list rather
+    // An empty roster must not silently mean "no offices": FALLBACK_OFFICE_KEYS
+    // is the fallback so a roster that failed to load still shows the list rather
     // than an empty state that reads as "you have never imported anything".
-    const fromRoster = FEES_OFFICE_IDS.filter((id) => known.has(id));
-    return fromRoster.length > 0 ? [...fromRoster] : [...FEES_OFFICE_IDS];
+    return servedOfficeKeysOrFallback(offices);
   }, [allSelected, selection, offices]);
 
   useEffect(() => {
@@ -275,7 +272,7 @@ export default function FeesImports() {
               to one of them. Pick one before uploading.
             </p>
             <div className="mt-3 flex flex-wrap gap-2">
-              {FEES_OFFICE_IDS.map((id) => (
+              {servedOfficeKeysOrFallback(offices).map((id) => (
                 <button
                   key={id}
                   type="button"

@@ -10,6 +10,7 @@
  * backend/migrations-tenant/1793400000000_hyg_staff.js for the table.
  */
 import { z } from "zod";
+import { OfficeKeySchema } from "../officeKey";
 
 /** At most this many sign-in ids per person (the table's CHECK says the same). */
 export const HYG_STAFF_SIGN_IN_MAX = 10;
@@ -61,7 +62,7 @@ export type HygStaffInput = z.input<typeof HygStaffInputSchema>;
 /** One row, as every route answers with it. */
 export const HygStaffSchema = z.object({
   id: z.string().uuid(),
-  office: z.enum(["roland", "valley"]),
+  office: OfficeKeySchema,
   fullName: z.string(),
   license: z.string().nullable(),
   signInIds: z.array(z.string()),
@@ -76,7 +77,7 @@ export type HygStaff = z.infer<typeof HygStaffSchema>;
 /** GET /api/platform/hyg-staff?office= */
 export const HygStaffListSchema = z.object({
   success: z.literal(true),
-  office: z.enum(["roland", "valley"]),
+  office: OfficeKeySchema,
   staff: z.array(HygStaffSchema),
   /**
    * True while this office has NO rows: notes still take hygienist names from
@@ -122,7 +123,7 @@ export type UserSignatureInput = z.input<typeof UserSignatureInputSchema>;
 export const UserSignatureResponseSchema = z.object({
   success: z.literal(true),
   /** The office whose notes this signature prints on (the user's home office). */
-  office: z.enum(["roland", "valley"]),
+  office: OfficeKeySchema,
   /** null = no active signature: the signed-in name prints alone. */
   signature: z
     .object({

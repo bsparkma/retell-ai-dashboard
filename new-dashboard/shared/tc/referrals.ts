@@ -7,6 +7,7 @@
  * Dental.
  */
 import { z } from "zod";
+import { OfficeKeySchema } from "../officeKey";
 
 /**
  * Where a referral stands. The DB CHECK (1791800000000_tc_referrals.js) carries
@@ -102,7 +103,7 @@ export type TcReferralDirectoryInput = z.infer<typeof TcReferralDirectoryInput>;
 /** One directory entry, as the API returns it. */
 export const TcReferralDirectoryEntry = z.object({
   entryId: z.string().uuid(),
-  officeId: z.enum(["roland", "valley"]),
+  officeId: OfficeKeySchema,
   practiceName: z.string(),
   specialistName: z.string(),
   specialty: z.string(),
@@ -166,7 +167,7 @@ export type TcReferralSignoffModePolicy = z.infer<typeof TcReferralSignoffModePo
 /** GET /api/tc/referrals/settings */
 export const TcReferralSettingsResponse = z.object({
   success: z.literal(true),
-  office: z.enum(["roland", "valley"]),
+  office: OfficeKeySchema,
   signoffRequired: TcReferralPolicy,
   /** The mode signoffRequired is derived from. Optional only for an older server. */
   signoffMode: TcReferralSignoffModePolicy.optional(),
@@ -217,7 +218,7 @@ export type TcReferralEmailMissing = z.infer<typeof TcReferralEmailMissing>;
 /** GET /api/tc/referrals/status — is the feature on here? Never refused. */
 export const TcReferralsStatus = z.object({
   success: z.literal(true),
-  office: z.enum(["roland", "valley"]),
+  office: OfficeKeySchema,
   enabled: z.boolean(),
   /**
    * R5: referral email. `enabled` is the per-office dark-launch switch
@@ -581,7 +582,7 @@ export type TcReferralPatientEmailRecord = z.infer<typeof TcReferralPatientEmail
 /** A referral, as the API returns it. */
 export const TcReferral = z.object({
   referralId: z.string().uuid(),
-  officeId: z.enum(["roland", "valley"]),
+  officeId: OfficeKeySchema,
   odPatientId: z.number().int().positive(),
   patientName: z.string(),
   tcCaseId: z.string().uuid().nullable(),
@@ -1500,7 +1501,7 @@ export function referralSendBlocker(
 /** GET /api/tc/referrals/signoff/summary — the nav badge and the arrival alert. */
 export const TcReferralSignoffSummary = z.object({
   success: z.literal(true),
-  office: z.enum(["roland", "valley"]),
+  office: OfficeKeySchema,
   enabled: z.boolean(),
   waiting: z.number().int().nonnegative(),
   newest: z

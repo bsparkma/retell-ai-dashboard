@@ -35,6 +35,7 @@
  * build rather than a discovery.
  */
 import { z } from "zod";
+import { OfficeKeySchema, type OfficeKey } from "../officeKey";
 
 // The auto-note vocabulary lives in its own file and is imported here, ONE
 // DIRECTION ONLY: the slip needs to know what a visit type and a graded row
@@ -71,10 +72,11 @@ import { ExistingTxDispositionSchema, ExistingTxSaveResponseSchema } from "./exi
  * database identity rather than a label. `unknown` is deliberately absent: it
  * has no Open Dental database, so it is not somewhere a day can be read from.
  */
-export const OfficeIdSchema = z.enum(["roland", "valley"]);
-export type OfficeId = z.infer<typeof OfficeIdSchema>;
-
-export const OFFICE_IDS = OfficeIdSchema.options;
+// MT-2b3: the FORMAT only (shared/officeKey.ts). Which keys are offices is the
+// server's call, per session tenant (backend/platform/officeGate.js), so there
+// is no OFFICE_IDS list here any more.
+export const OfficeIdSchema = OfficeKeySchema;
+export type OfficeId = OfficeKey;
 
 export function isOfficeId(value: unknown): value is OfficeId {
   return OfficeIdSchema.safeParse(value).success;

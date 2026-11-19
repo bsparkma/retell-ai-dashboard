@@ -22,6 +22,11 @@ const nurtureStore = require('../services/tcNurture/store');
 const messaging = require('../services/messaging');
 const { buildTenantSchema } = require('../scripts/lib/tenantSchemaReplay');
 
+// MT-2b3: the contract checks an office key's FORMAT now and has no list, so
+// this historical migration's CHECK is pinned to the list it was written with.
+// The live CHECK is the format one (migrations-tenant/1795000000000_office_format_checks.js).
+const HISTORICAL_OFFICE_LIST = ['roland', 'valley'];
+
 const MIGRATIONS_DIR = path.join(__dirname, '..', 'migrations-tenant');
 const SELF = '1791100000000_tc_nurture.js';
 
@@ -57,7 +62,7 @@ test('enrollment CHECKs equal the shared contract enums', () => {
   const calls = capture();
   assert.deepEqual(
     checkList(calls, 'tc_nurture_enrollments', 'tc_nurture_enrollments_office_check'),
-    contract.OfficeId.options
+    HISTORICAL_OFFICE_LIST
   );
   assert.deepEqual(
     checkList(calls, 'tc_nurture_enrollments', 'tc_nurture_enrollments_track_check'),

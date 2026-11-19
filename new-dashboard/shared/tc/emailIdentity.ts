@@ -20,6 +20,7 @@
  * None of these values is a secret; none is patient data.
  */
 import { z } from "zod";
+import { OfficeKeySchema } from "../officeKey";
 
 /** Caps the server enforces (and the send-time readers re-apply). */
 export const EMAIL_IDENTITY_LIMITS = {
@@ -86,7 +87,7 @@ export type TcEmailIdentityFieldState = z.infer<typeof TcEmailIdentityFieldState
 
 export const TcEmailIdentityResponse = z.object({
   success: z.literal(true),
-  office: z.enum(["roland", "valley"]),
+  office: OfficeKeySchema,
   fields: z.object({
     replyTo: TcEmailIdentityFieldState,
     practiceName: TcEmailIdentityFieldState,

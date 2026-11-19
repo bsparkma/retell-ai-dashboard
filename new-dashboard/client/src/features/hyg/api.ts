@@ -93,8 +93,11 @@ import {
 
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:5000/api";
 
-/** Short labels for chips — roster display names are too long for one. */
-export const HYG_OFFICE_LABELS: Record<OfficeId, string> = {
+/**
+ * Short labels for chips — roster display names are too long for one.
+ * Presentational only (MT-2b3); an office not named here has no short label.
+ */
+export const HYG_OFFICE_LABELS: Readonly<Record<string, string>> = {
   roland: "Roland",
   valley: "Riley",
 };

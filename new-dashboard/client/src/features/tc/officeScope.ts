@@ -15,17 +15,21 @@
 import { useMemo } from "react";
 import { OfficeId } from "@shared/tc/contract";
 import { useOffice, ALL_OFFICES } from "@/contexts/OfficeContext";
+import { selectedServedOffice } from "@/lib/officeKeys";
 
 // ── Labels ──────────────────────────────────────────────────────────────────
 
-/** Short office labels for badges/notices (roster names are too long for a chip). */
-export const TC_OFFICE_LABELS: Record<OfficeId, string> = {
+/**
+ * Short office labels for badges/notices (roster names are too long for a chip).
+ * Presentational only (MT-2b3); an office not named here renders as its key.
+ */
+export const TC_OFFICE_LABELS: Readonly<Record<string, string>> = {
   roland: "Roland",
   valley: "Valley",
 };
 
 export function tcOfficeLabel(officeId: OfficeId): string {
-  return TC_OFFICE_LABELS[officeId];
+  return TC_OFFICE_LABELS[officeId] ?? officeId;
 }
 
 // ── Selections (what list components accept as a prop) ──────────────────────
@@ -98,16 +102,17 @@ export function resolveTcOfficeScope(input: {
     };
   }
 
-  const parsed = OfficeId.safeParse(selection);
-  if (!parsed.success) {
-    // A non-TC office is selected (e.g. a voice-only location) — nothing to show.
+  // MT-2b3: well-formed AND on the roster (once it has loaded). Not an office
+  // the server serves -> nothing to show; the server gate would refuse it.
+  const selected = selectedServedOffice(selection, roster);
+  if (selected === null) {
     return { offices: [], isAllOffices: false, showOfficeBadges: false, office: null, loading };
   }
   return {
-    offices: [parsed.data],
+    offices: [selected],
     isAllOffices: false,
     showOfficeBadges: false,
-    office: parsed.data,
+    office: selected,
     loading,
   };
 }

@@ -610,7 +610,8 @@ test('recordInbound: lands unlinked in the inbox; STOP records an opt-out that b
     fakeAdapter('sms', async () => ({ provider: 'fake', providerMessageId: 'X', status: 'sent' }));
     const c = seedCase(db);
     // A request-shaped context for the service: tenant + a system actor.
-    const req = { tenant: { id: 'T1' }, user: { email: 'system:inbound' }, originalUrl: '/webhook-test' };
+    // MT-2b3: with the slug a real request carries (the office gate reads it).
+    const req = { tenant: { id: 'T1', slug: 'carein' }, user: { email: 'system:inbound' }, originalUrl: '/webhook-test' };
     const tenantDb = require('../../platform/tenantDb');
     const prev = tenantDb.withTenantDb;
     tenantDb.withTenantDb = async (_r, fn) => fn(db);

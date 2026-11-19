@@ -35,6 +35,7 @@ import { listActiveProviders } from "@/features/tc/providers/providersApi";
 import { TcReferral, referralReturnedLine, type TcReferralInput } from "@shared/tc/referrals";
 import type { OfficeId } from "@shared/tc/contract";
 
+import { asOfficeKey } from "@/lib/officeKeys";
 export interface CallReferralCall {
   id: string;
   odPatientId?: number | string | null;
@@ -42,7 +43,8 @@ export interface CallReferralCall {
 }
 
 function officeOf(call: CallReferralCall): OfficeId | null {
-  return call.officeId === "roland" || call.officeId === "valley" ? call.officeId : null;
+  // MT-2b3: any office key; the server's TC gate decides whose. 'unknown' is not one.
+  return asOfficeKey(call.officeId);
 }
 
 export function CallReferralButton({ call }: { call: CallReferralCall }) {

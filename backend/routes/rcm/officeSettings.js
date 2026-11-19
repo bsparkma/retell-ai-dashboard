@@ -46,7 +46,8 @@ const { requirePermission } = require('../../config/permissions');
 const postingDrain = require('../../services/rcm/postingDrain');
 const postingGate = require('../../services/rcm/postingGate');
 const { resolveRcmActor } = require('../../services/rcm/rcmUserMap');
-const { h, OFFICES, actorEmail, auditRcmDenial, iso } = require('./helpers');
+const { h, actorEmail, auditRcmDenial, iso } = require('./helpers');
+const { isSessionOffice, officeListText } = require('../../platform/officeGate');
 
 const router = express.Router();
 
@@ -67,12 +68,12 @@ function officeAssertion(req) {
   const office = req.rcmOffice;
   const named = String(req.params.office || '');
 
-  if (!OFFICES.includes(named)) {
+  if (!isSessionOffice(req, named)) {
     return {
       status: 400,
       body: {
         success: false,
-        error: `office must be one of: ${OFFICES.join(', ')}`,
+        error: `office must be one of: ${officeListText(req)}`,
         code: 'INVALID_OFFICE',
       },
     };

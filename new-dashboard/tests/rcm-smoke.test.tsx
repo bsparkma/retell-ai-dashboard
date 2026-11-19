@@ -84,11 +84,13 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Router as WouterRouter } from "wouter";
+// MT-2b3 (was: RCM_OFFICE_IDS from the rcm api). The client has no office list;
+// the two this suite renders are the fallback pair the fixtures use.
+import { FALLBACK_OFFICE_KEYS as RCM_OFFICE_IDS } from "@/lib/officeKeys";
 import { memoryLocation } from "wouter/memory-location";
 
 import {
   POSTING_STEPS,
-  RCM_OFFICE_IDS,
   RCM_OFFICE_LABELS,
   type BatchMatchResponse,
 } from "@/features/rcm/api";
