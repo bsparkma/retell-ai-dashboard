@@ -11,7 +11,7 @@
  *   referral templates (routes/tc/referralTemplateStore.js)
  *     - save / list per office for real; one office never sees the other's;
  *       a second save updates the one row
- *     - the CHECKs refuse an unknown office, an unknown kind, a body over 2000
+ *     - the CHECKs refuse a malformed office key, an unknown kind, a body over 2000
  *       and an empty updated_by
  *     - as the app role: SELECT / INSERT / UPDATE work, DELETE is refused
  *   hygiene Rx / pharmacy (services/hyg/visitStore.js)
@@ -109,8 +109,9 @@ async function partA(client) {
       assert.equal(n.rows[0].n, 1);
     });
 
-    await step('templates: the CHECKs refuse an unknown office, an unknown kind, a body over 2000, an empty updated_by', async () => {
-      await mustRefuse(client, PG_CHECK_VIOLATION, () => rawTemplate(client, 'unknown', 'specialist_message', 'x'));
+    await step('templates: the CHECKs refuse a malformed office key, an unknown kind, a body over 2000, an empty updated_by', async () => {
+      // MT-2b2: a format CHECK now — 'unknown' passes it (the server gates refuse it); a malformed key does not.
+      await mustRefuse(client, PG_CHECK_VIOLATION, () => rawTemplate(client, 'Not An Office', 'specialist_message', 'x'));
       await mustRefuse(client, PG_CHECK_VIOLATION, () => rawTemplate(client, 'valley', 'patient_letter', 'x'));
       await mustRefuse(client, PG_CHECK_VIOLATION, () => rawTemplate(client, 'valley', 'correspondence_note', 'x'.repeat(2001)));
       await mustRefuse(client, PG_CHECK_VIOLATION, () => rawTemplate(client, 'valley', 'correspondence_note', 'x', ''));
@@ -236,7 +237,7 @@ async function partB(client, databaseUrl) {
     // The pre-existing visit row took the default.
     assert.deepEqual(await visitStore.getPrescriptions(client, { office: 'roland', aptNum: APT }), { rxNeeded: '', pharmacy: '' });
     await assert.rejects(rxUpdate(client, 'roland', '', 'a\nb'), (err) => err.code === PG_CHECK_VIOLATION);
-    await assert.rejects(rawTemplate(client, 'unknown', 'specialist_message', 'x'), (err) => err.code === PG_CHECK_VIOLATION);
+    await assert.rejects(rawTemplate(client, 'Not An Office', 'specialist_message', 'x'), (err) => err.code === PG_CHECK_VIOLATION);
     if (await roleExists(client)) {
       const grants = await client.query(
         `SELECT privilege_type FROM information_schema.role_table_grants
