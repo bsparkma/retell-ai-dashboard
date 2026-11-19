@@ -235,7 +235,8 @@ async function partA(client) {
     });
     await step('tc_preauth_events: office, type and changes CHECKs refuse', async () => {
       const base = { office: OFFICE, preauthId, actor: ACTOR, type: 'updated', changes: {} };
-      await mustRefuse(client, PG_CHECK_VIOLATION, () => preauthStore.insertPreauthEvent(client, { ...base, office: 'unknown' }));
+      // MT-2b2: a format CHECK now — 'unknown' passes it (the server gates refuse it); a malformed key does not.
+      await mustRefuse(client, PG_CHECK_VIOLATION, () => preauthStore.insertPreauthEvent(client, { ...base, office: 'Not An Office' }));
       await mustRefuse(client, PG_CHECK_VIOLATION, () => preauthStore.insertPreauthEvent(client, { ...base, type: 'create' }));
       await mustRefuse(client, PG_CHECK_VIOLATION, () =>
         client.query(
