@@ -24,7 +24,15 @@
  *   POST   /:id/submit            draft → pending_signoff (or → approved when
  *                                 this office does not require sign-off)
  *   POST   /:id/withdraw          pending_signoff → draft
- *   POST   /:id/cancel            draft | pending_signoff → cancelled
+ *   POST   /:id/cancel            any unfinished status → cancelled (manual moves:
+ *                                 approved, sent, acknowledged, patient seen too;
+ *                                 409 while an email is in flight; drops the
+ *                                 referral's link tokens). Submit / withdraw /
+ *                                 cancel take an optional { note } for the history.
+ *   DELETE /:id                   a never-sent DRAFT only (./referralDelete.js) —
+ *                                 the row, its history, its files and link tokens.
+ *                                 Any other status, or a draft with outside-the-app
+ *                                 history, is 409: it can only be cancelled.
  *   Approve / decline live in ./referralSignoff.js, behind tc.referral_signoff.
  *
  *   R6 (item 56) — the hub and staff edits (NOTHING SENDS, still):
@@ -99,6 +107,7 @@ const referralSend = require('./referralSend');
 const correspondence = require('./referralCorrespondence');
 const chartNotes = require('./referralChartNotes');
 const odManualPatient = require('./odManualPatient');
+const referralDelete = require('./referralDelete');
 
 const {
   z,
@@ -112,6 +121,7 @@ const {
   TcReferralReopenRequest,
   TcReferralMarkSentRequest,
   TcReferralMarkRequest,
+  TcReferralMoveRequest,
   TcReferralSendRequest,
   TcReferralCorrespondenceRequest,
   TcReferralChartNoteRequest,
@@ -760,10 +770,31 @@ for (const verb of ['submit', 'withdraw', 'cancel']) {
     h(async (req, res) => {
       const id = ReferralId.safeParse(req.params.id);
       if (!id.success) return badReferralId(res);
-      const out = await transitions.applyVerb(req, { referralId: id.data, verb });
+      // Manual moves: an optional note for the history line (strict — an
+      // office, a status, a target is a 400; the table decides where it goes).
+      const body = parseBody(res, TcReferralMoveRequest, req.body ?? {});
+      if (!body) return undefined;
+      const out = await transitions.applyVerb(req, { referralId: id.data, verb, note: body.note || '' });
       return res.status(out.status).json(out.body);
     })
   );
 }
+
+// ── Manual moves: delete a never-sent draft ─────────────────────────────────
+
+/**
+ * DELETE /:id — a draft that never reached outside the app. tc.full (the
+ * router's guard); the office is the request's server-derived one; the body
+ * is ignored. Every other status is refused 409 here, whatever the UI showed.
+ */
+router.delete(
+  '/:id',
+  h(async (req, res) => {
+    const id = ReferralId.safeParse(req.params.id);
+    if (!id.success) return badReferralId(res);
+    const out = await referralDelete.deleteDraft(req, { referralId: id.data });
+    return res.status(out.status).json(out.body);
+  })
+);
 
 module.exports = router;

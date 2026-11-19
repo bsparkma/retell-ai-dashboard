@@ -285,8 +285,9 @@ describe("the detail panel", () => {
     expect(btn.disabled).toBe(true);
     expect(within(panel).getByTestId("tc-hub-send-conflict").textContent).toContain("could not be marked sent");
     expect(within(panel).getByTestId("tc-hub-send-blocked").textContent).toMatch(/already emailed/);
-    // The person can still record it.
-    expect(within(panel).getByTestId("tc-hub-mark")).toBeTruthy();
+    // The person can still record it (manual moves: the mark is a "Move to…" item).
+    fireEvent.click(within(panel).getByTestId("tc-hub-move-menu"));
+    expect(within(panel).getByTestId("tc-hub-move-mark_sent")).toBeTruthy();
   });
 
   it("an office that cannot send yet says why", async () => {
