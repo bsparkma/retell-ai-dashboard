@@ -29,7 +29,9 @@ export function isRcmOfficeId(value: unknown): value is RcmOfficeId {
 
 /**
  * Short labels for badges (roster display names are too long for a chip).
- * Presentational only; an office not named here renders as its key.
+ * Presentational only. An office not named here has NO short label at the
+ * lookups that index this map directly; a registry short name is the MT-2b3
+ * follow-up that retires it.
  */
 export const RCM_OFFICE_LABELS: Readonly<Record<string, string>> = {
   roland: "Roland",

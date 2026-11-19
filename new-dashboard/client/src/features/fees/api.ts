@@ -52,7 +52,9 @@ export function isFeesOfficeId(value: unknown): value is FeesOfficeId {
 
 /**
  * Short labels for chips — roster display names are too long for one.
- * Presentational only; an office not named here renders as its key.
+ * Presentational only. An office not named here has NO short label at the
+ * lookups that index this map directly; a registry short name is the MT-2b3
+ * follow-up that retires it.
  */
 export const FEES_OFFICE_LABELS: Readonly<Record<string, string>> = {
   roland: "Roland",
