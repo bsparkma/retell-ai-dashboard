@@ -29,6 +29,10 @@ const BACKEND = path.join(__dirname, '..');
 /** Route files that read a per-office setting (MT-2b's changed routes). */
 const ROUTE_FILES = [
   'routes/platform.js',
+  // MT-2c: the switch handlers moved out of routes/platform.js, and the
+  // practice's /admin door that mounts them.
+  'routes/officeSwitches.js',
+  'routes/adminOfficeSettings.js',
   'routes/printTemplates.js',
   'routes/referralLinkWebhooks.js',
   'routes/setupStatus.js',
@@ -63,7 +67,7 @@ const READER_CALL = new RegExp(
       String.raw`store\.prefillFor`,
       String.raw`referralSend\.emailSendStatus`,
       String.raw`referralLetter\.(?:unavailableReason|officeMissing|assertAvailable|bccFor)`,
-      String.raw`officeSettings\.(?:ensureTenantFresh|ensureFresh|refreshFromDb)`,
+      String.raw`officeSettings\.(?:ensureTenantFresh|ensureFresh|refreshFromDb|get|isServed)`,
       String.raw`(?<![.\w])realOffices`,
     ].join('|') +
     String.raw`)\(`,
