@@ -25,6 +25,11 @@ const contract = require('../tc/contract.gen.cjs');
 const messaging = require('../services/messaging');
 const { buildTenantSchema } = require('../scripts/lib/tenantSchemaReplay');
 
+// MT-2b3: the contract checks an office key's FORMAT now and has no list, so
+// this historical migration's CHECK is pinned to the list it was written with.
+// The live CHECK is the format one (migrations-tenant/1795000000000_office_format_checks.js).
+const HISTORICAL_OFFICE_LIST = ['roland', 'valley'];
+
 const SOURCE = fs.readFileSync(
   path.join(__dirname, '..', 'migrations-tenant', '1790300000000_tc_messaging.js'),
   'utf8'
@@ -69,11 +74,11 @@ const STATUSES_ADDED_LATER = ['skipped']; // 1791100000000_tc_nurture.js (item 4
 test('every CHECK literal equals the contract enum it mirrors', () => {
   const calls = capture();
   const pairs = [
-    ['tc_messages', 'office_id', contract.OfficeId.options],
+    ['tc_messages', 'office_id', HISTORICAL_OFFICE_LIST],
     ['tc_messages', 'direction', contract.MessageDirection.options],
     ['tc_messages', 'channel', contract.MessageChannel.options],
     ['tc_messages', 'status', contract.MessageStatus.options.filter((s) => !STATUSES_ADDED_LATER.includes(s))],
-    ['tc_contact_consent', 'office_id', contract.OfficeId.options],
+    ['tc_contact_consent', 'office_id', HISTORICAL_OFFICE_LIST],
     ['tc_contact_consent', 'channel', contract.MessageChannel.options],
     ['tc_contact_consent', 'state', contract.ConsentState.options],
     ['tc_contact_consent', 'source', contract.ConsentSource.options],

@@ -26,7 +26,7 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
-import type { TcCheckoutOfficeSwitch, TcReferralsSwitchState } from "@/lib/api";
+import type { OfficeSwitchDoor, TcCheckoutOfficeSwitch, TcOfficeSwitchPath, TcReferralsSwitchState } from "@/lib/api";
 
 const OFFICE_LABELS: Record<string, string> = { roland: "Roland", valley: "Riley (valley)" };
 
@@ -45,11 +45,19 @@ interface SwitchPanelConfig {
   title: string;
   description: string;
   confirmDescription: string;
+  /** The switch's URL segment, for the practice's /admin door (MT-2c). */
+  path: TcOfficeSwitchPath;
+  /** The Developer Console's own api methods — what the platform door calls, unchanged. */
   load: () => Promise<TcReferralsSwitchState>;
   save: (office: string, enabled: boolean) => Promise<TcReferralsSwitchState>;
 }
 
-function OfficeSwitchPanel({ config }: { config: SwitchPanelConfig }) {
+/** Which door a panel talks through (MT-2c). The Developer Console is the default. */
+export interface OfficeSwitchPanelProps {
+  door?: OfficeSwitchDoor;
+}
+
+function OfficeSwitchPanel({ config, door = "platform" }: { config: SwitchPanelConfig; door?: OfficeSwitchDoor }) {
   const [state, setState] = useState<TcReferralsSwitchState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
@@ -59,11 +67,11 @@ function OfficeSwitchPanel({ config }: { config: SwitchPanelConfig }) {
   const load = useCallback(async () => {
     setError(null);
     try {
-      setState(await config.load());
+      setState(door === "platform" ? await config.load() : await api.getTcOfficeSwitch(door, config.path));
     } catch (e) {
       setError(e instanceof Error ? e.message : `Could not load the ${noun} switch`);
     }
-  }, [config, noun]);
+  }, [config, noun, door]);
 
   useEffect(() => {
     void load();
@@ -72,7 +80,10 @@ function OfficeSwitchPanel({ config }: { config: SwitchPanelConfig }) {
   const commit = async (office: string, enabled: boolean) => {
     setSaving(office);
     try {
-      const next = await config.save(office, enabled);
+      const next =
+        door === "platform"
+          ? await config.save(office, enabled)
+          : await api.setTcOfficeSwitch(door, config.path, office, enabled);
       setState(next);
       const now = next.offices.find((o) => o.office === office);
       toast.success(`${config.noun} ${now?.enabled ? "on" : "off"} for ${OFFICE_LABELS[office] ?? office}`);
@@ -178,6 +189,7 @@ function OfficeSwitchPanel({ config }: { config: SwitchPanelConfig }) {
 
 const REFERRALS: SwitchPanelConfig = {
   prefix: "tc-referrals",
+  path: "tc-referrals-offices",
   noun: "Referrals",
   icon: <Send className="w-4 h-4" />,
   title: "TC referrals",
@@ -191,6 +203,7 @@ const REFERRALS: SwitchPanelConfig = {
 
 const REFERRAL_EMAIL: SwitchPanelConfig = {
   prefix: "tc-referral-email",
+  path: "tc-referral-email-offices",
   noun: "Referral email",
   icon: <Mail className="w-4 h-4" />,
   title: "TC referral email",
@@ -204,6 +217,7 @@ const REFERRAL_EMAIL: SwitchPanelConfig = {
 
 const REFERRAL_PATIENT_EMAIL: SwitchPanelConfig = {
   prefix: "tc-referral-patient-email",
+  path: "tc-referral-patient-email-offices",
   noun: "Patient referral email",
   icon: <UserRound className="w-4 h-4" />,
   title: "TC referral patient email",
@@ -216,17 +230,18 @@ const REFERRAL_PATIENT_EMAIL: SwitchPanelConfig = {
 };
 
 /** The referrals switch (item 52). */
-export function TcReferralsPanel() {
-  return <OfficeSwitchPanel config={REFERRALS} />;
+export function TcReferralsPanel({ door }: OfficeSwitchPanelProps = {}) {
+  return <OfficeSwitchPanel config={REFERRALS} door={door} />;
 }
 
 /** The referral email switch (R5). */
-export function TcReferralEmailPanel() {
-  return <OfficeSwitchPanel config={REFERRAL_EMAIL} />;
+export function TcReferralEmailPanel({ door }: OfficeSwitchPanelProps = {}) {
+  return <OfficeSwitchPanel config={REFERRAL_EMAIL} door={door} />;
 }
 
 const OD_SYNC: SwitchPanelConfig = {
   prefix: "tc-od-sync",
+  path: "tc-od-sync-offices",
   noun: "Open Dental sync",
   icon: <CalendarClock className="w-4 h-4" />,
   title: "TC Open Dental pipeline sync",
@@ -239,12 +254,13 @@ const OD_SYNC: SwitchPanelConfig = {
 };
 
 /** The Open Dental pipeline sync switch (CO-4b). */
-export function TcOdSyncPanel() {
-  return <OfficeSwitchPanel config={OD_SYNC} />;
+export function TcOdSyncPanel({ door }: OfficeSwitchPanelProps = {}) {
+  return <OfficeSwitchPanel config={OD_SYNC} door={door} />;
 }
 
 const AUTO_CHECKOUT: SwitchPanelConfig = {
   prefix: "tc-auto-checkout",
+  path: "tc-auto-checkout-offices",
   noun: "checkout cards from the schedule",
   icon: <CalendarCheck className="w-4 h-4" />,
   title: "TC checkout cards from today's schedule",
@@ -257,11 +273,11 @@ const AUTO_CHECKOUT: SwitchPanelConfig = {
 };
 
 /** Checkout cards from today's schedule (CO-5b). */
-export function TcAutoCheckoutPanel() {
-  return <OfficeSwitchPanel config={AUTO_CHECKOUT} />;
+export function TcAutoCheckoutPanel({ door }: OfficeSwitchPanelProps = {}) {
+  return <OfficeSwitchPanel config={AUTO_CHECKOUT} door={door} />;
 }
 
 /** The referral PATIENT email switch (R5b): only the patient's email after a send. */
-export function TcReferralPatientEmailPanel() {
-  return <OfficeSwitchPanel config={REFERRAL_PATIENT_EMAIL} />;
+export function TcReferralPatientEmailPanel({ door }: OfficeSwitchPanelProps = {}) {
+  return <OfficeSwitchPanel config={REFERRAL_PATIENT_EMAIL} door={door} />;
 }

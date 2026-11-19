@@ -157,13 +157,38 @@ function envPins(policy, office) {
 
 async function readSettingsRow(q, office) {
   const res = await q.query(
-    'SELECT office_id, signoff_required, autosend_on_approval, updated_by, updated_at FROM tc_referral_settings WHERE office_id = $1',
+    'SELECT office_id, signoff_required, signoff_mode, autosend_on_approval, updated_by, updated_at FROM tc_referral_settings WHERE office_id = $1',
     [office]
   );
   return res.rows[0] || null;
 }
 
-/** What is in force for one office, and why. */
+/** The sign-off modes (shared TC_REFERRAL_SIGNOFF_MODES; the 1795100000000 CHECK). */
+const SIGNOFF_MODES = Object.freeze(['doctor', 'verbal', 'off']);
+const SIGNOFF_MODE_DEFAULT = 'doctor';
+
+/**
+ * The sign-off MODE in force (referral-verbal-signoff), and why. The env pin
+ * REFERRAL_SIGNOFF_REQUIRED_<OFFICE>=true forces 'doctor' — the strictest — even
+ * over a stored 'verbal'. Then the office's stored mode; then (COMPAT) a row
+ * that carries only the old boolean — true reads 'doctor', false 'off', the
+ * same mapping as the migration's backfill; then the default, 'doctor'.
+ */
+function resolveSignoffMode(office, row) {
+  if (envPins(POLICIES.signoffRequired, office)) return { value: 'doctor', source: 'env' };
+  if (row && SIGNOFF_MODES.includes(row.signoff_mode)) return { value: row.signoff_mode, source: 'office' };
+  if (row && typeof row.signoff_required === 'boolean') {
+    return { value: row.signoff_required ? 'doctor' : 'off', source: 'office' };
+  }
+  return { value: SIGNOFF_MODE_DEFAULT, source: 'default' };
+}
+
+/**
+ * What is in force for one office, and why. signoffRequired is DERIVED from
+ * the mode (doctor / verbal -> true, off -> false, same source), so every
+ * reader of it — the transition table above all — answers exactly as before
+ * for an office in 'doctor' or 'off'.
+ */
 function resolvePolicies(office, row) {
   const out = {};
   for (const [key, policy] of Object.entries(POLICIES)) {
@@ -171,6 +196,9 @@ function resolvePolicies(office, row) {
     else if (row && typeof row[policy.column] === 'boolean') out[key] = { value: row[policy.column], source: 'office' };
     else out[key] = { value: policy.defaultValue, source: 'default' };
   }
+  const mode = resolveSignoffMode(office, row);
+  out.signoffMode = mode;
+  out.signoffRequired = { value: mode.value !== 'off', source: mode.source };
   return out;
 }
 
@@ -189,11 +217,16 @@ async function sendsOnApproval(q, office) {
   return policies.autosendOnApproval.value === true;
 }
 
-/** Upsert the office's stored choice; returns the stored row. */
+/**
+ * Upsert the office's stored choice; returns the stored row. `next.signoffMode`
+ * is the choice; signoff_required is written in step with it (the coherence
+ * CHECK, 1795100000000), so the two columns never disagree.
+ */
 async function upsertSettings(q, office, next, actor) {
+  if (!SIGNOFF_MODES.includes(next.signoffMode)) throw new Error(`referralStore: unknown sign-off mode ${next.signoffMode}`);
   const res = await q.query(
-    `INSERT INTO tc_referral_settings (office_id, signoff_required, autosend_on_approval, updated_by) VALUES ($1, $2, $3, $4) ON CONFLICT (office_id) DO UPDATE SET signoff_required = EXCLUDED.signoff_required, autosend_on_approval = EXCLUDED.autosend_on_approval, updated_by = EXCLUDED.updated_by, updated_at = now() RETURNING office_id, signoff_required, autosend_on_approval, updated_by, updated_at`,
-    [office, next.signoffRequired, next.autosendOnApproval, actor]
+    `INSERT INTO tc_referral_settings (office_id, signoff_required, signoff_mode, autosend_on_approval, updated_by) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (office_id) DO UPDATE SET signoff_required = EXCLUDED.signoff_required, signoff_mode = EXCLUDED.signoff_mode, autosend_on_approval = EXCLUDED.autosend_on_approval, updated_by = EXCLUDED.updated_by, updated_at = now() RETURNING office_id, signoff_required, signoff_mode, autosend_on_approval, updated_by, updated_at`,
+    [office, next.signoffMode !== 'off', next.signoffMode, next.autosendOnApproval, actor]
   );
   return res.rows[0] || null;
 }
@@ -247,6 +280,9 @@ const EVENT_COLS = [
   'chart_note_milestone',
   'chart_note_commlog_num',
   'chart_note_comm_type',
+  // Verbal sign-off (1795100000000): set only on a recorded verbal approve / decline / return.
+  'verbal_provider_id',
+  'verbal_provider_name',
 ];
 
 /** jsonb teeth: pg returns the value; a fake may hold the JSON text. */
@@ -315,6 +351,11 @@ function toEvent(e) {
       e.verb === 'chart_note_written' && e.chart_note_milestone && e.chart_note_commlog_num != null && e.chart_note_comm_type != null
         ? { milestone: e.chart_note_milestone, commLogNum: Number(e.chart_note_commlog_num), commType: Number(e.chart_note_comm_type) }
         : null,
+    // Verbal sign-off: present ONLY on a recorded verbal OK, so every other
+    // event (and every doctor-mode answer) reads exactly as it did before.
+    ...(e.verbal_provider_id && e.verbal_provider_name
+      ? { verbal: { providerId: String(e.verbal_provider_id), providerName: e.verbal_provider_name } }
+      : {}),
   };
 }
 
@@ -457,7 +498,17 @@ async function casStatus(q, { office, referralId, from, to, actor, at }) {
   return res.rows[0] || null;
 }
 
-async function insertEvent(q, { office, referralId, from, to, actor, at, note, verb = null }) {
+async function insertEvent(q, { office, referralId, from, to, actor, at, note, verb = null, verbal = null }) {
+  if (verbal) {
+    // Verbal sign-off: the same row, plus WHICH doctor gave the OK. `actor` is
+    // the person who recorded it. A separate statement, so the ordinary insert
+    // below is byte-for-byte what it always was.
+    await q.query(
+      'INSERT INTO tc_referral_events (event_id, office_id, referral_id, from_status, to_status, actor, at, note, verb, verbal_provider_id, verbal_provider_name) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)',
+      [randomUUID(), office, referralId, from, to, actor, at, note || '', verb, verbal.providerId, verbal.providerName]
+    );
+    return;
+  }
   await q.query(
     `INSERT INTO tc_referral_events (event_id, office_id, referral_id, from_status, to_status, actor, at, note, verb) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
     [randomUUID(), office, referralId, from, to, actor, at, note || '', verb]
@@ -828,13 +879,109 @@ async function setScheduledDate(q, { office, referralId, date }) {
   ]);
 }
 
+// ── Manual moves: cancel after send, delete a never-sent draft ─────────────
+
+/**
+ * How long an email claim is taken to be live. MIRRORS referralSend.js's
+ * CLAIM_STALE_MS (a test pins them equal): the moves may not require the send
+ * module (the messaging-gateway pin), so the number lives here as well.
+ */
+const SEND_CLAIM_STALE_MS = 5 * 60 * 1000;
+
+/** Is an email for this referral (probably) going out right now? `claim` from lockSendClaim. */
+function sendClaimIsLive(claim, now) {
+  if (claim.send_attempt_id == null) return false;
+  if (claim.send_attempt_at == null) return true;
+  return new Date(claim.send_attempt_at).getTime() >= now.getTime() - SEND_CLAIM_STALE_MS;
+}
+
+/** The instant before which a claim is stale, for releaseStaleSendClaim. */
+function sendClaimStaleBefore(now) {
+  return new Date(now.getTime() - SEND_CLAIM_STALE_MS).toISOString();
+}
+
+/**
+ * The referral's email claim (R5's send_attempt_id / _at), locked FOR UPDATE
+ * so a cancel or a delete and a send cannot interleave. null = no such row.
+ */
+async function lockSendClaim(q, office, referralId) {
+  const res = await q.query(
+    'SELECT referral_id, status, send_attempt_id, send_attempt_at FROM tc_referrals WHERE office_id = $1 AND referral_id = $2 FOR UPDATE',
+    [office, referralId]
+  );
+  return res.rows[0] || null;
+}
+
+/**
+ * casStatus, and ALSO conditional on no email claim being held: of a cancel
+ * and a send's claim, exactly one wins. null = it was not `from`, or a send
+ * claimed it.
+ */
+async function casStatusUnclaimed(q, { office, referralId, from, to, actor, at }) {
+  const res = await q.query(
+    `UPDATE tc_referrals SET status = $4, status_changed_at = $5, status_changed_by = $6, updated_at = now() WHERE office_id = $1 AND referral_id = $2 AND status = $3 AND send_attempt_id IS NULL RETURNING ${REFERRAL_COLS.join(', ')}`,
+    [office, referralId, from, to, at, actor]
+  );
+  return res.rows[0] || null;
+}
+
+/** Forget every link token of a referral (cancel): an emailed link then opens the neutral page. */
+async function deleteLinkTokens(q, office, referralId) {
+  const res = await q.query('DELETE FROM tc_referral_link_tokens WHERE office_id = $1 AND referral_id = $2', [office, referralId]);
+  return res.rowCount || 0;
+}
+
+/** The verbs on a referral's history — all the delete rule reads. */
+async function eventVerbs(q, office, referralId) {
+  const res = await q.query('SELECT verb FROM tc_referral_events WHERE office_id = $1 AND referral_id = $2', [office, referralId]);
+  return res.rows.map((r) => ({ verb: r.verb ?? null }));
+}
+
+/** The storage keys of a referral's attachments (server-side only; never sent to a client). */
+async function attachmentBlobKeys(q, office, referralId) {
+  const res = await q.query('SELECT blob_key FROM tc_referral_attachments WHERE office_id = $1 AND referral_id = $2', [
+    office,
+    referralId,
+  ]);
+  return res.rows.map((r) => String(r.blob_key));
+}
+
+/**
+ * Delete a DRAFT, conditional on it still being a draft with no email claim.
+ * The rows hanging off it go with it: ON DELETE CASCADE in Postgres, and the
+ * explicit deletes after (no-ops there) say so in code. false = it was not a
+ * draft any more; nothing was deleted.
+ */
+async function deleteDraftReferral(q, office, referralId) {
+  const res = await q.query(
+    'DELETE FROM tc_referrals WHERE office_id = $1 AND referral_id = $2 AND status = $3 AND send_attempt_id IS NULL RETURNING referral_id',
+    [office, referralId, 'draft']
+  );
+  if (res.rows.length !== 1) return false;
+  for (const table of ['tc_referral_events', 'tc_referral_attachments', 'tc_referral_link_tokens']) {
+    await q.query(`DELETE FROM ${table} WHERE office_id = $1 AND referral_id = $2`, [office, referralId]);
+  }
+  return true;
+}
+
 module.exports = {
+  SEND_CLAIM_STALE_MS,
+  sendClaimIsLive,
+  sendClaimStaleBefore,
+  lockSendClaim,
+  casStatusUnclaimed,
+  deleteLinkTokens,
+  eventVerbs,
+  attachmentBlobKeys,
+  deleteDraftReferral,
   insertLinkTokens,
   findLinkToken,
   consumeLinkToken,
   setScheduledDate,
   DIRECTORY_COLS,
   POLICIES,
+  SIGNOFF_MODES,
+  resolveSignoffMode,
   sendsOnApproval,
   directoryEmails,
   openSendProblems,

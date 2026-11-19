@@ -52,13 +52,19 @@
  * edit; "Write to chart" writes the exact text shown above it to the patient's
  * Open Dental chart. Only that click writes — nothing here does on its own.
  *
+ * MANUAL MOVES (referral-manual-moves). The TC side's moves — submit,
+ * withdraw, reopen, the marks, cancel — are one "Move to…" menu
+ * (features/tc/referrals/MoveMenu) listing exactly the shared table's moves
+ * from here; each asks first, with an optional note. A never-sent draft offers
+ * "Delete draft", which asks first and closes the panel on the server's yes.
+ *
  * Every state shown is the server's answer: nothing reads as saved, moved,
  * marked or sent before the server confirms it.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearch } from "wouter";
 import { toast } from "sonner";
-import { ChevronDown, ChevronRight, Loader2, Mail, Paperclip, Pencil, RefreshCw } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, Mail, Paperclip, Pencil, RefreshCw, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -79,6 +85,7 @@ import {
   type WithOffice,
 } from "@/features/tc/officeScope";
 import {
+  deleteReferral,
   editReferralFields,
   getReferral,
   getReferralSettings,
@@ -98,15 +105,21 @@ import {
 } from "@/features/tc/referrals/referralsApi";
 import {
   HUB_MARK_VERBS,
-  hubActionLabel,
   hubActionPlan,
   hubCanAddFilesAfterSend,
+  hubCanDeleteDraft,
   hubCanLogCorrespondence,
   hubCanWriteChartNotes,
+  hubNotesWithVerbal,
+  hubVerbalVerbs,
+  isMarkVerb,
   signoffViewHref,
+  type HubAction,
   type HubViewer,
 } from "@/features/tc/referrals/hubActions";
+import { MoveMenu } from "@/features/tc/referrals/MoveMenu";
 import { SignoffActions, signoffDoneLine } from "@/features/tc/referrals/SignoffActions";
+import { VerbalSignoffActions } from "@/features/tc/referrals/VerbalSignoffActions";
 import { LogCorrespondence } from "@/features/tc/referrals/LogCorrespondence";
 import { ChartNotes } from "@/features/tc/referrals/ChartNotes";
 import {
@@ -145,6 +158,7 @@ import {
   type TcReferralAttachment,
   type TcReferralDirectoryEntry,
   type TcReferralHubQuery,
+  type TcReferralSignoffMode,
   type TcReferralSendOutcome,
   type TcReferralsStatus,
 } from "@shared/tc/referrals";
@@ -284,10 +298,14 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
   const [filter, setFilter] = useState<TcReferralHubQuery>({});
   const [showDone, setShowDone] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
+  /** The card's "Edit (re-approval needed)": open the panel straight into its reopen edit. */
+  const [openReopen, setOpenReopen] = useState(false);
   /** The office's sign-off policy, only to say where Submit leads; null = unread. */
   const [signoffRequired, setSignoffRequired] = useState<boolean | null>(null);
   /** The office's auto-send-on-approval policy, for Approve's question; null = unread. */
   const [autosend, setAutosend] = useState<boolean | null>(null);
+  /** The office's sign-off mode — 'verbal' offers recording the doctor's OK; null = unread (never offers it). */
+  const [signoffMode, setSignoffMode] = useState<TcReferralSignoffMode | null>(null);
   const viewer = useHubViewer();
 
   const load = useCallback(() => {
@@ -335,6 +353,7 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
         if (cancelled) return;
         setSignoffRequired(s.signoffRequired.value);
         setAutosend(s.autosendOnApproval.value);
+        setSignoffMode(s.signoffMode?.value ?? null);
       })
       .catch(() => undefined);
     return () => {
@@ -466,8 +485,26 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
                 {!collapsed &&
                   g.referrals.map((r) => (
                     <div key={r.referralId} className="space-y-1">
-                      <HubCard referral={r} now={at} onOpen={() => setOpenId(r.referralId)} />
-                      {/* A sibling of the card, never inside it: the card is itself a button. */}
+                      <HubCard
+                        referral={r}
+                        now={at}
+                        onOpen={() => {
+                          setOpenReopen(false);
+                          setOpenId(r.referralId);
+                        }}
+                      />
+                      {/* Siblings of the card, never inside it: the card is itself a button. */}
+                      <CardMove
+                        office={office}
+                        referral={r}
+                        viewer={viewer}
+                        signoffRequired={signoffRequired}
+                        onDone={load}
+                        onReopen={() => {
+                          setOpenReopen(true);
+                          setOpenId(r.referralId);
+                        }}
+                      />
                       {emailSend?.enabled && r.status === "approved" && (
                         <CardSend office={office} referral={r} email={emailSend} onDone={load} />
                       )}
@@ -488,6 +525,8 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
         viewer={viewer}
         signoffRequired={signoffRequired}
         autosend={autosend}
+        signoffMode={signoffMode}
+        startWithReopen={openReopen}
       />
     </div>
   );
@@ -529,6 +568,106 @@ async function runSend(office: OfficeId, referralId: string): Promise<void> {
 }
 
 /** The send row under an approved card. */
+/**
+ * ONE place that turns a "Move to…" choice into its route, for the panel's
+ * menu and the cards' alike, so the two can never call different routes:
+ * the marks go to their mark route, submit / withdraw / cancel to the verb
+ * route (with the note only when there is one). Reopen is not a move here —
+ * it opens the edit form.
+ */
+export function runHubMove(office: OfficeId, referralId: string, action: HubAction, note: string): Promise<TcReferral> {
+  const verb = action.verb;
+  if (verb === "reopen") return Promise.reject(new Error("reopen opens the edit form; it is not a move"));
+  if (isMarkVerb(verb)) return markReferral(office, referralId, verb, note);
+  return note ? referralVerb(office, referralId, verb, note) : referralVerb(office, referralId, verb);
+}
+
+/** The toast after a move, from the server's read-back. Pure. */
+export function hubMoveDoneLine(action: HubAction, next: TcReferral): string {
+  const verb = action.verb;
+  if (isMarkVerb(verb)) return `${REFERRAL_MARK_LABELS[verb]}: recorded`;
+  if (verb === "submit") return next.status === "approved" ? "Referral approved (sign-off not required)" : "Sent for the doctor's sign-off";
+  if (verb === "withdraw") return "Back to draft";
+  return "Referral cancelled";
+}
+
+/**
+ * The "Move to…" menu on a hub CARD (referral-card-move-button): the panel's
+ * menu, compact, as a SIBLING of the card (the card is itself a button), so
+ * opening the card is untouched. Its actions are hubActionPlan's for this
+ * viewer — a viewer without tc.full gets none, so nothing is drawn. Reopen
+ * hands over to the detail panel, which opens straight into its edit form.
+ * A refusal (a stale card: someone moved it first) shows the server's words —
+ * where it stands now — with a Refresh.
+ */
+export function CardMove({
+  office,
+  referral: r,
+  viewer,
+  signoffRequired,
+  onDone,
+  onReopen,
+}: {
+  office: OfficeId;
+  referral: TcReferral;
+  viewer: HubViewer;
+  signoffRequired: boolean | null;
+  /** Re-read the list (after a move, or from Refresh). */
+  onDone: () => void;
+  /** Open the detail panel in its reopen edit. */
+  onReopen: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const plan = hubActionPlan(r.status, viewer, signoffRequired);
+  if (plan.actions.length === 0) return null;
+
+  async function move(action: HubAction, note: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await runHubMove(office, r.referralId, action, note);
+      toast.success(hubMoveDoneLine(action, next));
+      onDone();
+    } catch (e) {
+      // Not re-read yet: the card keeps its place until the person presses
+      // Refresh, so the message is not pulled out from under them.
+      setError(tcErrorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-1 px-1" data-testid="tc-hub-card-moves">
+      <MoveMenu
+        status={r.status}
+        actions={plan.actions}
+        busy={busy}
+        onMove={(a, n) => void move(a, n)}
+        onReopen={onReopen}
+        placement="card"
+      />
+      {error && (
+        <div className="flex flex-wrap items-center gap-2 text-xs" data-testid="tc-hub-card-move-error">
+          <span className="text-destructive">{error}</span>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1"
+            onClick={() => {
+              setError(null);
+              onDone();
+            }}
+          >
+            <RefreshCw className="w-3.5 h-3.5" /> Refresh
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function CardSend({
   office,
   referral: r,
@@ -680,6 +819,8 @@ export function HubDetail({
   viewer = { tcFull: true, signoff: false },
   signoffRequired = null,
   autosend = null,
+  signoffMode = null,
+  startWithReopen = false,
   reader = "hub",
   onSigned,
 }: {
@@ -695,6 +836,10 @@ export function HubDetail({
   signoffRequired?: boolean | null;
   /** The office's auto-send-on-approval policy, for Approve's question; null = unread (it asks). */
   autosend?: boolean | null;
+  /** The office's sign-off mode; only a READ 'verbal' offers recording a doctor's verbal OK. */
+  signoffMode?: TcReferralSignoffMode | null;
+  /** A card's "Edit (re-approval needed)": open in the reopen edit, if it is still approved. */
+  startWithReopen?: boolean;
   reader?: HubDetailReader;
   /** After approve / decline / send back, with the server's read-back. */
   onSigned?: (next: TcReferral) => void;
@@ -711,23 +856,24 @@ export function HubDetail({
   const [editing, setEditing] = useState<Editing>(null);
   const [busy, setBusy] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
-  const [markText, setMarkText] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
     setR(null);
     setFiles([]);
     setEditing(null);
     setServerError(null);
-    setMarkText("");
     setLoadError(null);
-    setConfirmCancel(false);
+    setConfirmDelete(false);
     if (!referralId) return;
     let cancelled = false;
     (viaSignoff ? getSignoffReferral(office, referralId) : getReferral(office, referralId))
       .then((x) => {
-        if (!cancelled) setR(x);
+        if (cancelled) return;
+        setR(x);
+        // Only where the panel itself would offer it: an approved referral, a tc.full viewer.
+        if (startWithReopen && !viaSignoff && viewer.tcFull && x.status === "approved") startEdit("reopen");
       })
       .catch((e: unknown) => {
         if (!cancelled) setLoadError(tcErrorMessage(e));
@@ -766,12 +912,11 @@ export function HubDetail({
   async function act(run: () => Promise<TcReferral>, ok: string | ((next: TcReferral) => string)) {
     setBusy(true);
     setServerError(null);
-    setConfirmCancel(false);
+    setConfirmDelete(false);
     try {
       const next = await run();
       setR(next);
       setEditing(null);
-      setMarkText("");
       toast.success(typeof ok === "string" ? ok : ok(next));
     } catch (e) {
       setServerError(tcErrorMessage(e));
@@ -814,31 +959,49 @@ export function HubDetail({
     }
   }
 
-  /** submit / withdraw / cancel, through the same routes the case panel uses. */
-  function move(verb: "submit" | "withdraw" | "cancel") {
+  /**
+   * One "Move to…" choice, through the route that move already had: the marks
+   * through their mark routes, submit / withdraw / cancel through theirs.
+   * Reopen never comes here — it is the edit form.
+   */
+  function move(action: HubAction, note: string) {
     if (!r) return;
-    void act(
-      () => referralVerb(office, r.referralId, verb),
-      (next) =>
-        verb === "submit"
-          ? next.status === "approved"
-            ? "Referral approved (sign-off not required)"
-            : "Sent for the doctor's sign-off"
-          : verb === "withdraw"
-            ? "Back to draft"
-            : "Referral cancelled",
-    );
+    if (action.verb === "reopen") return;
+    // The same call the cards make (runHubMove): one mapping from a choice to its route.
+    void act(() => runHubMove(office, r.referralId, action, note), (next) => hubMoveDoneLine(action, next));
+  }
+
+  /** Delete a never-sent draft. The panel closes only on the server's yes. */
+  async function removeDraft() {
+    if (!r) return;
+    setBusy(true);
+    setServerError(null);
+    try {
+      const out = await deleteReferral(office, r.referralId);
+      toast.success(
+        out.filesLeft > 0
+          ? `Draft deleted (${out.filesLeft} attached file${out.filesLeft === 1 ? "" : "s"} could not be removed from storage)`
+          : "Draft deleted",
+      );
+      setConfirmDelete(false);
+      onChanged();
+      onClose();
+    } catch (e) {
+      setServerError(tcErrorMessage(e));
+      setConfirmDelete(false);
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
   }
 
   // Through the sign-off routes nothing on the TC side is offered, whoever is looking.
   const asViewer: HubViewer = viaSignoff ? { tcFull: false, signoff: viewer.signoff } : viewer;
   const plan = r ? hubActionPlan(r.status, asViewer, signoffRequired) : null;
-  const offered = (verb: string) => plan?.actions.find((a) => a.verb === verb) ?? null;
-  const mark = HUB_MARK_VERBS.find((m) => offered(m) !== null) ?? null;
-  const submit = offered("submit");
-  const withdraw = offered("withdraw");
-  const cancel = offered("cancel");
-  const reopen = offered("reopen");
+  // Verbal sign-off: through the hub's own (tc.full) routes only.
+  const verbalVerbs = r && !viaSignoff ? hubVerbalVerbs(r.status, asViewer, signoffMode) : [];
+  const moveNotes = plan ? hubNotesWithVerbal(plan.notes, verbalVerbs) : [];
+  const canDelete = r ? !viaSignoff && hubCanDeleteDraft(r.status, r.events, asViewer) : false;
   const editable = r ? asViewer.tcFull && REFERRAL_FIELD_EDITABLE_STATUSES.includes(r.status) : false;
   // R6.9: through the hub's own (tc.full) routes only.
   const canLog = r ? !viaSignoff && hubCanLogCorrespondence(r.status, asViewer) : false;
@@ -947,38 +1110,54 @@ export function HubDetail({
               </>
             ) : (
               <div className="space-y-3" data-testid="tc-hub-actions">
-                {(editable || submit || withdraw || cancel) && (
-                  <div className="flex flex-wrap items-center gap-2" data-testid="tc-hub-moves">
-                    {submit && (
-                      <Button size="sm" onClick={() => move("submit")} disabled={busy} data-testid="tc-hub-submit">
-                        {hubActionLabel(submit)}
-                      </Button>
-                    )}
+                {plan && (editable || canDelete || plan.actions.length > 0) && (
+                  <div className="flex flex-wrap items-start gap-2" data-testid="tc-hub-moves">
+                    {/* The TC side's moves: exactly the shared table's, in one menu. */}
+                    <MoveMenu
+                      status={r.status}
+                      actions={plan.actions}
+                      busy={busy}
+                      onMove={move}
+                      onReopen={() => startEdit("reopen")}
+                    />
                     {editable && (
                       <Button size="sm" variant="outline" className="gap-1" onClick={() => startEdit("fields")}>
                         <Pencil className="w-3.5 h-3.5" /> Edit
                       </Button>
                     )}
-                    {withdraw && (
-                      <Button size="sm" variant="outline" onClick={() => move("withdraw")} disabled={busy} data-testid="tc-hub-withdraw">
-                        {hubActionLabel(withdraw)}
-                      </Button>
-                    )}
-                    {cancel && !confirmCancel && (
-                      <Button size="sm" variant="ghost" onClick={() => setConfirmCancel(true)} disabled={busy} data-testid="tc-hub-cancel">
-                        {hubActionLabel(cancel)}
+                    {canDelete && !confirmDelete && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="gap-1 text-destructive"
+                        onClick={() => setConfirmDelete(true)}
+                        disabled={busy}
+                        data-testid="tc-hub-delete"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" /> Delete draft
                       </Button>
                     )}
                   </div>
                 )}
-                {cancel && confirmCancel && (
-                  <div className="space-y-2 rounded-lg border border-border p-3" data-testid="tc-hub-cancel-confirm">
-                    <p className="text-sm">Cancel this referral? It moves to Closed / declined / cancelled and cannot be reopened.</p>
+                {canDelete && confirmDelete && (
+                  <div
+                    role="alertdialog"
+                    aria-labelledby="hub-delete-title"
+                    className="space-y-2 rounded-lg border border-destructive/40 p-3"
+                    data-testid="tc-hub-delete-confirm"
+                  >
+                    <p id="hub-delete-title" className="text-sm font-medium">
+                      Delete this draft?
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      It was never sent, so it can be deleted outright: the referral, its history and its attached files
+                      ({files.length}). This cannot be undone.
+                    </p>
                     <div className="flex gap-2">
-                      <Button size="sm" variant="destructive" onClick={() => move("cancel")} disabled={busy}>
-                        {busy && <Loader2 className="w-4 h-4 animate-spin" />} Yes, cancel it
+                      <Button size="sm" variant="destructive" onClick={() => void removeDraft()} disabled={busy}>
+                        {busy && <Loader2 className="w-4 h-4 animate-spin" />} Yes, delete it
                       </Button>
-                      <Button size="sm" variant="outline" onClick={() => setConfirmCancel(false)} disabled={busy}>
+                      <Button size="sm" variant="outline" onClick={() => setConfirmDelete(false)} disabled={busy}>
                         Keep it
                       </Button>
                     </div>
@@ -1006,9 +1185,23 @@ export function HubDetail({
                     }}
                   />
                 )}
-                {plan && plan.notes.length > 0 && (
+                {/* Verbal sign-off: a tc.full user records a named doctor's OK, mode 'verbal' only. */}
+                {verbalVerbs.length > 0 && (
+                  <VerbalSignoffActions
+                    office={office}
+                    referral={r}
+                    verbs={verbalVerbs}
+                    autosend={autosend}
+                    onSigned={(next) => {
+                      setR(next);
+                      onChanged();
+                      onSigned?.(next);
+                    }}
+                  />
+                )}
+                {moveNotes.length > 0 && (
                   <div className="space-y-1 text-xs text-muted-foreground" data-testid="tc-hub-move-notes">
-                    {plan.notes.map((n) => (
+                    {moveNotes.map((n) => (
                       <p key={n}>{n}</p>
                     ))}
                   </div>
@@ -1020,11 +1213,6 @@ export function HubDetail({
                     ) : (
                       <p className="text-xs font-medium text-emerald-700 dark:text-emerald-400">{REFERRAL_READY_TO_SEND_COPY}</p>
                     )}
-                    {reopen && (
-                      <Button size="sm" variant="outline" className="gap-1" onClick={() => startEdit("reopen")}>
-                        <Pencil className="w-3.5 h-3.5" /> {hubActionLabel(reopen)}
-                      </Button>
-                    )}
                   </>
                 )}
                 {!REFERRAL_FIELD_EDITABLE_STATUSES.includes(r.status) && r.status !== "approved" && (
@@ -1033,17 +1221,6 @@ export function HubDetail({
                       ? "This referral is finished and can no longer be edited."
                       : "This referral has gone to the specialist, so it can no longer be edited."}
                   </p>
-                )}
-                {mark && (
-                  <MarkBox
-                    mark={mark}
-                    text={markText}
-                    onText={setMarkText}
-                    busy={busy}
-                    onMark={() =>
-                      void act(() => markReferral(office, r.referralId, mark, markText.trim()), `${REFERRAL_MARK_LABELS[mark]}: recorded`)
-                    }
-                  />
                 )}
                 {canAddFiles && (
                   <AddAttachments
@@ -1136,51 +1313,6 @@ function SendBox({
           {blocker}
         </p>
       )}
-    </div>
-  );
-}
-
-const MARK_HINTS: Record<ReferralMark, string> = {
-  mark_sent:
-    "Only once it has actually gone — by fax, email or by hand, outside the app. This records it; it does not send anything.",
-  mark_acknowledged: "The specialist's office confirmed they have it. This records it; it contacts no one.",
-  mark_patient_seen: "The specialist has seen the patient. This records it; it contacts no one.",
-  close: "Nothing more to do on this referral.",
-};
-
-function MarkBox({
-  mark,
-  text,
-  onText,
-  busy,
-  onMark,
-}: {
-  mark: ReferralMark;
-  text: string;
-  onText: (v: string) => void;
-  busy: boolean;
-  onMark: () => void;
-}) {
-  const required = mark === "mark_sent";
-  return (
-    <div className="space-y-2 rounded-lg border border-dashed border-border p-3" data-testid="tc-hub-mark">
-      <p className="text-xs text-muted-foreground">{MARK_HINTS[mark]}</p>
-      <div className="space-y-1">
-        <Label htmlFor="hub-mark-text" className="text-xs">
-          {required ? "How and where was it sent? *" : "Note (optional)"}
-        </Label>
-        <Input
-          id="hub-mark-text"
-          value={text}
-          maxLength={300}
-          onChange={(e) => onText(e.target.value)}
-          placeholder={required ? "e.g. Faxed to their front desk" : ""}
-          disabled={busy}
-        />
-      </div>
-      <Button size="sm" onClick={onMark} disabled={busy || (required && !text.trim())}>
-        {busy && <Loader2 className="w-4 h-4 animate-spin" />} {REFERRAL_MARK_LABELS[mark]}
-      </Button>
     </div>
   );
 }

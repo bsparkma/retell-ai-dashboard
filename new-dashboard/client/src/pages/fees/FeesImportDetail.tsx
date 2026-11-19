@@ -112,7 +112,6 @@ import {
   isEdited,
   parseFeeInput,
   FeesApiError,
-  FEES_OFFICE_IDS,
   FEES_OFFICE_LABELS,
   isFeesOfficeId,
   type FeesImportBatch,
@@ -130,6 +129,7 @@ import {
 import { PostingPanel } from "@/features/fees/PostingPanel";
 import { cn } from "@/lib/utils";
 
+import { FALLBACK_OFFICE_KEYS } from "@/lib/officeKeys";
 type DetailState =
   | { kind: "loading" }
   | { kind: "ready"; batch: FeesImportBatch; rows: FeesImportRow[] }
@@ -145,8 +145,10 @@ type DetailState =
  * leak anything, because a 404 is all the wrong office can ever produce.
  */
 function officesToTry(selection: string): FeesOfficeId[] {
-  if (selection === ALL_OFFICES) return [...FEES_OFFICE_IDS];
-  return isFeesOfficeId(selection) ? [selection] : [...FEES_OFFICE_IDS];
+  // MT-2b3: FALLBACK_OFFICE_KEYS, not the roster: this runs inside a load that does
+  // not wait for the roster, and changing that is a disclosed follow-up.
+  if (selection === ALL_OFFICES) return [...FALLBACK_OFFICE_KEYS];
+  return isFeesOfficeId(selection) ? [selection] : [...FALLBACK_OFFICE_KEYS];
 }
 
 /** A local date-time an office reads, from an ISO string. */

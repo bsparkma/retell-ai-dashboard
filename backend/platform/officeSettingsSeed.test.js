@@ -18,7 +18,9 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const registry = require('./registry');
-const parity = require('./officeSettingsParity');
+// MT-2d: the parity tripwire is retired; its pure comparator lives on, test-only.
+const compare = require('./officeSettingsCompareTestUtils');
+const officeRegistry = require('./officeRegistry');
 const officeSettings = require('./officeSettings');
 const keys = require('./officeSettingKeys');
 const { FakeControlPlane, TENANT_ID } = require('./officeSettingsTestUtils');
@@ -100,15 +102,12 @@ async function runAll(t, fixture, mutate = (r) => r) {
   for (const r of planned) cp.seedOffice(r.office_key, r.setting_key, r.value);
 
   registry.setPoolForTests(cp.pool());
-  parity.resetForTests();
   officeSettings.resetCacheForTests();
   for (const sw of SWITCHES) sw.resetCacheForTests();
   hygPilot.resetCacheForTests();
   emailIdentity.resetCacheForTests();
-  parity.arm();
   t.after(() => {
     registry.setPoolForTests(null);
-    parity.resetForTests();
     officeSettings.resetCacheForTests();
     for (const sw of SWITCHES) sw.resetCacheForTests();
     hygPilot.resetCacheForTests();
@@ -119,20 +118,23 @@ async function runAll(t, fixture, mutate = (r) => r) {
     }
   });
 
-  const warn = t.mock.method(console, 'warn', () => {});
-  const log = t.mock.method(console, 'log', () => {});
+  t.mock.method(console, 'warn', () => {});
+  t.mock.method(console, 'log', () => {});
   for (const sw of SWITCHES) assert.equal((await sw.refreshFromDb('carein')).ok, true);
   assert.equal((await hygPilot.refreshFromDb('carein')).ok, true);
   assert.equal((await emailIdentity.refreshFromDb('carein')).ok, true);
   await tcNurture.switchedOnOffices(registry, 'carein');
   await tcOpportunities.switchedOnOffices(registry, 'carein');
-  await parity.settled();
 
+  const offices = officeRegistry.tenantOfficeKeys('carein');
   return {
     planned,
-    results: Object.fromEntries(keys.OFFICE_SETTING_KEYS.map((k) => [k, parity.lastResult(k)])),
-    warnLines: warn.mock.calls.map((c) => String(c.arguments[0])),
-    logLines: log.mock.calls.map((c) => String(c.arguments[0])),
+    results: Object.fromEntries(
+      keys.OFFICE_SETTING_KEYS.map((k) => [
+        k,
+        compare.diff(k, offices, officeSettings.servedRows('carein', k), cp.platformValue(k)),
+      ])
+    ),
   };
 }
 
@@ -142,15 +144,12 @@ for (const [name, fixture] of [
   ['no rows at all', {}],
 ]) {
   test(`seed equivalence on ${name}: every key x office answers the same from both tables`, async (t) => {
-    const { results, warnLines, logLines } = await runAll(t, fixture);
+    const { results } = await runAll(t, fixture);
     for (const k of keys.OFFICE_SETTING_KEYS) {
       assert.deepEqual(results[k], [], `${k} diverged: ${JSON.stringify(results[k])}`);
     }
-    assert.equal(warnLines.filter((l) => l.includes('office settings parity')).length, 0);
-    assert.equal(
-      logLines.filter((l) => l.includes('office settings parity OK — 2 office(s), 10 setting(s)')).length,
-      1
-    );
+    // MT-2d: the two assertions on the tripwire's log lines ("office settings
+    // parity" warn / "parity OK" line) were removed with the tripwire itself.
   });
 }
 

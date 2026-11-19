@@ -45,7 +45,8 @@ describe("Admin hub — print templates", () => {
     expect(link.textContent).toContain("Print templates");
     expect(link.textContent).toContain("School/work excuses and appointment cards");
     const cards = within(screen.getByTestId("admin-practice-settings")).getAllByRole("link");
-    expect(cards.map((a) => a.getAttribute("href"))).toEqual(["/admin/print-templates", "/admin/users"]);
+    // MT-2c added the Office settings card ahead of this one.
+    expect(cards.map((a) => a.getAttribute("href"))).toEqual(["/admin/office-settings", "/admin/print-templates", "/admin/users"]);
   });
 
   it("the page inherits /admin's admin.all gate", () => {

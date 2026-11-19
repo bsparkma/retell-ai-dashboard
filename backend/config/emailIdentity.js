@@ -7,7 +7,7 @@
  * be changed as Azure app settings:
  *
  *   field           saved in the app             app setting (the fallback)
- *   replyTo         platform_setting, below      ACS_EMAIL_REPLY_TO_<OFFICE>
+ *   replyTo         office_setting, below        ACS_EMAIL_REPLY_TO_<OFFICE>
  *   practiceName                                 TC_EMAIL_PRACTICE_NAME_<OFFICE>
  *   practicePhone                                TC_EMAIL_PRACTICE_PHONE_<OFFICE>
  *   practiceAddress                              TC_EMAIL_PRACTICE_ADDRESS_<OFFICE>
@@ -35,12 +35,14 @@
  * referral letter read the same values (services/messaging/emailContent.js).
  *
  * MT-2b: the values are SERVED from the control-plane office_setting table,
- * keyed by (tenant, office), and platform_setting is still written alongside
- * in the same transaction so a rollback is a source flip. The env fallback is
+ * keyed by (tenant, office). MT-2d: office_setting is also the only table
+ * WRITTEN (one row per save); the old platform_setting row is inert history.
+ * The env fallback is
  * tenant 'carein's (the app settings are keyed by office key alone, and are
  * this deployment's settings for carein's offices): another tenant with an
  * office keyed 'roland' must never sign its email with Roland's name, address
- * or reply-to. Writes are refused for any tenant but 'carein' until MT-2d.
+ * or reply-to. Writes are still refused for any tenant but 'carein' (opening
+ * them is a separate decision; MT-2d did not change it).
  *
  * (HISTORY, pre-MT-2b) WHY platform_setting AND NOT A TENANT TABLE. The values this replaces are
  * PROCESS-WIDE app settings keyed by office, and every reader is a synchronous
@@ -253,12 +255,11 @@ function codedError(message, code) {
  * when the control plane cannot be read: a save must not guess what it replaces.
  *
  * `office` (what the history records as replaced) is read from office_setting,
- * the SERVED table. `all` is the platform_setting map the dual-write replaces
- * whole (MT-2a, kept for rollback). Tenant 'carein' only until MT-2d.
+ * the served and (MT-2d) only written table. Tenant 'carein' only.
  *
  * @param {string} tenantSlug
  * @param {string} officeKey
- * @returns {Promise<{ all: Record<string, unknown>, office: Record<StoredField, string|null> }>}
+ * @returns {Promise<{ office: Record<StoredField, string|null> }>}
  */
 async function readStoredFromDb(tenantSlug, officeKey) {
   if (tenantSlug !== MT2A_TENANT_SLUG) {
@@ -267,20 +268,13 @@ async function readStoredFromDb(tenantSlug, officeKey) {
       'OFFICE_SETTING_TENANT_NOT_WRITABLE'
     );
   }
-  const [row, rows] = await Promise.all([
-    registry.getPlatformSetting(SETTING_KEY),
-    registry.listOfficeSettings(tenantSlug),
-  ]);
-  const all =
-    row && row.value && typeof row.value === 'object' && !Array.isArray(row.value)
-      ? { .../** @type {Record<string, unknown>} */ (row.value) }
-      : {};
+  const rows = await registry.listOfficeSettings(tenantSlug);
   const served = (rows || []).find((r) => r.office_key === officeKey && r.setting_key === SETTING_KEY);
   const mine = parseIdentity(served ? served.value : null);
   /** @type {Record<StoredField, string|null>} */
   const office = { replyTo: null, practiceName: null, practicePhone: null, practiceAddress: null, referralBcc: null };
   for (const f of STORED_FIELDS) office[/** @type {StoredField} */ (f)] = mine[/** @type {StoredField} */ (f)] ?? null;
-  return { all, office };
+  return { office };
 }
 
 /**
@@ -289,9 +283,9 @@ async function readStoredFromDb(tenantSlug, officeKey) {
  * The values must already be validated (the route's strict contract); they are
  * normalized again here so nothing unusable is ever written.
  *
- * Read-modify-write of the one platform_setting jsonb map (the registry mirrors
- * it into office_setting in the same transaction): the other office's entry is
- * carried through untouched. Tenant 'carein' only until MT-2d.
+ * MT-2d: writes this office's ONE office_setting row (registry.setOfficeSetting).
+ * The other office's row is never read or rewritten; platform_setting is not
+ * touched. Tenant 'carein' only.
  *
  * @param {string} tenantSlug
  * @param {string} officeKey
@@ -318,12 +312,9 @@ async function persist(tenantSlug, officeKey, values, updatedBy) {
     if (clean === null) throw codedError(`${field} is not usable`, 'INVALID_BODY');
     next[field] = clean;
   }
-  const { all } = await readStoredFromDb(tenantSlug, officeKey);
-  all[officeKey] = next;
-  // The registry writes platform_setting AND office_setting in one
-  // transaction, and refuses (OFFICE_SETTING_READBACK_MISMATCH) if either
-  // table does not read back as asked.
-  await registry.setPlatformSetting(SETTING_KEY, all, updatedBy, { officeKey });
+  // The registry refuses (OFFICE_SETTING_READBACK_MISMATCH) if the row does
+  // not read back as asked.
+  await registry.setOfficeSetting(tenantSlug, officeKey, SETTING_KEY, next, updatedBy);
 
   const read = await refreshFromDb(tenantSlug);
   const mismatch =

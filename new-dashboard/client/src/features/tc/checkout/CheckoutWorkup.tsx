@@ -278,13 +278,16 @@ export function CheckoutWorkup({ office, handoff, showOfficeBadge = false, onCha
       {/* RULING (CO-5a fix): answered, then the visit arrived — back in Waiting, the answer as history. */}
       {handoff.reopenedFrom && <ReopenedNotice reopened={handoff.reopenedFrom} />}
 
-      {(snap.frontDeskNote || snap.financialNote) && (
+      {(snap.frontDeskNote || snap.financialNote || snap.paDetails) && (
         <div className="rounded-lg border border-border bg-muted/40 p-3 text-sm space-y-1" data-testid="workup-hygiene-notes">
           {snap.frontDeskNote && (
             <p><span className="text-muted-foreground">Front desk: </span>{snap.frontDeskNote}</p>
           )}
           {snap.financialNote && (
             <p><span className="text-muted-foreground">Financial: </span>{snap.financialNote}</p>
+          )}
+          {snap.paDetails && (
+            <p className="whitespace-pre-wrap" data-testid="workup-pa-details"><span className="text-muted-foreground">PA details: </span>{snap.paDetails}</p>
           )}
         </div>
       )}

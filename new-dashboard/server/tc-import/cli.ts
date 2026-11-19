@@ -25,7 +25,8 @@
  * tokens, no account keys — the account has shared-key auth disabled.
  */
 import * as fs from "node:fs";
-import { OfficeId } from "@shared/tc/contract";
+import type { OfficeId } from "@shared/tc/contract";
+import { LEGACY_OFFICES, parseLegacyOffice } from "@shared/tc/legacy";
 import { buildBlobKey, createBlobStore } from "../../../backend/services/blobStore.js";
 import { loadLegacyDataDir } from "./loadLegacy";
 import { buildImportPlan } from "./plan";
@@ -49,7 +50,7 @@ function parseArgs(argv: string[]): CliArgs {
     dataDir: "",
     execute: false,
     tenantSlug: "carein",
-    defaultOffice: "roland",
+    defaultOffice: LEGACY_OFFICES[0],
     userMapPath: null,
     blobAccount: null,
     blobContainer: "tc-media",
@@ -59,7 +60,7 @@ function parseArgs(argv: string[]): CliArgs {
     if (a === "--data-dir") args.dataDir = argv[++i] ?? "";
     else if (a === "--execute") args.execute = true;
     else if (a === "--tenant-slug") args.tenantSlug = argv[++i] ?? "";
-    else if (a === "--default-office") args.defaultOffice = OfficeId.parse(argv[++i]);
+    else if (a === "--default-office") args.defaultOffice = parseLegacyOffice(argv[++i]);
     else if (a === "--user-map") args.userMapPath = argv[++i] ?? null;
     else if (a === "--blob-account") args.blobAccount = argv[++i] ?? null;
     else if (a === "--blob-container") args.blobContainer = argv[++i] ?? "tc-media";

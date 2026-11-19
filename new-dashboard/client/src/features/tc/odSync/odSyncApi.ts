@@ -5,6 +5,7 @@
  */
 import { z } from "zod";
 
+import { OfficeKeySchema } from "@shared/officeKey";
 import { tcRequest, TcApiError } from "@/features/tc/api";
 import type { OfficeId } from "@shared/tc/contract";
 
@@ -72,7 +73,7 @@ const PanelCase = z.object({ caseId: z.string(), patientName: z.string(), status
 
 export const OdSyncStatus = z.object({
   success: z.literal(true),
-  office: z.enum(["roland", "valley"]),
+  office: OfficeKeySchema,
   enabled: z.boolean(),
   running: z.boolean(),
   lastRun: OdSyncRun.nullable(),

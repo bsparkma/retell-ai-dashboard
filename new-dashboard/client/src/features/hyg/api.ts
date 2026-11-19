@@ -93,8 +93,11 @@ import {
 
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:5000/api";
 
-/** Short labels for chips — roster display names are too long for one. */
-export const HYG_OFFICE_LABELS: Record<OfficeId, string> = {
+/**
+ * Short labels for chips — roster display names are too long for one.
+ * Presentational only (MT-2b3); an office not named here has no short label.
+ */
+export const HYG_OFFICE_LABELS: Readonly<Record<string, string>> = {
   roland: "Roland",
   valley: "Riley",
 };
@@ -896,6 +899,65 @@ export async function sendOrthoScreening(
       return parsed.data;
     },
     {},
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The after-Send addendum
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Add an addendum to a SENT visit. Writes NOTHING to Open Dental: the server
+ * composes the preview and stores it; "Send addendum" is a separate press.
+ */
+export async function addAddendum(
+  office: OfficeId,
+  aptNum: number,
+  text: string,
+): Promise<HygVisitMutation> {
+  return mutate("POST", `/visit/${aptNum}/addenda`, { office }, parseVisit, { text });
+}
+
+/** What "Send addendum" answers: the visit, and how this one send went. */
+export const HygAddendumSendResponseSchema = HygVisitMutationSchema.extend({
+  addendumId: z.string(),
+  outcome: z.object({
+    state: z.enum(["Written", "Failed"]),
+    writtenRef: z.string().nullable(),
+    errorMessage: z.string().nullable(),
+    code: z.string().nullable(),
+  }),
+});
+export type HygAddendumSendResponse = z.infer<typeof HygAddendumSendResponseSchema>;
+
+/**
+ * Send one addendum to the chart. The body carries ONLY the fingerprint of the
+ * preview on screen — the server re-checks it against its own stored row.
+ */
+export async function sendAddendum(
+  office: OfficeId,
+  aptNum: number,
+  date: string,
+  addendumId: string,
+  previewFingerprint: string,
+): Promise<HygAddendumSendResponse> {
+  return mutate(
+    "POST",
+    `/visit/${aptNum}/addenda/${addendumId}/send`,
+    { office, date },
+    (raw) => {
+      const parsed = HygAddendumSendResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new HygApiError(
+          "CareIN sent something this page could not read back",
+          0,
+          "CONTRACT_MISMATCH",
+          { issues: parsed.error.issues.slice(0, 5) },
+        );
+      }
+      return parsed.data;
+    },
+    { previewFingerprint },
   );
 }
 

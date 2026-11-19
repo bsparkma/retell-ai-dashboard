@@ -28,27 +28,35 @@
  * client has no counterpart to prove because it has no Open Dental call to make.
  */
 
+import { isOfficeKey, type OfficeKey } from "@shared/officeKey";
 import { handleUnauthorized } from "@/lib/api";
 
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:5000/api";
 
 /**
- * The two frozen office keys, mirroring backend/routes/fees/helpers.js.
+ * An office key (shared/officeKey.ts). MT-2b3: there is no frozen list here
+ * any more. Which keys are this practice's offices is the server's call, per
+ * session tenant (backend/platform/officeGate.js); the pages take them from the
+ * office roster (client/src/lib/officeKeys.ts).
  *
- * 'unknown' is deliberately absent: officeAgents carries it as a bucket for
- * unmapped Mango lines, it names no real practice, and the server refuses it.
- * A payer contract filed under no office at all is the thing this type exists
- * to make unrepresentable.
+ * 'unknown' is still unrepresentable: officeAgents carries it as a bucket for
+ * unmapped Mango lines, it names no real practice, and both the schema and the
+ * server refuse it. A payer contract filed under no office at all is the thing
+ * this type exists to make unrepresentable.
  */
-export const FEES_OFFICE_IDS = ["roland", "valley"] as const;
-export type FeesOfficeId = (typeof FEES_OFFICE_IDS)[number];
+export type FeesOfficeId = OfficeKey;
 
 export function isFeesOfficeId(value: unknown): value is FeesOfficeId {
-  return typeof value === "string" && (FEES_OFFICE_IDS as readonly string[]).includes(value);
+  return isOfficeKey(value);
 }
 
-/** Short labels for chips — roster display names are too long for one. */
-export const FEES_OFFICE_LABELS: Record<FeesOfficeId, string> = {
+/**
+ * Short labels for chips — roster display names are too long for one.
+ * Presentational only. An office not named here has NO short label at the
+ * lookups that index this map directly; a registry short name is the MT-2b3
+ * follow-up that retires it.
+ */
+export const FEES_OFFICE_LABELS: Readonly<Record<string, string>> = {
   roland: "Roland",
   valley: "Riley",
 };

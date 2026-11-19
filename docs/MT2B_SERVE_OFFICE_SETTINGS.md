@@ -1,8 +1,9 @@
 # MT-2b — serve the per-office settings from `office_setting`, per tenant
 
 **Status:** the ten per-office readers SERVE `office_setting` for `(tenant, office)`.
-`platform_setting` is still written in the same transaction (MT-2a's dual-write),
-so a rollback is a source flip (revert this slice), not a data repair.
+**Since MT-2d** `office_setting` is also the only table written and the parity
+tripwire is retired — see [MT2D_SINGLE_WRITER.md](MT2D_SINGLE_WRITER.md), which
+supersedes the "Runbook writes" and "Rollback" sections below.
 Builds on [MT2A_OFFICE_SETTINGS.md](MT2A_OFFICE_SETTINGS.md).
 
 ## What changed

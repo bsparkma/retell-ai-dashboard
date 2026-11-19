@@ -23,39 +23,27 @@
  * can only ever narrow what the voice path already allows.
  */
 
+const { makeRequireOffice } = require('../../platform/officeGate');
 const { audit, auditMany, AuditError } = require('../../platform/audit');
 const odOffices = require('../../config/odOffices');
 const { sessionTenantSlug } = require('../../platform/sessionTenant');
 
 /**
- * Frozen internal office keys — the same two the rest of the platform uses. A
- * third office is a config change in config/officeAgents.js, not an edit here.
- * `unknown` is deliberately absent: it has no Open Dental database, so it is
- * not somewhere a hygiene day can be read from.
- */
-const OFFICES = Object.freeze(['roland', 'valley']);
-
-/**
  * Middleware: validate `?office=` and attach it as req.hygOffice.
  *
- * 400, not 403 — a missing or unknown office is a malformed request, not an
+ * MT-2b3: the key must be one of the SESSION tenant's offices
+ * (officeRegistry.isTenantOffice, via platform/officeGate.js), not a member of
+ * a hard-coded pair. 'unknown', '', an array and any casing variant are
+ * refused. For tenant carein the answer is roland/valley, whether or not the
+ * registry is readable, and the refusal body is byte-identical to the old one.
+ *
+ * 400, not 403: a missing or unknown office is a malformed request, not an
  * entitlement failure. Entitlement is the mount-level requireModule('hyg') and
  * permission is the mount-level requireReadWrite; both have already run.
  *
  * @type {import('express').RequestHandler}
  */
-function requireOffice(req, res, next) {
-  const office = req.query.office;
-  if (typeof office !== 'string' || !OFFICES.includes(office)) {
-    return res.status(400).json({
-      success: false,
-      error: 'office query param is required and must be one of: ' + OFFICES.join(', '),
-      code: 'INVALID_OFFICE',
-    });
-  }
-  req.hygOffice = office;
-  return next();
-}
+const requireOffice = makeRequireOffice('hygOffice');
 
 /**
  * Resolve this office's Open Dental handle for the HYGIENE module, or return
@@ -263,7 +251,6 @@ async function auditHygDenial(req, resourceType, resourceId, extra) {
 }
 
 module.exports = {
-  OFFICES,
   requireOffice,
   resolveHygOd,
   actorEmail,

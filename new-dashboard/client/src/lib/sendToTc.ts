@@ -16,12 +16,13 @@
 
 import type { CallActor } from "@/lib/api";
 
-/**
- * The offices a TC case can be filed under. 'unknown' (an unmapped Mango line)
- * is deliberately absent: a case has to belong to a practice, and M5 already
+import { isOfficeKey } from "@shared/officeKey";
+/*
+ * The offices a TC case can be filed under: any office key (MT-2b3: the server's
+ * TC gate decides whose). 'unknown' (an unmapped Mango line) is not one
+ * (isOfficeKey refuses it): a case has to belong to a practice, and M5 already
  * keeps those calls out of every office-scoped action.
  */
-const FILEABLE_OFFICES: ReadonlySet<string> = new Set(["roland", "valley"]);
 
 /** The fields of a call this decision reads. Structural, so tests need no full call. */
 export interface SendToTcCall {
@@ -65,7 +66,7 @@ export function sendToTcState(call: SendToTcCall, tcEntitled: boolean, mayHandOf
   if (patientId === null || patientId === undefined || patientId === "") return { kind: "hidden" };
 
   // No known practice → no case list to file under.
-  if (!call.officeId || !FILEABLE_OFFICES.has(call.officeId)) return { kind: "hidden" };
+  if (!call.officeId || !isOfficeKey(call.officeId)) return { kind: "hidden" };
 
   // Already handed over. The server is idempotent, but the UI shouldn't invite a
   // second click that reads like it does something new.

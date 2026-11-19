@@ -22,14 +22,15 @@
  *   - Practice staff. #304 retired that page and folded it into Users (each
  *     person's "Signature on notes"), and nothing in the Developer Console
  *     replaced it, so there is no page to link to.
- *   - Hygiene. Its only setting is the per-office pilot switch, which is a
- *     Developer Console control, not a practice one.
+ *   - Hygiene as its own card. Its only setting is the per-office pilot
+ *     switch, which (MT-2c, ruling A) lives on the Office settings card with
+ *     the TC per-office switches.
  * The RCM cards are not links: they are RcmPostingSettingsCard and
  * RcmShadowComparisonCard, rendered in place by Admin.tsx, and each hides
  * itself without `rcm.settings`.
  */
 import type { LucideIcon } from "lucide-react";
-import { Bot, BookOpen, Building2, CalendarClock, Printer, Send, Stethoscope, Users } from "lucide-react";
+import { Bot, BookOpen, Building2, CalendarClock, MapPin, Printer, Send, Stethoscope, Users } from "lucide-react";
 import { canVisit } from "@/lib/permissions";
 import { hasModule, type ModuleId } from "@/lib/modules";
 import { tcSettingsHref } from "@/features/tc/settings/paths";
@@ -85,6 +86,17 @@ export const HUB_CARDS: readonly HubCard[] = [
     detail: "Specialists and referral policies (shown while referrals is on for the office)",
     module: "tc",
     checkRoute: true,
+  },
+  {
+    // MT-2c (ruling A): the per-office switches, for this practice's admins.
+    // Under /admin's own gate, so no checkRoute. No `module`: the page shows
+    // the TC and hygiene sections each by its own module.
+    id: "office-settings",
+    group: "practice",
+    href: "/admin/office-settings",
+    icon: MapPin,
+    title: "Office settings",
+    detail: "What is switched on at each office: checkout, referrals, Open Dental sync, hygiene",
   },
   {
     id: "print-templates",

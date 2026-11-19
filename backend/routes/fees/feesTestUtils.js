@@ -111,7 +111,8 @@ function assertEditedPair(row) {
 const BATCH_CHECKS = [
   {
     name: 'fees_import_batch_office_check',
-    holds: (b) => ['roland', 'valley'].includes(b.office),
+    // 1795000000000_office_format_checks (MT-2b2): a format, no longer the pair.
+    holds: (b) => typeof b.office === 'string' && /^[a-z][a-z0-9_-]{1,31}$/.test(b.office),
   },
   {
     name: 'fees_import_batch_source_type_check',

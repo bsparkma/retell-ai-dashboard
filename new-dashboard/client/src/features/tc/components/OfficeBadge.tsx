@@ -13,10 +13,12 @@ import { Badge } from "@/components/ui/badge";
 import { MapPin } from "lucide-react";
 import { tcOfficeLabel } from "../officeScope";
 
-const OFFICE_CLASS: Record<OfficeId, string> = {
+// MT-2b3: presentational; an office not named here gets the neutral badge.
+const OFFICE_CLASS: Readonly<Record<string, string>> = {
   roland: "bg-teal-100 text-teal-700 dark:bg-teal-950 dark:text-teal-300",
   valley: "bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300",
 };
+const NEUTRAL_CLASS = "bg-muted text-muted-foreground";
 
 export function OfficeBadge({
   officeId,
@@ -29,7 +31,7 @@ export function OfficeBadge({
     <Badge
       variant="outline"
       data-testid="office-badge"
-      className={`border-transparent gap-1 ${OFFICE_CLASS[officeId]} ${className}`}
+      className={`border-transparent gap-1 ${OFFICE_CLASS[officeId] ?? NEUTRAL_CLASS} ${className}`}
     >
       <MapPin className="w-3 h-3" />
       {tcOfficeLabel(officeId)}

@@ -24,7 +24,15 @@
  *   POST   /:id/submit            draft → pending_signoff (or → approved when
  *                                 this office does not require sign-off)
  *   POST   /:id/withdraw          pending_signoff → draft
- *   POST   /:id/cancel            draft | pending_signoff → cancelled
+ *   POST   /:id/cancel            any unfinished status → cancelled (manual moves:
+ *                                 approved, sent, acknowledged, patient seen too;
+ *                                 409 while an email is in flight; drops the
+ *                                 referral's link tokens). Submit / withdraw /
+ *                                 cancel take an optional { note } for the history.
+ *   DELETE /:id                   a never-sent DRAFT only (./referralDelete.js) —
+ *                                 the row, its history, its files and link tokens.
+ *                                 Any other status, or a draft with outside-the-app
+ *                                 history, is 409: it can only be cancelled.
  *   Approve / decline live in ./referralSignoff.js, behind tc.referral_signoff.
  *
  *   R6 (item 56) — the hub and staff edits (NOTHING SENDS, still):
@@ -99,6 +107,7 @@ const referralSend = require('./referralSend');
 const correspondence = require('./referralCorrespondence');
 const chartNotes = require('./referralChartNotes');
 const odManualPatient = require('./odManualPatient');
+const referralDelete = require('./referralDelete');
 
 const {
   z,
@@ -112,9 +121,13 @@ const {
   TcReferralReopenRequest,
   TcReferralMarkSentRequest,
   TcReferralMarkRequest,
+  TcReferralMoveRequest,
   TcReferralSendRequest,
   TcReferralCorrespondenceRequest,
   TcReferralChartNoteRequest,
+  TcReferralVerbalApproveRequest,
+  TcReferralVerbalDeclineRequest,
+  TcReferralVerbalReturnRequest,
   ReferralTemplateSaveRequest,
 } = contract;
 
@@ -256,6 +269,7 @@ async function settingsPayload(req) {
     success: true,
     office,
     signoffRequired: policies.signoffRequired,
+    signoffMode: policies.signoffMode,
     autosendOnApproval: policies.autosendOnApproval,
     canEdit: holdsPermission(req, 'admin.all'),
     updatedBy: row ? row.updated_by : null,
@@ -263,9 +277,22 @@ async function settingsPayload(req) {
   };
 }
 
-/** `signoff_on:autosend_off` — a slug inside audit_log's prior_state grammar. */
+/**
+ * `signoff_on:autosend_off` — a slug inside audit_log's prior_state grammar.
+ * 'doctor' is `signoff_on` and 'off' is `signoff_off`, exactly as before the
+ * mode existed; only the new 'verbal' has its own word.
+ */
 function settingsSlug(p) {
-  return `signoff_${p.signoffRequired.value ? 'on' : 'off'}:autosend_${p.autosendOnApproval.value ? 'on' : 'off'}`;
+  const mode = p.signoffMode.value;
+  const signoff = mode === 'verbal' ? 'verbal' : mode === 'off' ? 'off' : 'on';
+  return `signoff_${signoff}:autosend_${p.autosendOnApproval.value ? 'on' : 'off'}`;
+}
+
+/** The office's STORED mode (no env pin): what a PUT changes from. */
+function storedSignoffMode(row) {
+  if (!row) return 'doctor';
+  if (store.SIGNOFF_MODES.includes(row.signoff_mode)) return row.signoff_mode;
+  return row.signoff_required === false ? 'off' : 'doctor';
 }
 
 router.get(
@@ -293,17 +320,25 @@ router.put(
       // Store the OFFICE's choice: what it already chose (or the defaults),
       // with this request's changes on top. An env pin still wins on read.
       const stored = {
-        signoffRequired: row ? row.signoff_required : store.POLICIES.signoffRequired.defaultValue,
+        signoffMode: storedSignoffMode(row),
         autosendOnApproval: row ? row.autosend_on_approval : store.POLICIES.autosendOnApproval.defaultValue,
       };
+      // The legacy boolean still works: false = 'off'; true = a doctor is
+      // needed, which a stored 'verbal' already satisfies, so it stays.
+      let signoffMode = stored.signoffMode;
+      if (body.signoffMode !== undefined) signoffMode = body.signoffMode;
+      else if (body.signoffRequired === false) signoffMode = 'off';
+      else if (body.signoffRequired === true) signoffMode = stored.signoffMode === 'verbal' ? 'verbal' : 'doctor';
       const next = {
-        signoffRequired: body.signoffRequired ?? stored.signoffRequired,
+        signoffMode,
         autosendOnApproval: body.autosendOnApproval ?? stored.autosendOnApproval,
       };
       // Item 53 (carried from R1's review): auto-send with sign-off OFF would
       // send a referral no doctor ever read the moment it is submitted. That
       // pair is refused, not stored; sign-off back ON, or auto-send OFF.
-      if (!next.signoffRequired && next.autosendOnApproval) return { unsafe: true };
+      // 'verbal' + auto-send is allowed (Beau's ruling): the recorder's
+      // approve click, with the doctor named, is the human review.
+      if (next.signoffMode === 'off' && next.autosendOnApproval) return { unsafe: true };
       const written = await store.upsertSettings(pool, office, next, actorEmail(req));
       if (!written) throw new Error('referral settings were not stored');
       return store.resolvePolicies(office, row);
@@ -694,6 +729,51 @@ for (const mark of MARKS) {
   );
 }
 
+// ── Verbal sign-off (mode 'verbal') ────────────────────────────────────────
+
+/**
+ * POST /:id/verbal-approve | verbal-decline | verbal-return — a tc.full user
+ * records a NAMED doctor's verbal OK (or no, or question) on a referral
+ * awaiting sign-off. The doctor is an id from the office's active provider
+ * directory, never free text; the event and the audit row carry both people
+ * (the recorder is the actor; the doctor is on the row).
+ *
+ * STRUCTURAL, not a hidden button: the transition reads the office's mode in
+ * its own transaction and refuses 409 SIGNOFF_NOT_VERBAL unless it is
+ * 'verbal' — in 'doctor' mode these routes cannot approve anything, whoever
+ * calls them. The doctor's own routes (/signoff/:id/…) are unchanged.
+ *
+ * An approve is then exactly the sign-off route's approve: if the office
+ * emails on approval, referralSend.sendAfterApproval runs after the approval
+ * committed (unchanged), and the answer says what the email did.
+ */
+const VERBAL = [
+  { path: 'verbal-approve', verb: 'approve', schema: TcReferralVerbalApproveRequest, note: (b) => b.note || '' },
+  { path: 'verbal-decline', verb: 'decline', schema: TcReferralVerbalDeclineRequest, note: (b) => b.reason },
+  { path: 'verbal-return', verb: 'return', schema: TcReferralVerbalReturnRequest, note: (b) => b.comment },
+];
+for (const v of VERBAL) {
+  router.post(
+    `/:id/${v.path}`,
+    h(async (req, res) => {
+      const id = ReferralId.safeParse(req.params.id);
+      if (!id.success) return badReferralId(res);
+      const body = parseBody(res, v.schema, req.body ?? {});
+      if (!body) return undefined;
+      const out = await transitions.applyVerb(req, {
+        referralId: id.data,
+        verb: v.verb,
+        note: v.note(body),
+        verbal: { providerId: body.providerId },
+      });
+      if (out.status !== 200 || v.verb !== 'approve') return res.status(out.status).json(out.body);
+      const auto = await referralSend.sendAfterApproval(req, { office: req.tcOffice, referralId: id.data });
+      if (!auto) return res.json(out.body);
+      return res.json({ ...out.body, referral: auto.referral || out.body.referral, autoSend: auto.outcome });
+    })
+  );
+}
+
 // ── R6.9: the correspondence log ────────────────────────────────────────────
 
 /**
@@ -760,10 +840,31 @@ for (const verb of ['submit', 'withdraw', 'cancel']) {
     h(async (req, res) => {
       const id = ReferralId.safeParse(req.params.id);
       if (!id.success) return badReferralId(res);
-      const out = await transitions.applyVerb(req, { referralId: id.data, verb });
+      // Manual moves: an optional note for the history line (strict — an
+      // office, a status, a target is a 400; the table decides where it goes).
+      const body = parseBody(res, TcReferralMoveRequest, req.body ?? {});
+      if (!body) return undefined;
+      const out = await transitions.applyVerb(req, { referralId: id.data, verb, note: body.note || '' });
       return res.status(out.status).json(out.body);
     })
   );
 }
+
+// ── Manual moves: delete a never-sent draft ─────────────────────────────────
+
+/**
+ * DELETE /:id — a draft that never reached outside the app. tc.full (the
+ * router's guard); the office is the request's server-derived one; the body
+ * is ignored. Every other status is refused 409 here, whatever the UI showed.
+ */
+router.delete(
+  '/:id',
+  h(async (req, res) => {
+    const id = ReferralId.safeParse(req.params.id);
+    if (!id.success) return badReferralId(res);
+    const out = await referralDelete.deleteDraft(req, { referralId: id.data });
+    return res.status(out.status).json(out.body);
+  })
+);
 
 module.exports = router;

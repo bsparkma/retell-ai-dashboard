@@ -99,6 +99,7 @@ import DisabledReason from "@/components/rcm/DisabledReason";
 import EobViewer from "@/components/rcm/EobViewer";
 import RcmStepper from "@/components/rcm/RcmStepper";
 
+import { FALLBACK_OFFICE_KEYS } from "@/lib/officeKeys";
 type State =
   | { kind: "loading" }
   | { kind: "error"; message: string }
@@ -248,7 +249,9 @@ export default function FieldConfirm() {
      * concrete office is tried in roster order and a 404 under one is how the
      * other is discovered.
      */
-    const offices = isRcmOfficeId(selected) ? [selected] : (["roland", "valley"] as const);
+    // MT-2b3: FALLBACK_OFFICE_KEYS, not the roster: this load does not wait for the
+    // roster, and changing that is a disclosed follow-up.
+    const offices = isRcmOfficeId(selected) ? [selected] : FALLBACK_OFFICE_KEYS;
 
     (async () => {
       let lastError: unknown = null;

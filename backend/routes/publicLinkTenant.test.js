@@ -403,3 +403,33 @@ test('the fallback path: an unreachable control plane is 503 too, never a guess'
     await app.close();
   }
 });
+
+// ── MT-2b3 ruling: an opt-out is RECORDED even while the registry is down ────
+
+test("registry unreadable + a valid token for a non-carein tenant: the opt-out is written and the done page shown", async () => {
+  const officeRegistry = require('../platform/officeRegistry');
+  const app = await bootTwoTenants();
+  const savedList = registry.listTenantOffices;
+  // Every registry read fails: bravo has NO offices the gates can confirm.
+  registry.listTenantOffices = async () => {
+    throw new Error('control plane unreachable');
+  };
+  officeRegistry.resetCacheForTests();
+  try {
+    assert.equal(officeRegistry.isTenantOffice('bravo', 'roland'), false, 'precondition: the registry cannot confirm the office');
+    const tokenB = await seedT2Email(app.dbB, app.index);
+    const r = await unsubscribe(app.baseUrl, tokenB);
+    assert.equal(r.status, 200);
+    assert.equal(r.text, DONE_PAGE);
+    const rows = app.dbB.table('tc_contact_consent');
+    assert.equal(rows.length, 1, "B's opt-out is recorded despite the blip");
+    assert.equal(rows[0].state, 'opted_out');
+    assert.equal(rows[0].office_id, 'roland', "the office is the one on B's own message row");
+    assert.equal(rows[0].source, 'unsubscribe_link');
+    assert.equal(app.dbA.table('tc_contact_consent').length, 0, "nothing in A's");
+  } finally {
+    registry.listTenantOffices = savedList;
+    officeRegistry.resetCacheForTests();
+    await app.close();
+  }
+});

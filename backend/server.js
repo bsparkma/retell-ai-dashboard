@@ -69,7 +69,6 @@ async function bootstrap() {
   const tcEmail = require('./config/tcEmail');
   const emailIdentity = require('./config/emailIdentity');
   const officeRegistry = require('./platform/officeRegistry');
-  const officeSettingsParity = require('./platform/officeSettingsParity');
   const { requireDashboardAuth, socketAuth } = require('./middleware/auth');
   const { tenantContext, requireModule } = require('./middleware/tenantContext');
   const { requirePermission, requireReadWrite, requireSuperAdmin } = require('./config/permissions');
@@ -315,6 +314,12 @@ async function bootstrap() {
   // too. MOUNTED ABOVE /api/admin on purpose, so this one path answers without
   // the voice guard and every other /api/admin path still meets it below.
   app.use('/api/admin/setup-status', requirePermission('admin.all'), require('./routes/setupStatus'));
+  // MT-2c (ruling A): the practice's own per-office settings — the Developer
+  // Console's switch handlers (routes/officeSwitches.js), behind /admin's gate
+  // and each switch's module guard instead of requireSuperAdmin(). ABOVE
+  // /api/admin for the same reason as setup-status: a TC-only practice has no
+  // voice module. Tenant from the session, office checked against it.
+  app.use('/api/admin/office-settings', requirePermission('admin.all'), require('./routes/adminOfficeSettings'));
   // The Admin page: scheduler start/stop, cost ceilings, queues, config. Tenant
   // 'admin' only — this is the one surface 'office' does not get.
   app.use('/api/admin', voiceModule, requirePermission('admin.all'), adminRouter);
@@ -607,13 +612,11 @@ async function bootstrap() {
     await officeRegistry.refreshFromDb();
     officeRegistry.startRefreshTimer();
 
-    //    The office settings parity tripwire, INVERTED in MT-2b. The ten
-    //    per-office readers SERVE office_setting now; after every successful
-    //    office_setting read of tenant 'carein' the tripwire reads
-    //    platform_setting (still written alongside, for rollback) and warns on
-    //    drift, naming office_setting as served. It only LOGS. Armed before the
-    //    boot read below so that read is compared too.
-    officeSettingsParity.arm();
+    //    (MT-2d) The tripwire that compared office_setting with platform_setting
+    //    is retired: office_setting is the only table the ten per-office
+    //    settings are written to and served from, so there is no second copy
+    //    to compare. The office REGISTRY's tripwire (config/officeAgents.js,
+    //    config/odOffices.js) stays.
 
     // 5. Start the per-office Open Dental health check (default every 5 min).
     //    This is the DELIBERATE replacement for the 3-minute self-polling loop
@@ -680,11 +683,6 @@ async function bootstrap() {
     //    MT-2b: already read above with every other per-office setting (one
     //    shared office_setting read per tenant); this only arms its timer.
     emailIdentity.startRefreshTimer();
-
-    //    MT-2b parity sweep: the boot read above already handed all ten keys to
-    //    the tripwire (one office_setting read covers every key). Awaited here
-    //    only so its first verdict lands in the boot log; it never throws.
-    await officeSettingsParity.settled();
 
     hygDayWarm.start();
 

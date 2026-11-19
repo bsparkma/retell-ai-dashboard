@@ -16,6 +16,11 @@
  *    sign-off" and none of them. Send and the marks are unchanged;
  *  - the panel: Submit / Withdraw / Cancel go through the existing referralVerb
  *    routes and the panel shows only the server's answer.
+ *  - MANUAL MOVES (referral-manual-moves, RE-PINNED): those moves and the
+ *    marks are ONE "Move to…" menu listing exactly the plan's actions; each
+ *    asks first (with an optional note) and only its confirm calls the route.
+ *    Cancel now reaches approved / sent / acknowledged / patient seen. A
+ *    never-sent draft offers "Delete draft", which asks first.
  *
  * NO NETWORK, NO BACKEND, NOTHING SENDS (the referrals API is mocked whole and
  * the send call is asserted never made), NO PHI (test patient 12827).
@@ -38,6 +43,7 @@ const { toastMock, ref } = vi.hoisted(() => ({
     reopenReferral: vi.fn(),
     markReferral: vi.fn(),
     referralVerb: vi.fn(),
+    deleteReferral: vi.fn(),
     sendReferralEmail: vi.fn(),
     approveReferral: vi.fn(),
     declineReferral: vi.fn(),
@@ -59,6 +65,7 @@ import {
   HUB_VERBS,
   hubActionLabel,
   hubActionPlan,
+  hubCanDeleteDraft,
   type HubViewer,
 } from "@/features/tc/referrals/hubActions";
 import { TcApiError } from "@/features/tc/api";
@@ -119,10 +126,11 @@ describe("hubActionPlan — what the hub offers, from the shared table", () => {
     expect(Object.fromEntries(StatusEnum.options.map((s) => [s, verbsFor(s)]))).toEqual({
       draft: ["submit", "cancel"],
       pending_signoff: ["withdraw", "cancel"],
-      approved: ["reopen", "mark_sent"],
-      sent: ["mark_acknowledged"],
-      acknowledged: ["mark_patient_seen"],
-      patient_seen: ["close"],
+      // Manual moves (RE-PINNED): cancel reaches every unfinished status.
+      approved: ["reopen", "mark_sent", "cancel"],
+      sent: ["mark_acknowledged", "cancel"],
+      acknowledged: ["mark_patient_seen", "cancel"],
+      patient_seen: ["close", "cancel"],
       closed: [],
       declined: [],
       cancelled: [],
@@ -245,35 +253,71 @@ function expectNothingSent() {
   expect(ref.approveReferral).not.toHaveBeenCalled();
 }
 
-describe("the detail panel's moves", () => {
+/** Open the "Move to…" menu and list what it offers, then close it again. */
+function menuVerbs(panel: HTMLElement): string[] {
+  const trigger = within(panel).queryByTestId("tc-hub-move-menu");
+  if (!trigger) return [];
+  fireEvent.click(trigger);
+  const verbs = within(panel)
+    .getAllByRole("menuitem")
+    .map((b) => (b.getAttribute("data-testid") ?? "").replace("tc-hub-move-", ""));
+  fireEvent.click(trigger);
+  return verbs;
+}
+
+/** Choose `verb` from the menu; returns the confirm step it opens. */
+function choose(panel: HTMLElement, verb: string): HTMLElement {
+  fireEvent.click(within(panel).getByTestId("tc-hub-move-menu"));
+  fireEvent.click(within(panel).getByTestId(`tc-hub-move-${verb}`));
+  return within(panel).getByTestId("tc-hub-move-confirm");
+}
+
+describe("the detail panel's moves (one Move to… menu)", () => {
   it("THE BUG: a draft with no specialist yet can be submitted from the hub; the panel shows the server's answer", async () => {
     const d = referral();
     const { panel, onChanged } = await openDetail(d);
-    const submit = within(panel).getByTestId("tc-hub-submit") as HTMLButtonElement;
-    expect(submit.textContent).toBe("Submit for sign-off");
-    expect(submit.disabled).toBe(false);
+    expect(menuVerbs(panel)).toEqual(["submit", "cancel"]);
     expect(within(panel).getByRole("button", { name: /^Edit$/ })).toBeTruthy();
+    fireEvent.click(within(panel).getByTestId("tc-hub-move-menu"));
+    expect(within(panel).getByTestId("tc-hub-move-submit").textContent).toBe("Submit for sign-off→ Pending Dr. sign-off");
+    fireEvent.click(within(panel).getByTestId("tc-hub-move-submit"));
+    // Choosing asks first: nothing has been called yet.
+    expect(ref.referralVerb).not.toHaveBeenCalled();
 
     ref.referralVerb.mockResolvedValue({ ...d, status: "pending_signoff" });
-    fireEvent.click(submit);
+    fireEvent.click(within(panel).getByTestId("tc-hub-move-go"));
     await waitFor(() => expect(ref.referralVerb).toHaveBeenCalledWith("roland", RID, "submit"));
     await waitFor(() => expect(within(panel).getByTestId("tc-referral-status").textContent).toBe("Pending Dr. sign-off"));
     expect(toastMock.success).toHaveBeenCalledWith("Sent for the doctor's sign-off");
     expect(onChanged).toHaveBeenCalled();
     // Now awaiting sign-off: withdraw / cancel, and where the doctor acts.
-    expect(within(panel).queryByTestId("tc-hub-submit")).toBeNull();
-    expect(within(panel).getByTestId("tc-hub-withdraw")).toBeTruthy();
+    expect(menuVerbs(panel)).toEqual(["withdraw", "cancel"]);
     expect(within(panel).getByTestId("tc-hub-move-notes").textContent).toContain(HUB_SIGNOFF_WAITING_COPY);
     expectNothingSent();
+  });
+
+  it("a note typed at the confirm step goes to the route; Back calls nothing", async () => {
+    const d = referral({ status: "pending_signoff" });
+    const { panel } = await openDetail(d);
+    let confirm = choose(panel, "withdraw");
+    fireEvent.click(within(confirm).getByRole("button", { name: "Back" }));
+    expect(within(panel).queryByTestId("tc-hub-move-confirm")).toBeNull();
+    expect(ref.referralVerb).not.toHaveBeenCalled();
+
+    confirm = choose(panel, "withdraw");
+    fireEvent.change(within(confirm).getByLabelText(/Note for the history/), { target: { value: "Fixing the teeth" } });
+    ref.referralVerb.mockResolvedValue({ ...d, status: "draft" });
+    fireEvent.click(within(confirm).getByTestId("tc-hub-move-go"));
+    await waitFor(() => expect(ref.referralVerb).toHaveBeenCalledWith("roland", RID, "withdraw", "Fixing the teeth"));
   });
 
   it("sign-off off for the office: the label says it approves, and the toast follows the server's status", async () => {
     const d = referral();
     const { panel } = await openDetail(d, { signoffRequired: false });
-    const submit = within(panel).getByTestId("tc-hub-submit");
-    expect(submit.textContent).toBe("Submit (sign-off not required — approves it)");
+    const confirm = choose(panel, "submit");
+    expect(within(confirm).getByTestId("tc-hub-move-go").textContent).toContain("Submit (sign-off not required — approves it)");
     ref.referralVerb.mockResolvedValue({ ...d, status: "approved" });
-    fireEvent.click(submit);
+    fireEvent.click(within(confirm).getByTestId("tc-hub-move-go"));
     await waitFor(() => expect(within(panel).getByTestId("tc-referral-status").textContent).toBe("Approved"));
     expect(toastMock.success).toHaveBeenCalledWith("Referral approved (sign-off not required)");
     expectNothingSent();
@@ -281,16 +325,17 @@ describe("the detail panel's moves", () => {
 
   it("the policy could not be read: Submit is still there, labelled plainly", async () => {
     const { panel } = await openDetail(referral(), { signoffRequired: null });
-    expect(within(panel).getByTestId("tc-hub-submit").textContent).toBe("Submit");
+    fireEvent.click(within(panel).getByTestId("tc-hub-move-menu"));
+    expect(within(panel).getByTestId("tc-hub-move-submit").textContent).toBe("Submit→ depends on the office's sign-off setting");
   });
 
-  it("a refused move leaves the referral as it was and says why", async () => {
+  it("a refused move (a stale card) leaves the referral as it was and says why", async () => {
     const d = referral();
     const { panel } = await openDetail(d);
     ref.referralVerb.mockRejectedValue(
       new TcApiError("This referral cannot be submitted: it is pending dr. sign-off.", 409, "REFERRAL_TRANSITION_NOT_ALLOWED", null, []),
     );
-    fireEvent.click(within(panel).getByTestId("tc-hub-submit"));
+    fireEvent.click(within(choose(panel, "submit")).getByTestId("tc-hub-move-go"));
     expect(await within(panel).findByText("This referral cannot be submitted: it is pending dr. sign-off.")).toBeTruthy();
     expect(within(panel).getByTestId("tc-referral-status").textContent).toBe("Draft");
     expect(toastMock.success).not.toHaveBeenCalled();
@@ -301,10 +346,10 @@ describe("the detail panel's moves", () => {
     const { panel } = await openDetail(d);
     expect(within(panel).queryByTestId("tc-hub-signoff-actions")).toBeNull();
     ref.referralVerb.mockResolvedValue({ ...d, status: "draft" });
-    fireEvent.click(within(panel).getByTestId("tc-hub-withdraw"));
+    fireEvent.click(within(choose(panel, "withdraw")).getByTestId("tc-hub-move-go"));
     await waitFor(() => expect(ref.referralVerb).toHaveBeenCalledWith("roland", RID, "withdraw"));
     await waitFor(() => expect(within(panel).getByTestId("tc-referral-status").textContent).toBe("Draft"));
-    expect(within(panel).getByTestId("tc-hub-submit")).toBeTruthy();
+    expect(menuVerbs(panel)).toContain("submit");
   });
 
   it("RE-PINNED: an admin (a signer) gets Approve, Decline and Send back on the hub; a TC gets none", async () => {
@@ -313,6 +358,8 @@ describe("the detail panel's moves", () => {
     expect(within(panel).getByRole("button", { name: /Decline/ })).toBeTruthy();
     expect(within(panel).getByRole("button", { name: /Send back with a question/ })).toBeTruthy();
     expect(within(panel).queryByTestId("tc-hub-move-notes")).toBeNull();
+    // The menu never carries a doctor's move, even for a signer.
+    expect(menuVerbs(panel)).toEqual(["withdraw", "cancel"]);
     expectNothingSent(); // drawn, not pressed
     cleanup();
     const tc = await openDetail(referral({ status: "pending_signoff" }), { viewer: TC });
@@ -323,34 +370,139 @@ describe("the detail panel's moves", () => {
   it("cancel asks first; only 'Yes, cancel it' moves it", async () => {
     const d = referral();
     const { panel } = await openDetail(d);
-    fireEvent.click(within(panel).getByTestId("tc-hub-cancel"));
-    const confirm = within(panel).getByTestId("tc-hub-cancel-confirm");
+    let confirm = choose(panel, "cancel");
     expect(ref.referralVerb).not.toHaveBeenCalled();
     fireEvent.click(within(confirm).getByRole("button", { name: "Keep it" }));
-    expect(within(panel).queryByTestId("tc-hub-cancel-confirm")).toBeNull();
+    expect(within(panel).queryByTestId("tc-hub-move-confirm")).toBeNull();
     expect(ref.referralVerb).not.toHaveBeenCalled();
 
-    fireEvent.click(within(panel).getByTestId("tc-hub-cancel"));
+    confirm = choose(panel, "cancel");
     ref.referralVerb.mockResolvedValue({ ...d, status: "cancelled" });
-    fireEvent.click(within(panel).getByRole("button", { name: /Yes, cancel it/ }));
+    fireEvent.click(within(confirm).getByRole("button", { name: /Yes, cancel it/ }));
     await waitFor(() => expect(ref.referralVerb).toHaveBeenCalledWith("roland", RID, "cancel"));
     await waitFor(() => expect(within(panel).getByTestId("tc-referral-status").textContent).toBe("Cancelled"));
     expect(within(panel).getByTestId("tc-hub-readonly").textContent).toContain("finished");
     expect(within(panel).queryByTestId("tc-hub-moves")).toBeNull();
   });
 
+  it("NEW: cancel after it went out — the confirm says the emailed links stop working", async () => {
+    const d = referral({ status: "sent", directoryEntryId: ENTRY, practiceName: "River Endodontics" });
+    const { panel } = await openDetail(d);
+    expect(menuVerbs(panel)).toEqual(["mark_acknowledged", "cancel"]);
+    const confirm = choose(panel, "cancel");
+    expect(confirm.textContent).toContain("links in the emails already sent will stop working");
+    ref.referralVerb.mockResolvedValue({ ...d, status: "cancelled" });
+    fireEvent.change(within(confirm).getByLabelText(/Note for the history/), { target: { value: "Patient went elsewhere" } });
+    fireEvent.click(within(confirm).getByRole("button", { name: /Yes, cancel it/ }));
+    await waitFor(() => expect(ref.referralVerb).toHaveBeenCalledWith("roland", RID, "cancel", "Patient went elsewhere"));
+    expectNothingSent();
+  });
+
+  it("NEW: an email in flight refuses the cancel with the server's words; nothing moves", async () => {
+    const d = referral({ status: "approved", directoryEntryId: ENTRY, practiceName: "River Endodontics" });
+    const { panel } = await openDetail(d);
+    ref.referralVerb.mockRejectedValue(
+      new TcApiError("An email for this referral is going out right now.", 409, "REFERRAL_SEND_IN_PROGRESS", null, []),
+    );
+    fireEvent.click(within(choose(panel, "cancel")).getByRole("button", { name: /Yes, cancel it/ }));
+    expect(await within(panel).findByText(/going out right now/)).toBeTruthy();
+    expect(within(panel).getByTestId("tc-referral-status").textContent).toBe("Approved");
+  });
+
   it("without tc.full: no moves and no edit, and the reason is named", async () => {
     const { panel } = await openDetail(referral(), { viewer: NOT_TC });
-    expect(within(panel).queryByTestId("tc-hub-submit")).toBeNull();
+    expect(within(panel).queryByTestId("tc-hub-move-menu")).toBeNull();
+    expect(within(panel).queryByTestId("tc-hub-delete")).toBeNull();
     expect(within(panel).queryByRole("button", { name: /^Edit$/ })).toBeNull();
     expect(within(panel).getByTestId("tc-hub-move-notes").textContent).toContain(HUB_NOT_TC_FULL_COPY);
   });
 
-  it("the post-approval world is unchanged: an approved one offers re-approval edit and the mark, no submit", async () => {
+  it("a doctor (sign-off only) gets no Move to… menu and no Delete, on any status", async () => {
+    for (const status of ["draft", "pending_signoff", "sent"] as const) {
+      const { panel } = await openDetail(referral({ status }), { viewer: DOCTOR });
+      expect(within(panel).queryByTestId("tc-hub-move-menu")).toBeNull();
+      expect(within(panel).queryByTestId("tc-hub-delete")).toBeNull();
+      cleanup();
+    }
+  });
+
+  it("the post-approval world: re-approval edit, the mark and cancel are in the menu; no submit", async () => {
     const { panel } = await openDetail(referral({ status: "approved", directoryEntryId: ENTRY, practiceName: "River Endodontics" }));
-    expect(within(panel).queryByTestId("tc-hub-moves")).toBeNull();
-    expect(within(panel).getByRole("button", { name: /Edit \(re-approval needed\)/ })).toBeTruthy();
-    expect(within(panel).getByTestId("tc-hub-mark")).toBeTruthy();
+    expect(menuVerbs(panel)).toEqual(["reopen", "mark_sent", "cancel"]);
+    // Reopen opens the edit form (its own confirm step), not a move confirm.
+    fireEvent.click(within(panel).getByTestId("tc-hub-move-menu"));
+    fireEvent.click(within(panel).getByTestId("tc-hub-move-reopen"));
+    expect(within(panel).queryByTestId("tc-hub-move-confirm")).toBeNull();
+    expect(await within(panel).findByRole("button", { name: "Save & send for re-approval" })).toBeTruthy();
     expectNothingSent();
+  });
+});
+
+describe("Delete draft", () => {
+  it("hubCanDeleteDraft: a tc.full viewer, a draft, no outside-the-app history (an approve does not block)", () => {
+    const ev = (verb: string) => ({
+      eventId: RID,
+      fromStatus: null,
+      toStatus: "draft" as const,
+      actor: "tc@carein.ai",
+      at: "2026-10-20T15:00:00.000Z",
+      note: "",
+      verb: verb as never,
+    });
+    expect(hubCanDeleteDraft("draft", [], TC)).toBe(true);
+    expect(hubCanDeleteDraft("draft", [ev("submit"), ev("approve"), ev("reopen"), ev("return")], TC)).toBe(true);
+    expect(hubCanDeleteDraft("draft", [], NOT_TC)).toBe(false);
+    expect(hubCanDeleteDraft("draft", [], DOCTOR)).toBe(false);
+    for (const s of StatusEnum.options.filter((x) => x !== "draft")) expect(hubCanDeleteDraft(s, [], ADMIN)).toBe(false);
+    for (const v of ["send_failed", "mark_sent", "correspondence", "chart_note_written", "patient_email_skipped"]) {
+      expect(hubCanDeleteDraft("draft", [ev(v)], ADMIN), v).toBe(false);
+    }
+  });
+
+  it("asks first; 'Keep it' deletes nothing; 'Yes, delete it' deletes and closes the panel", async () => {
+    const onClose = vi.fn();
+    ref.getReferral.mockResolvedValue(referral());
+    const onChanged = vi.fn();
+    render(<HubDetail office="roland" referralId={RID} onClose={onClose} onChanged={onChanged} viewer={TC} signoffRequired />);
+    const panel = await screen.findByTestId("tc-hub-detail");
+    fireEvent.click(await within(panel).findByTestId("tc-hub-delete"));
+    const confirm = within(panel).getByRole("alertdialog");
+    fireEvent.click(within(confirm).getByRole("button", { name: "Keep it" }));
+    expect(ref.deleteReferral).not.toHaveBeenCalled();
+    expect(within(panel).queryByRole("alertdialog")).toBeNull();
+
+    ref.deleteReferral.mockResolvedValue({ success: true, referralId: RID, filesRemoved: 0, filesLeft: 0 });
+    fireEvent.click(within(panel).getByTestId("tc-hub-delete"));
+    fireEvent.click(within(within(panel).getByRole("alertdialog")).getByRole("button", { name: /Yes, delete it/ }));
+    await waitFor(() => expect(ref.deleteReferral).toHaveBeenCalledWith("roland", RID));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(toastMock.success).toHaveBeenCalledWith("Draft deleted");
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it("a refusal (it moved, or has history) keeps the panel open with the server's words", async () => {
+    const onClose = vi.fn();
+    ref.getReferral.mockResolvedValue(referral());
+    render(<HubDetail office="roland" referralId={RID} onClose={onClose} onChanged={() => undefined} viewer={TC} signoffRequired />);
+    const panel = await screen.findByTestId("tc-hub-detail");
+    ref.deleteReferral.mockRejectedValue(
+      new TcApiError("Only a draft can be deleted: this referral is pending dr. sign-off. Cancel it instead.", 409, "REFERRAL_DELETE_NOT_DRAFT", null, []),
+    );
+    fireEvent.click(await within(panel).findByTestId("tc-hub-delete"));
+    fireEvent.click(within(within(panel).getByRole("alertdialog")).getByRole("button", { name: /Yes, delete it/ }));
+    expect(await within(panel).findByText(/Only a draft can be deleted/)).toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(toastMock.success).not.toHaveBeenCalled();
+  });
+
+  it("not offered once the draft has outside-the-app history, nor on any other status", async () => {
+    const sentBefore = referral({
+      events: [{ eventId: RID, fromStatus: "approved", toStatus: "approved", actor: "tc@carein.ai", at: "2026-10-20T15:00:00.000Z", note: "", verb: "send_failed" }],
+    });
+    const a = await openDetail(sentBefore);
+    expect(within(a.panel).queryByTestId("tc-hub-delete")).toBeNull();
+    cleanup();
+    const b = await openDetail(referral({ status: "pending_signoff" }));
+    expect(within(b.panel).queryByTestId("tc-hub-delete")).toBeNull();
   });
 });

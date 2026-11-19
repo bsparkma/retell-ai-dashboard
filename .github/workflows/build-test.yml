@@ -244,15 +244,39 @@ jobs:
 
       # MT-2a (control migrations 1789600000000 + 1789600000001): office_setting's
       # CHECKs, foreign key and two-tenant independence (one transaction, rolled
-      # back), the backfill over real rows (rolled back), then the real
-      # dual-write through the registry with a forced office_setting failure
-      # and the parity tripwire, committed and cleaned up. Part C runs only on a
-      # pristine control DB, which this ephemeral one is.
-      - name: mt2a office settings verification (real CHECKs, backfill, dual-write)
+      # back), the backfill over real rows (rolled back), then (MT-2d) the real
+      # single writer through the registry: one office_setting row per write,
+      # platform_setting history untouched, a forced office_setting failure
+      # refused; committed and cleaned up. Part C runs only on a pristine
+      # control DB, which this ephemeral one is.
+      - name: mt2a office settings verification (real CHECKs, backfill, single writer)
         working-directory: backend
         env:
           CONTROL_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_control
         run: node scripts/office-settings-verify-queries.js
+
+      # MT-2b2 (1795000000000): all 70 office CHECKs are the one format check,
+      # a new office key inserts into representative tables of every module,
+      # garbage and NULL are refused (one transaction, rolled back) — then the
+      # REAL down() (refused while a third office's row exists; with only
+      # roland/valley rows, restores the 70 originals verbatim) and up().
+      # Leaves the schema as it found it.
+      - name: mt2b2 office format checks verification (real CHECKs, real down/up)
+        working-directory: backend
+        env:
+          MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
+        run: node scripts/office-format-checks-verify-queries.js
+
+      # Tenant migration 1795200000000: the after-Send addendum's table. The
+      # store's add → send transitions, every CHECK, the write-once trigger and
+      # the app role's missing DELETE, in one rolled-back transaction — then the
+      # REAL down() (refused while an addendum exists; on an empty table, it
+      # removes it) and up(). Leaves the schema as it found it.
+      - name: hyg visit addendum verification (real CHECKs, trigger, grants, down/up)
+        working-directory: backend
+        env:
+          MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
+        run: node scripts/hyg-visit-addendum-verify-queries.js
 
       - name: spine smoke test (registry / tenantDb / append-only audit / entitlement)
         working-directory: backend

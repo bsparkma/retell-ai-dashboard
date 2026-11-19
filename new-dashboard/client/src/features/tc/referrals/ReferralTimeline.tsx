@@ -8,6 +8,7 @@ import {
   TC_REFERRAL_CHART_MILESTONE_LABELS,
   TC_REFERRAL_STATUS_LABELS,
   referralCorrespondenceLabel,
+  verbalDoctorLabel,
   type TcReferralChartNoteRecord,
   type TcReferralEvent,
   type TcReferralEventVerb,
@@ -52,8 +53,24 @@ export function referralChartNoteLabel(c: TcReferralChartNoteRecord): string {
 /** R5b: the same move, when the specialist's link made it rather than a person. */
 export const REFERRAL_ACKNOWLEDGED_BY_LINK_LABEL = "Specialist confirmed receipt (from the email link)";
 
+/**
+ * Verbal sign-off: the doctor's answer, as a tc.full user recorded it — both
+ * people on the one line. "Approved — verbal OK from Dr. X, recorded by Y".
+ * Pure; null for any event that is not a recorded verbal OK.
+ */
+export function referralVerbalLabel(e: TcReferralEvent): string | null {
+  if (!e.verbal) return null;
+  const dr = verbalDoctorLabel(e.verbal.providerName);
+  if (e.verb === "approve") return `Approved — verbal OK from ${dr}, recorded by ${e.actor}`;
+  if (e.verb === "decline") return `Declined — verbal decision from ${dr}, recorded by ${e.actor}`;
+  if (e.verb === "return") return `Sent back — verbal question from ${dr}, recorded by ${e.actor}`;
+  return null;
+}
+
 /** One history line's label. Pure. */
 export function referralEventLabel(e: TcReferralEvent): string {
+  const verbal = referralVerbalLabel(e);
+  if (verbal) return verbal;
   if (e.verb === "mark_acknowledged" && e.actor === REFERRAL_LINK_ACTORS.specialist) {
     return REFERRAL_ACKNOWLEDGED_BY_LINK_LABEL;
   }
@@ -79,7 +96,9 @@ export function ReferralTimeline({ events }: { events: readonly TcReferralEvent[
           <span className="font-medium text-foreground">{referralEventLabel(e)}</span>
           <span className="text-muted-foreground">
             {" "}
-            · {when(e.at)} · {e.actor}
+            · {when(e.at)}
+            {/* A verbal line already names the recorder. */}
+            {e.verbal ? null : <> · {e.actor}</>}
           </span>
           {e.note && <p className="text-muted-foreground whitespace-pre-wrap">{e.note}</p>}
         </li>

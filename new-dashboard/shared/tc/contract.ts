@@ -18,6 +18,7 @@
  *    mapping/drop of every legacy field).
  */
 import { z } from "zod";
+import { OfficeKeySchema, type OfficeKey } from "../officeKey";
 import { EmailBlocks } from "./emailBlocks";
 // The hygienist's ortho screening (item 33). ONE vocabulary for both modules:
 // the hygiene slip stores this object and TC carries it, so the schema lives
@@ -28,8 +29,10 @@ import { EXISTING_TX_HANDOFF_MAX, ExistingTxHandoffItemSchema } from "../hyg/exi
 
 // ── Shared primitives ────────────────────────────────────────────────────────
 
-export const OfficeId = z.enum(["roland", "valley"]);
-export type OfficeId = z.infer<typeof OfficeId>;
+// MT-2b3: the FORMAT only (shared/officeKey.ts). Which keys are offices is the
+// server's call, per session tenant (backend/platform/officeGate.js).
+export const OfficeId = OfficeKeySchema;
+export type OfficeId = OfficeKey;
 
 /** Non-negative integer cents. The only money representation in the module. */
 export const Cents = z.number().int().min(0);

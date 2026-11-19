@@ -21,6 +21,7 @@ import {
   legacySimulationToTc,
   legacyTemplateToTc,
   legacyUserToMapEntry,
+  LEGACY_OFFICES,
 } from "@shared/tc/legacy";
 import {
   caseToRows,
@@ -52,7 +53,9 @@ export interface PlanDeps {
   newId?: () => string;
 }
 
-const OFFICES: OfficeId[] = ["roland", "valley"];
+// MT-2b3: the legacy app's two locations (shared/tc/legacy.ts), the only offices
+// a legacy import can file under. Not a list of the practice's offices.
+const OFFICES: readonly OfficeId[] = LEGACY_OFFICES;
 
 /** Tolerant peek at a raw record's legacy id, for reporting only. */
 function peekId(raw: unknown): string {

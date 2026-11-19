@@ -45,6 +45,7 @@
  * only: nothing here writes Open Dental, sends an email or a text.
  */
 import { z } from "zod";
+import { OfficeKeySchema } from "../officeKey";
 
 import { FollowupChannel, PreauthType } from "./contract";
 import { TcCheckoutHandoff } from "./checkout";
@@ -193,7 +194,7 @@ export type HygCheckoutQuestionBadge = z.infer<typeof HygCheckoutQuestionBadge>;
 
 export const HygCheckoutQuestionBadgesResponse = z.object({
   success: z.literal(true),
-  office: z.enum(["roland", "valley"]),
+  office: OfficeKeySchema,
   /** False when checkout is switched off for the office: no badges. */
   enabled: z.boolean(),
   badges: z.array(HygCheckoutQuestionBadge),
@@ -203,7 +204,7 @@ export type HygCheckoutQuestionBadgesResponse = z.infer<typeof HygCheckoutQuesti
 /** GET /api/hyg/visit/:aptNum/checkout-questions and the reply's answer. */
 export const HygCheckoutThreadResponse = z.object({
   success: z.literal(true),
-  office: z.enum(["roland", "valley"]),
+  office: OfficeKeySchema,
   aptNum: z.number().int().positive(),
   thread: TcCheckoutQuestionThread,
 });

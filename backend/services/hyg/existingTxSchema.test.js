@@ -20,6 +20,11 @@ const migration = require('../../migrations-tenant/1792800000000_hyg_existing_tx
 const contract = require('../../hyg/contract.gen.cjs');
 const { buildTenantSchema } = require('../../scripts/lib/tenantSchemaReplay');
 
+// MT-2b3: the contract checks an office key's FORMAT now and has no list, so
+// this historical migration's CHECK is pinned to the list it was written with.
+// The live CHECK is the format one (migrations-tenant/1795000000000_office_format_checks.js).
+const HISTORICAL_OFFICE_LIST = ['roland', 'valley'];
+
 const FILE = '1792800000000_hyg_existing_tx_disposition.js';
 const MIGRATIONS_DIR = path.join(__dirname, '..', '..', 'migrations-tenant');
 const SOURCE = fs.readFileSync(path.join(MIGRATIONS_DIR, FILE), 'utf8');
@@ -61,7 +66,7 @@ test('the CHECK vocabularies equal the shared contract’s', () => {
     inList(constraint(calls, `${t}_wait_timeframe_check`).check),
     contract.ExistingTxWaitSchema.options
   );
-  assert.deepEqual(inList(constraint(calls, `${t}_office_check`).check), contract.OfficeIdSchema.options);
+  assert.deepEqual(inList(constraint(calls, `${t}_office_check`).check), HISTORICAL_OFFICE_LIST);
   assert.equal(migration.NOTE_MAX, contract.EXISTING_TX_NOTE_MAX);
   assert.match(constraint(calls, `${t}_note_check`).check, new RegExp(`<= ${contract.EXISTING_TX_NOTE_MAX}\\b`));
 });

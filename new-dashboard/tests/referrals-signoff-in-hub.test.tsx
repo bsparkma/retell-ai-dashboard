@@ -358,7 +358,8 @@ describe("the sign-off view: what the approval did (old R5 page pins)", () => {
 describe("the sign-off view gives a doctor no staff-only ability", () => {
   it("no submit / withdraw / cancel / staff edit / mark / send — and no tc.full route is asked", async () => {
     const panel = await openInView(referral());
-    for (const id of ["tc-hub-submit", "tc-hub-withdraw", "tc-hub-cancel", "tc-hub-mark", "tc-hub-send", "tc-hub-moves"]) {
+    // Manual moves: the menu and Delete draft join the list of what a doctor never gets.
+    for (const id of ["tc-hub-submit", "tc-hub-withdraw", "tc-hub-cancel", "tc-hub-mark", "tc-hub-send", "tc-hub-moves", "tc-hub-move-menu", "tc-hub-delete"]) {
       expect(within(panel).queryByTestId(id), id).toBeNull();
     }
     // The only Edit is the doctor's (it carries the doctor's note).
@@ -406,8 +407,10 @@ describe("sign-off inside the hub panel", () => {
     expect(within(panel).getByTestId("tc-hub-signoff-actions")).toBeTruthy();
     expect(within(panel).getByRole("button", { name: /Decline/ })).toBeTruthy();
     expect(within(panel).getByRole("button", { name: /Send back with a question/ })).toBeTruthy();
-    // The TC side's moves are still there for an admin, unchanged.
-    expect(within(panel).getByTestId("tc-hub-withdraw")).toBeTruthy();
+    // The TC side's moves are still there for an admin (manual moves: in the "Move to…" menu).
+    fireEvent.click(within(panel).getByTestId("tc-hub-move-menu"));
+    expect(within(panel).getByTestId("tc-hub-move-withdraw")).toBeTruthy();
+    fireEvent.click(within(panel).getByTestId("tc-hub-move-menu"));
     // tc.full: the staff edit is the edit offered, not a second (doctor's) one.
     expect(within(panel).getAllByRole("button", { name: /^Edit$/ })).toHaveLength(1);
     ref.approveReferral.mockResolvedValue(referral({ status: "approved" }));
@@ -513,7 +516,11 @@ describe("the old path, the doctor's home and the route map", () => {
   it("/tc/referrals/signoff redirects to the sign-off view, keeping a deep link; a bogus office is dropped", () => {
     expect(signoffRedirectTarget("")).toBe("/tc/referrals?view=signoff");
     expect(signoffRedirectTarget(`office=valley&referral=${RID}`)).toBe(`/tc/referrals?view=signoff&office=valley&referral=${RID}`);
-    expect(signoffRedirectTarget(`office=elsewhere&referral=${RID}`)).toBe("/tc/referrals?view=signoff");
+    // MT-2b3 (was: office=elsewhere). The redirect checks the key's SHAPE; a
+    // well-formed key that is not an office is dropped by the hub (offices.includes)
+    // and refused by the server gate.
+    expect(signoffRedirectTarget(`office=Elsewhere&referral=${RID}`)).toBe("/tc/referrals?view=signoff");
+    expect(signoffRedirectTarget(`office=unknown&referral=${RID}`)).toBe("/tc/referrals?view=signoff");
   });
 
   it("the doctor's home is the sign-off view, and a doctor may open the hub's path but nothing else in TC", () => {

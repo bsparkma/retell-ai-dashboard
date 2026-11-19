@@ -367,52 +367,29 @@ async function getPlatformSetting(key) {
  * shows, and an upsert that skipped the timestamp would report the wrong date
  * for it.
  *
- * MT-2a DUAL-WRITE. When `key` is one of the ten per-office settings
- * (platform/officeSettingKeys.js), the same call ALSO mirrors the map into
- * office_setting for tenant 'carein', in ONE control-DB transaction with the
- * platform_setting write, and reads both back inside it. If either stored
- * value is not what was asked, the transaction rolls back and this throws
- * OFFICE_SETTING_READBACK_MISMATCH, which every caller already turns into a
- * 500. platform_setting is still what is served; see mirrorOfficeSettingInTx()
- * below. Every other key keeps the single upsert, unchanged.
+ * GLOBAL KEYS ONLY (MT-2d). The ten per-office settings
+ * (platform/officeSettingKeys.js) live in office_setting and are written with
+ * setOfficeSetting() below. Their old platform_setting rows are left in place
+ * as inert history: nothing reads them. Writing one here would put a value
+ * where nobody looks, so it is refused (OFFICE_SETTING_NOT_PLATFORM) rather
+ * than silently stored.
  *
  * @param {string} key
  * @param {unknown} value JSON-serialisable
  * @param {string|null} [updatedBy] actor email, or null for a runbook write
- * @param {{ officeKey?: string }} [opts] the office this write is FOR, so its
- *        office_setting row is re-stamped even when its value did not change
  * @returns {Promise<{ key: string, value: unknown, updated_at: Date, updated_by: string|null }>}
+ * @throws {Error & { code: string }} OFFICE_SETTING_NOT_PLATFORM for one of the ten keys
  */
-async function setPlatformSetting(key, value, updatedBy = null, opts = {}) {
+async function setPlatformSetting(key, value, updatedBy = null) {
   const officeSettingKeys = require('./officeSettingKeys');
-  if (!officeSettingKeys.isOfficeSettingKey(key)) {
-    const { rows } = await query(UPSERT_PLATFORM_SETTING_SQL, [key, JSON.stringify(value), updatedBy]);
-    return rows[0];
+  if (officeSettingKeys.isOfficeSettingKey(key)) {
+    throw codedRegistryError(
+      `'${key}' is a per-office setting: it is written to office_setting (setOfficeSetting), not platform_setting`,
+      'OFFICE_SETTING_NOT_PLATFORM'
+    );
   }
-
-  const p = await getPool();
-  const client = await p.connect();
-  /** @type {{ key: string, value: unknown, updated_at: Date, updated_by: string|null }} */
-  let row;
-  try {
-    await client.query('BEGIN');
-    const res = await client.query(UPSERT_PLATFORM_SETTING_SQL, [key, JSON.stringify(value), updatedBy]);
-    row = res.rows[0];
-    if (!row || !isDeepStrictEqual(row.value, JSON.parse(JSON.stringify(value)))) {
-      throw readbackMismatch(key, 'platform_setting');
-    }
-    await mirrorOfficeSettingInTx(client, key, value, updatedBy, (opts && opts.officeKey) || null);
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
-  // Committed: the tripwire must not compare against an office_setting read
-  // from before it.
-  require('./officeSettings').invalidate(officeSettingKeys.MT2A_TENANT_SLUG);
-  return row;
+  const { rows } = await query(UPSERT_PLATFORM_SETTING_SQL, [key, JSON.stringify(value), updatedBy]);
+  return rows[0];
 }
 
 const UPSERT_PLATFORM_SETTING_SQL = `INSERT INTO platform_setting (key, value, updated_by)
@@ -424,114 +401,132 @@ const UPSERT_PLATFORM_SETTING_SQL = `INSERT INTO platform_setting (key, value, u
        RETURNING key, value, updated_at, updated_by`;
 
 /**
- * @param {string} key
- * @param {'platform_setting'|'office_setting'} table
+ * @param {string} message
+ * @param {string} code
  * @returns {Error & { code: string }}
  */
-function readbackMismatch(key, table) {
-  const err = /** @type {Error & { code: string }} */ (
-    new Error(`'${key}' was written but ${table} did not read back as asked`)
-  );
-  err.code = 'OFFICE_SETTING_READBACK_MISMATCH';
+function codedRegistryError(message, code) {
+  const err = /** @type {Error & { code: string }} */ (new Error(message));
+  err.code = code;
   return err;
 }
 
-/** `${key}/${office}` pairs whose "no office row" warning has been printed. @type {Set<string>} */
-const mirrorSkipWarned = new Set();
+/**
+ * @param {string} key
+ * @returns {Error & { code: string }}
+ */
+function readbackMismatch(key) {
+  return codedRegistryError(
+    `'${key}' was written but office_setting did not read back as asked`,
+    'OFFICE_SETTING_READBACK_MISMATCH'
+  );
+}
+
+/** `${tenant}/${key}/${office}` triples whose "no office row" warning has been printed. @type {Set<string>} */
+const officeSkipWarned = new Set();
 
 /**
- * Mirror one per-office platform_setting map into office_setting, inside the
- * caller's transaction (MT-2a).
+ * Write ONE office's value of one of the ten per-office settings (MT-2d: the
+ * single writer). office_setting is the only table written; platform_setting
+ * is neither read nor touched.
  *
- *   - Each entry the key's reader honours (officeSettingKeys.mirrorEntries)
- *     for an office that HAS an `office` row is upserted. A row whose value is
- *     unchanged keeps its provenance, except the office this write is FOR,
- *     which is re-stamped (the "reaffirmed today" rule above).
- *   - A row for an office the new map no longer honours is deleted, so the
- *     mirror is exact.
- *   - Then office_setting is read back inside the transaction; any difference
- *     from what was asked throws OFFICE_SETTING_READBACK_MISMATCH and the
- *     caller rolls BOTH writes back.
+ *   - Exactly one row, (tenant, office, key), is upserted. No other office's
+ *     row is read for the write, rewritten or deleted.
+ *   - The row is re-stamped (updated_by, updated_at) even when its value did
+ *     not change: the "reaffirmed today" rule above.
+ *   - Inside the same transaction the key's rows are read back; if this
+ *     office's row is not what was asked, it rolls back and throws
+ *     OFFICE_SETTING_READBACK_MISMATCH, which every caller turns into a 500.
+ *   - The tenant's office_setting cache is invalidated after the commit.
  *
- * An honoured entry for an office with no `office` row (an environment the
- * MT-1 seed never reached, e.g. a bare local database) cannot be stored, by
- * the foreign key. It is skipped and warned about ONCE per (key, office):
- * refusing the write there would change behaviour for an environment that has
- * never had office rows. Staging and prod hold both rows (MT-1, live 11/12).
+ * An office with no `office` row (an environment the MT-1 seed never reached,
+ * e.g. a bare local database) cannot hold a row, by the foreign key. As under
+ * MT-2a it is skipped, warned about ONCE per (tenant, key, office), and nothing
+ * is written: the caller's own read-back then refuses the write, exactly as it
+ * did before. Returns null in that case.
  *
  * Never logs a value.
  *
- * @param {import('pg').PoolClient} client
- * @param {string} key
- * @param {unknown} value
- * @param {string|null} updatedBy
- * @param {string|null} forOffice
- * @returns {Promise<void>}
+ * @param {string} tenantSlug
+ * @param {string} officeKey
+ * @param {string} settingKey one of the ten (platform/officeSettingKeys.js)
+ * @param {unknown} value a boolean, or (tc_email_identity) an object
+ * @param {string|null} [updatedBy] actor email, or null for a runbook write
+ * @returns {Promise<{ office_key: string, setting_key: string, value: unknown, updated_at: Date, updated_by: string|null }|null>}
+ * @throws {Error & { code: string }} NOT_AN_OFFICE_SETTING | INVALID_OFFICE_SETTING_VALUE |
+ *         OFFICE_SETTING_READBACK_MISMATCH
  */
-async function mirrorOfficeSettingInTx(client, key, value, updatedBy, forOffice) {
-  const { MT2A_TENANT_SLUG, mirrorEntries } = require('./officeSettingKeys');
-  const officesRes = await client.query(
-    `SELECT o.tenant_id, o.office_key
-       FROM office o
-       JOIN tenant t ON t.tenant_id = o.tenant_id
-      WHERE t.slug = $1`,
-    [MT2A_TENANT_SLUG]
-  );
-  /** @type {Map<string, string>} office_key -> tenant_id */
-  const present = new Map(officesRes.rows.map((r) => [r.office_key, r.tenant_id]));
-  const tenantId = officesRes.rows[0] ? officesRes.rows[0].tenant_id : null;
+async function setOfficeSetting(tenantSlug, officeKey, settingKey, value, updatedBy = null) {
+  const { KIND } = require('./officeSettingKeys');
+  const kind = Object.prototype.hasOwnProperty.call(KIND, settingKey) ? KIND[settingKey] : undefined;
+  if (!kind) {
+    throw codedRegistryError(`'${settingKey}' is not a per-office setting`, 'NOT_AN_OFFICE_SETTING');
+  }
+  const shapeOk =
+    kind === 'identity'
+      ? Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+      : typeof value === 'boolean';
+  if (!shapeOk) {
+    throw codedRegistryError(`'${settingKey}' cannot hold that value`, 'INVALID_OFFICE_SETTING_VALUE');
+  }
+  const asked = JSON.parse(JSON.stringify(value));
 
-  /** @type {Map<string, unknown>} */
-  const expected = new Map();
-  for (const e of mirrorEntries(key, value)) {
-    if (!present.has(e.officeKey)) {
-      const id = `${key}/${e.officeKey}`;
-      if (!mirrorSkipWarned.has(id)) {
-        mirrorSkipWarned.add(id);
+  const p = await getPool();
+  const client = await p.connect();
+  /** @type {{ office_key: string, setting_key: string, value: unknown, updated_at: Date, updated_by: string|null }|null} */
+  let row = null;
+  try {
+    await client.query('BEGIN');
+    const officesRes = await client.query(
+      `SELECT o.tenant_id, o.office_key
+         FROM office o
+         JOIN tenant t ON t.tenant_id = o.tenant_id
+        WHERE t.slug = $1`,
+      [tenantSlug]
+    );
+    const office = officesRes.rows.find((r) => r.office_key === officeKey);
+    if (!office) {
+      const id = `${tenantSlug}/${settingKey}/${officeKey}`;
+      if (!officeSkipWarned.has(id)) {
+        officeSkipWarned.add(id);
         console.warn(
-          `[registry] office_setting not written for '${key}' / '${e.officeKey}': tenant ` +
-            `'${MT2A_TENANT_SLUG}' has no office row for it (nothing is served for that office: MT-2b serves office_setting)`
+          `[registry] office_setting not written for '${settingKey}' / '${officeKey}': tenant ` +
+            `'${tenantSlug}' has no office row for it (nothing is served for that office)`
         );
       }
-      continue;
+      await client.query('ROLLBACK');
+      return null;
     }
-    expected.set(e.officeKey, e.value);
-    await client.query(
+    const res = await client.query(
       `INSERT INTO office_setting (tenant_id, office_key, setting_key, value, updated_by)
             VALUES ($1, $2, $3, $4::jsonb, $5)
        ON CONFLICT (tenant_id, office_key, setting_key) DO UPDATE
             SET value = EXCLUDED.value,
                 updated_by = EXCLUDED.updated_by,
                 updated_at = now()
-          WHERE office_setting.value IS DISTINCT FROM EXCLUDED.value
-             OR office_setting.office_key = $6`,
-      [present.get(e.officeKey), e.officeKey, key, JSON.stringify(e.value), updatedBy, forOffice]
+         RETURNING office_key, setting_key, value, updated_at, updated_by`,
+      [office.tenant_id, officeKey, settingKey, JSON.stringify(asked), updatedBy]
     );
+    row = res.rows[0] || null;
+    const back = await client.query(
+      `SELECT office_key, value
+         FROM office_setting
+        WHERE tenant_id = $1
+          AND setting_key = $2`,
+      [office.tenant_id, settingKey]
+    );
+    const mine = back.rows.find((r) => r.office_key === officeKey);
+    if (!row || !mine || !isDeepStrictEqual(mine.value, asked)) throw readbackMismatch(settingKey);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
   }
-
-  if (tenantId === null) return;
-
-  await client.query(
-    `DELETE FROM office_setting
-      WHERE tenant_id = $1
-        AND setting_key = $2
-        AND NOT (office_key = ANY($3::text[]))`,
-    [tenantId, key, [...expected.keys()]]
-  );
-
-  const back = await client.query(
-    `SELECT office_key, value
-       FROM office_setting
-      WHERE tenant_id = $1
-        AND setting_key = $2`,
-    [tenantId, key]
-  );
-  /** @type {Map<string, unknown>} */
-  const stored = new Map(back.rows.map((r) => [r.office_key, r.value]));
-  const same =
-    stored.size === expected.size &&
-    [...expected].every(([office, v]) => stored.has(office) && isDeepStrictEqual(stored.get(office), v));
-  if (!same) throw readbackMismatch(key, 'office_setting');
+  // Committed: nothing may keep serving a read from before it.
+  require('./officeSettings').invalidate(tenantSlug);
+  return row;
 }
 
 /**
@@ -1088,6 +1083,7 @@ module.exports = {
   listTenantOffices,
   getPlatformSetting,
   setPlatformSetting,
+  setOfficeSetting,
   listOfficeSettings,
   setPoolForTests,
   getTenantDbRef,

@@ -108,6 +108,7 @@ import DisabledReason from "@/components/rcm/DisabledReason";
 import Explainer from "@/components/rcm/Explainer";
 import AlreadyApproved from "@/components/rcm/AlreadyApproved";
 
+import { FALLBACK_OFFICE_KEYS } from "@/lib/officeKeys";
 type State =
   | { kind: "loading" }
   | { kind: "loaded"; preview: ApprovalPreview; detail: RemittanceDetail; office: RcmOfficeId }
@@ -146,7 +147,9 @@ export default function ApproveCheck() {
     let cancelled = false;
     setState({ kind: "loading" });
 
-    const offices = isRcmOfficeId(selected) ? [selected] : (["roland", "valley"] as const);
+    // MT-2b3: FALLBACK_OFFICE_KEYS, not the roster: this load does not wait for the
+    // roster, and changing that is a disclosed follow-up.
+    const offices = isRcmOfficeId(selected) ? [selected] : FALLBACK_OFFICE_KEYS;
 
     (async () => {
       let lastError: unknown = null;

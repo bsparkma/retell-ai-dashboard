@@ -37,6 +37,10 @@ through it.
 
 ### Runbook writes (nurture, opportunities have no route)
 
+> **SUPERSEDED by MT-2d.** Write the `office_setting` row only — see
+> [MT2D_SINGLE_WRITER.md](MT2D_SINGLE_WRITER.md#runbook-writes-nurture-opportunities-have-no-route--replaces-the-mt-2a-recipe).
+> The dual-write and the parity tripwire below are retired.
+
 A raw `INSERT INTO platform_setting` bypasses the dual-write, and the parity
 tripwire will (correctly) warn. Write both, in one transaction:
 

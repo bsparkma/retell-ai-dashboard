@@ -22,6 +22,7 @@
  * prefill and the server's save validation all call the functions below.
  */
 import { z } from "zod";
+import { OfficeKeySchema } from "../officeKey";
 
 /** The closed placeholder menu, in the order the picker shows it. */
 export const REFERRAL_TEMPLATE_PLACEHOLDERS = [
@@ -141,7 +142,7 @@ export type ReferralTemplateState = z.infer<typeof ReferralTemplateState>;
 /** GET /api/tc/referrals/templates (and the chairside read). Both kinds, always. */
 export const ReferralTemplatesResponse = z.object({
   success: z.literal(true),
-  office: z.enum(["roland", "valley"]),
+  office: OfficeKeySchema,
   /** May this user change them? (Settings only; the same rule as the referral policies.) */
   canEdit: z.boolean(),
   templates: z.array(ReferralTemplateState),

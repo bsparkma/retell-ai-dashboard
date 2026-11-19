@@ -74,6 +74,7 @@ const twilioStatus = require('./twilio/status');
 const acsSmsStatus = require('./acs/smsStatus');
 const emailContent = require('./emailContent');
 const { sessionTenantSlug } = require('../../platform/sessionTenant');
+const { isSessionOfficeFresh, isOfficeKeyFormat } = require('../../platform/officeGate');
 // (item 47) The nurture exit hooks. They only ever stop drafting; nothing in
 // them sends.
 const nurtureHooks = require('../tcNurture/hooks');
@@ -807,7 +808,10 @@ async function recordUnsubscribeLink(req, token) {
     const m = res.rows.length === 1 ? res.rows[0] : await referralEmailByToken(q, hash);
     if (!m) return { outcome: 'no_match' };
     const address = normalizeAddress('email', m.to_address);
-    if (!address || !['roland', 'valley'].includes(m.office_id)) return { outcome: 'no_match' };
+    // MT-2b3 (ruling): FORMAT only, never the registry gate. The tenant came
+    // from the link token and the office from this tenant's own row, so a
+    // registry blip must not drop the opt-out. See officeGate.isOfficeKeyFormat.
+    if (!address || !isOfficeKeyFormat(m.office_id)) return { outcome: 'no_match' };
     const existing = await consent.getConsentRow(q, m.office_id, 'email', address);
     if (existing && existing.state === 'opted_out') {
       return { outcome: 'already', office: m.office_id, messageId: m.message_id };
@@ -991,7 +995,10 @@ async function recordInbound(
     linkOpenCase = false,
   }
 ) {
-  if (!['roland', 'valley'].includes(office)) throw new Error('[messaging] recordInbound needs a frozen office key');
+  // MT-2b3: one of the resolved tenant's offices (platform/officeGate.js).
+  if (!(await isSessionOfficeFresh(req, office))) {
+    throw new Error('[messaging] recordInbound needs a frozen office key');
+  }
   const from = normalizeAddress(channel, fromAddress);
   if (!from) throw new MessagingError('NO_ADDRESS', 'Inbound message has no usable sender address.');
   const family = channel === 'sms' ? keywordFamily(body) : null;

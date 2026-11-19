@@ -18,12 +18,23 @@
  * referral (auto-send on approval), so the panel asks first wherever that may
  * happen (see SignoffActions). Everyone else sees "Waiting for the doctor's
  * sign-off" and no doctor's move. Send and the marks are unchanged.
+ *
+ * MANUAL MOVES (referral-manual-moves): the TC side's moves are drawn as ONE
+ * "Move to…" menu listing exactly the plan's actions — the table decides,
+ * nothing is added here. Cancel reaches every unfinished status now (the
+ * shared table's change). A never-sent draft can also be DELETED
+ * (hubCanDeleteDraft) — not a move; the server re-checks it.
  */
 import {
   REFERRAL_MARK_LABELS,
+  TC_REFERRAL_STATUS_LABELS,
   referralCanLogCorrespondence,
+  referralDeleteBlocker,
   referralChartMilestones,
   referralNextStatus,
+  TC_REFERRAL_VERBAL_VERBS,
+  type TcReferralSignoffMode,
+  type TcReferralVerbalVerb,
   type TcReferralEvent,
   type TcReferralMoveVerb,
   type TcReferralStatus,
@@ -124,6 +135,26 @@ export function hubActionPlan(
 }
 
 /**
+ * Verbal sign-off (referral-verbal-signoff): the doctor's three moves a tc.full
+ * viewer may RECORD for a named doctor — only when the office's mode is READ
+ * as 'verbal' (null = could not be read = none), only on a referral awaiting
+ * sign-off. UX only: the server reads the mode itself and refuses otherwise.
+ */
+export function hubVerbalVerbs(
+  status: TcReferralStatus,
+  viewer: HubViewer,
+  signoffMode: TcReferralSignoffMode | null,
+): TcReferralVerbalVerb[] {
+  if (signoffMode !== "verbal" || !viewer.tcFull) return [];
+  return TC_REFERRAL_VERBAL_VERBS.filter((v) => referralNextStatus(status, v, { signoffRequired: true }) !== null);
+}
+
+/** The plan's notes, less "waiting for the doctor" when this viewer can record the doctor's OK. */
+export function hubNotesWithVerbal(notes: readonly string[], verbalVerbs: readonly TcReferralVerbalVerb[]): string[] {
+  return verbalVerbs.length > 0 ? notes.filter((n) => n !== HUB_SIGNOFF_WAITING_COPY) : [...notes];
+}
+
+/**
  * R6.9a: the TC staff upload window — the server's rule (routes/tc/referrals.js
  * TC_STAFF_ATTACHABLE_STATUSES), mirrored for the UI only. The server decides.
  * Approved (not yet sent), closed, declined and cancelled stay shut.
@@ -168,6 +199,24 @@ export function hubCanLogCorrespondence(status: TcReferralStatus, viewer: HubVie
  */
 export function hubCanWriteChartNotes(events: readonly TcReferralEvent[] | undefined, viewer: HubViewer): boolean {
   return viewer.tcFull && referralChartMilestones(events).length > 0;
+}
+
+/**
+ * Is "Delete draft" offered? To a tc.full viewer, on a draft whose history
+ * never reached outside the app — the shared rule the server applies (it
+ * re-checks, and refuses a live email claim too).
+ */
+export function hubCanDeleteDraft(
+  status: TcReferralStatus,
+  events: readonly TcReferralEvent[] | undefined,
+  viewer: HubViewer,
+): boolean {
+  return viewer.tcFull && referralDeleteBlocker(status, events) === null;
+}
+
+/** The "Move to…" item's second line: where it leads, or that the office decides. */
+export function hubMoveTargetLabel(action: HubAction): string {
+  return action.to ? `→ ${TC_REFERRAL_STATUS_LABELS[action.to]}` : "→ depends on the office's sign-off setting";
 }
 
 /** The button's words. Submit names where it goes when the policy is known. */

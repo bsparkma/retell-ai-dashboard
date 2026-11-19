@@ -47,7 +47,9 @@ describe("resolveTcOfficeScope", () => {
   it("ignores roster entries that aren't TC offices", () => {
     const scope = resolveTcOfficeScope({
       selection: "all",
-      roster: [{ officeId: "roland" }, { officeId: "some-voice-only-line" }],
+      // MT-2b3 (was: "some-voice-only-line"). Every registry office is a TC office
+      // now; the roster entry that is not one is the unmapped-line bucket.
+      roster: [{ officeId: "roland" }, { officeId: "unknown" }],
     });
     expect(scope.offices).toEqual(["roland"]);
     // One office in scope: no badges, and writes stay unambiguous.

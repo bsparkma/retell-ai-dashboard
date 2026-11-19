@@ -16,6 +16,7 @@ import type {
   TcPreauthRow,
   TcSmileSimulationRow,
 } from "@shared/tc/rows";
+import type { OfficeId } from "@shared/tc/contract";
 
 /** One skipped source record: identified by legacy id ONLY — never PHI. */
 export interface SkippedRecord {
@@ -77,7 +78,8 @@ export interface ImportPlan {
 
 export interface PlanOptions {
   tenantSlug: string;
-  defaultOffice: "roland" | "valley";
+  /** One of the legacy app's two locations (shared/tc/legacy.ts LEGACY_OFFICES). */
+  defaultOffice: OfficeId;
   /** legacy user id → platform email (from --user-map) */
   userEmailOverrides: Record<string, string>;
 }

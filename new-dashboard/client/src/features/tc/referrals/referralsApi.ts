@@ -15,6 +15,7 @@ import {
   TcReferralAttachment,
   TcReferralSendOutcome,
   TcReferralChartMilestone,
+  TcReferralDeleteResponse,
   type TcReferralChartNoteRequest,
   type TcReferralCorrespondenceRequest,
   type TcReferralCreateRequest,
@@ -23,6 +24,8 @@ import {
   type TcReferralFieldsEdit,
   type TcReferralHubQuery,
   type TcReferralInput,
+  type TcReferralSignoffMode,
+  type TcReferralVerbalVerb,
 } from "@shared/tc/referrals";
 import type { OfficeId } from "@shared/tc/contract";
 import {
@@ -93,7 +96,7 @@ export async function getReferralSettings(office: OfficeId): Promise<TcReferralS
 
 export async function updateReferralSettings(
   office: OfficeId,
-  change: { signoffRequired?: boolean; autosendOnApproval?: boolean },
+  change: { signoffRequired?: boolean; signoffMode?: TcReferralSignoffMode; autosendOnApproval?: boolean },
 ): Promise<TcReferralSettingsResponse> {
   return parse(
     TcReferralSettingsResponse,
@@ -162,16 +165,33 @@ export async function updateReferral(office: OfficeId, referralId: string, refer
   ).referral;
 }
 
-/** submit / withdraw / cancel — the TC side's verbs. */
+/**
+ * submit / withdraw / cancel — the TC side's verbs. `note` (optional) goes on
+ * the history line; a blank one is not sent.
+ */
 export async function referralVerb(
   office: OfficeId,
   referralId: string,
   verb: "submit" | "withdraw" | "cancel",
+  note?: string,
 ): Promise<TcReferral> {
+  const body = note && note.trim() ? { note: note.trim() } : {};
   return parse(
     ReferralResponse,
-    await tcRequest<unknown>(`/tc/referrals/${referralId}/${verb}`, { office, method: "POST", body: {} }),
+    await tcRequest<unknown>(`/tc/referrals/${referralId}/${verb}`, { office, method: "POST", body }),
   ).referral;
+}
+
+/**
+ * Delete a never-sent DRAFT. The server refuses (409) every other status, and a
+ * draft that was ever sent, marked sent, emailed to the patient, logged or
+ * charted — those can only be cancelled.
+ */
+export async function deleteReferral(office: OfficeId, referralId: string): Promise<TcReferralDeleteResponse> {
+  return parse(
+    TcReferralDeleteResponse,
+    await tcRequest<unknown>(`/tc/referrals/${referralId}`, { office, method: "DELETE" }),
+  );
 }
 
 // The doctor's side (tc.referral_signoff).
@@ -357,6 +377,42 @@ export async function returnReferral(office: OfficeId, referralId: string, comme
       office,
       method: "POST",
       body: { comment },
+    }),
+  ).referral;
+}
+
+// ── Verbal sign-off (mode 'verbal'): a tc.full user records a doctor's OK ───
+
+/** What each verbal move sends besides the doctor: a note, a reason, a question. */
+export type VerbalSignoffBody =
+  | { verb: "approve"; note?: string }
+  | { verb: "decline"; reason: string }
+  | { verb: "return"; comment: string };
+
+const VERBAL_PATHS: Record<TcReferralVerbalVerb, string> = {
+  approve: "verbal-approve",
+  decline: "verbal-decline",
+  return: "verbal-return",
+};
+
+/**
+ * POST /tc/referrals/:id/verbal-approve | verbal-decline | verbal-return. The
+ * doctor is a provider-directory id. The server refuses (409
+ * SIGNOFF_NOT_VERBAL) unless this office's mode is 'verbal'.
+ */
+export async function verbalSignoff(
+  office: OfficeId,
+  referralId: string,
+  providerId: string,
+  move: VerbalSignoffBody,
+): Promise<TcReferral> {
+  const { verb, ...rest } = move;
+  return parse(
+    ReferralResponse,
+    await tcRequest<unknown>(`/tc/referrals/${referralId}/${VERBAL_PATHS[verb]}`, {
+      office,
+      method: "POST",
+      body: { providerId, ...rest },
     }),
   ).referral;
 }

@@ -36,6 +36,7 @@ const { contract, actorEmail, auditTc } = require('./helpers');
 const { withTenantTx } = require('./tx');
 const tenantDb = require('../../platform/tenantDb');
 const store = require('./referralStore');
+const providerStore = require('./providerStore');
 const odOffices = require('../../config/odOffices');
 const { isOdWriteDisabled } = require('../../middleware/envGuards');
 
@@ -81,6 +82,18 @@ const VERB_WORDS = Object.freeze({
   send: 'emailed',
 });
 
+function sendInProgress(row) {
+  return {
+    status: 409,
+    body: {
+      success: false,
+      error: 'An email for this referral is going out right now. Refresh in a moment, then cancel it if you still need to.',
+      code: 'REFERRAL_SEND_IN_PROGRESS',
+      currentStatus: row.status,
+    },
+  };
+}
+
 function refusal(row, verb) {
   const label = contract.TC_REFERRAL_STATUS_LABELS[row.status] || row.status;
   return {
@@ -103,34 +116,74 @@ function refusal(row, verb) {
  *        TC (the hygiene visit, a call) passes the office IT derived.
  * @returns {Promise<{ status: number, body: object }>}
  */
-async function applyVerb(req, { referralId, verb, note = '', office = req.tcOffice }) {
-  const outcome = await withTenantTx(req, (client) => moveInTx(req, client, { office, referralId, verb, note }));
+async function applyVerb(req, { referralId, verb, note = '', office = req.tcOffice, verbal = null }) {
+  const outcome = await withTenantTx(req, (client) => moveInTx(req, client, { office, referralId, verb, note, verbal }));
   return answer(req, outcome, { referralId, verb, office });
 }
+
+/** The doctor's three moves — the only ones a recorded verbal OK can stand behind. */
+const VERBAL_VERBS = Object.freeze(['approve', 'decline', 'return']);
 
 /**
  * Steps 1–5 of the header, INSIDE a caller's transaction, so a producer can
  * create and submit atomically (item 54). Returns { missing } | { refused: row }
  * | { moved: true }; the caller decides what a refusal does to its transaction.
  */
-async function moveInTx(req, client, { office, referralId, verb, note = '' }) {
+async function moveInTx(req, client, { office, referralId, verb, note = '', verbal = null }) {
   // R5: a send is recorded only by referralSend.js, after ACS accepted the
   // email. Nothing may claim one through a generic move.
   if (verb === 'send') throw new Error('referralTransitions: `send` moves only through referralSend.js');
+  if (verbal && !VERBAL_VERBS.includes(verb)) throw new Error(`referralTransitions: \`${verb}\` cannot be a verbal sign-off`);
   const actor = actorEmail(req);
   const at = clock().toISOString();
   const row = await store.findReferral(client, office, referralId);
   if (!row) return { missing: true };
   const policies = await store.effectivePolicies(client, office);
+  // Verbal sign-off is STRUCTURAL, not a hidden button: a recorded verbal OK
+  // stands only where THIS office's mode, read here in the same transaction,
+  // is 'verbal'. In 'doctor' (or 'off', or under the env pin) it is refused
+  // whatever the caller holds and whatever the referral's status.
+  let doctor = null;
+  if (verbal) {
+    if (policies.signoffMode.value !== 'verbal') return { notVerbal: policies.signoffMode.value };
+    // The doctor is one of this office's ACTIVE providers — an id from the
+    // directory, never a typed name. The name is copied as it reads now.
+    const provider = await providerStore.findProvider(client, office, verbal.providerId);
+    if (!provider || provider.active !== true) return { badProvider: true };
+    doctor = { providerId: String(provider.provider_id), providerName: provider.name };
+  }
   const to = contract.referralNextStatus(row.status, verb, {
     signoffRequired: policies.signoffRequired.value,
   });
   if (!to) return { refused: row };
 
-  const moved = await store.casStatus(client, { office, referralId, from: row.status, to, actor, at });
+  let moved;
+  if (verb === 'cancel') {
+    // Manual moves: cancel reaches approved now, where an email may be going
+    // out. Lock the row; a LIVE claim refuses (the email may already be with
+    // ACS), a stale one — left by a request that died — is cleared, and the
+    // move is conditional on no claim, so a send that claims in between loses
+    // to this cancel or wins over it, never both.
+    const claim = await store.lockSendClaim(client, office, referralId);
+    if (claim && store.sendClaimIsLive(claim, clock())) return { refused: row, inFlight: true };
+    if (claim && claim.send_attempt_id != null) {
+      await store.releaseStaleSendClaim(client, { office, referralId, staleBefore: store.sendClaimStaleBefore(clock()) });
+    }
+    moved = await store.casStatusUnclaimed(client, { office, referralId, from: row.status, to, actor, at });
+  } else {
+    moved = await store.casStatus(client, { office, referralId, from: row.status, to, actor, at });
+  }
   if (!moved) {
     const now = await store.findReferral(client, office, referralId);
-    return now ? { refused: now } : { missing: true };
+    if (!now) return { missing: true };
+    if (verb === 'cancel' && now.status === row.status) return { refused: now, inFlight: true };
+    return { refused: now };
+  }
+  if (verb === 'cancel') {
+    // The links in any email already sent stop working: they open the neutral
+    // page (the public routes are unchanged; their token simply no longer
+    // exists). The patient's unsubscribe link is not a link token and stays.
+    await store.deleteLinkTokens(client, office, referralId);
   }
   const autoApproved = verb === 'submit' && to === 'approved';
   await store.insertEvent(client, {
@@ -142,10 +195,17 @@ async function moveInTx(req, client, { office, referralId, verb, note = '' }) {
     at,
     note: autoApproved ? "Sign-off isn't required for this office" : note,
     verb,
+    ...(doctor ? { verbal: doctor } : {}),
   });
   // Inside the transaction ON PURPOSE: a failed audit write throws, and the
-  // throw rolls the status change and its event back.
-  await auditTc(req, 'UPDATE', 'tc_referral', referralId, { office, priorState: row.status });
+  // throw rolls the status change and its event back. A verbal OK's row
+  // carries the doctor's provider id as its cause (source_ref); the row's
+  // user is the recorder. (Names stay on the event: audit_log holds ids.)
+  await auditTc(req, 'UPDATE', 'tc_referral', referralId, {
+    office,
+    priorState: row.status,
+    ...(doctor ? { sourceRef: `verbal_provider:${doctor.providerId}` } : {}),
+  });
   return { moved: true, from: row.status, to };
 }
 
@@ -275,6 +335,27 @@ async function answer(req, outcome, { referralId, verb, office }) {
   if (outcome.missing) {
     return { status: 404, body: { success: false, error: 'Referral not found', code: 'NOT_FOUND' } };
   }
+  if (outcome.inFlight) return sendInProgress(outcome.refused);
+  if (outcome.notVerbal) {
+    return {
+      status: 409,
+      body: {
+        success: false,
+        error:
+          outcome.notVerbal === 'doctor'
+            ? "This office signs referrals off in the app: the doctor approves it from their sign-off view."
+            : "Sign-off isn't required for this office, so there is no verbal OK to record.",
+        code: 'SIGNOFF_NOT_VERBAL',
+        signoffMode: outcome.notVerbal,
+      },
+    };
+  }
+  if (outcome.badProvider) {
+    return {
+      status: 422,
+      body: { success: false, error: "Pick the doctor from this office's active providers.", code: 'VERBAL_PROVIDER_INVALID' },
+    };
+  }
   if (outcome.refused) return refusal(outcome.refused, verb);
   return { status: 200, body: { success: true, referral: await readBack(req, referralId, office) } };
 }
@@ -298,6 +379,7 @@ async function readBack(req, referralId, office = req.tcOffice) {
 }
 
 module.exports = {
+  VERBAL_VERBS,
   applyVerb,
   moveInTx,
   editFieldsInTx,
