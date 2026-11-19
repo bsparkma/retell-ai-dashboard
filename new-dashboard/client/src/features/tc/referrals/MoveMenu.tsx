@@ -11,8 +11,13 @@
  * Nothing here decides anything: the server re-checks the table, the CAS on
  * the status, and who is asking. A stale card is refused with the server's
  * words, shown by the panel.
+ *
+ * CARD MOVES (referral-card-move-button): the same menu also sits on each hub
+ * card (`placement="card"`) — a compact trigger with its own test ids, the
+ * same confirm step and note, the same actions. Only the trigger's look and
+ * the ids differ; the panel's menu is unchanged.
  */
-import { useState } from "react";
+import { useId, useState } from "react";
 import { ChevronDown, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -37,12 +42,15 @@ export const MOVE_HINTS: Record<HubVerb, string> = {
 /** Cancelling after it went out also stops the links in the emails already sent. */
 const SENT_OR_LATER: readonly TcReferralStatus[] = ["sent", "acknowledged", "patient_seen"];
 
+export type MoveMenuPlacement = "panel" | "card";
+
 export function MoveMenu({
   status,
   actions,
   busy,
   onMove,
   onReopen,
+  placement = "panel",
 }: {
   status: TcReferralStatus;
   actions: readonly HubAction[];
@@ -50,10 +58,16 @@ export function MoveMenu({
   /** Run the move; resolves when the panel has the server's answer. */
   onMove: (action: HubAction, note: string) => void;
   onReopen: () => void;
+  /** Where it is drawn: the detail panel (default, unchanged) or a hub card (compact). */
+  placement?: MoveMenuPlacement;
 }) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState<HubAction | null>(null);
   const [note, setNote] = useState("");
+  // Unique per menu: a card's menu and the panel's can be open at once.
+  const noteId = `hub-move-note-${useId()}`;
+  // The panel keeps its ids; a card's are its own, so the two never collide.
+  const tid = placement === "card" ? "tc-hub-card-move" : "tc-hub-move";
 
   if (actions.length === 0) return null;
 
@@ -76,7 +90,7 @@ export function MoveMenu({
     const required = pending.verb === "mark_sent";
     const isCancel = pending.verb === "cancel";
     return (
-      <div className="space-y-2 rounded-lg border border-border p-3" data-testid="tc-hub-move-confirm">
+      <div className="space-y-2 rounded-lg border border-border p-3" data-testid={`${tid}-confirm`}>
         <p className="text-sm font-medium">
           {isCancel ? "Cancel this referral?" : `${hubActionLabel(pending)} ${hubMoveTargetLabel(pending)}`}
         </p>
@@ -85,11 +99,11 @@ export function MoveMenu({
           {isCancel && SENT_OR_LATER.includes(status) ? " The links in the emails already sent will stop working." : ""}
         </p>
         <div className="space-y-1">
-          <Label htmlFor="hub-move-note" className="text-xs">
+          <Label htmlFor={noteId} className="text-xs">
             {required ? "How and where was it sent? *" : "Note for the history (optional)"}
           </Label>
           <Input
-            id="hub-move-note"
+            id={noteId}
             value={note}
             maxLength={300}
             onChange={(e) => setNote(e.target.value)}
@@ -109,7 +123,7 @@ export function MoveMenu({
               onMove(action, text);
             }}
             disabled={busy || (required && !note.trim())}
-            data-testid="tc-hub-move-go"
+            data-testid={`${tid}-go`}
           >
             {busy && <Loader2 className="w-4 h-4 animate-spin" />} {isCancel ? "Yes, cancel it" : hubActionLabel(pending)}
           </Button>
@@ -121,19 +135,21 @@ export function MoveMenu({
     );
   }
 
+  const card = placement === "card";
   return (
-    <div className="space-y-1" data-testid="tc-hub-move">
+    <div className="space-y-1" data-testid={tid}>
       <Button
         size="sm"
         variant="outline"
-        className="gap-1"
+        className={card ? "h-7 gap-1 px-2 text-xs" : "gap-1"}
         aria-haspopup="menu"
         aria-expanded={open}
+        aria-label={card ? "Move this referral" : undefined}
         onClick={() => setOpen((o) => !o)}
         disabled={busy}
-        data-testid="tc-hub-move-menu"
+        data-testid={`${tid}-menu`}
       >
-        Move to… <ChevronDown className="w-3.5 h-3.5" />
+        {card ? "Move" : "Move to…"} <ChevronDown className="w-3.5 h-3.5" />
       </Button>
       {open && (
         <div role="menu" aria-label="Move this referral" className="w-72 rounded-md border border-border bg-popover p-1 shadow-md">
@@ -144,7 +160,7 @@ export function MoveMenu({
               role="menuitem"
               className="flex w-full flex-col items-start rounded px-2 py-1.5 text-left text-sm hover:bg-muted focus:bg-muted focus:outline-none"
               onClick={() => choose(a)}
-              data-testid={`tc-hub-move-${a.verb}`}
+              data-testid={`${tid}-${a.verb}`}
             >
               <span className={a.verb === "cancel" ? "text-destructive" : undefined}>{hubActionLabel(a)}</span>
               <span className="text-xs text-muted-foreground">{hubMoveTargetLabel(a)}</span>

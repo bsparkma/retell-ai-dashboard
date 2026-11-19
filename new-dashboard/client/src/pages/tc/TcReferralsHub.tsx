@@ -298,6 +298,8 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
   const [filter, setFilter] = useState<TcReferralHubQuery>({});
   const [showDone, setShowDone] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
+  /** The card's "Edit (re-approval needed)": open the panel straight into its reopen edit. */
+  const [openReopen, setOpenReopen] = useState(false);
   /** The office's sign-off policy, only to say where Submit leads; null = unread. */
   const [signoffRequired, setSignoffRequired] = useState<boolean | null>(null);
   /** The office's auto-send-on-approval policy, for Approve's question; null = unread. */
@@ -483,8 +485,26 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
                 {!collapsed &&
                   g.referrals.map((r) => (
                     <div key={r.referralId} className="space-y-1">
-                      <HubCard referral={r} now={at} onOpen={() => setOpenId(r.referralId)} />
-                      {/* A sibling of the card, never inside it: the card is itself a button. */}
+                      <HubCard
+                        referral={r}
+                        now={at}
+                        onOpen={() => {
+                          setOpenReopen(false);
+                          setOpenId(r.referralId);
+                        }}
+                      />
+                      {/* Siblings of the card, never inside it: the card is itself a button. */}
+                      <CardMove
+                        office={office}
+                        referral={r}
+                        viewer={viewer}
+                        signoffRequired={signoffRequired}
+                        onDone={load}
+                        onReopen={() => {
+                          setOpenReopen(true);
+                          setOpenId(r.referralId);
+                        }}
+                      />
                       {emailSend?.enabled && r.status === "approved" && (
                         <CardSend office={office} referral={r} email={emailSend} onDone={load} />
                       )}
@@ -506,6 +526,7 @@ export function HubInner({ office, now = () => new Date() }: { office: OfficeId;
         signoffRequired={signoffRequired}
         autosend={autosend}
         signoffMode={signoffMode}
+        startWithReopen={openReopen}
       />
     </div>
   );
@@ -547,6 +568,106 @@ async function runSend(office: OfficeId, referralId: string): Promise<void> {
 }
 
 /** The send row under an approved card. */
+/**
+ * ONE place that turns a "Move to…" choice into its route, for the panel's
+ * menu and the cards' alike, so the two can never call different routes:
+ * the marks go to their mark route, submit / withdraw / cancel to the verb
+ * route (with the note only when there is one). Reopen is not a move here —
+ * it opens the edit form.
+ */
+export function runHubMove(office: OfficeId, referralId: string, action: HubAction, note: string): Promise<TcReferral> {
+  const verb = action.verb;
+  if (verb === "reopen") return Promise.reject(new Error("reopen opens the edit form; it is not a move"));
+  if (isMarkVerb(verb)) return markReferral(office, referralId, verb, note);
+  return note ? referralVerb(office, referralId, verb, note) : referralVerb(office, referralId, verb);
+}
+
+/** The toast after a move, from the server's read-back. Pure. */
+export function hubMoveDoneLine(action: HubAction, next: TcReferral): string {
+  const verb = action.verb;
+  if (isMarkVerb(verb)) return `${REFERRAL_MARK_LABELS[verb]}: recorded`;
+  if (verb === "submit") return next.status === "approved" ? "Referral approved (sign-off not required)" : "Sent for the doctor's sign-off";
+  if (verb === "withdraw") return "Back to draft";
+  return "Referral cancelled";
+}
+
+/**
+ * The "Move to…" menu on a hub CARD (referral-card-move-button): the panel's
+ * menu, compact, as a SIBLING of the card (the card is itself a button), so
+ * opening the card is untouched. Its actions are hubActionPlan's for this
+ * viewer — a viewer without tc.full gets none, so nothing is drawn. Reopen
+ * hands over to the detail panel, which opens straight into its edit form.
+ * A refusal (a stale card: someone moved it first) shows the server's words —
+ * where it stands now — with a Refresh.
+ */
+export function CardMove({
+  office,
+  referral: r,
+  viewer,
+  signoffRequired,
+  onDone,
+  onReopen,
+}: {
+  office: OfficeId;
+  referral: TcReferral;
+  viewer: HubViewer;
+  signoffRequired: boolean | null;
+  /** Re-read the list (after a move, or from Refresh). */
+  onDone: () => void;
+  /** Open the detail panel in its reopen edit. */
+  onReopen: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const plan = hubActionPlan(r.status, viewer, signoffRequired);
+  if (plan.actions.length === 0) return null;
+
+  async function move(action: HubAction, note: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await runHubMove(office, r.referralId, action, note);
+      toast.success(hubMoveDoneLine(action, next));
+      onDone();
+    } catch (e) {
+      // Not re-read yet: the card keeps its place until the person presses
+      // Refresh, so the message is not pulled out from under them.
+      setError(tcErrorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-1 px-1" data-testid="tc-hub-card-moves">
+      <MoveMenu
+        status={r.status}
+        actions={plan.actions}
+        busy={busy}
+        onMove={(a, n) => void move(a, n)}
+        onReopen={onReopen}
+        placement="card"
+      />
+      {error && (
+        <div className="flex flex-wrap items-center gap-2 text-xs" data-testid="tc-hub-card-move-error">
+          <span className="text-destructive">{error}</span>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1"
+            onClick={() => {
+              setError(null);
+              onDone();
+            }}
+          >
+            <RefreshCw className="w-3.5 h-3.5" /> Refresh
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function CardSend({
   office,
   referral: r,
@@ -699,6 +820,7 @@ export function HubDetail({
   signoffRequired = null,
   autosend = null,
   signoffMode = null,
+  startWithReopen = false,
   reader = "hub",
   onSigned,
 }: {
@@ -716,6 +838,8 @@ export function HubDetail({
   autosend?: boolean | null;
   /** The office's sign-off mode; only a READ 'verbal' offers recording a doctor's verbal OK. */
   signoffMode?: TcReferralSignoffMode | null;
+  /** A card's "Edit (re-approval needed)": open in the reopen edit, if it is still approved. */
+  startWithReopen?: boolean;
   reader?: HubDetailReader;
   /** After approve / decline / send back, with the server's read-back. */
   onSigned?: (next: TcReferral) => void;
@@ -746,7 +870,10 @@ export function HubDetail({
     let cancelled = false;
     (viaSignoff ? getSignoffReferral(office, referralId) : getReferral(office, referralId))
       .then((x) => {
-        if (!cancelled) setR(x);
+        if (cancelled) return;
+        setR(x);
+        // Only where the panel itself would offer it: an approved referral, a tc.full viewer.
+        if (startWithReopen && !viaSignoff && viewer.tcFull && x.status === "approved") startEdit("reopen");
       })
       .catch((e: unknown) => {
         if (!cancelled) setLoadError(tcErrorMessage(e));
@@ -839,23 +966,9 @@ export function HubDetail({
    */
   function move(action: HubAction, note: string) {
     if (!r) return;
-    const verb = action.verb;
-    if (verb === "reopen") return;
-    if (isMarkVerb(verb)) {
-      void act(() => markReferral(office, r.referralId, verb, note), `${REFERRAL_MARK_LABELS[verb]}: recorded`);
-      return;
-    }
-    void act(
-      () => (note ? referralVerb(office, r.referralId, verb, note) : referralVerb(office, r.referralId, verb)),
-      (next) =>
-        verb === "submit"
-          ? next.status === "approved"
-            ? "Referral approved (sign-off not required)"
-            : "Sent for the doctor's sign-off"
-          : verb === "withdraw"
-            ? "Back to draft"
-            : "Referral cancelled",
-    );
+    if (action.verb === "reopen") return;
+    // The same call the cards make (runHubMove): one mapping from a choice to its route.
+    void act(() => runHubMove(office, r.referralId, action, note), (next) => hubMoveDoneLine(action, next));
   }
 
   /** Delete a never-sent draft. The panel closes only on the server's yes. */
