@@ -203,7 +203,8 @@ test("a carein write lands in carein's rows only, and is served back", async () 
   assert.equal(state.source, 'db');
   assert.deepEqual(fake.officeValues('tc_checkout_enabled'), { valley: true });
   assert.deepEqual(fake.officeValues('tc_checkout_enabled', ACME_ID), { main: false });
-  assert.deepEqual(fake.platformValue('tc_checkout_enabled'), { valley: true });
+  // MT-2d (was `{ valley: true }` under the MT-2a dual-write): single writer.
+  assert.equal(fake.platformValue('tc_checkout_enabled'), undefined, 'platform_setting is not written');
 });
 
 // ── 2/3. stuck-off-safe, the fallback, the break-glass ──────────────────────

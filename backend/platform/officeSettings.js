@@ -4,10 +4,9 @@
  * The reader for office_setting. SERVING since MT-2b: the ten per-office
  * readers (config/tcOfficeSwitch.js, hygPilot.js, tcNurture.js,
  * tcOpportunities.js, emailIdentity.js) answer their STORED layer from here,
- * for (tenant, office). platform_setting is still written in the same
- * transaction (registry.setPlatformSetting) so a rollback is a source flip,
- * and the parity tripwire (platform/officeSettingsParity.js) now reports
- * office_setting as the SERVED side.
+ * for (tenant, office). Since MT-2d office_setting is also the only table they
+ * are WRITTEN to (registry.setOfficeSetting); the old platform_setting rows
+ * are inert history and the parity tripwire that compared the two is retired.
  *
  * CACHE RULES (unchanged from MT-2a):
  *   - ONE cached read of ALL of a tenant's rows (every office, every key).
@@ -72,9 +71,6 @@ const officeRegistry = require('./officeRegistry');
 /** @type {Map<string, TenantCache>} */
 const caches = new Map();
 
-/** @type {Array<(tenantSlug: string) => void>} */
-const listeners = [];
-
 /** @type {ReturnType<typeof setInterval>|null} */
 let refreshTimer = null;
 
@@ -119,16 +115,6 @@ function cellKey(officeKey, settingKey) {
 }
 
 /**
- * Be told about every SUCCESSFUL read of a tenant (the parity tripwire). A
- * failed read notifies nobody.
- * @param {(tenantSlug: string) => void} listener
- * @returns {void}
- */
-function onRefresh(listener) {
-  listeners.push(listener);
-}
-
-/**
  * Re-read every row of one tenant. NEVER THROWS. A failed read keeps the
  * previous rows, and they stay SERVED until the last success is older than
  * maxServedAgeMs() — see the header.
@@ -159,13 +145,6 @@ async function refreshFromDb(tenantSlug) {
     c.loadedAt = Date.now();
     c.lastSuccessAt = c.loadedAt;
     c.lastLoggedError = null;
-    for (const listener of listeners) {
-      try {
-        listener(tenantSlug);
-      } catch (err) {
-        console.error(`[officeSettings] refresh listener threw: ${err && err.message ? err.message : String(err)}`);
-      }
-    }
     return { ok: true, error: null };
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
@@ -454,7 +433,6 @@ function resetCacheForTests() {
 module.exports = {
   refreshMinutes,
   maxServedAgeMs,
-  onRefresh,
   refreshFromDb,
   ensureFresh,
   ensureTenantFresh,

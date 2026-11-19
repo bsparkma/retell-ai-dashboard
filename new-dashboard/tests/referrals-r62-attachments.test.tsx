@@ -166,7 +166,9 @@ describe("the hub's staff edit", () => {
   it("a reopen (approved → re-approval) offers no files: approved is not attachable", async () => {
     ref.listReferralAttachments.mockResolvedValue([]);
     const panel = await openHub(referral({ status: "approved" }));
-    fireEvent.click(within(panel).getByRole("button", { name: /Edit \(re-approval needed\)/ }));
+    // Manual moves: the reopen is a "Move to…" item now.
+    fireEvent.click(within(panel).getByTestId("tc-hub-move-menu"));
+    fireEvent.click(within(panel).getByTestId("tc-hub-move-reopen"));
     await within(panel).findByTestId("referral-fields-form");
     expect(within(panel).queryByTestId("referral-add-attachments")).toBeNull();
   });
