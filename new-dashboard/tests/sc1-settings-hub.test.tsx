@@ -274,6 +274,8 @@ describe("/admin is the settings card map", () => {
       "/admin/tc/settings#practice",
       "/admin/tc/settings#providers",
       "/admin/tc/settings#referrals",
+      // MT-2c: the per-office switches card, added ahead of print templates.
+      "/admin/office-settings",
       "/admin/print-templates",
       "/admin/users",
     ]);
@@ -313,7 +315,9 @@ describe("/admin is the settings card map", () => {
     await screen.findByTestId("admin-link-users");
     expect(screen.queryByTestId("admin-link-practice-info")).toBeNull();
     expect(screen.queryByTestId("admin-module-tc")).toBeNull();
-    expect(hrefsIn("admin-practice-settings")).toEqual(["/admin/print-templates", "/admin/users"]);
+    // MT-2c: Office settings is under /admin's own gate with no module of its
+    // own (the page shows each section by its module), so it stays.
+    expect(hrefsIn("admin-practice-settings")).toEqual(["/admin/office-settings", "/admin/print-templates", "/admin/users"]);
   });
 
   it("every card the registry can show resolves to a real route of this app", () => {

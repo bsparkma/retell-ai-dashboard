@@ -314,6 +314,12 @@ async function bootstrap() {
   // too. MOUNTED ABOVE /api/admin on purpose, so this one path answers without
   // the voice guard and every other /api/admin path still meets it below.
   app.use('/api/admin/setup-status', requirePermission('admin.all'), require('./routes/setupStatus'));
+  // MT-2c (ruling A): the practice's own per-office settings — the Developer
+  // Console's switch handlers (routes/officeSwitches.js), behind /admin's gate
+  // and each switch's module guard instead of requireSuperAdmin(). ABOVE
+  // /api/admin for the same reason as setup-status: a TC-only practice has no
+  // voice module. Tenant from the session, office checked against it.
+  app.use('/api/admin/office-settings', requirePermission('admin.all'), require('./routes/adminOfficeSettings'));
   // The Admin page: scheduler start/stop, cost ceilings, queues, config. Tenant
   // 'admin' only — this is the one surface 'office' does not get.
   app.use('/api/admin', voiceModule, requirePermission('admin.all'), adminRouter);
