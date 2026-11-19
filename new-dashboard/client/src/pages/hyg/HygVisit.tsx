@@ -73,6 +73,7 @@ import {
   emptySlip,
   isOfficeId,
   medicalHistoryLine,
+  type HygAddendum,
   type HygSlip,
   type SendConfirmation,
   type StagedWrite,
@@ -80,7 +81,9 @@ import {
   type TreatmentItemInput,
 } from "@shared/hyg/contract";
 import {
+  addAddendum,
   addTreatmentItem,
+  sendAddendum,
   fetchExistingTx,
   fetchPerio,
   fetchPerioSend,
@@ -126,6 +129,7 @@ import type { CheckoutDelivery } from "@shared/hyg/contract";
 import { cn } from "@/lib/utils";
 import { VisitReferral } from "@/features/hyg/visit/VisitReferral";
 import { VisitPrescriptions } from "@/features/hyg/visit/VisitPrescriptions";
+import { VisitAddenda } from "@/features/hyg/visit/VisitAddenda";
 
 /** How long after the last keystroke the slip is stored. */
 const SAVE_DEBOUNCE_MS = 800;
@@ -685,6 +689,26 @@ export default function HygVisit() {
     [office, aptNum, date, page, adopt],
   );
 
+  /**
+   * Send ONE addendum — the human-approved write. The fingerprint is the one
+   * of the preview on screen; the server's readback is adopted either way, so
+   * a Failed send shows its reason on the addendum itself.
+   */
+  const onSendAddendum = useCallback(
+    async (addendum: HygAddendum) => {
+      if (!isOfficeId(office)) return;
+      setBusy(true);
+      try {
+        adopt(await sendAddendum(office, aptNum, date, addendum.id, addendum.previewFingerprint));
+      } catch (err) {
+        if (err instanceof HygApiError) setError(err);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [office, aptNum, date, adopt],
+  );
+
   /** Store the slip after a pause, so every keystroke is not a round trip. */
   const onSlipChange = useCallback(
     (next: HygSlip) => {
@@ -1194,6 +1218,17 @@ export default function HygVisit() {
             perio={trayPerio}
             onResumePerio={() => void onRetryPerio()}
           />
+          {page.visit ? (
+            <VisitAddenda
+              // Defaulted again here: a visit that did not come through the
+              // schema (an older cached response) must not cost the page.
+              addenda={page.visit.addenda ?? []}
+              window={page.visit.addendumWindow ?? null}
+              busy={busy}
+              onAdd={(text) => run(() => addAddendum(office, aptNum, text)).then((res) => res !== null)}
+              onSend={(a) => void onSendAddendum(a)}
+            />
+          ) : null}
         </aside>
       </div>
     </div>

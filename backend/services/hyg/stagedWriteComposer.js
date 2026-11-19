@@ -213,6 +213,8 @@ function noteTemplateLines(visit) {
     // Only the `srp` template reads it; every other template ignores it, so a
     // retired srp_quad_N slip composes exactly the note it always did.
     srpQuads: Array.isArray(slip.srpQuads) ? slip.srpQuads : [],
+    // '' unless PAs is picked — the one predicate every surface shares.
+    paDetails: contract.paDetailsText(slip),
   });
 }
 
@@ -233,6 +235,9 @@ function slipLines(visit) {
   if (Array.isArray(slip.xrayTypes) && slip.xrayTypes.length > 0) {
     lines.push('X-rays: ' + slip.xrayTypes.join(', '));
   }
+  // Right under the X-rays it describes, and only while PAs is picked.
+  const pa = contract.paDetailsLine(slip);
+  if (pa) lines.push(pa);
   if (slip.examStatus) {
     lines.push('Doctor exam: ' + (contract.EXAM_STATUS_LABELS[slip.examStatus] || slip.examStatus));
   }
@@ -740,8 +745,48 @@ function compose(kind, ctx) {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The after-Send addendum (hyg-pa-details-addendum)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The first line of every addendum. One definition — the test reads it too. */
+const ADDENDUM_HEADING = 'ADDENDUM to the hygiene visit note';
+
+/**
+ * What an addendum WILL say in the chart. PURE, like everything above, and
+ * through the same `line()` choke point — so the preview a person confirms and
+ * the GroupNote text Open Dental receives are the same bytes.
+ *
+ * It names the note it follows (the visit date and, when the read-back gave
+ * one, that note's own reference) because an addendum is ADDITIVE: the
+ * original note is never edited, so the addendum has to point at it. It ends
+ * with the same typed-name block the visit note does — and says "Unsigned" for
+ * the same reason (see the header).
+ *
+ * @param {{ visitDate: string|null, noteRef: string|null, text: string,
+ *           author: string, enteredAt: string }} input
+ *   `enteredAt` is the office-local time label the ROUTE computes (this module
+ *   has no clock). `author` is the signed-in user, never a request field.
+ * @returns {{ preview: string[], text: string }}
+ */
+function composeAddendum({ visitDate, noteRef, text, author, enteredAt }) {
+  const heading = `${ADDENDUM_HEADING} of ${visitDate || 'this visit'}` + (noteRef ? ` (${noteRef})` : '');
+  const body = String(text)
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((l) => l.replace(/\s+$/, ''));
+  // Leading/trailing blank lines are not content; inner blank lines are kept.
+  while (body.length > 0 && body[0] === '') body.shift();
+  while (body.length > 0 && body[body.length - 1] === '') body.pop();
+  const raw = [heading, ...body, `${NAME_BLOCK_PREFIX} ${author} at ${enteredAt}. Unsigned.`];
+  const preview = raw.map(line);
+  return { preview, text: preview.join(NOTE_NEWLINE) };
+}
+
 module.exports = {
   compose,
+  composeAddendum,
+  ADDENDUM_HEADING,
   // Exported so a test can state what the sanitizer actually changed.
   composeRaw,
   NAME_BLOCK_PREFIX,

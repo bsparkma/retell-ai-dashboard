@@ -222,8 +222,32 @@ function toStagedWrite(row) {
   };
 }
 
+/** Columns of hyg_visit_addendum, in one place, so the SELECTs cannot drift. */
+const ADDENDUM_COLUMNS = `
+  addendum_id, visit_id, office, body, author, created_at, preview, state,
+  error_message, written_ref, sent_by, sent_at, updated_at
+`;
+
+/** One hyg_visit_addendum row → the contract's HygAddendum. */
+function toAddendum(row) {
+  const preview = arr(row.preview);
+  return {
+    id: row.addendum_id,
+    text: row.body,
+    author: row.author,
+    createdAt: iso(row.created_at),
+    state: row.state,
+    preview,
+    previewFingerprint: fingerprintPreview(preview),
+    writtenRef: row.written_ref ?? null,
+    errorMessage: row.error_message ?? null,
+    sentBy: row.sent_by ?? null,
+    sentAt: iso(row.sent_at),
+  };
+}
+
 /** The three rowsets → the contract's HygVisit. */
-function toVisit(visitRow, itemRows, stagedRows) {
+function toVisit(visitRow, itemRows, stagedRows, addendumRows = []) {
   return {
     visitId: visitRow.visit_id,
     office: visitRow.office,
@@ -252,6 +276,9 @@ function toVisit(visitRow, itemRows, stagedRows) {
             finalAt: iso(visitRow.checkout_final_at),
           }
         : null,
+    // After-Send addenda, oldest first. `addendumWindow` is the ROUTE's to add:
+    // it needs a clock, and this module holds rows.
+    addenda: addendumRows.map(toAddendum),
     createdBy: visitRow.created_by,
     createdAt: iso(visitRow.created_at),
     updatedBy: visitRow.updated_by ?? null,
@@ -282,7 +309,7 @@ async function getVisit(pool, { office, aptNum }) {
 
 /** Load a visit row's children and shape the whole thing. */
 async function hydrate(pool, visitRow) {
-  const [items, staged] = await Promise.all([
+  const [items, staged, addenda] = await Promise.all([
     pool.query(
       `SELECT ${ITEM_COLUMNS} FROM hyg_treatment_item
         WHERE visit_id = $1 AND office = $2
@@ -295,8 +322,85 @@ async function hydrate(pool, visitRow) {
         ORDER BY created_at ASC`,
       [visitRow.visit_id, visitRow.office]
     ),
+    pool.query(
+      `SELECT ${ADDENDUM_COLUMNS} FROM hyg_visit_addendum
+        WHERE visit_id = $1 AND office = $2
+        ORDER BY created_at ASC, addendum_id ASC`,
+      [visitRow.visit_id, visitRow.office]
+    ),
   ]);
-  return toVisit(visitRow, items.rows, staged.rows);
+  return toVisit(visitRow, items.rows, staged.rows, addenda.rows);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The after-Send addendum (hyg-pa-details-addendum)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// APPEND-ONLY. There is no update of body/author/preview and no delete here,
+// and the migration makes both impossible for the app role anyway (no DELETE
+// grant; a write-once trigger). The only statements that move a row are the
+// three send transitions, each conditional on the state it leaves.
+
+/**
+ * Add one addendum, already composed. Born `Staged`: its preview is fixed now,
+ * and it reaches the chart only through a human-pressed Send.
+ *
+ * @returns {Promise<Record<string, any>>} the contract's HygAddendum
+ */
+async function addAddendum(pool, { office, visitId, text, author, preview }) {
+  const res = await pool.query(
+    `INSERT INTO hyg_visit_addendum (visit_id, office, body, author, preview)
+       VALUES ($1, $2, $3, $4, $5::jsonb)
+     RETURNING ${ADDENDUM_COLUMNS}`,
+    [visitId, office, text, author, JSON.stringify(preview)]
+  );
+  return toAddendum(res.rows[0]);
+}
+
+/** One addendum on one visit in one office, or null. */
+async function getAddendum(pool, { office, visitId, addendumId }) {
+  const res = await pool.query(
+    `SELECT ${ADDENDUM_COLUMNS} FROM hyg_visit_addendum
+      WHERE addendum_id = $1 AND visit_id = $2 AND office = $3`,
+    [addendumId, visitId, office]
+  );
+  return res.rowCount === 0 ? null : toAddendum(res.rows[0]);
+}
+
+/**
+ * Staged | Failed → Sending. PERSISTED BEFORE THE CALL, like markSending: a
+ * process that dies mid-write leaves "we tried and do not know", never "ready".
+ * Conditional, so two presses cannot both claim it.
+ * @returns {Promise<boolean>}
+ */
+async function markAddendumSending(pool, { office, visitId, addendumId }) {
+  const res = await pool.query(
+    `UPDATE hyg_visit_addendum
+        SET state = 'Sending', error_message = NULL, updated_at = now()
+      WHERE addendum_id = $1 AND visit_id = $2 AND office = $3 AND state IN ('Staged', 'Failed')`,
+    [addendumId, visitId, office]
+  );
+  return res.rowCount === 1;
+}
+
+/** Sending → Written. Only ever called AFTER the read-back confirmed it. */
+async function markAddendumWritten(pool, { office, visitId, addendumId, actor, writtenRef }) {
+  await pool.query(
+    `UPDATE hyg_visit_addendum
+        SET state = 'Written', sent_by = $4, sent_at = now(), written_ref = $5, updated_at = now()
+      WHERE addendum_id = $1 AND visit_id = $2 AND office = $3 AND state = 'Sending'`,
+    [addendumId, visitId, office, actor, writtenRef]
+  );
+}
+
+/** Sending → Failed, with the reason in words. */
+async function markAddendumFailed(pool, { office, visitId, addendumId, error }) {
+  await pool.query(
+    `UPDATE hyg_visit_addendum
+        SET state = 'Failed', error_message = $4, updated_at = now()
+      WHERE addendum_id = $1 AND visit_id = $2 AND office = $3 AND state = 'Sending'`,
+    [addendumId, visitId, office, String(error || 'The addendum was not sent')]
+  );
 }
 
 /**
@@ -1203,8 +1307,16 @@ module.exports = {
   removeItem,
   stageWrite,
   unstageWrite,
+  // The after-Send addendum.
+  ADDENDUM_COLUMNS,
+  addAddendum,
+  getAddendum,
+  markAddendumSending,
+  markAddendumWritten,
+  markAddendumFailed,
   // Exported for tests that assert the row → contract mapping directly.
   toVisit,
   toItem,
   toStagedWrite,
+  toAddendum,
 };

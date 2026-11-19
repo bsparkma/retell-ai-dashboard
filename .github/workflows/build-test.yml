@@ -267,6 +267,17 @@ jobs:
           MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
         run: node scripts/office-format-checks-verify-queries.js
 
+      # Tenant migration 1795200000000: the after-Send addendum's table. The
+      # store's add → send transitions, every CHECK, the write-once trigger and
+      # the app role's missing DELETE, in one rolled-back transaction — then the
+      # REAL down() (refused while an addendum exists; on an empty table, it
+      # removes it) and up(). Leaves the schema as it found it.
+      - name: hyg visit addendum verification (real CHECKs, trigger, grants, down/up)
+        working-directory: backend
+        env:
+          MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
+        run: node scripts/hyg-visit-addendum-verify-queries.js
+
       - name: spine smoke test (registry / tenantDb / append-only audit / entitlement)
         working-directory: backend
         env:

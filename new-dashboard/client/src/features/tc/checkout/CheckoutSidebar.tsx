@@ -228,7 +228,7 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
 
               {/* The hygienist's two notes from the slip, as their own section
                   rather than a footnote under everything else. */}
-              {(snap.frontDeskNote || snap.financialNote) && (
+              {(snap.frontDeskNote || snap.financialNote || snap.paDetails) && (
                 <section className="space-y-1.5 text-sm" data-testid="checkout-hygiene-notes">
                   <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">From the hygienist</h3>
                   {snap.frontDeskNote && (
@@ -236,6 +236,9 @@ export function CheckoutSidebar({ office, handoffId, showOfficeBadge = false, on
                   )}
                   {snap.financialNote && (
                     <p data-testid="checkout-financial-note"><span className="text-muted-foreground">Financial: </span>{snap.financialNote}</p>
+                  )}
+                  {snap.paDetails && (
+                    <p className="whitespace-pre-wrap" data-testid="checkout-pa-details"><span className="text-muted-foreground">PA details: </span>{snap.paDetails}</p>
                   )}
                 </section>
               )}
