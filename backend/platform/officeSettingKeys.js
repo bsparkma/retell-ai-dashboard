@@ -11,21 +11,25 @@
  * NOT HERE, DELIBERATELY: tc_email_enabled, tc_sms_enabled and
  * call_retention_days. They are process-wide and stay in platform_setting.
  *
- * mirrorEntries() is the LIVE twin of the backfill's frozen planBackfill(): the
+ * mirrorEntries() is the twin of the backfill's frozen planBackfill(): the
  * per-office entries of a platform_setting map that the key's own reader would
- * honour today. Anything that reader ignores is not mirrored.
+ * honour. Since MT-2d nothing in the running server mirrors a map (writes are
+ * one office_setting row each, registry.setOfficeSetting); it is kept for the
+ * test suites that model a platform_setting-shaped store, and for the
+ * backfill-equivalence proof (officeSettingsSeed.test.js).
  *
  * NO CYCLE. platform/registry.js requires this module lazily (inside
- * setPlatformSetting), and this module requires the readers' helpers lazily
- * (inside mirrorEntries), because config/emailIdentity.js requires the registry.
+ * setPlatformSetting / setOfficeSetting), and this module requires the readers'
+ * helpers lazily (inside mirrorEntries), because config/emailIdentity.js
+ * requires the registry.
  */
 
 /**
- * The tenant every dual-write and parity check is for. The per-office maps in
- * platform_setting have no tenant dimension; they are this tenant's settings,
- * so this is the only tenant they can be mirrored for, and (MT-2b) the only
- * tenant whose readers honour an env `=true` FALLBACK and whose settings can
- * be WRITTEN until MT-2d stops writing platform_setting.
+ * The tenant the MT-2a dual-write and backfill were for: the per-office maps
+ * in platform_setting had no tenant dimension and were this tenant's settings.
+ * Still (MT-2b, unchanged by MT-2d) the only tenant whose readers honour an env
+ * `=true` FALLBACK, and the only tenant whose settings the persist functions
+ * accept a write for.
  */
 const MT2A_TENANT_SLUG = 'carein';
 
@@ -124,8 +128,8 @@ function mirrorEntries(settingKey, value) {
 /**
  * THE stored-layer answer one reader serves for one office, from the SERVED
  * office_setting rows of its key (MT-2b). Every reader resolves through this,
- * and the parity tripwire uses it for the office_setting side, so "what is
- * served" and "what is compared" cannot drift apart.
+ * (the retired MT-2b parity tripwire compared through it too; its comparator
+ * now lives on, test-only, in officeSettingsCompareTestUtils.js).
  *
  *   switch    the office's boolean row, else null (nobody chose -> env fallback)
  *   map       hygPilot: when the tenant holds ANY row for the key, an office

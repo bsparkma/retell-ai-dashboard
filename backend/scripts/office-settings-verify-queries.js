@@ -25,12 +25,17 @@
  * PART C — COMMITTED, through the real registry and the real readers' persist
  *   functions (each one a route's write path), then cleaned up. RUNS ONLY on a
  *   pristine database (no platform_setting row for any of the ten keys and no
- *   office_setting row for tenant 'carein'), so it never touches real data:
+ *   office_setting row for tenant 'carein'), so it never touches real data.
+ *   MT-2d (single writer; this part proved the MT-2a dual-write before):
+ *   - a deliberately stale platform_setting history row is seeded first;
  *   - tcCheckout.persist, hygPilot.persistHygEnabled and emailIdentity.persist
- *     land identical values in both tables;
- *   - with a trigger that makes the office_setting write fail, the
- *     platform_setting write rolls back with it;
- *   - with every reader read once, the parity tripwire finds nothing.
+ *     write ONE office_setting row each, a roland write leaves valley's row
+ *     (value and provenance) untouched, and the history row stays
+ *     byte-for-byte as it was;
+ *   - the readers serve office_setting, never the stale history;
+ *   - setPlatformSetting refuses a per-office key;
+ *   - with a trigger that makes the office_setting write fail, the write is
+ *     refused and nothing changes.
  *
  * NO OPEN DENTAL. Every value is a synthetic literal (example.test / .invalid).
  *
@@ -296,7 +301,6 @@ async function partC(client) {
     delete process.env[k];
   }
   const registry = require('../platform/registry');
-  const parity = require('../platform/officeSettingsParity');
   const tcCheckout = require('../config/tcCheckout');
   const hygPilot = require('../config/hygPilot');
   const emailIdentity = require('../config/emailIdentity');
@@ -308,35 +312,83 @@ async function partC(client) {
     );
     return Object.fromEntries(r.rows.map((x) => [x.office_key, x.value]));
   };
-  const platformValue = async (key) => {
-    const r = await client.query('SELECT value FROM platform_setting WHERE key = $1', [key]);
-    return r.rows[0] ? r.rows[0].value : undefined;
+  const officeRow = async (key, officeKey) => {
+    const r = await client.query(
+      `SELECT value::text AS v, updated_at, updated_by FROM office_setting
+        WHERE tenant_id = $1 AND setting_key = $2 AND office_key = $3`,
+      [tenantId, key, officeKey]
+    );
+    return r.rows[0] ? JSON.stringify(r.rows[0]) : null;
+  };
+  /** platform_setting for the ten keys, byte-for-byte (value text + provenance). */
+  const platformSnapshot = async () => {
+    const r = await client.query(
+      'SELECT key, value::text AS v, updated_at, updated_by FROM platform_setting WHERE key = ANY($1::text[]) ORDER BY key',
+      [TEN]
+    );
+    return JSON.stringify(r.rows);
   };
 
   try {
+    // Inert history a pre-MT-2d dual-write would have left: deliberately STALE.
+    // Every write below must leave it exactly as it is, and nothing may serve it.
+    await client.query(
+      `INSERT INTO platform_setting (key, value, updated_by) VALUES
+         ('tc_checkout_enabled', '{"roland": false, "valley": true}'::jsonb, $1),
+         ('hyg_od_enabled', '{"valley": true}'::jsonb, $1),
+         ('tc_email_identity', '{"roland": {"practiceName": "Stale History Example"}}'::jsonb, $1)`,
+      [ACTOR]
+    );
+    const history = await platformSnapshot();
+
     await tcCheckout.persist('carein', 'roland', true, ACTOR);
     await tcCheckout.persist('carein', 'valley', false, ACTOR);
-    assert.deepEqual(await platformValue('tc_checkout_enabled'), { roland: true, valley: false });
     assert.deepEqual(await officeValues('tc_checkout_enabled'), { roland: true, valley: false });
-    console.log('  ok  tcCheckout.persist (PUT /tc-checkout-offices) wrote both tables identically');
+    const valleyRow = await officeRow('tc_checkout_enabled', 'valley');
+    await tcCheckout.persist('carein', 'roland', false, ACTOR);
+    assert.equal(await officeRow('tc_checkout_enabled', 'valley'), valleyRow, "a roland write left valley's row untouched");
+    assert.deepEqual(await officeValues('tc_checkout_enabled'), { roland: false, valley: false });
+    console.log('  ok  tcCheckout.persist (PUT /tc-checkout-offices) wrote ONE office_setting row per write');
 
     await hygPilot.persistHygEnabled('carein', 'valley', false, ACTOR);
-    assert.deepEqual(await platformValue('hyg_od_enabled'), { valley: false });
     assert.deepEqual(await officeValues('hyg_od_enabled'), { valley: false });
-    console.log('  ok  hygPilot.persistHygEnabled (PUT /hyg-offices) wrote both tables identically');
+    console.log('  ok  hygPilot.persistHygEnabled (PUT /hyg-offices) wrote office_setting only');
 
     await emailIdentity.persist(
       'carein',
       'roland',
-      { replyTo: 'FrontDesk@Roland.example.test', practiceName: 'Roland Example Dental', practicePhone: null, referralBcc: null },
+      {
+        replyTo: 'FrontDesk@Roland.example.test',
+        practiceName: 'Roland Example Dental',
+        practicePhone: null,
+        practiceAddress: null,
+        referralBcc: null,
+      },
       ACTOR
     );
     const identity = { replyTo: 'frontdesk@roland.example.test', practiceName: 'Roland Example Dental' };
-    assert.deepEqual(await platformValue('tc_email_identity'), { roland: identity });
     assert.deepEqual(await officeValues('tc_email_identity'), { roland: identity });
-    console.log('  ok  emailIdentity.persist (PUT /tc/email-identity) wrote both tables identically');
+    console.log('  ok  emailIdentity.persist (PUT /tc/email-identity) wrote office_setting only');
 
-    // A failing office_setting write takes the platform_setting write with it.
+    assert.equal(await platformSnapshot(), history);
+    console.log('  ok  platform_setting history is byte-for-byte untouched by every write');
+
+    // Read-back: what is served is what was written, never the stale history.
+    assert.equal((await tcCheckout.refreshFromDb('carein')).ok, true);
+    assert.equal(tcCheckout.enabledFor('carein', 'roland'), false);
+    assert.equal(tcCheckout.enabledFor('carein', 'valley'), false, 'history says valley=true; it is not served');
+    assert.equal((await emailIdentity.refreshFromDb('carein')).ok, true);
+    assert.equal(emailIdentity.storedValue('carein', 'roland', 'practiceName'), 'Roland Example Dental');
+    console.log('  ok  the readers serve office_setting, not the stale platform_setting history');
+
+    // The ten keys can no longer be written to platform_setting at all.
+    await assert.rejects(registry.setPlatformSetting('tc_checkout_enabled', { roland: true }, ACTOR), {
+      code: 'OFFICE_SETTING_NOT_PLATFORM',
+    });
+    assert.equal(await platformSnapshot(), history);
+    console.log('  ok  setPlatformSetting refuses a per-office key and writes nothing');
+
+    // A failing office_setting write is refused and leaves the row as it was.
     await client.query(`
       CREATE FUNCTION mt2a_verify_refuse() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN RAISE EXCEPTION 'mt2a verify: forced office_setting failure'; END $$;
@@ -348,29 +400,9 @@ async function partC(client) {
     } finally {
       await client.query('DROP TRIGGER IF EXISTS mt2a_verify_refuse ON office_setting; DROP FUNCTION IF EXISTS mt2a_verify_refuse();');
     }
-    assert.deepEqual(await platformValue('tc_checkout_enabled'), { roland: true, valley: false });
-    assert.deepEqual(await officeValues('tc_checkout_enabled'), { roland: true, valley: false });
-    console.log('  ok  a failed office_setting write rolled the platform_setting write back');
-
-    // Every reader once, armed: the tripwire finds nothing.
-    parity.arm();
-    for (const sw of [
-      tcCheckout,
-      require('../config/tcOdSync'),
-      require('../config/tcAutoCheckout'),
-      require('../config/tcReferrals'),
-      require('../config/tcReferralEmail'),
-      require('../config/tcReferralPatientEmail'),
-    ]) {
-      assert.equal((await sw.refreshFromDb('carein')).ok, true);
-    }
-    assert.equal((await hygPilot.refreshFromDb('carein')).ok, true);
-    assert.equal((await emailIdentity.refreshFromDb('carein')).ok, true);
-    await require('../config/tcNurture').switchedOnOffices(registry, 'carein');
-    await require('../config/tcOpportunities').switchedOnOffices(registry, 'carein');
-    await parity.settled();
-    for (const key of TEN) assert.deepEqual(parity.lastResult(key), [], key);
-    console.log('  ok  every reader compared clean against office_setting');
+    assert.deepEqual(await officeValues('tc_checkout_enabled'), { roland: false, valley: false });
+    assert.equal(await platformSnapshot(), history);
+    console.log('  ok  a failed office_setting write rolled back, and touched nothing else');
     return true;
   } finally {
     await client.query('DELETE FROM office_setting WHERE tenant_id = $1', [tenantId]);
@@ -392,11 +424,11 @@ async function main() {
     const a = await partA(client);
     console.log('MT-2a part B (backfill on real rows, one transaction, rolled back):');
     const b = await partB(client);
-    console.log('MT-2a part C (real dual-write through the registry, committed then cleaned):');
+    console.log('MT-2d part C (real single writer through the registry, committed then cleaned):');
     const c = await partC(client);
     console.log(
       `MT-2a verification passed: ${a.length} part-A checks; backfill ${b ? 'verified' : 'SKIPPED'}; ` +
-        `dual-write ${c ? 'verified' : 'SKIPPED'}`
+        `single writer ${c ? 'verified' : 'SKIPPED'}`
     );
     if (process.env.CI && (!b || !c)) {
       throw new Error('in CI, parts B and C must not skip');

@@ -43,12 +43,12 @@
  * refresh windows; then the answer falls to the env fallback (carein only) and
  * then OFF.
  *
- * WRITES. platform_setting is still written, with office_setting in the same
- * transaction (registry.setPlatformSetting, MT-2a), so a rollback is a source
- * flip. platform_setting has no tenant dimension and holds 'carein's settings,
- * so in this slice only tenant 'carein' can be written; any other tenant is
- * refused (OFFICE_SETTING_TENANT_NOT_WRITABLE) rather than written into
- * carein's rows. MT-2d removes that.
+ * WRITES (MT-2d). office_setting is the only table written
+ * (registry.setOfficeSetting): one (tenant, office, key) row per write. The old
+ * platform_setting rows are inert history. Writes are still accepted for tenant
+ * 'carein' only (OFFICE_SETTING_TENANT_NOT_WRITABLE otherwise). The original
+ * reason — platform_setting had no tenant dimension — is gone with the
+ * dual-write; opening writes to other tenants is a separate, explicit decision.
  */
 
 const registry = require('../platform/registry');
@@ -203,16 +203,10 @@ function createOfficeSwitch({ settingKey, envPrefix, label }) {
     if (typeof enabled !== 'boolean') {
       throw codedError('enabled must be a boolean', 'INVALID_BODY');
     }
-    const current = await registry.getPlatformSetting(settingKey);
-    const base =
-      current && current.value && typeof current.value === 'object' && !Array.isArray(current.value)
-        ? { .../** @type {Record<string, unknown>} */ (current.value) }
-        : {};
-    base[officeKey] = enabled;
-    // The registry writes platform_setting AND office_setting in one
-    // transaction, and refuses (OFFICE_SETTING_READBACK_MISMATCH) if either
-    // table does not read back as asked.
-    await registry.setPlatformSetting(settingKey, base, updatedBy, { officeKey });
+    // MT-2d: the one office_setting row, and nothing else. No other office's
+    // value is read or rewritten; platform_setting is not touched. The registry
+    // refuses (OFFICE_SETTING_READBACK_MISMATCH) if the row does not read back.
+    await registry.setOfficeSetting(tenantSlug, officeKey, settingKey, enabled, updatedBy);
     const read = await refreshFromDb(tenantSlug);
     if (!read.ok || storedFor(tenantSlug, officeKey) !== enabled) {
       throw codedError('The switch was written but could not be read back', 'SWITCH_READBACK_FAILED');
