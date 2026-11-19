@@ -193,9 +193,11 @@ function steps(client) {
       "INSERT INTO tc_od_sync_runs (run_id, office_id, trigger, started_at, status) VALUES ($1, 'roland', 'cron', now(), 'ok')",
       [randomUUID()]
     ),
+    // MT-2b2 (1795000000000): the office CHECK is a FORMAT now, so 'unknown' passes it by design
+    // (the server gates refuse it). A MALFORMED key is what the database still refuses.
     mustRefuse(
-      'a run for an office that is not one',
-      "INSERT INTO tc_od_sync_runs (run_id, office_id, trigger, started_at, status) VALUES ($1, 'unknown', 'manual', now(), 'ok')",
+      'a run for a malformed office key',
+      "INSERT INTO tc_od_sync_runs (run_id, office_id, trigger, started_at, status) VALUES ($1, 'Not An Office', 'manual', now(), 'ok')",
       [randomUUID()]
     ),
   ];

@@ -255,6 +255,18 @@ jobs:
           CONTROL_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_control
         run: node scripts/office-settings-verify-queries.js
 
+      # MT-2b2 (1795000000000): all 70 office CHECKs are the one format check,
+      # a new office key inserts into representative tables of every module,
+      # garbage and NULL are refused (one transaction, rolled back) — then the
+      # REAL down() (refused while a third office's row exists; with only
+      # roland/valley rows, restores the 70 originals verbatim) and up().
+      # Leaves the schema as it found it.
+      - name: mt2b2 office format checks verification (real CHECKs, real down/up)
+        working-directory: backend
+        env:
+          MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
+        run: node scripts/office-format-checks-verify-queries.js
+
       - name: spine smoke test (registry / tenantDb / append-only audit / entitlement)
         working-directory: backend
         env:

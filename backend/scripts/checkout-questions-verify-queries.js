@@ -11,7 +11,7 @@
  * PART A — one transaction, ALWAYS rolled back:
  *   - the store's insert / list / resolve run for real (a question, a reply,
  *     resolve-twice resolves once);
- *   - the CHECKs refuse an unknown office, an unknown role, an empty and an
+ *   - the CHECKs refuse a malformed office key, an unknown role, an empty and an
  *     oversized body, an empty author, and a RESOLVED reply;
  *   - the FK refuses a question on a card that does not exist;
  *   - as the app role: SELECT and INSERT work, UPDATE of resolved_at works,
@@ -130,7 +130,8 @@ async function partA(client) {
       assert.deepEqual(await questionStore.listForHandoffs(client, 'valley', [card]), []);
     });
     await step('the CHECKs refuse: office, role, empty / oversized body, empty author, a resolved reply', async () => {
-      await mustRefuse(client, PG_CHECK_VIOLATION, () => insert(client, { handoffId: card, office: 'unknown' }));
+      // MT-2b2: a format CHECK now — 'unknown' passes it (the server gates refuse it); a malformed key does not.
+      await mustRefuse(client, PG_CHECK_VIOLATION, () => insert(client, { handoffId: card, office: 'Not An Office' }));
       await mustRefuse(client, PG_CHECK_VIOLATION, () => insert(client, { handoffId: card, authorRole: 'doctor' }));
       await mustRefuse(client, PG_CHECK_VIOLATION, () => insert(client, { handoffId: card, body: '' }));
       await mustRefuse(client, PG_CHECK_VIOLATION, () => insert(client, { handoffId: card, body: 'x'.repeat(2001) }));
