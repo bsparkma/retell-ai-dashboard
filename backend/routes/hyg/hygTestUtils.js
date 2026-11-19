@@ -257,7 +257,8 @@ class FakeHygDb extends FakeAuditDb {
     return `${prefix}-${String(this.seq).padStart(4, '0')}`;
   }
 
-  static OFFICES = ['roland', 'valley'];
+  /** The office CHECK as 1795000000000_office_format_checks (MT-2b2) leaves it: a FORMAT, not a list. */
+  static OFFICE_FORMAT = /^[a-z][a-z0-9_-]{1,31}$/;
   /** The CHECK as 1794800000000_hyg_priority_holding leaves it. */
   static PRIORITIES = ['urgent', 'preventative', 'cosmetic', 'holding'];
   static CATEGORIES = [
@@ -402,7 +403,7 @@ class FakeHygDb extends FakeAuditDb {
   }
 
   checkOffice(office) {
-    if (!FakeHygDb.OFFICES.includes(office)) {
+    if (typeof office !== 'string' || !FakeHygDb.OFFICE_FORMAT.test(office)) {
       throw new Error(`hyg office_check violated: '${office}'`);
     }
   }
