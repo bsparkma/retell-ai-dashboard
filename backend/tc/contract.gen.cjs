@@ -15020,9 +15020,11 @@ __export(contract_entry_exports, {
   TC_REFERRAL_R5_EVENT_VERBS: () => TC_REFERRAL_R5_EVENT_VERBS,
   TC_REFERRAL_R69_EVENT_VERBS: () => TC_REFERRAL_R69_EVENT_VERBS,
   TC_REFERRAL_SEND_EVENT_VERBS: () => TC_REFERRAL_SEND_EVENT_VERBS,
+  TC_REFERRAL_SIGNOFF_MODES: () => TC_REFERRAL_SIGNOFF_MODES,
   TC_REFERRAL_SOURCE_KINDS_R2: () => TC_REFERRAL_SOURCE_KINDS_R2,
   TC_REFERRAL_STATUS_LABELS: () => TC_REFERRAL_STATUS_LABELS,
   TC_REFERRAL_URGENCY_LABELS: () => TC_REFERRAL_URGENCY_LABELS,
+  TC_REFERRAL_VERBAL_VERBS: () => TC_REFERRAL_VERBAL_VERBS,
   TERMINAL_CASE_STATUSES: () => TERMINAL_CASE_STATUSES,
   TcCase: () => TcCase,
   TcCaseEvent: () => TcCaseEvent,
@@ -15140,12 +15142,17 @@ __export(contract_entry_exports, {
   TcReferralSendVerb: () => TcReferralSendVerb,
   TcReferralSettingsRequest: () => TcReferralSettingsRequest,
   TcReferralSettingsResponse: () => TcReferralSettingsResponse,
+  TcReferralSignoffMode: () => TcReferralSignoffMode,
+  TcReferralSignoffModePolicy: () => TcReferralSignoffModePolicy,
   TcReferralSignoffSummary: () => TcReferralSignoffSummary,
   TcReferralSourceKind: () => TcReferralSourceKind,
   TcReferralStatus: () => TcReferralStatus,
   TcReferralTeeth: () => TcReferralTeeth,
   TcReferralUrgency: () => TcReferralUrgency,
   TcReferralVerb: () => TcReferralVerb,
+  TcReferralVerbalApproveRequest: () => TcReferralVerbalApproveRequest,
+  TcReferralVerbalDeclineRequest: () => TcReferralVerbalDeclineRequest,
+  TcReferralVerbalReturnRequest: () => TcReferralVerbalReturnRequest,
   TcReferralsStatus: () => TcReferralsStatus,
   TcSmileSimulation: () => TcSmileSimulation,
   TextBlock: () => TextBlock,
@@ -15245,6 +15252,7 @@ __export(contract_entry_exports, {
   resolveNotificationLevel: () => resolveNotificationLevel,
   safeUrl: () => safeUrl,
   samplePrintValues: () => samplePrintValues,
+  signoffModeRequiresSignoff: () => signoffModeRequiresSignoff,
   simulationToRow: () => simulationToRow,
   teethText: () => teethText,
   templateBody: () => templateBody,
@@ -15257,6 +15265,7 @@ __export(contract_entry_exports, {
   validatePrintStyling: () => validatePrintStyling,
   validatePrintTemplate: () => validatePrintTemplate,
   validateReferralTemplate: () => validateReferralTemplate,
+  verbalDoctorLabel: () => verbalDoctorLabel,
   wrapToChars: () => wrapToChars,
   wrapToWidth: () => wrapToWidth,
   z: () => import_zod18.z
@@ -18176,10 +18185,21 @@ var TcReferralPolicy = import_zod11.z.object({
   value: import_zod11.z.boolean(),
   source: import_zod11.z.enum(["env", "office", "default"])
 });
+var TC_REFERRAL_SIGNOFF_MODES = ["doctor", "verbal", "off"];
+var TcReferralSignoffMode = import_zod11.z.enum(TC_REFERRAL_SIGNOFF_MODES);
+function signoffModeRequiresSignoff(mode) {
+  return mode !== "off";
+}
+var TcReferralSignoffModePolicy = import_zod11.z.object({
+  value: TcReferralSignoffMode,
+  source: import_zod11.z.enum(["env", "office", "default"])
+});
 var TcReferralSettingsResponse = import_zod11.z.object({
   success: import_zod11.z.literal(true),
   office: import_zod11.z.enum(["roland", "valley"]),
   signoffRequired: TcReferralPolicy,
+  /** The mode signoffRequired is derived from. Optional only for an older server. */
+  signoffMode: TcReferralSignoffModePolicy.optional(),
   autosendOnApproval: TcReferralPolicy,
   /** Admin-only for now: may this user change the two policies? */
   canEdit: import_zod11.z.boolean(),
@@ -18187,9 +18207,14 @@ var TcReferralSettingsResponse = import_zod11.z.object({
   updatedAt: import_zod11.z.string().nullable()
 });
 var TcReferralSettingsRequest = import_zod11.z.object({
+  /** Legacy: true = 'doctor', false = 'off'. Never together with signoffMode. */
   signoffRequired: import_zod11.z.boolean().optional(),
+  signoffMode: TcReferralSignoffMode.optional(),
   autosendOnApproval: import_zod11.z.boolean().optional()
-}).strict().refine((v) => v.signoffRequired !== void 0 || v.autosendOnApproval !== void 0, "Nothing to change");
+}).strict().refine(
+  (v) => v.signoffRequired !== void 0 || v.signoffMode !== void 0 || v.autosendOnApproval !== void 0,
+  "Nothing to change"
+).refine((v) => v.signoffRequired === void 0 || v.signoffMode === void 0, "Send signoffMode or signoffRequired, not both");
 var TcReferralEmailUnavailable = import_zod11.z.enum([
   "switched_off",
   "not_configured",
@@ -18328,7 +18353,13 @@ var TcReferralEvent = import_zod11.z.object({
   /** R6.9: on a `correspondence` row, which way, with whom, how. null otherwise. */
   correspondence: TcReferralCorrespondenceKind.nullable().optional(),
   /** R6.10: on a `chart_note_written` row, the milestone and the commlog. null otherwise. */
-  chartNote: TcReferralChartNoteRecord.nullable().optional()
+  chartNote: TcReferralChartNoteRecord.nullable().optional(),
+  /**
+   * Verbal sign-off: on an approve / decline / return a tc.full user RECORDED
+   * for a doctor, the doctor (provider directory id + the name as it read
+   * then). `actor` is the recorder. Absent on every other row.
+   */
+  verbal: import_zod11.z.object({ providerId: import_zod11.z.string().uuid(), providerName: import_zod11.z.string() }).optional()
 });
 var TcReferralReceived = import_zod11.z.object({
   at: import_zod11.z.string(),
@@ -18528,6 +18559,15 @@ var TcReferralDoctorEdit = import_zod11.z.object({
 }).strict().refine(hasAnyField, "Nothing to change");
 var TcReferralReopenRequest = import_zod11.z.object({ fields: TcReferralFieldsEdit.optional() }).strict();
 var TcReferralReturnRequest = import_zod11.z.object({ comment: import_zod11.z.string().trim().min(1, "Say what you need").max(1e3) }).strict();
+var VerbalProvider = { providerId: import_zod11.z.string().uuid("Pick the doctor who gave the OK") };
+var TcReferralVerbalApproveRequest = import_zod11.z.object({ ...VerbalProvider, note: import_zod11.z.string().trim().max(500).optional() }).strict();
+var TcReferralVerbalDeclineRequest = TcReferralDeclineRequest.extend(VerbalProvider).strict();
+var TcReferralVerbalReturnRequest = TcReferralReturnRequest.extend(VerbalProvider).strict();
+var TC_REFERRAL_VERBAL_VERBS = ["approve", "decline", "return"];
+function verbalDoctorLabel(providerName) {
+  const n = providerName.trim();
+  return /^dr\.?\s/i.test(n) ? n : `Dr. ${n}`;
+}
 var TcReferralMarkSentRequest = import_zod11.z.object({ how: import_zod11.z.string().trim().min(1, "Say how it was sent").max(300) }).strict();
 var TcReferralMarkRequest = import_zod11.z.object({ note: import_zod11.z.string().trim().max(300).optional() }).strict();
 var TC_REFERRAL_HUB_GROUPS = [
@@ -20908,9 +20948,11 @@ function odToothText(tooth) {
   TC_REFERRAL_R5_EVENT_VERBS,
   TC_REFERRAL_R69_EVENT_VERBS,
   TC_REFERRAL_SEND_EVENT_VERBS,
+  TC_REFERRAL_SIGNOFF_MODES,
   TC_REFERRAL_SOURCE_KINDS_R2,
   TC_REFERRAL_STATUS_LABELS,
   TC_REFERRAL_URGENCY_LABELS,
+  TC_REFERRAL_VERBAL_VERBS,
   TERMINAL_CASE_STATUSES,
   TcCase,
   TcCaseEvent,
@@ -21028,12 +21070,17 @@ function odToothText(tooth) {
   TcReferralSendVerb,
   TcReferralSettingsRequest,
   TcReferralSettingsResponse,
+  TcReferralSignoffMode,
+  TcReferralSignoffModePolicy,
   TcReferralSignoffSummary,
   TcReferralSourceKind,
   TcReferralStatus,
   TcReferralTeeth,
   TcReferralUrgency,
   TcReferralVerb,
+  TcReferralVerbalApproveRequest,
+  TcReferralVerbalDeclineRequest,
+  TcReferralVerbalReturnRequest,
   TcReferralsStatus,
   TcSmileSimulation,
   TextBlock,
@@ -21133,6 +21180,7 @@ function odToothText(tooth) {
   resolveNotificationLevel,
   safeUrl,
   samplePrintValues,
+  signoffModeRequiresSignoff,
   simulationToRow,
   teethText,
   templateBody,
@@ -21145,6 +21193,7 @@ function odToothText(tooth) {
   validatePrintStyling,
   validatePrintTemplate,
   validateReferralTemplate,
+  verbalDoctorLabel,
   wrapToChars,
   wrapToWidth,
   z
