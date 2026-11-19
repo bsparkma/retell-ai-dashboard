@@ -60,6 +60,7 @@ import {
   type TcReferralDirectoryEntry,
   type TcReferralPolicy,
   type TcReferralSettingsResponse,
+  type TcReferralSignoffMode,
 } from "@shared/tc/referrals";
 
 // ── The form ────────────────────────────────────────────────────────────────
@@ -272,6 +273,57 @@ function PolicyRow({
   );
 }
 
+/**
+ * Verbal sign-off: HOW the doctor signs off, once sign-off is on. 'doctor' =
+ * in the app (a doctor's own approve); 'verbal' = also a tc.full user may
+ * record a named doctor's verbal OK from the hub. Locked under the env pin
+ * (which forces 'doctor').
+ */
+export const SIGNOFF_HOW_CHOICES: ReadonlyArray<{ mode: "doctor" | "verbal"; label: string; help: string }> = [
+  { mode: "doctor", label: "In the app", help: "The doctor approves it themselves, from their sign-off view." },
+  {
+    mode: "verbal",
+    label: "Verbal OK, recorded by staff",
+    help: "A treatment coordinator or office manager may also record the doctor's verbal OK — naming the doctor. The history shows both people.",
+  },
+];
+
+function SignoffHowRow({
+  mode,
+  locked,
+  disabled,
+  onChange,
+}: {
+  mode: TcReferralSignoffMode;
+  locked: boolean;
+  disabled: boolean;
+  onChange: (m: TcReferralSignoffMode) => void;
+}) {
+  return (
+    <fieldset className="py-2 space-y-1" data-testid="ref-signoff-how">
+      <legend className="text-sm font-medium">How the doctor signs off</legend>
+      {SIGNOFF_HOW_CHOICES.map((c) => (
+        <label key={c.mode} className="flex items-start gap-2 text-sm">
+          <input
+            type="radio"
+            name="ref-signoff-how"
+            className="mt-1"
+            value={c.mode}
+            checked={mode === c.mode}
+            disabled={disabled || locked}
+            onChange={() => onChange(c.mode)}
+          />
+          <span>
+            {c.label}
+            <span className="block text-xs text-muted-foreground">{c.help}</span>
+          </span>
+        </label>
+      ))}
+      {locked && <p className="text-[11px] text-muted-foreground">Locked by a safety setting</p>}
+    </fieldset>
+  );
+}
+
 // ── The section ─────────────────────────────────────────────────────────────
 
 export function ReferralsSection({ office }: { office: OfficeId }) {
@@ -334,7 +386,7 @@ export function ReferralsSection({ office }: { office: OfficeId }) {
     }
   }
 
-  async function changePolicy(change: { signoffRequired?: boolean; autosendOnApproval?: boolean }) {
+  async function changePolicy(change: { signoffRequired?: boolean; signoffMode?: TcReferralSignoffMode; autosendOnApproval?: boolean }) {
     setPolicyBusy(true);
     try {
       setSettings(await updateReferralSettings(office, change));
@@ -386,6 +438,14 @@ export function ReferralsSection({ office }: { office: OfficeId }) {
             disabled={!settings.canEdit || policyBusy}
             onChange={(v) => void changePolicy({ signoffRequired: v })}
           />
+          {settings.signoffRequired.value && (
+            <SignoffHowRow
+              mode={settings.signoffMode?.value ?? "doctor"}
+              locked={settings.signoffRequired.source === "env"}
+              disabled={!settings.canEdit || policyBusy}
+              onChange={(m) => void changePolicy({ signoffMode: m })}
+            />
+          )}
           <PolicyRow
             id="ref-autosend"
             label="Send automatically once approved"

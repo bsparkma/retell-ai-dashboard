@@ -157,13 +157,38 @@ function envPins(policy, office) {
 
 async function readSettingsRow(q, office) {
   const res = await q.query(
-    'SELECT office_id, signoff_required, autosend_on_approval, updated_by, updated_at FROM tc_referral_settings WHERE office_id = $1',
+    'SELECT office_id, signoff_required, signoff_mode, autosend_on_approval, updated_by, updated_at FROM tc_referral_settings WHERE office_id = $1',
     [office]
   );
   return res.rows[0] || null;
 }
 
-/** What is in force for one office, and why. */
+/** The sign-off modes (shared TC_REFERRAL_SIGNOFF_MODES; the 1795100000000 CHECK). */
+const SIGNOFF_MODES = Object.freeze(['doctor', 'verbal', 'off']);
+const SIGNOFF_MODE_DEFAULT = 'doctor';
+
+/**
+ * The sign-off MODE in force (referral-verbal-signoff), and why. The env pin
+ * REFERRAL_SIGNOFF_REQUIRED_<OFFICE>=true forces 'doctor' — the strictest — even
+ * over a stored 'verbal'. Then the office's stored mode; then (COMPAT) a row
+ * that carries only the old boolean — true reads 'doctor', false 'off', the
+ * same mapping as the migration's backfill; then the default, 'doctor'.
+ */
+function resolveSignoffMode(office, row) {
+  if (envPins(POLICIES.signoffRequired, office)) return { value: 'doctor', source: 'env' };
+  if (row && SIGNOFF_MODES.includes(row.signoff_mode)) return { value: row.signoff_mode, source: 'office' };
+  if (row && typeof row.signoff_required === 'boolean') {
+    return { value: row.signoff_required ? 'doctor' : 'off', source: 'office' };
+  }
+  return { value: SIGNOFF_MODE_DEFAULT, source: 'default' };
+}
+
+/**
+ * What is in force for one office, and why. signoffRequired is DERIVED from
+ * the mode (doctor / verbal -> true, off -> false, same source), so every
+ * reader of it — the transition table above all — answers exactly as before
+ * for an office in 'doctor' or 'off'.
+ */
 function resolvePolicies(office, row) {
   const out = {};
   for (const [key, policy] of Object.entries(POLICIES)) {
@@ -171,6 +196,9 @@ function resolvePolicies(office, row) {
     else if (row && typeof row[policy.column] === 'boolean') out[key] = { value: row[policy.column], source: 'office' };
     else out[key] = { value: policy.defaultValue, source: 'default' };
   }
+  const mode = resolveSignoffMode(office, row);
+  out.signoffMode = mode;
+  out.signoffRequired = { value: mode.value !== 'off', source: mode.source };
   return out;
 }
 
@@ -189,11 +217,16 @@ async function sendsOnApproval(q, office) {
   return policies.autosendOnApproval.value === true;
 }
 
-/** Upsert the office's stored choice; returns the stored row. */
+/**
+ * Upsert the office's stored choice; returns the stored row. `next.signoffMode`
+ * is the choice; signoff_required is written in step with it (the coherence
+ * CHECK, 1795100000000), so the two columns never disagree.
+ */
 async function upsertSettings(q, office, next, actor) {
+  if (!SIGNOFF_MODES.includes(next.signoffMode)) throw new Error(`referralStore: unknown sign-off mode ${next.signoffMode}`);
   const res = await q.query(
-    `INSERT INTO tc_referral_settings (office_id, signoff_required, autosend_on_approval, updated_by) VALUES ($1, $2, $3, $4) ON CONFLICT (office_id) DO UPDATE SET signoff_required = EXCLUDED.signoff_required, autosend_on_approval = EXCLUDED.autosend_on_approval, updated_by = EXCLUDED.updated_by, updated_at = now() RETURNING office_id, signoff_required, autosend_on_approval, updated_by, updated_at`,
-    [office, next.signoffRequired, next.autosendOnApproval, actor]
+    `INSERT INTO tc_referral_settings (office_id, signoff_required, signoff_mode, autosend_on_approval, updated_by) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (office_id) DO UPDATE SET signoff_required = EXCLUDED.signoff_required, signoff_mode = EXCLUDED.signoff_mode, autosend_on_approval = EXCLUDED.autosend_on_approval, updated_by = EXCLUDED.updated_by, updated_at = now() RETURNING office_id, signoff_required, signoff_mode, autosend_on_approval, updated_by, updated_at`,
+    [office, next.signoffMode !== 'off', next.signoffMode, next.autosendOnApproval, actor]
   );
   return res.rows[0] || null;
 }
@@ -247,6 +280,9 @@ const EVENT_COLS = [
   'chart_note_milestone',
   'chart_note_commlog_num',
   'chart_note_comm_type',
+  // Verbal sign-off (1795100000000): set only on a recorded verbal approve / decline / return.
+  'verbal_provider_id',
+  'verbal_provider_name',
 ];
 
 /** jsonb teeth: pg returns the value; a fake may hold the JSON text. */
@@ -315,6 +351,11 @@ function toEvent(e) {
       e.verb === 'chart_note_written' && e.chart_note_milestone && e.chart_note_commlog_num != null && e.chart_note_comm_type != null
         ? { milestone: e.chart_note_milestone, commLogNum: Number(e.chart_note_commlog_num), commType: Number(e.chart_note_comm_type) }
         : null,
+    // Verbal sign-off: present ONLY on a recorded verbal OK, so every other
+    // event (and every doctor-mode answer) reads exactly as it did before.
+    ...(e.verbal_provider_id && e.verbal_provider_name
+      ? { verbal: { providerId: String(e.verbal_provider_id), providerName: e.verbal_provider_name } }
+      : {}),
   };
 }
 
@@ -457,7 +498,17 @@ async function casStatus(q, { office, referralId, from, to, actor, at }) {
   return res.rows[0] || null;
 }
 
-async function insertEvent(q, { office, referralId, from, to, actor, at, note, verb = null }) {
+async function insertEvent(q, { office, referralId, from, to, actor, at, note, verb = null, verbal = null }) {
+  if (verbal) {
+    // Verbal sign-off: the same row, plus WHICH doctor gave the OK. `actor` is
+    // the person who recorded it. A separate statement, so the ordinary insert
+    // below is byte-for-byte what it always was.
+    await q.query(
+      'INSERT INTO tc_referral_events (event_id, office_id, referral_id, from_status, to_status, actor, at, note, verb, verbal_provider_id, verbal_provider_name) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)',
+      [randomUUID(), office, referralId, from, to, actor, at, note || '', verb, verbal.providerId, verbal.providerName]
+    );
+    return;
+  }
   await q.query(
     `INSERT INTO tc_referral_events (event_id, office_id, referral_id, from_status, to_status, actor, at, note, verb) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
     [randomUUID(), office, referralId, from, to, actor, at, note || '', verb]
@@ -929,6 +980,8 @@ module.exports = {
   setScheduledDate,
   DIRECTORY_COLS,
   POLICIES,
+  SIGNOFF_MODES,
+  resolveSignoffMode,
   sendsOnApproval,
   directoryEmails,
   openSendProblems,

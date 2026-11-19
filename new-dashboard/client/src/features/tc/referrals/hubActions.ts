@@ -32,6 +32,9 @@ import {
   referralDeleteBlocker,
   referralChartMilestones,
   referralNextStatus,
+  TC_REFERRAL_VERBAL_VERBS,
+  type TcReferralSignoffMode,
+  type TcReferralVerbalVerb,
   type TcReferralEvent,
   type TcReferralMoveVerb,
   type TcReferralStatus,
@@ -129,6 +132,26 @@ export function hubActionPlan(
     return { actions: [], signoff, notes };
   }
   return { actions: possible, signoff, notes };
+}
+
+/**
+ * Verbal sign-off (referral-verbal-signoff): the doctor's three moves a tc.full
+ * viewer may RECORD for a named doctor — only when the office's mode is READ
+ * as 'verbal' (null = could not be read = none), only on a referral awaiting
+ * sign-off. UX only: the server reads the mode itself and refuses otherwise.
+ */
+export function hubVerbalVerbs(
+  status: TcReferralStatus,
+  viewer: HubViewer,
+  signoffMode: TcReferralSignoffMode | null,
+): TcReferralVerbalVerb[] {
+  if (signoffMode !== "verbal" || !viewer.tcFull) return [];
+  return TC_REFERRAL_VERBAL_VERBS.filter((v) => referralNextStatus(status, v, { signoffRequired: true }) !== null);
+}
+
+/** The plan's notes, less "waiting for the doctor" when this viewer can record the doctor's OK. */
+export function hubNotesWithVerbal(notes: readonly string[], verbalVerbs: readonly TcReferralVerbalVerb[]): string[] {
+  return verbalVerbs.length > 0 ? notes.filter((n) => n !== HUB_SIGNOFF_WAITING_COPY) : [...notes];
 }
 
 /**

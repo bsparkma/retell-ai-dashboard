@@ -24,6 +24,8 @@ import {
   type TcReferralFieldsEdit,
   type TcReferralHubQuery,
   type TcReferralInput,
+  type TcReferralSignoffMode,
+  type TcReferralVerbalVerb,
 } from "@shared/tc/referrals";
 import type { OfficeId } from "@shared/tc/contract";
 import {
@@ -94,7 +96,7 @@ export async function getReferralSettings(office: OfficeId): Promise<TcReferralS
 
 export async function updateReferralSettings(
   office: OfficeId,
-  change: { signoffRequired?: boolean; autosendOnApproval?: boolean },
+  change: { signoffRequired?: boolean; signoffMode?: TcReferralSignoffMode; autosendOnApproval?: boolean },
 ): Promise<TcReferralSettingsResponse> {
   return parse(
     TcReferralSettingsResponse,
@@ -375,6 +377,42 @@ export async function returnReferral(office: OfficeId, referralId: string, comme
       office,
       method: "POST",
       body: { comment },
+    }),
+  ).referral;
+}
+
+// ── Verbal sign-off (mode 'verbal'): a tc.full user records a doctor's OK ───
+
+/** What each verbal move sends besides the doctor: a note, a reason, a question. */
+export type VerbalSignoffBody =
+  | { verb: "approve"; note?: string }
+  | { verb: "decline"; reason: string }
+  | { verb: "return"; comment: string };
+
+const VERBAL_PATHS: Record<TcReferralVerbalVerb, string> = {
+  approve: "verbal-approve",
+  decline: "verbal-decline",
+  return: "verbal-return",
+};
+
+/**
+ * POST /tc/referrals/:id/verbal-approve | verbal-decline | verbal-return. The
+ * doctor is a provider-directory id. The server refuses (409
+ * SIGNOFF_NOT_VERBAL) unless this office's mode is 'verbal'.
+ */
+export async function verbalSignoff(
+  office: OfficeId,
+  referralId: string,
+  providerId: string,
+  move: VerbalSignoffBody,
+): Promise<TcReferral> {
+  const { verb, ...rest } = move;
+  return parse(
+    ReferralResponse,
+    await tcRequest<unknown>(`/tc/referrals/${referralId}/${VERBAL_PATHS[verb]}`, {
+      office,
+      method: "POST",
+      body: { providerId, ...rest },
     }),
   ).referral;
 }

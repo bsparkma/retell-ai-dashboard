@@ -134,11 +134,42 @@ export const TcReferralPolicy = z.object({
 });
 export type TcReferralPolicy = z.infer<typeof TcReferralPolicy>;
 
+/**
+ * HOW an office signs referrals off (referral-verbal-signoff). Equal to the
+ * CHECK on tc_referral_settings.signoff_mode (1795100000000); its test pins it.
+ *
+ *   doctor  a tc.referral_signoff holder (doctor, admin) signs it in the app.
+ *           The strictest, and the default for a new office.
+ *   verbal  the same — OR any tc.full user records a NAMED doctor's verbal OK
+ *           (approve / decline / send back) from the hub. The history and the
+ *           audit row carry both people: the recorder and the doctor.
+ *   off     submitting approves it; nobody signs.
+ *
+ * signoffRequired is derived: true for doctor and verbal, false for off.
+ */
+export const TC_REFERRAL_SIGNOFF_MODES = ["doctor", "verbal", "off"] as const;
+export const TcReferralSignoffMode = z.enum(TC_REFERRAL_SIGNOFF_MODES);
+export type TcReferralSignoffMode = z.infer<typeof TcReferralSignoffMode>;
+
+/** Does this mode put a referral in front of a doctor before it is approved? */
+export function signoffModeRequiresSignoff(mode: TcReferralSignoffMode): boolean {
+  return mode !== "off";
+}
+
+/** The mode in force, and which layer answered (as TcReferralPolicy). */
+export const TcReferralSignoffModePolicy = z.object({
+  value: TcReferralSignoffMode,
+  source: z.enum(["env", "office", "default"]),
+});
+export type TcReferralSignoffModePolicy = z.infer<typeof TcReferralSignoffModePolicy>;
+
 /** GET /api/tc/referrals/settings */
 export const TcReferralSettingsResponse = z.object({
   success: z.literal(true),
   office: z.enum(["roland", "valley"]),
   signoffRequired: TcReferralPolicy,
+  /** The mode signoffRequired is derived from. Optional only for an older server. */
+  signoffMode: TcReferralSignoffModePolicy.optional(),
   autosendOnApproval: TcReferralPolicy,
   /** Admin-only for now: may this user change the two policies? */
   canEdit: z.boolean(),
@@ -150,11 +181,17 @@ export type TcReferralSettingsResponse = z.infer<typeof TcReferralSettingsRespon
 /** PUT /api/tc/referrals/settings — either or both. */
 export const TcReferralSettingsRequest = z
   .object({
+    /** Legacy: true = 'doctor', false = 'off'. Never together with signoffMode. */
     signoffRequired: z.boolean().optional(),
+    signoffMode: TcReferralSignoffMode.optional(),
     autosendOnApproval: z.boolean().optional(),
   })
   .strict()
-  .refine((v) => v.signoffRequired !== undefined || v.autosendOnApproval !== undefined, "Nothing to change");
+  .refine(
+    (v) => v.signoffRequired !== undefined || v.signoffMode !== undefined || v.autosendOnApproval !== undefined,
+    "Nothing to change",
+  )
+  .refine((v) => v.signoffRequired === undefined || v.signoffMode === undefined, "Send signoffMode or signoffRequired, not both");
 export type TcReferralSettingsRequest = z.infer<typeof TcReferralSettingsRequest>;
 
 /**
@@ -516,6 +553,12 @@ export const TcReferralEvent = z.object({
   correspondence: TcReferralCorrespondenceKind.nullable().optional(),
   /** R6.10: on a `chart_note_written` row, the milestone and the commlog. null otherwise. */
   chartNote: TcReferralChartNoteRecord.nullable().optional(),
+  /**
+   * Verbal sign-off: on an approve / decline / return a tc.full user RECORDED
+   * for a doctor, the doctor (provider directory id + the name as it read
+   * then). `actor` is the recorder. Absent on every other row.
+   */
+  verbal: z.object({ providerId: z.string().uuid(), providerName: z.string() }).optional(),
 });
 export type TcReferralEvent = z.infer<typeof TcReferralEvent>;
 
@@ -850,6 +893,33 @@ export const TcReferralReturnRequest = z
   .object({ comment: z.string().trim().min(1, "Say what you need").max(1000) })
   .strict();
 export type TcReferralReturnRequest = z.infer<typeof TcReferralReturnRequest>;
+
+/**
+ * Verbal sign-off (mode 'verbal' only): POST /api/tc/referrals/:id/verbal-approve
+ * | verbal-decline | verbal-return. The doctor is PICKED from the office's
+ * active provider directory — an id, never free text. The rest is the same as
+ * the doctor's own move: an optional note to approve, a reason to decline, a
+ * question to send back.
+ */
+const VerbalProvider = { providerId: z.string().uuid("Pick the doctor who gave the OK") };
+export const TcReferralVerbalApproveRequest = z
+  .object({ ...VerbalProvider, note: z.string().trim().max(500).optional() })
+  .strict();
+export type TcReferralVerbalApproveRequest = z.infer<typeof TcReferralVerbalApproveRequest>;
+export const TcReferralVerbalDeclineRequest = TcReferralDeclineRequest.extend(VerbalProvider).strict();
+export type TcReferralVerbalDeclineRequest = z.infer<typeof TcReferralVerbalDeclineRequest>;
+export const TcReferralVerbalReturnRequest = TcReferralReturnRequest.extend(VerbalProvider).strict();
+export type TcReferralVerbalReturnRequest = z.infer<typeof TcReferralVerbalReturnRequest>;
+
+/** The verbs a verbal OK can stand behind — the doctor's three. */
+export const TC_REFERRAL_VERBAL_VERBS = ["approve", "decline", "return"] as const;
+export type TcReferralVerbalVerb = (typeof TC_REFERRAL_VERBAL_VERBS)[number];
+
+/** "Dr. X" — the directory name, with the title unless it already has one. */
+export function verbalDoctorLabel(providerName: string): string {
+  const n = providerName.trim();
+  return /^dr\.?\s/i.test(n) ? n : `Dr. ${n}`;
+}
 
 /** POST /api/tc/referrals/:id/mark-sent — how / where it went, in a few words. */
 export const TcReferralMarkSentRequest = z
