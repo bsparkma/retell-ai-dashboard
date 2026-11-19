@@ -137,41 +137,30 @@ class FakeControlPlane {
       const t = this.tenants.find((x) => x.slug === params[0]);
       return ok(t ? this.offices.filter((o) => o.tenant_id === t.tenant_id) : []);
     }
-    if (sql.startsWith('INSERT INTO office_setting')) {
+    // MT-2d single writer (registry.setOfficeSetting): one row, always re-stamped.
+    if (
+      sql.startsWith('INSERT INTO office_setting') &&
+      sql.endsWith('RETURNING office_key, setting_key, value, updated_at, updated_by')
+    ) {
       if (this.fail.officeUpsert) throw new Error('forced office_setting failure');
-      const [tenantId, officeKey, settingKey, json, by, forOffice] = /** @type {[string, string, string, string, string|null, string|null]} */ (params);
+      const [tenantId, officeKey, settingKey, json, by] = /** @type {[string, string, string, string, string|null]} */ (params);
       if (!this.offices.some((o) => o.tenant_id === tenantId && o.office_key === officeKey)) {
         const err = /** @type {Error & { code?: string }} */ (new Error('office_setting_office_fkey'));
         err.code = '23503';
         throw err;
       }
-      const id = `${tenantId}|${officeKey}|${settingKey}`;
-      const value = JSON.parse(json);
-      const existing = this.officeSetting.get(id);
-      if (
-        !existing ||
-        JSON.stringify(existing.value) !== JSON.stringify(value) ||
-        (forOffice !== null && existing.office_key === forOffice)
-      ) {
-        this.officeSetting.set(id, {
-          tenant_id: tenantId,
-          office_key: officeKey,
-          setting_key: settingKey,
-          value,
-          updated_at: this.now(),
-          updated_by: by,
-        });
-      }
-      return ok([]);
-    }
-    if (sql.startsWith('DELETE FROM office_setting WHERE tenant_id = $1 AND setting_key = $2')) {
-      const [tenantId, settingKey, keep] = /** @type {[string, string, string[]]} */ (params);
-      for (const [id, r] of [...this.officeSetting]) {
-        if (r.tenant_id === tenantId && r.setting_key === settingKey && !keep.includes(r.office_key)) {
-          this.officeSetting.delete(id);
-        }
-      }
-      return ok([]);
+      const row = {
+        tenant_id: tenantId,
+        office_key: officeKey,
+        setting_key: settingKey,
+        value: JSON.parse(json),
+        updated_at: this.now(),
+        updated_by: by,
+      };
+      this.officeSetting.set(`${tenantId}|${officeKey}|${settingKey}`, row);
+      return ok([
+        { office_key: row.office_key, setting_key: row.setting_key, value: row.value, updated_at: row.updated_at, updated_by: row.updated_by },
+      ]);
     }
     if (sql.startsWith('SELECT office_key, value FROM office_setting WHERE tenant_id = $1 AND setting_key = $2')) {
       const [tenantId, settingKey] = /** @type {[string, string]} */ (params);
@@ -215,8 +204,10 @@ class FakeControlPlane {
 }
 
 /**
- * TESTS ONLY (MT-2b). Many suites drive a per-office switch by stubbing
- * `registry.getPlatformSetting`. Since MT-2b the readers SERVE office_setting,
+ * TESTS ONLY (MT-2b; MT-2d). Many suites drive a per-office switch by stubbing
+ * `registry.getPlatformSetting` / `setPlatformSetting` — in those suites that
+ * stub is simply the test's settings STORE, not the production table. Since
+ * MT-2b the readers SERVE office_setting,
  * which they read through `registry.listOfficeSettings`. This installs a
  * `listOfficeSettings` that derives tenant 'carein's office_setting rows from
  * whatever the suite's getPlatformSetting stub answers AT READ TIME, through
@@ -230,16 +221,43 @@ class FakeControlPlane {
  * whose stub throws is read as "no row for that key"; only when EVERY key
  * throws does this throw — the suite is simulating an unreachable control plane.
  *
- * It changes no assertion and no stubbed value: the suite's stub stays the one
- * source of the test's settings. Returns a restore function.
+ * WRITES (MT-2d). The readers' persist functions now call
+ * `registry.setOfficeSetting(tenant, office, key, value, by)` — one office.
+ * This also installs a `setOfficeSetting` that folds that one office's value
+ * into the suite's stub store (its getPlatformSetting map, written back through
+ * its setPlatformSetting stub), so the suite's store stays the one source of
+ * its settings and its write counters still count one write per save. It only
+ * stands in for office_setting inside such a suite; the production
+ * single-writer path is pinned against the in-memory control plane in
+ * officeSettingsSingleWriter.test.js.
  *
- * @param {{ getPlatformSetting: (key: string) => Promise<unknown>, listOfficeSettings: unknown }} registry
+ * It changes no stubbed value. Returns a restore function.
+ *
+ * @param {{ getPlatformSetting: (key: string) => Promise<unknown>,
+ *           setPlatformSetting: (key: string, value: unknown, by?: string|null) => Promise<unknown>,
+ *           listOfficeSettings: unknown, setOfficeSetting: unknown }} registry
  * @param {{ tenantSlug?: string }} [opts]
  * @returns {() => void}
  */
 function mirrorPlatformStubIntoOfficeSettings(registry, opts = {}) {
   const tenantSlug = opts.tenantSlug || 'carein';
   const { OFFICE_SETTING_KEYS, mirrorEntries } = require('./officeSettingKeys');
+  const savedSet = /** @type {Function} */ (registry.setOfficeSetting);
+  registry.setOfficeSetting = async (slug, officeKey, settingKey, value, updatedBy = null) => {
+    // An in-memory control plane is installed: the REAL single writer runs.
+    if (registry === realRegistry && testPoolInstalled) {
+      return savedSet.call(registry, slug, officeKey, settingKey, value, updatedBy);
+    }
+    if (slug !== tenantSlug) throw new Error(`test store holds tenant '${tenantSlug}' only, not '${slug}'`);
+    const current = /** @type {{ value?: unknown }|null} */ (await registry.getPlatformSetting(settingKey));
+    const base =
+      current && current.value && typeof current.value === 'object' && !Array.isArray(current.value)
+        ? { .../** @type {Record<string, unknown>} */ (current.value) }
+        : {};
+    base[officeKey] = value;
+    await registry.setPlatformSetting(settingKey, base, updatedBy);
+    return { office_key: officeKey, setting_key: settingKey, value, updated_at: new Date(), updated_by: updatedBy };
+  };
   const saved = registry.listOfficeSettings;
   registry.listOfficeSettings = async (slug) => {
     // An in-memory control plane is installed on the real registry: read ITS
@@ -275,6 +293,7 @@ function mirrorPlatformStubIntoOfficeSettings(registry, opts = {}) {
   };
   return () => {
     registry.listOfficeSettings = saved;
+    registry.setOfficeSetting = savedSet;
   };
 }
 

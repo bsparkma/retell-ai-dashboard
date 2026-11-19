@@ -318,18 +318,14 @@ async function refreshFromDb(tenantSlug) {
 /**
  * Store a new value for ONE office and adopt it immediately.
  *
- * READ-MODIFY-WRITE against the DATABASE, not against a cache: a runbook may
- * have written the row directly since the last refresh, and flipping roland
- * must not silently revert valley to whatever we last saw. Unknown office keys
- * already in the platform_setting map are PRESERVED rather than dropped.
+ * MT-2d: ONE office_setting row (registry.setOfficeSetting) and nothing else.
+ * Flipping roland never reads or rewrites valley's row, so a runbook write to
+ * valley since the last refresh cannot be reverted by it. platform_setting is
+ * not touched. The cache is then refreshed FROM office_setting and the served
+ * row must read back as asked, so what the console reports is what is served.
  *
- * The registry writes platform_setting AND office_setting in one transaction
- * (MT-2a, kept for rollback). The cache is then refreshed FROM office_setting
- * and the served row must read back as asked, so what the console reports is
- * what is served.
- *
- * Tenant 'carein' only until MT-2d: platform_setting holds no other tenant's
- * settings, and writing another tenant's switch into it would write carein's.
+ * Tenant 'carein' only (unchanged by MT-2d; opening other tenants is a
+ * separate decision).
  *
  * @param {string} tenantSlug
  * @param {string} officeKey
@@ -360,14 +356,7 @@ async function persistHygEnabled(tenantSlug, officeKey, enabled, updatedBy = nul
     throw err;
   }
 
-  const current = await registry.getPlatformSetting(SETTING_KEY);
-  const base =
-    current && current.value && typeof current.value === 'object' && !Array.isArray(current.value)
-      ? /** @type {Record<string, unknown>} */ ({ ...current.value })
-      : {};
-  base[officeKey] = enabled;
-
-  await registry.setPlatformSetting(SETTING_KEY, base, updatedBy, { officeKey });
+  await registry.setOfficeSetting(tenantSlug, officeKey, SETTING_KEY, enabled, updatedBy);
 
   const refreshed = await refreshFromDb(tenantSlug);
   if (!refreshed.ok || storedFor(tenantSlug, officeKey) !== enabled) {

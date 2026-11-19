@@ -55,8 +55,10 @@ async function boot(t, { role = 'admin', db = new FakeTenantDb(), env = {}, user
   Object.assign(process.env, env);
   const cp = { row: null, fail: false, writes: 0, tamper: null };
   registry.getPlatformSetting = async (key) => {
-    if (key !== emailIdentity.SETTING_KEY) return null;
+    // MT-2d: "down" fails EVERY key, as an unreachable control plane does (was
+    // checked after the key filter, which only the old persist's direct read hit).
     if (cp.fail) throw new Error('control plane down');
+    if (key !== emailIdentity.SETTING_KEY) return null;
     return cp.row ? { ...cp.row, value: JSON.parse(JSON.stringify(cp.row.value)) } : null;
   };
   registry.setPlatformSetting = async (key, value, by) => {
