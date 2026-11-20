@@ -15,6 +15,9 @@
  *      Dental client and no AI client
  *   V  answer validation: one refusal code per failure, normalization
  *   M  merge resolution leaves unset fields as {{tokens}} and lists them
+ *   W  1.2.0 wording: no answer-owned {{token}}, no [[slot]], no stray brace,
+ *      no review_referral email in any golden case; a set scheduling link is
+ *      printed where the library says; the retired-key list is review_link only
  */
 
 const assert = require('node:assert/strict');
@@ -28,7 +31,7 @@ const library = require('./index');
 const { compose } = require('./compose');
 const contract = require('../../tc/contract.gen.cjs');
 
-const SOURCE_SHA256 = '8dd80e2e89b966b4b54a67a1a69c42bf8dc72b51e13d104265cbd504231ce5aa';
+const SOURCE_SHA256 = '21a063957b4e075ef01c77071a8a48adffe7aab29262d28ef00f4966e35d4033';
 const golden = JSON.parse(fs.readFileSync(path.join(__dirname, '__fixtures__', 'golden.json'), 'utf8'));
 /** A fresh, unfrozen parse: the golden test must not depend on the module's copy. */
 const freshSource = () => JSON.parse(fs.readFileSync(path.join(__dirname, 'source.json'), 'utf8'));
@@ -49,10 +52,8 @@ test('G: every golden case reproduces exactly', () => {
     assert.equal(out.length, c.email_count, `${c.name}: email count`);
     assert.equal(new Set(out.map((e) => e.procedure_id)).size, c.procedure_count, `${c.name}: procedures`);
     assert.equal(new Set(out.map((e) => e.stage)).size, c.stages, `${c.name}: stages`);
-    const unresolvedTokens = out.filter((e) => /\[\[\w+\]\]/.test(e.subject + e.preheader + e.body_text)).length;
-    assert.equal(unresolvedTokens, c.unresolved_token_emails, `${c.name}: emails with an unfilled [[TOKEN]]`);
-    assert.equal(out[0].id, c.first_id);
-    assert.equal(out[out.length - 1].id, c.last_id);
+    const mergeFields = [...new Set(out.flatMap((e) => e.merge_fields))].sort();
+    assert.deepEqual(mergeFields, c.merge_fields, `${c.name}: merge fields printed anywhere`);
   }
 });
 
@@ -212,8 +213,10 @@ test('V: one refusal code per failure', () => {
     [{ schedule_link: 'http://book.example.test' }, C.LINK, 'schedule_link'],
     [{ schedule_link: 'book.example.test' }, C.LINK, 'schedule_link'],
     [{ schedule_link: 'https://book.example.test/a b' }, C.LINK, 'schedule_link'],
-    [{ review_link: `https://r.example.test/${'x'.repeat(300)}` }, C.LINK, 'review_link'],
-    [{ review_link: 'javascript:alert(1)' }, C.LINK, 'review_link'],
+    [{ schedule_link: `https://r.example.test/${'x'.repeat(300)}` }, C.LINK, 'schedule_link'],
+    [{ schedule_link: 'javascript:alert(1)' }, C.LINK, 'schedule_link'],
+    // Retired in 1.2.0: not a question any more, so an unknown key.
+    [{ review_link: 'https://review.example.test' }, C.UNKNOWN_KEY, 'review_link'],
   ];
   for (const [input, code, key] of cases) {
     const r = v(input);
@@ -261,11 +264,52 @@ test('M: unresolved merge fields stay as tokens and are listed', () => {
   assert.deepEqual(r.unresolved, ['office_phone', 'schedule_link']);
 });
 
-test('M: missing settings name the stages that print each', () => {
-  const missing = library.missingSettings({});
-  assert.deepEqual(missing.map((m) => m.field), ['schedule_link', 'doctor_name', 'review_link']);
-  assert.deepEqual(missing.find((m) => m.field === 'review_link').stages, ['review_referral']);
-  assert.ok(missing.find((m) => m.field === 'schedule_link').stages.includes('tp_recap'));
-  const set = library.missingSettings({ schedule_link: 'https://book.example.test', doctor_name: 'Dr. Sample', review_link: 'https://review.example.test' });
-  assert.deepEqual(set, []);
+test('M: missing lists only a setting an email still prints as a token; blankOptional lists the blank ones', () => {
+  // 1.2.0 writes both settings into the text, so nothing is missing even blank.
+  assert.deepEqual(library.missingSettings({}), []);
+  assert.deepEqual(library.blankOptionalSettings({}), ['schedule_link', 'doctor_name']);
+  assert.deepEqual(library.blankOptionalSettings({ doctor_name: 'Dr. Sample' }), ['schedule_link']);
+  assert.deepEqual(library.blankOptionalSettings({ schedule_link: 'https://book.example.test', doctor_name: '  ' }), ['doctor_name']);
+  const set = { schedule_link: 'https://book.example.test', doctor_name: 'Dr. Sample' };
+  assert.deepEqual(library.missingSettings(set), []);
+  assert.deepEqual(library.blankOptionalSettings(set), []);
+});
+
+/** Text outside every {{merge}} token. */
+const outsideMerge = (text) => text.replace(/\{\{\w+\}\}/g, '');
+
+test('W: no golden case prints an answer-owned token, a [[slot]], a stray brace or a review request', () => {
+  for (const c of golden.cases) {
+    const out = compose(freshSource(), c.answers);
+    for (const e of out) {
+      for (const [part, text] of [['subject', e.subject], ['preheader', e.preheader], ['body', e.body_text]]) {
+        const where = `${c.name}: ${e.id} ${part}`;
+        for (const token of ['{{schedule_link}}', '{{doctor_name}}', '{{review_link}}']) assert.ok(!text.includes(token), `${where} prints ${token}`);
+        assert.ok(!text.includes('[['), `${where} has a [[ slot left`);
+        assert.ok(!/[{}]/.test(outsideMerge(text)), `${where} has a brace outside a {{merge}} token`);
+      }
+      assert.notEqual(e.stage, 'review_referral', `${c.name}: ${e.id}`);
+    }
+  }
+  const src = freshSource();
+  assert.ok(!src.stages.some((s) => s.id === 'review_referral'));
+  assert.ok(!src.questions.some((q) => q.id === 'review_link'));
+  assert.ok(!src.merge_fields.some((m) => m.name === 'review_link'));
+});
+
+test('W: a set scheduling link is printed in tp_recap A, objection_time B and last_touch C', () => {
+  const url = 'https://book.example.test/sample';
+  for (const [stage, variant] of [['tp_recap', 'A'], ['objection_time', 'B'], ['last_touch', 'C']]) {
+    const e = library.composeOne({ procedureId: 'crown', stage, variant }, { schedule_link: url });
+    assert.ok(e.body_text.includes(url), `crown ${stage} ${variant} prints the link`);
+    const blank = library.composeOne({ procedureId: 'crown', stage, variant }, {});
+    assert.ok(!blank.body_text.includes('book.example.test'), `crown ${stage} ${variant} blank: no link`);
+    assert.ok(!/book online/i.test(blank.body_text), `crown ${stage} ${variant} blank: no online-booking sentence`);
+  }
+});
+
+test('W: the retired saved key list is review_link only, and none of it is an answer key', () => {
+  assert.deepEqual([...contract.EMAIL_LIBRARY_RETIRED_SAVED_KEYS], ['review_link']);
+  for (const k of contract.EMAIL_LIBRARY_RETIRED_SAVED_KEYS) assert.ok(!contract.EMAIL_LIBRARY_ANSWER_KEYS.includes(k), k);
+  assert.deepEqual([...contract.EMAIL_LIBRARY_MERGE_SETTINGS], ['schedule_link', 'doctor_name']);
 });

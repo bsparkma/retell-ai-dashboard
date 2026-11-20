@@ -14855,6 +14855,7 @@ __export(contract_entry_exports, {
   EMAIL_LIBRARY_NEVER_STORED: () => EMAIL_LIBRARY_NEVER_STORED,
   EMAIL_LIBRARY_PREVIEW_SAMPLES: () => EMAIL_LIBRARY_PREVIEW_SAMPLES,
   EMAIL_LIBRARY_PROCEDURE_IDS: () => EMAIL_LIBRARY_PROCEDURE_IDS,
+  EMAIL_LIBRARY_RETIRED_SAVED_KEYS: () => EMAIL_LIBRARY_RETIRED_SAVED_KEYS,
   EMAIL_LIBRARY_SELECT_OPTIONS: () => EMAIL_LIBRARY_SELECT_OPTIONS,
   EMAIL_LIBRARY_TEXT_MAX: () => EMAIL_LIBRARY_TEXT_MAX,
   EMAIL_LIBRARY_VARIANTS: () => EMAIL_LIBRARY_VARIANTS,
@@ -20779,7 +20780,7 @@ var EMAIL_LIBRARY_TEXT_MAX = {
   membership_name: 120,
   aligner_brand: 120
 };
-var EMAIL_LIBRARY_LINK_KEYS = ["schedule_link", "review_link"];
+var EMAIL_LIBRARY_LINK_KEYS = ["schedule_link"];
 var EMAIL_LIBRARY_LINK_MAX = 300;
 var EMAIL_LIBRARY_CANCEL_HOURS = { key: "cancel_hours", min: 1, max: 168 };
 var EMAIL_LIBRARY_PROCEDURE_IDS = [
@@ -20821,7 +20822,8 @@ var EMAIL_LIBRARY_PROCEDURE_IDS = [
   "emergency_followup"
 ];
 var EMAIL_LIBRARY_VARIANTS = ["A", "B", "C"];
-var EMAIL_LIBRARY_MERGE_SETTINGS = ["schedule_link", "doctor_name", "review_link"];
+var EMAIL_LIBRARY_MERGE_SETTINGS = ["schedule_link", "doctor_name"];
+var EMAIL_LIBRARY_RETIRED_SAVED_KEYS = ["review_link"];
 var EMAIL_LIBRARY_PREVIEW_SAMPLES = {
   first_name: "Jordan",
   appointment_date: "Tuesday, March 3",
@@ -20873,7 +20875,6 @@ var EmailLibraryAnswers = import_zod19.z.object({
   membership_name: textField(EMAIL_LIBRARY_TEXT_MAX.membership_name).optional(),
   aligner_brand: textField(EMAIL_LIBRARY_TEXT_MAX.aligner_brand).optional(),
   schedule_link: linkField.optional(),
-  review_link: linkField.optional(),
   cancel_hours: import_zod19.z.string().refine((v) => CANCEL_HOURS_SHAPE.test(v) && Number(v) >= EMAIL_LIBRARY_CANCEL_HOURS.min && Number(v) <= EMAIL_LIBRARY_CANCEL_HOURS.max).optional(),
   services_off: multiField(EMAIL_LIBRARY_PROCEDURE_IDS).optional()
 }).strict();
@@ -21039,7 +21040,10 @@ var EmailLibraryProfileResponse = import_zod19.z.object({
   libraryVersion: import_zod19.z.string().nullable(),
   updatedBy: import_zod19.z.string().nullable(),
   updatedAt: import_zod19.z.string().nullable(),
+  /** Settings some composed email still prints as a {{token}} (normally none since 1.2.0). */
   missing: import_zod19.z.array(EmailLibraryMissingSetting),
+  /** The optional settings this office has left blank (server-computed; the wording works without them). */
+  blankOptional: import_zod19.z.array(import_zod19.z.enum(EMAIL_LIBRARY_MERGE_SETTINGS)),
   /** May this viewer save? (admin.all) — UX only; the server enforces it. */
   canEdit: import_zod19.z.boolean()
 }).strict();
@@ -21139,6 +21143,7 @@ function odToothText(tooth) {
   EMAIL_LIBRARY_NEVER_STORED,
   EMAIL_LIBRARY_PREVIEW_SAMPLES,
   EMAIL_LIBRARY_PROCEDURE_IDS,
+  EMAIL_LIBRARY_RETIRED_SAVED_KEYS,
   EMAIL_LIBRARY_SELECT_OPTIONS,
   EMAIL_LIBRARY_TEXT_MAX,
   EMAIL_LIBRARY_VARIANTS,

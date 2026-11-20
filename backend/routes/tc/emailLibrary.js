@@ -9,8 +9,9 @@
  *                           procedures this office provides, stages, tones,
  *                           sequences and the questionnaire (minus office_name
  *                           and office_phone)
- *   GET  /profile?office=   the saved answers, and which answer-owned merge
- *                           settings are unset and which stages print them
+ *   GET  /profile?office=   the saved answers; `missing` (a setting some email
+ *                           still prints as its {{token}}, normally none) and
+ *                           `blankOptional` (the optional settings left blank)
  *   PUT  /profile?office=   { answers } — whole-object replace. Validated (one
  *                           refusal code per failure), upserted and read back in
  *                           ONE tenant transaction, audited. Practice admins only.
@@ -34,12 +35,20 @@
  *   first_name                  the fixed sample "Jordan"
  *   sender_name                 the signed-in user's display name
  *   appointment_date / _time    fixed samples
- *   doctor_name, schedule_link,
- *   review_link                 the answers
+ *   doctor_name, schedule_link  the answers (since library 1.2.0 the composer
+ *                               writes both into the text, so they are normally
+ *                               not tokens any more; kept for any that are)
  * Anything without a value stays as its {{token}} and is listed in
  * `unresolved` — never blank, never invented. An unconfigured phone counts as
  * unset (officeMergeValues' "the office" fallback is send-time copy, and the
  * preview's job is to show the office what it has not set).
+ *
+ * RETIRED SAVED KEYS. A profile saved under an older library version may hold a
+ * key that version retired (EMAIL_LIBRARY_RETIRED_SAVED_KEYS: review_link, gone
+ * in 1.2.0). Every READ strips exactly those before validating, so the office
+ * is not locked out with the STALE 409; the row is not rewritten, and the key
+ * disappears at the office's next save. A PUT that sends one is still refused
+ * as an unknown key, and any other unknown saved key is still STALE.
  */
 
 const express = require('express');
@@ -58,6 +67,7 @@ const {
   EmailLibraryProfilePutRequest,
   EmailLibraryPreviewRequest,
   EMAIL_LIBRARY_PREVIEW_SAMPLES,
+  EMAIL_LIBRARY_RETIRED_SAVED_KEYS,
   validateEmailLibraryAnswers,
 } = contract;
 
@@ -87,11 +97,24 @@ async function loadSaved(req) {
 }
 
 /**
+ * A saved answers object without the keys a later library retired. Read-side
+ * only: the row itself is left as it is.
+ * @param {unknown} answers
+ * @returns {unknown}
+ */
+function withoutRetiredKeys(answers) {
+  if (answers === null || typeof answers !== 'object' || Array.isArray(answers)) return answers;
+  const out = { .../** @type {Record<string, unknown>} */ (answers) };
+  for (const key of EMAIL_LIBRARY_RETIRED_SAVED_KEYS) delete out[key];
+  return out;
+}
+
+/**
  * @param {import('express').Request} req
  * @param {Awaited<ReturnType<typeof profileStore.readProfile>>} stored
+ * @param {Record<string, unknown>} answers the stored answers, validated
  */
-function profileBody(req, stored) {
-  const answers = stored ? stored.answers : {};
+function profileBody(req, stored, answers) {
   return {
     success: true,
     office: req.tcOffice,
@@ -101,13 +124,15 @@ function profileBody(req, stored) {
     updatedBy: stored ? stored.updatedBy : null,
     updatedAt: stored ? iso(stored.updatedAt) : null,
     missing: library.missingSettings(answers),
+    blankOptional: library.blankOptionalSettings(answers),
     canEdit: holdsPermission(req, 'admin.all'),
   };
 }
 
 /**
- * Saved answers re-validated. A row is only ever written validated, so a
- * failure here means the library changed under it.
+ * Saved answers re-validated, after dropping the retired keys. A row is only
+ * ever written validated, so a failure here means the library changed under it
+ * in a way this version does not tolerate.
  * @param {import('express').Request} req
  * @param {import('express').Response} res
  * @returns {Promise<{ stored: Awaited<ReturnType<typeof profileStore.readProfile>>, answers: Record<string, unknown> } | null>}
@@ -115,7 +140,7 @@ function profileBody(req, stored) {
 async function savedAnswersOr409(req, res) {
   const stored = await loadSaved(req);
   if (!stored) return { stored: null, answers: {} };
-  const v = validateEmailLibraryAnswers(stored.answers);
+  const v = validateEmailLibraryAnswers(withoutRetiredKeys(stored.answers));
   if (!v.ok) {
     res.status(409).json({
       success: false,
@@ -146,7 +171,7 @@ router.get(
   h(async (req, res) => {
     const saved = await savedAnswersOr409(req, res);
     if (!saved) return;
-    res.json(profileBody(req, saved.stored));
+    res.json(profileBody(req, saved.stored, saved.answers));
   })
 );
 
@@ -202,7 +227,7 @@ router.put(
       office,
       priorState: outcome.prior ? 'stored' : 'unset',
     });
-    return res.json(profileBody(req, outcome.readBack));
+    return res.json(profileBody(req, outcome.readBack, v.answers));
   })
 );
 
@@ -256,7 +281,6 @@ router.post(
       sender_name: senderName || null,
       doctor_name: typeof answers.doctor_name === 'string' ? answers.doctor_name : null,
       schedule_link: typeof answers.schedule_link === 'string' ? answers.schedule_link : null,
-      review_link: typeof answers.review_link === 'string' ? answers.review_link : null,
     });
     const [subject, preheader, bodyText] = resolved.texts;
 

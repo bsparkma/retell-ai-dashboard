@@ -58,7 +58,7 @@ const q = (over: Partial<EmailLibraryCatalogResponse["questions"][number]> & Pic
 const CATALOG: EmailLibraryCatalogResponse = {
   success: true,
   office: "roland",
-  libraryVersion: "1.1.0",
+  libraryVersion: "1.2.0",
   clinicallyApproved: false,
   status: "DRAFT",
   rulesOfUse: [],
@@ -72,7 +72,7 @@ const CATALOG: EmailLibraryCatalogResponse = {
   ],
   stages: [
     { id: "tp_recap", label: "Treatment recap", phase: "Unscheduled", use: "", inUse: true },
-    { id: "review_referral", label: "Review request", phase: "After", use: "", inUse: true },
+    { id: "post_op_checkin", label: "Post-op check-in", phase: "After", use: "", inUse: true },
   ],
   variants: { A: "Warm and personal", B: "Short and direct", C: "Educational" },
   sequences: [],
@@ -104,7 +104,8 @@ function profile(over: Partial<EmailLibraryProfileResponse> = {}): EmailLibraryP
     libraryVersion: null,
     updatedBy: null,
     updatedAt: null,
-    missing: [{ field: "schedule_link", stages: ["tp_recap"] }],
+    missing: [],
+    blankOptional: ["schedule_link", "doctor_name"],
     canEdit: true,
     ...over,
   };
@@ -124,9 +125,9 @@ function preview(over: Partial<EmailLibraryPreviewResponse> = {}): EmailLibraryP
     answersSource: "saved",
     subject: "Good seeing you, Jordan",
     preheader: "A quick recap of what we talked about.",
-    bodyText: "Hi Jordan,\n\nYou can book online at {{schedule_link}}, or call us at {{office_phone}}.\n\nTC User",
-    mergeFields: ["first_name", "office_phone", "schedule_link", "sender_name"],
-    unresolved: ["office_phone", "schedule_link"],
+    bodyText: "Hi Jordan,\n\nReply to this email or call us at {{office_phone}}.\n\nTC User",
+    mergeFields: ["first_name", "office_phone", "sender_name"],
+    unresolved: ["office_phone"],
     wordCount: 20,
     clinicallyApproved: false,
     ...over,
@@ -157,8 +158,7 @@ describe("/admin/patient-emails", () => {
     fireEvent.click(within(screen.getByTestId("patient-emails-q-same_day_crowns")).getByRole("checkbox"));
     expect(screen.getByTestId("patient-emails-q-same_day_length")).toBeTruthy();
 
-    expect(screen.getByTestId("patient-emails-missing-schedule_link").textContent).toContain("Treatment recap");
-    await waitFor(() => expect(screen.getAllByTestId("patient-emails-unresolved-token").length).toBe(2), { timeout: 2000 });
+    await waitFor(() => expect(screen.getAllByTestId("patient-emails-unresolved-token").length).toBe(1), { timeout: 2000 });
     expect(screen.getByTestId("patient-emails-unresolved").textContent).toContain("{{office_phone}}");
   });
 
@@ -221,6 +221,38 @@ describe("/admin/patient-emails", () => {
     expect(await screen.findByTestId("patient-emails-read-only")).toBeTruthy();
     expect(screen.queryByTestId("patient-emails-save")).toBeNull();
     expect((screen.getByLabelText("Doctor name as it should appear") as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it("blank optional settings are neutral lines, and there is no Not-set box when nothing is missing", async () => {
+    render(<AdminPatientEmails />);
+    await screen.findByTestId("patient-emails-questionnaire");
+    expect(screen.queryByTestId("patient-emails-missing")).toBeNull();
+    expect(screen.getByTestId("patient-emails-blank-schedule_link").textContent).toBe(
+      "No online scheduling link: emails ask patients to reply or call.",
+    );
+    expect(screen.getByTestId("patient-emails-blank-doctor_name").textContent).toBe('No doctor name: emails say "we".');
+    // Neutral, not the amber warning box.
+    expect(screen.getByTestId("patient-emails-blank-optional").className).not.toMatch(/amber/);
+  });
+
+  it("only the blank settings get a line; none when both are set", async () => {
+    apiMock.getEmailLibraryProfile.mockResolvedValue(profile({ saved: true, answers: { doctor_name: "Dr. Sample" }, blankOptional: ["schedule_link"] }));
+    render(<AdminPatientEmails />);
+    await screen.findByTestId("patient-emails-blank-schedule_link");
+    expect(screen.queryByTestId("patient-emails-blank-doctor_name")).toBeNull();
+    cleanup();
+    apiMock.getEmailLibraryProfile.mockResolvedValue(
+      profile({ saved: true, answers: { doctor_name: "Dr. Sample", schedule_link: "https://book.example.test" }, blankOptional: [] }),
+    );
+    render(<AdminPatientEmails />);
+    await screen.findByTestId("patient-emails-questionnaire");
+    expect(screen.queryByTestId("patient-emails-blank-optional")).toBeNull();
+  });
+
+  it("the amber Not-set box shows only when the server lists a setting still printed as a token", async () => {
+    apiMock.getEmailLibraryProfile.mockResolvedValue(profile({ missing: [{ field: "schedule_link", stages: ["tp_recap"] }] }));
+    render(<AdminPatientEmails />);
+    expect((await screen.findByTestId("patient-emails-missing-schedule_link")).textContent).toContain("Treatment recap");
   });
 
   it("no banner once the server says the library is approved", async () => {

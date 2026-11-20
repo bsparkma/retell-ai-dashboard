@@ -3,7 +3,7 @@
  * catalog / profile / preview API shapes.
  *
  * WHAT THIS IS. The library (backend/services/tcEmailLibrary/source.json, frozen
- * and hash-pinned) holds 36 procedure blocks and 57 stage frames. An office's
+ * and hash-pinned) holds 36 procedure blocks and 54 stage frames. An office's
  * answers to the questionnaire below change the WORDING of the emails composed
  * from it, and nothing else: never who is contacted, when, or whether. In this
  * slice the library is configuration plus a preview. Nothing here creates a
@@ -62,7 +62,7 @@ export const EMAIL_LIBRARY_TEXT_MAX = {
 } as const;
 
 /** Link answers: https only, at most this long. */
-export const EMAIL_LIBRARY_LINK_KEYS = ["schedule_link", "review_link"] as const;
+export const EMAIL_LIBRARY_LINK_KEYS = ["schedule_link"] as const;
 export const EMAIL_LIBRARY_LINK_MAX = 300;
 
 /** Hours of notice to change an appointment: an integer string in this range. */
@@ -84,12 +84,31 @@ export const EMAIL_LIBRARY_VARIANTS = ["A", "B", "C"] as const;
 export type EmailLibraryVariant = (typeof EMAIL_LIBRARY_VARIANTS)[number];
 
 /**
- * Merge values that come from the office's ANSWERS (as opposed to the email
- * identity, the signed-in user, or the patient). GET /profile lists which of
- * these are unset and which stages print them.
+ * The OPTIONAL office settings the wording reads from the answers (as opposed to
+ * the email identity, the signed-in user, or the patient). Since library 1.2.0
+ * the composer writes them into the text itself (globals BOOK_ONLINE,
+ * BOOK_BULLET, REACH_ONLINE, DOCTOR): a blank scheduling link drops the
+ * online-booking sentence and a blank doctor name reads "we". So a blank one is
+ * a choice, not a gap. GET /profile reports them twice:
+ *   `missing`        only a setting some composed email still prints as its
+ *                    {{token}} (none, with 1.2.0)
+ *   `blankOptional`  every one of these the office has left blank
  */
-export const EMAIL_LIBRARY_MERGE_SETTINGS = ["schedule_link", "doctor_name", "review_link"] as const;
+export const EMAIL_LIBRARY_MERGE_SETTINGS = ["schedule_link", "doctor_name"] as const;
 export type EmailLibraryMergeSetting = (typeof EMAIL_LIBRARY_MERGE_SETTINGS)[number];
+
+/**
+ * Answer keys a library version has RETIRED, which a profile saved under an
+ * older version may still hold. The server strips exactly these from a SAVED
+ * row before validating it (it does not rewrite the row; the key disappears at
+ * the office's next save), so the office is not locked out with
+ * EMAIL_LIBRARY_SAVED_ANSWERS_STALE. They are NOT answer keys: a PUT or an
+ * unsaved preview that sends one is refused as an unknown key, and any other
+ * unknown saved key still reads as stale.
+ *   review_link   retired in 1.2.0 with the review_referral stage: the library
+ *                 never asks for a review
+ */
+export const EMAIL_LIBRARY_RETIRED_SAVED_KEYS = ["review_link"] as const;
 
 /**
  * The preview's fixed sample values. Clearly synthetic: the preview never
@@ -166,7 +185,6 @@ export const EmailLibraryAnswers = z
     membership_name: textField(EMAIL_LIBRARY_TEXT_MAX.membership_name).optional(),
     aligner_brand: textField(EMAIL_LIBRARY_TEXT_MAX.aligner_brand).optional(),
     schedule_link: linkField.optional(),
-    review_link: linkField.optional(),
     cancel_hours: z
       .string()
       .refine((v) => CANCEL_HOURS_SHAPE.test(v) && Number(v) >= EMAIL_LIBRARY_CANCEL_HOURS.min && Number(v) <= EMAIL_LIBRARY_CANCEL_HOURS.max)
@@ -398,7 +416,10 @@ export const EmailLibraryProfileResponse = z
     libraryVersion: z.string().nullable(),
     updatedBy: z.string().nullable(),
     updatedAt: z.string().nullable(),
+    /** Settings some composed email still prints as a {{token}} (normally none since 1.2.0). */
     missing: z.array(EmailLibraryMissingSetting),
+    /** The optional settings this office has left blank (server-computed; the wording works without them). */
+    blankOptional: z.array(z.enum(EMAIL_LIBRARY_MERGE_SETTINGS)),
     /** May this viewer save? (admin.all) — UX only; the server enforces it. */
     canEdit: z.boolean(),
   })

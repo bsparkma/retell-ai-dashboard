@@ -3,7 +3,7 @@
 /**
  * The TC patient email library (EL-1): WORDING CONFIG + PREVIEW. Nothing more.
  *
- *   source.json   the frozen library (36 procedure blocks x 57 stage frames x
+ *   source.json   the frozen library (36 procedure blocks x 54 stage frames x
  *                 the questionnaire). Byte-identical to the handoff file; its
  *                 sha256 is pinned by tcEmailLibrary.test.js, so a wording change
  *                 is a PR that moves the pin.
@@ -131,9 +131,19 @@ function catalog(office, answers) {
   };
 }
 
+/** @param {Record<string, unknown>} answers @param {string} field */
+function isBlank(answers, field) {
+  const v = answers[field];
+  return !(typeof v === 'string' && v.trim() !== '');
+}
+
 /**
- * The answer-owned merge settings (schedule_link, doctor_name, review_link) this
- * office has not set, and the stages whose emails print each one.
+ * The answer-owned settings (schedule_link, doctor_name) this office has not
+ * set AND that at least one of its composed emails still prints as a
+ * `{{token}}`, with the stages that print each. Since library 1.2.0 the
+ * composer writes both into the text (a blank link drops the booking sentence,
+ * a blank doctor reads "we"), so this is normally empty: a setting is listed
+ * only when the wording would really show a hole.
  * @param {Record<string, unknown>} answers
  * @returns {Array<{ field: string, stages: string[] }>}
  */
@@ -142,14 +152,25 @@ function missingSettings(answers) {
   /** @type {Array<{ field: string, stages: string[] }>} */
   const out = [];
   for (const field of MERGE_SETTINGS) {
-    const v = answers[field];
-    if (typeof v === 'string' && v.trim() !== '') continue;
+    if (!isBlank(answers, field)) continue;
     const stages = new Set();
     for (const e of emails) if (e.merge_fields.includes(field)) stages.add(e.stage);
+    if (stages.size === 0) continue;
     // Source order, so the page lists them as the library does.
     out.push({ field, stages: SOURCE.stages.map((/** @type {any} */ s) => s.id).filter((/** @type {string} */ id) => stages.has(id)) });
   }
   return out;
+}
+
+/**
+ * The optional settings (schedule_link, doctor_name) this office has left
+ * blank, in contract order. Not a warning: the page shows one neutral line per
+ * entry saying how the emails read without it.
+ * @param {Record<string, unknown>} answers
+ * @returns {string[]}
+ */
+function blankOptionalSettings(answers) {
+  return MERGE_SETTINGS.filter((/** @type {string} */ field) => isBlank(answers, field));
 }
 
 class EmailLibraryError extends Error {
@@ -223,5 +244,6 @@ module.exports = {
   composeOne,
   catalog,
   missingSettings,
+  blankOptionalSettings,
   resolveMergeFields,
 };

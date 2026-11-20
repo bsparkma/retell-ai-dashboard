@@ -1,18 +1,23 @@
 {
- "library_version": "1.1.0",
- "source_sha256": "8dd80e2e89b966b4b54a67a1a69c42bf8dc72b51e13d104265cbd504231ce5aa",
- "note": "Each case: compose(source, answers) -> JSON.stringify(result) -> sha256. A port of compose.js must reproduce every hash exactly.",
+ "library_version": "1.2.0",
+ "source_sha256": "21a063957b4e075ef01c77071a8a48adffe7aab29262d28ef00f4966e35d4033",
+ "note": "Each case: compose(source, answers) -> JSON.stringify(result) -> sha256.",
  "cases": [
   {
    "name": "blank",
    "answers": {},
-   "email_count": 1980,
+   "email_count": 1872,
    "procedure_count": 36,
-   "stages": 19,
-   "unresolved_token_emails": 0,
-   "output_sha256": "2429f63d0b7c6a4ee63a1bedbf6b04dec8b516ed8d234c266a12b7979addc48b",
-   "first_id": "filling.tp_recap.A",
-   "last_id": "emergency_followup.review_referral.C"
+   "stages": 18,
+   "merge_fields": [
+    "appointment_date",
+    "appointment_time",
+    "first_name",
+    "office_name",
+    "office_phone",
+    "sender_name"
+   ],
+   "output_sha256": "5f0f28395127bf37d5ed1e24dabcc6356de341c74873f125c57d4658aa30170d"
   },
   {
    "name": "same_day_buffered",
@@ -31,13 +36,18 @@
     ],
     "cancel_hours": "24"
    },
-   "email_count": 1980,
+   "email_count": 1872,
    "procedure_count": 36,
-   "stages": 19,
-   "unresolved_token_emails": 0,
-   "output_sha256": "488c2bf3fe78bfb0046eda0450f5ab78f1a8c49fbad5cb2d8bbd08636e9a74b5",
-   "first_id": "filling.tp_recap.A",
-   "last_id": "emergency_followup.review_referral.C"
+   "stages": 18,
+   "merge_fields": [
+    "appointment_date",
+    "appointment_time",
+    "first_name",
+    "office_name",
+    "office_phone",
+    "sender_name"
+   ],
+   "output_sha256": "30ec60a27bd18da4ce9a3bb7cb0ab4628d835abef04e433c5cf48d93105e7bf1"
   },
   {
    "name": "everything",
@@ -73,13 +83,38 @@
      "sleep_appliance"
     ]
    },
-   "email_count": 1737,
+   "email_count": 1638,
    "procedure_count": 33,
+   "stages": 17,
+   "merge_fields": [
+    "appointment_date",
+    "appointment_time",
+    "first_name",
+    "office_name",
+    "office_phone",
+    "sender_name"
+   ],
+   "output_sha256": "5c035561414447f428d1d047568a874c59e6e816e8a30d794df7b642a22b551e"
+  },
+  {
+   "name": "links_set",
+   "answers": {
+    "schedule_link": "https://book.example.com/valley",
+    "doctor_name": "Dr. Sample",
+    "buffered": true
+   },
+   "email_count": 1872,
+   "procedure_count": 36,
    "stages": 18,
-   "unresolved_token_emails": 0,
-   "output_sha256": "74553b489b32b7de4e1da12ab085658ca74caafba4f9d65c331f7cf42340f5e2",
-   "first_id": "filling.tp_recap.A",
-   "last_id": "emergency_followup.review_referral.C"
+   "merge_fields": [
+    "appointment_date",
+    "appointment_time",
+    "first_name",
+    "office_name",
+    "office_phone",
+    "sender_name"
+   ],
+   "output_sha256": "9c434f80aff58d6db313b45cbfc21faaa68f4ba840c5eb62d0de6457e5072d54"
   }
  ]
 }
