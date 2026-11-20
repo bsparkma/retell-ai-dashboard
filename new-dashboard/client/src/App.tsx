@@ -26,6 +26,7 @@ import Admin from "./pages/Admin";
 import AdminUsers from "./pages/AdminUsers";
 import AdminPrintTemplates from "./pages/AdminPrintTemplates";
 import AdminOfficeSettings from "./pages/AdminOfficeSettings";
+import AdminPatientEmails from "./pages/AdminPatientEmails";
 import Platform from "./pages/Platform";
 import Callbacks from "./pages/Callbacks";
 import RcmToday from "./pages/rcm/RcmToday";
@@ -139,6 +140,11 @@ export function Router() {
         {/* MT-2c (ruling A): this practice's per-office switches. Under
             /admin: admin.all, a card on the hub, no nav tab. */}
         <Route path="/admin/office-settings" component={AdminOfficeSettings} />
+        {/* EL-1: the TC patient email library's wording + preview, per office.
+            A card on the hub, no nav tab. Its OWN ROUTE_PERMISSIONS entry
+            (tc.full) beats /admin's admin.all, so TC staff can read it; saving
+            is admin.all, server-side. Nothing on it sends. */}
+        <Route path="/admin/patient-emails" component={AdminPatientEmails} />
         {/* SC-1: the TC settings page, moved here from /tc/settings so /admin
             is the practice's one settings hub. Gated by its OWN
             ROUTE_PERMISSIONS entry carrying tc.full, exactly what /tc/settings

@@ -9,7 +9,8 @@
  *                      (sections of the TC settings page), Print templates,
  *                      Users & roles
  *   Module settings    Treatment Coordinator (the TC settings page, moved to
- *                      /admin/tc/settings), Voice (Agent Builder, Scheduling,
+ *                      /admin/tc/settings), Patient emails (the TC email
+ *                      library's wording, EL-1), Voice (Agent Builder, Scheduling,
  *                      and the call-notification toggles), RCM (the posting
  *                      switch and its shadow comparison)
  *
@@ -86,6 +87,7 @@ export default function Admin() {
   const practiceCards = cards.filter((c) => c.group === "practice");
   const tcCards = cards.filter((c) => c.group === "module" && c.subgroup === "Treatment Coordinator");
   const voiceCards = cards.filter((c) => c.group === "module" && c.subgroup === "Voice");
+  const emailLibraryCards = cards.filter((c) => c.group === "module" && c.subgroup === "Patient emails");
   const voiceEntitled = hasModule(tenantModules, "voice");
 
   return (
@@ -124,6 +126,14 @@ export default function Admin() {
           <div className="space-y-3" data-testid="admin-module-tc">
             <SubHeading>Treatment Coordinator</SubHeading>
             <CardGrid cards={tcCards} />
+          </div>
+        )}
+
+        {/* EL-1: the patient email library, its own block while it is a draft. */}
+        {emailLibraryCards.length > 0 && (
+          <div className="space-y-3" data-testid="admin-module-tc-email-library">
+            <SubHeading>Patient emails</SubHeading>
+            <CardGrid cards={emailLibraryCards} />
           </div>
         )}
 

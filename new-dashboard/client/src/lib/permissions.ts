@@ -116,6 +116,10 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionAction | readonly Permi
   // can, and nobody else. Never widen admin.all to cover it, and never gate it
   // behind admin.all.
   "/admin/tc/settings": "tc.full",
+  // EL-1: the patient email library's wording. Readable by everyone who holds
+  // tc.full (longest prefix beats "/admin"); the page is read-only without
+  // admin.all, and the server refuses a save without it.
+  "/admin/patient-emails": "tc.full",
   "/tc": "tc.full",
   // The TC Inbox: the ONE /tc page a hygienist may see (read-only — Claim and
   // the case page are tc.full). It moved here from /tc/hygiene/inbox in CO-2
