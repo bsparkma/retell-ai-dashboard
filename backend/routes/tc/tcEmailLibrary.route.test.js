@@ -9,7 +9,11 @@
  *   P  PUT replaces the whole object, reads back, audits one row; GET returns it
  *   V  refusals carry the validator's code and save nothing; office_name and
  *      office_phone are refused
- *   M  GET /profile lists the unset merge settings and the stages that print them
+ *   M  GET /profile: `missing` only for a setting some email still prints as a
+ *      {{token}} (none in 1.2.0); `blankOptional` names the blank optional ones
+ *   R  a saved row carrying a RETIRED key (review_link) reads back without it
+ *      and without the STALE 409, the row untouched; a PUT sending it is
+ *      refused; any other unknown saved key is still STALE
  *   C  the catalog drops office_name / office_phone, follows services_off, and
  *      says clinicallyApproved: false
  *   X  preview: saved or unsaved answers, never persisted; unset merge values
@@ -129,7 +133,7 @@ test('P: PUT replaces the whole object, reads back, audits; GET returns it; offi
   assert.equal(contract.EmailLibraryProfileResponse.safeParse(put.body).success, true, 'the answer matches its contract');
   assert.equal(put.body.saved, true);
   assert.equal(put.body.answers.doctor_name, 'Dr. Sample', 'trimmed');
-  assert.equal(put.body.libraryVersion, '1.1.0');
+  assert.equal(put.body.libraryVersion, '1.2.0');
   assert.equal(put.body.updatedBy, 'tc@carein.ai');
   assert.ok(put.body.updatedAt);
 
@@ -190,7 +194,9 @@ test('V: refusals carry the validator code and save nothing', async (t) => {
     [{ amenities: 'warm {blankets}' }, C.TEXT_FORBIDDEN_CHARACTER, 'amenities'],
     [{ doctor_name: 'x'.repeat(121) }, C.TEXT_TOO_LONG, 'doctor_name'],
     [{ cancel_hours: '200' }, C.CANCEL_HOURS, 'cancel_hours'],
-    [{ review_link: 'http://review.example.test' }, C.LINK, 'review_link'],
+    [{ schedule_link: 'http://book.example.test' }, C.LINK, 'schedule_link'],
+    // Retired in 1.2.0: refused as an unknown key, never stored.
+    [{ review_link: 'https://review.example.test' }, C.UNKNOWN_KEY, 'review_link'],
   ];
   for (const [answers, code, field] of cases) {
     const r = await api(baseUrl, 'PUT', q('/profile'), { answers });
@@ -211,16 +217,106 @@ test('V: refusals carry the validator code and save nothing', async (t) => {
   assert.equal(libAudits(db).length, 0);
 });
 
-test('M: GET /profile lists unset merge settings and the stages that print them', async (t) => {
+test('M: GET /profile with blank answers: nothing missing, both optional settings blank', async (t) => {
   const { baseUrl } = await boot(t);
   const empty = await api(baseUrl, 'GET', q('/profile'));
-  assert.deepEqual(empty.body.missing.map((m) => m.field), ['schedule_link', 'doctor_name', 'review_link']);
-  assert.deepEqual(empty.body.missing.find((m) => m.field === 'review_link').stages, ['review_referral']);
-  assert.deepEqual(empty.body.missing.find((m) => m.field === 'doctor_name').stages, ['why_it_matters']);
+  assert.equal(empty.status, 200);
+  assert.equal(contract.EmailLibraryProfileResponse.safeParse(empty.body).success, true);
+  assert.deepEqual(empty.body.missing, []);
+  assert.deepEqual(empty.body.blankOptional, ['schedule_link', 'doctor_name']);
 
-  await api(baseUrl, 'PUT', q('/profile'), { answers: SAMPLE });
+  await api(baseUrl, 'PUT', q('/profile'), { answers: { doctor_name: 'Dr. Sample' } });
+  const half = await api(baseUrl, 'GET', q('/profile'));
+  assert.deepEqual(half.body.missing, []);
+  assert.deepEqual(half.body.blankOptional, ['schedule_link']);
+
+  const put = await api(baseUrl, 'PUT', q('/profile'), { answers: SAMPLE });
+  assert.deepEqual(put.body.blankOptional, [], 'the PUT read-back carries it too');
   const after = await api(baseUrl, 'GET', q('/profile'));
-  assert.deepEqual(after.body.missing.map((m) => m.field), ['review_link']);
+  assert.deepEqual(after.body.missing, []);
+  assert.deepEqual(after.body.blankOptional, []);
+});
+
+/** A row as an office saved it under library 1.1.0, written straight into the fake store. */
+function seedStoredRow(db, answers, office = 'roland') {
+  profiles(db).push({
+    office_id: office,
+    answers: JSON.stringify(answers),
+    library_version: '1.1.0',
+    updated_by: 'admin@example.test',
+    updated_at: new Date('2026-11-19T15:00:00.000Z'),
+  });
+}
+const storedAnswers = (row) => (typeof row.answers === 'string' ? JSON.parse(row.answers) : row.answers);
+
+test('R: a stored 1.1.0 row carrying review_link reads back without it, with no 409, and is not rewritten', async (t) => {
+  assert.deepEqual([...contract.EMAIL_LIBRARY_RETIRED_SAVED_KEYS], ['review_link']);
+  const db = new ProfileDb();
+  seedStoredRow(db, { cbct: true, schedule_link: 'https://book.example.test/sample', review_link: 'https://review.example.test/sample' });
+  const { baseUrl } = await boot(t, { db });
+
+  const prof = await api(baseUrl, 'GET', q('/profile'));
+  assert.equal(prof.status, 200, JSON.stringify(prof.body));
+  assert.equal(contract.EmailLibraryProfileResponse.safeParse(prof.body).success, true, 'the answer matches its strict contract');
+  assert.deepEqual(prof.body.answers, { cbct: true, schedule_link: 'https://book.example.test/sample' });
+  assert.equal(prof.body.saved, true);
+  assert.equal(prof.body.libraryVersion, '1.1.0', 'reported as saved');
+  assert.deepEqual(prof.body.missing, []);
+  assert.deepEqual(prof.body.blankOptional, ['doctor_name']);
+
+  const cat = await api(baseUrl, 'GET', q('/catalog'));
+  assert.equal(cat.status, 200, JSON.stringify(cat.body));
+
+  const prev = await api(baseUrl, 'POST', q('/preview'), { procedure_id: 'crown', stage: 'tp_recap', variant: 'A' });
+  assert.equal(prev.status, 200, JSON.stringify(prev.body));
+  assert.equal(prev.body.answersSource, 'saved');
+  assert.match(prev.body.bodyText, /https:\/\/book\.example\.test\/sample/);
+  assert.ok(!prev.body.bodyText.includes('review.example.test'));
+
+  // Reads never write: the row still holds the retired key until the next save.
+  assert.equal(profiles(db).length, 1);
+  assert.equal(storedAnswers(profiles(db)[0]).review_link, 'https://review.example.test/sample');
+  assert.equal(libAudits(db).length, 0);
+
+  // The office's next save drops it.
+  const put = await api(baseUrl, 'PUT', q('/profile'), { answers: prof.body.answers });
+  assert.equal(put.status, 200);
+  assert.equal(storedAnswers(profiles(db)[0]).review_link, undefined);
+});
+
+test('R: a PUT sending review_link is refused and saves nothing', async (t) => {
+  const db = new ProfileDb();
+  const { baseUrl } = await boot(t, { db });
+  const r = await api(baseUrl, 'PUT', q('/profile'), { answers: { cbct: true, review_link: 'https://review.example.test' } });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.code, contract.EMAIL_LIBRARY_ANSWER_CODES.UNKNOWN_KEY);
+  assert.equal(r.body.field, 'review_link');
+  const p = await api(baseUrl, 'POST', q('/preview'), {
+    procedure_id: 'crown',
+    stage: 'tp_recap',
+    variant: 'A',
+    answers: { review_link: 'https://review.example.test' },
+  });
+  assert.equal(p.status, 400, 'unsaved preview answers are not tolerated either');
+  assert.equal(p.body.code, contract.EMAIL_LIBRARY_ANSWER_CODES.UNKNOWN_KEY);
+  assert.equal(profiles(db).length, 0);
+});
+
+test('R: any other unknown saved key is still the STALE 409', async (t) => {
+  const db = new ProfileDb();
+  seedStoredRow(db, { cbct: true, review_link: 'https://review.example.test', favorite_color: 'blue' });
+  const { baseUrl } = await boot(t, { db });
+  const calls = [
+    ['GET', '/profile', undefined],
+    ['GET', '/catalog', undefined],
+    ['POST', '/preview', { procedure_id: 'crown', stage: 'tp_recap', variant: 'A' }],
+  ];
+  for (const [method, path, body] of calls) {
+    const r = await api(baseUrl, method, q(path), body);
+    assert.equal(r.status, 409, method + ' ' + path);
+    assert.equal(r.body.code, 'EMAIL_LIBRARY_SAVED_ANSWERS_STALE');
+    assert.equal(r.body.field, 'favorite_color');
+  }
 });
 
 test('C: the catalog drops the office fields, follows services_off, and is unapproved', async (t) => {
@@ -229,12 +325,14 @@ test('C: the catalog drops the office fields, follows services_off, and is unapp
   assert.equal(before.status, 200);
   assert.equal(contract.EmailLibraryCatalogResponse.safeParse(before.body).success, true);
   assert.equal(before.body.clinicallyApproved, false);
-  assert.equal(before.body.libraryVersion, '1.1.0');
+  assert.equal(before.body.libraryVersion, '1.2.0');
   assert.equal(before.body.procedures.length, 36);
-  assert.equal(before.body.emailCount, 1980);
+  assert.equal(before.body.emailCount, 1872);
   const ids = before.body.questions.map((x) => x.id);
   assert.ok(!ids.includes('office_name') && !ids.includes('office_phone'));
-  assert.equal(ids.length, 20, 'the source has 22 questions; two are the office fields');
+  assert.ok(!ids.includes('review_link'), 'the review-link question is gone');
+  assert.ok(!before.body.stages.some((s) => s.id === 'review_referral'), 'the review stage is gone');
+  assert.equal(ids.length, 19, 'the source has 21 questions; two are the office fields');
 
   await api(baseUrl, 'PUT', q('/profile'), { answers: { services_off: ['braces', 'full_arch'], insurance_mode: 'no_insurance' } });
   const after = await api(baseUrl, 'GET', q('/catalog'));
@@ -253,10 +351,11 @@ test('X: preview with unset values returns them unresolved and lists them', asyn
   assert.equal(r.body.answersSource, 'saved');
   assert.equal(r.body.clinicallyApproved, false);
   assert.match(r.body.subject, /Jordan/, 'first_name is the sample');
-  // No phone configured and no scheduling link saved: both stay tokens.
+  // No phone configured: it stays a token. No scheduling link saved: since
+  // 1.2.0 the booking sentence is simply absent, never a {{schedule_link}} hole.
   assert.ok(r.body.unresolved.includes('office_phone'));
-  assert.ok(r.body.unresolved.includes('schedule_link'));
-  assert.match(r.body.bodyText, /\{\{schedule_link\}\}/);
+  assert.ok(!r.body.unresolved.includes('schedule_link'));
+  assert.ok(!r.body.bodyText.includes('{{schedule_link}}'));
   assert.match(r.body.bodyText, /\{\{office_phone\}\}/);
   assert.ok(!r.body.bodyText.includes('the office\n'), 'never the send-time "the office" filler');
   // The signed-in user's display name signs it.
@@ -321,7 +420,7 @@ test('N: the whole surface writes no tc_messages row', async (t) => {
   await api(baseUrl, 'GET', q('/catalog'));
   await api(baseUrl, 'PUT', q('/profile'), { answers: SAMPLE });
   await api(baseUrl, 'GET', q('/profile'));
-  for (const stage of ['tp_recap', 'scheduled_confirm', 'review_referral']) {
+  for (const stage of ['tp_recap', 'scheduled_confirm', 'post_op_checkin']) {
     await api(baseUrl, 'POST', q('/preview'), { procedure_id: 'crown', stage, variant: 'C' });
   }
   assert.equal(db.table('tc_messages').length, 0);
