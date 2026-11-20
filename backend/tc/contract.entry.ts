@@ -64,6 +64,9 @@ export * from "../../new-dashboard/shared/tc/referralTemplates";
 // test, and the human status route's nextTouch body. One derivation for
 // server and dashboard.
 export * from "../../new-dashboard/shared/tc/nextTouch";
+// The TC patient email library (EL-1): the office's wording answers, their
+// one-code-per-failure validator, and the catalog / profile / preview shapes.
+export * from "../../new-dashboard/shared/tc/emailLibrary";
 // The routes compose small request shapes (status-transition bodies, complete/
 // reschedule payloads) from contract pieces; export the SAME zod instance so
 // those shapes and the contract schemas share one library version.

@@ -112,6 +112,9 @@ router.use('/notification-prefs', tcFull, require('./notifications'));
 // tc.full here like every TC mount; the router itself then requires
 // tc.notification_defaults (admin + office), as notifications.js does.
 router.use('/email-identity', tcFull, require('./emailIdentity'));
+// EL-1: the patient email library as wording config + preview. DARK: no
+// draft, no message row, no send. PUT /profile also needs admin.all (in-router).
+router.use('/email-library', tcFull, require('./emailLibrary'));
 // The provider directory (referring provider / pre-auth doctor). tc.full here;
 // adding, editing and the Open Dental import need tc.notification_defaults
 // (admin + office) inside. Not behind the referrals switch: pre-auth uses it.
