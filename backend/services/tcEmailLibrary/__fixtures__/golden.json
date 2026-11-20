@@ -1,0 +1,85 @@
+{
+ "library_version": "1.1.0",
+ "source_sha256": "8dd80e2e89b966b4b54a67a1a69c42bf8dc72b51e13d104265cbd504231ce5aa",
+ "note": "Each case: compose(source, answers) -> JSON.stringify(result) -> sha256. A port of compose.js must reproduce every hash exactly.",
+ "cases": [
+  {
+   "name": "blank",
+   "answers": {},
+   "email_count": 1980,
+   "procedure_count": 36,
+   "stages": 19,
+   "unresolved_token_emails": 0,
+   "output_sha256": "2429f63d0b7c6a4ee63a1bedbf6b04dec8b516ed8d234c266a12b7979addc48b",
+   "first_id": "filling.tp_recap.A",
+   "last_id": "emergency_followup.review_referral.C"
+  },
+  {
+   "name": "same_day_buffered",
+   "answers": {
+    "same_day_crowns": true,
+    "same_day_length": "about two hours",
+    "buffered": true,
+    "digital_scanner": true,
+    "sedation": [
+     "nitrous"
+    ],
+    "insurance_mode": "in_network",
+    "schedule_perks": [
+     "early",
+     "friday"
+    ],
+    "cancel_hours": "24"
+   },
+   "email_count": 1980,
+   "procedure_count": 36,
+   "stages": 19,
+   "unresolved_token_emails": 0,
+   "output_sha256": "488c2bf3fe78bfb0046eda0450f5ab78f1a8c49fbad5cb2d8bbd08636e9a74b5",
+   "first_id": "filling.tp_recap.A",
+   "last_id": "emergency_followup.review_referral.C"
+  },
+  {
+   "name": "everything",
+   "answers": {
+    "same_day_crowns": true,
+    "digital_scanner": true,
+    "cbct": true,
+    "laser": true,
+    "buffered": true,
+    "sedation": [
+     "nitrous",
+     "oral",
+     "iv"
+    ],
+    "amenities": "blankets and headphones",
+    "insurance_mode": "no_insurance",
+    "financing_partners": "Sample Financing Co",
+    "membership_name": "Sample Savings Plan",
+    "schedule_perks": [
+     "early",
+     "lunch",
+     "evening",
+     "friday",
+     "saturday"
+    ],
+    "cancel_hours": "72",
+    "implant_surgery": "specialist",
+    "whitening_type": "take_home",
+    "aligner_brand": "SampleAlign",
+    "services_off": [
+     "full_arch",
+     "braces",
+     "sleep_appliance"
+    ]
+   },
+   "email_count": 1737,
+   "procedure_count": 33,
+   "stages": 18,
+   "unresolved_token_emails": 0,
+   "output_sha256": "74553b489b32b7de4e1da12ab085658ca74caafba4f9d65c331f7cf42340f5e2",
+   "first_id": "filling.tp_recap.A",
+   "last_id": "emergency_followup.review_referral.C"
+  }
+ ]
+}

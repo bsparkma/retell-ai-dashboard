@@ -14813,10 +14813,10 @@ var require_zod = __commonJS({
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.z = void 0;
-    var z20 = __importStar(require_external());
-    exports2.z = z20;
+    var z21 = __importStar(require_external());
+    exports2.z = z21;
     __exportStar(require_external(), exports2);
-    exports2.default = z20;
+    exports2.default = z21;
   }
 });
 
@@ -14845,6 +14845,20 @@ __export(contract_entry_exports, {
   DividerBlock: () => DividerBlock,
   DraftMessageBody: () => DraftMessageBody,
   EMAIL_IDENTITY_LIMITS: () => EMAIL_IDENTITY_LIMITS,
+  EMAIL_LIBRARY_ANSWER_CODES: () => EMAIL_LIBRARY_ANSWER_CODES,
+  EMAIL_LIBRARY_ANSWER_KEYS: () => EMAIL_LIBRARY_ANSWER_KEYS,
+  EMAIL_LIBRARY_CANCEL_HOURS: () => EMAIL_LIBRARY_CANCEL_HOURS,
+  EMAIL_LIBRARY_LINK_KEYS: () => EMAIL_LIBRARY_LINK_KEYS,
+  EMAIL_LIBRARY_LINK_MAX: () => EMAIL_LIBRARY_LINK_MAX,
+  EMAIL_LIBRARY_MERGE_SETTINGS: () => EMAIL_LIBRARY_MERGE_SETTINGS,
+  EMAIL_LIBRARY_MULTI_OPTIONS: () => EMAIL_LIBRARY_MULTI_OPTIONS,
+  EMAIL_LIBRARY_NEVER_STORED: () => EMAIL_LIBRARY_NEVER_STORED,
+  EMAIL_LIBRARY_PREVIEW_SAMPLES: () => EMAIL_LIBRARY_PREVIEW_SAMPLES,
+  EMAIL_LIBRARY_PROCEDURE_IDS: () => EMAIL_LIBRARY_PROCEDURE_IDS,
+  EMAIL_LIBRARY_SELECT_OPTIONS: () => EMAIL_LIBRARY_SELECT_OPTIONS,
+  EMAIL_LIBRARY_TEXT_MAX: () => EMAIL_LIBRARY_TEXT_MAX,
+  EMAIL_LIBRARY_VARIANTS: () => EMAIL_LIBRARY_VARIANTS,
+  EMAIL_LIBRARY_YESNO_KEYS: () => EMAIL_LIBRARY_YESNO_KEYS,
   EMAIL_MERGE_TOKENS: () => EMAIL_MERGE_TOKENS,
   EMAIL_TEXT_ACTIONS_MAX: () => EMAIL_TEXT_ACTIONS_MAX,
   EMAIL_TEXT_BODY_CEILING: () => EMAIL_TEXT_BODY_CEILING,
@@ -14852,6 +14866,17 @@ __export(contract_entry_exports, {
   EditDraftBody: () => EditDraftBody,
   EmailBlock: () => EmailBlock,
   EmailBlocks: () => EmailBlocks,
+  EmailLibraryAnswers: () => EmailLibraryAnswers,
+  EmailLibraryCatalogResponse: () => EmailLibraryCatalogResponse,
+  EmailLibraryMissingSetting: () => EmailLibraryMissingSetting,
+  EmailLibraryPreviewRequest: () => EmailLibraryPreviewRequest,
+  EmailLibraryPreviewResponse: () => EmailLibraryPreviewResponse,
+  EmailLibraryProcedure: () => EmailLibraryProcedure,
+  EmailLibraryProfilePutRequest: () => EmailLibraryProfilePutRequest,
+  EmailLibraryProfileResponse: () => EmailLibraryProfileResponse,
+  EmailLibraryQuestion: () => EmailLibraryQuestion,
+  EmailLibrarySequence: () => EmailLibrarySequence,
+  EmailLibraryStage: () => EmailLibraryStage,
   EmailTemplateCategory: () => EmailTemplateCategory,
   FollowupChannel: () => FollowupChannel,
   FollowupKind: () => FollowupKind,
@@ -15161,7 +15186,7 @@ __export(contract_entry_exports, {
   Urgency: () => Urgency,
   Uuid: () => Uuid,
   VoiceHandoffDetail: () => VoiceHandoffDetail,
-  ZodError: () => import_zod19.ZodError,
+  ZodError: () => import_zod20.ZodError,
   addBusinessDays: () => addBusinessDays,
   allPresetViolations: () => allPresetViolations,
   appointmentWhenLabel: () => appointmentWhenLabel,
@@ -15199,6 +15224,7 @@ __export(contract_entry_exports, {
   intensityFor: () => intensityFor,
   isContactAttemptDetail: () => isContactAttemptDetail,
   isDefaultStyling: () => isDefaultStyling,
+  isHttpsLink: () => isHttpsLink,
   isNotesRevisionDetail: () => isNotesRevisionDetail,
   isOpenCaseStatus: () => isOpenCaseStatus,
   isPrimaryTooth: () => isPrimaryTooth,
@@ -15263,13 +15289,14 @@ __export(contract_entry_exports, {
   toothText: () => toothText,
   unpricedCheckoutPhases: () => unpricedCheckoutPhases,
   userMapEntryToRow: () => userMapEntryToRow,
+  validateEmailLibraryAnswers: () => validateEmailLibraryAnswers,
   validatePrintStyling: () => validatePrintStyling,
   validatePrintTemplate: () => validatePrintTemplate,
   validateReferralTemplate: () => validateReferralTemplate,
   verbalDoctorLabel: () => verbalDoctorLabel,
   wrapToChars: () => wrapToChars,
   wrapToWidth: () => wrapToWidth,
-  z: () => import_zod19.z
+  z: () => import_zod20.z
 });
 module.exports = __toCommonJS(contract_entry_exports);
 
@@ -20731,8 +20758,323 @@ var NextTouchInput = import_zod18.z.object({
 }).strict();
 var NEXT_TOUCH_REQUIRED = "NEXT_TOUCH_REQUIRED";
 
+// shared/tc/emailLibrary.ts
+var import_zod19 = __toESM(require_zod(), 1);
+var EMAIL_LIBRARY_NEVER_STORED = ["office_name", "office_phone"];
+var EMAIL_LIBRARY_YESNO_KEYS = ["same_day_crowns", "digital_scanner", "cbct", "laser", "buffered"];
+var EMAIL_LIBRARY_SELECT_OPTIONS = {
+  insurance_mode: ["standard", "in_network", "files_claims", "no_insurance"],
+  implant_surgery: ["in_house", "specialist"],
+  whitening_type: ["both", "in_office", "take_home"]
+};
+var EMAIL_LIBRARY_MULTI_OPTIONS = {
+  sedation: ["nitrous", "oral", "iv"],
+  schedule_perks: ["early", "lunch", "evening", "friday", "saturday"]
+};
+var EMAIL_LIBRARY_TEXT_MAX = {
+  doctor_name: 120,
+  same_day_length: 120,
+  amenities: 200,
+  financing_partners: 120,
+  membership_name: 120,
+  aligner_brand: 120
+};
+var EMAIL_LIBRARY_LINK_KEYS = ["schedule_link", "review_link"];
+var EMAIL_LIBRARY_LINK_MAX = 300;
+var EMAIL_LIBRARY_CANCEL_HOURS = { key: "cancel_hours", min: 1, max: 168 };
+var EMAIL_LIBRARY_PROCEDURE_IDS = [
+  "filling",
+  "crown",
+  "onlay",
+  "root_canal",
+  "bridge",
+  "extraction",
+  "wisdom_teeth",
+  "bone_graft",
+  "implant",
+  "implant_denture",
+  "full_arch",
+  "denture",
+  "partial",
+  "reline",
+  "deep_cleaning",
+  "perio_maintenance",
+  "gum_graft",
+  "recare",
+  "new_patient",
+  "night_guard",
+  "whitening",
+  "veneers",
+  "bonding",
+  "smile_makeover",
+  "aligners",
+  "braces",
+  "early_ortho",
+  "retainer",
+  "sleep_appliance",
+  "tmj",
+  "sealants",
+  "pediatric_restorative",
+  "space_maintainer",
+  "frenectomy",
+  "large_case",
+  "emergency_followup"
+];
+var EMAIL_LIBRARY_VARIANTS = ["A", "B", "C"];
+var EMAIL_LIBRARY_MERGE_SETTINGS = ["schedule_link", "doctor_name", "review_link"];
+var EMAIL_LIBRARY_PREVIEW_SAMPLES = {
+  first_name: "Jordan",
+  appointment_date: "Tuesday, March 3",
+  appointment_time: "9:00 AM"
+};
+var EMAIL_LIBRARY_ANSWER_KEYS = [
+  ...EMAIL_LIBRARY_YESNO_KEYS,
+  ...Object.keys(EMAIL_LIBRARY_SELECT_OPTIONS),
+  ...Object.keys(EMAIL_LIBRARY_MULTI_OPTIONS),
+  ...Object.keys(EMAIL_LIBRARY_TEXT_MAX),
+  ...EMAIL_LIBRARY_LINK_KEYS,
+  EMAIL_LIBRARY_CANCEL_HOURS.key,
+  "services_off"
+];
+var EMAIL_LIBRARY_ANSWER_CODES = {
+  NOT_AN_OBJECT: "EMAIL_LIBRARY_ANSWERS_NOT_OBJECT",
+  OFFICE_FIELD: "EMAIL_LIBRARY_OFFICE_FIELD_REFUSED",
+  UNKNOWN_KEY: "EMAIL_LIBRARY_UNKNOWN_KEY",
+  NOT_BOOLEAN: "EMAIL_LIBRARY_NOT_BOOLEAN",
+  BAD_OPTION: "EMAIL_LIBRARY_BAD_OPTION",
+  BAD_PROCEDURE: "EMAIL_LIBRARY_BAD_PROCEDURE",
+  TEXT_NOT_STRING: "EMAIL_LIBRARY_TEXT_NOT_STRING",
+  TEXT_TOO_LONG: "EMAIL_LIBRARY_TEXT_TOO_LONG",
+  TEXT_FORBIDDEN_CHARACTER: "EMAIL_LIBRARY_TEXT_FORBIDDEN_CHARACTER",
+  CANCEL_HOURS: "EMAIL_LIBRARY_CANCEL_HOURS_INVALID",
+  LINK: "EMAIL_LIBRARY_LINK_INVALID"
+};
+var LINE_SEPARATORS = String.fromCharCode(8232, 8233);
+var FORBIDDEN_TEXT = new RegExp(`[{}\\[\\]<>\\x00-\\x1f\\x7f-\\x9f${LINE_SEPARATORS}]`);
+var CANCEL_HOURS_SHAPE = /^[1-9][0-9]{0,2}$/;
+var textField = (max) => import_zod19.z.string().min(1).max(max).refine((v) => v === v.trim() && !FORBIDDEN_TEXT.test(v));
+var linkField = import_zod19.z.string().min(1).max(EMAIL_LIBRARY_LINK_MAX).refine((v) => isHttpsLink(v));
+var multiField = (values) => import_zod19.z.array(import_zod19.z.enum(values)).min(1);
+var EmailLibraryAnswers = import_zod19.z.object({
+  same_day_crowns: import_zod19.z.boolean().optional(),
+  digital_scanner: import_zod19.z.boolean().optional(),
+  cbct: import_zod19.z.boolean().optional(),
+  laser: import_zod19.z.boolean().optional(),
+  buffered: import_zod19.z.boolean().optional(),
+  insurance_mode: import_zod19.z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.insurance_mode).optional(),
+  implant_surgery: import_zod19.z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.implant_surgery).optional(),
+  whitening_type: import_zod19.z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.whitening_type).optional(),
+  sedation: multiField(EMAIL_LIBRARY_MULTI_OPTIONS.sedation).optional(),
+  schedule_perks: multiField(EMAIL_LIBRARY_MULTI_OPTIONS.schedule_perks).optional(),
+  doctor_name: textField(EMAIL_LIBRARY_TEXT_MAX.doctor_name).optional(),
+  same_day_length: textField(EMAIL_LIBRARY_TEXT_MAX.same_day_length).optional(),
+  amenities: textField(EMAIL_LIBRARY_TEXT_MAX.amenities).optional(),
+  financing_partners: textField(EMAIL_LIBRARY_TEXT_MAX.financing_partners).optional(),
+  membership_name: textField(EMAIL_LIBRARY_TEXT_MAX.membership_name).optional(),
+  aligner_brand: textField(EMAIL_LIBRARY_TEXT_MAX.aligner_brand).optional(),
+  schedule_link: linkField.optional(),
+  review_link: linkField.optional(),
+  cancel_hours: import_zod19.z.string().refine((v) => CANCEL_HOURS_SHAPE.test(v) && Number(v) >= EMAIL_LIBRARY_CANCEL_HOURS.min && Number(v) <= EMAIL_LIBRARY_CANCEL_HOURS.max).optional(),
+  services_off: multiField(EMAIL_LIBRARY_PROCEDURE_IDS).optional()
+}).strict();
+function isHttpsLink(v) {
+  if (v.length === 0 || v.length > EMAIL_LIBRARY_LINK_MAX) return false;
+  if (/\s/.test(v) || FORBIDDEN_TEXT.test(v)) return false;
+  let url;
+  try {
+    url = new URL(v);
+  } catch {
+    return false;
+  }
+  return url.protocol === "https:" && url.hostname.length > 0;
+}
+var has = (list, v) => list.includes(v);
+var refuse = (code, key, message) => ({
+  ok: false,
+  code,
+  key,
+  message
+});
+function validateEmailLibraryAnswers(raw) {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return refuse(EMAIL_LIBRARY_ANSWER_CODES.NOT_AN_OBJECT, null, "Answers must be an object");
+  }
+  const out = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (has(EMAIL_LIBRARY_NEVER_STORED, key)) {
+      return refuse(
+        EMAIL_LIBRARY_ANSWER_CODES.OFFICE_FIELD,
+        key,
+        `${key} comes from the office's email identity and cannot be set here`
+      );
+    }
+    if (!has(EMAIL_LIBRARY_ANSWER_KEYS, key)) {
+      return refuse(EMAIL_LIBRARY_ANSWER_CODES.UNKNOWN_KEY, key, `${key} is not a question in this library`);
+    }
+    if (value === void 0 || value === null) continue;
+    if (has(EMAIL_LIBRARY_YESNO_KEYS, key)) {
+      if (typeof value !== "boolean") return refuse(EMAIL_LIBRARY_ANSWER_CODES.NOT_BOOLEAN, key, `${key} must be yes or no`);
+      out[key] = value;
+      continue;
+    }
+    if (key in EMAIL_LIBRARY_SELECT_OPTIONS) {
+      const options = EMAIL_LIBRARY_SELECT_OPTIONS[key];
+      if (value === "") continue;
+      if (typeof value !== "string" || !has(options, value)) {
+        return refuse(EMAIL_LIBRARY_ANSWER_CODES.BAD_OPTION, key, `${key} must be one of: ${options.join(", ")}`);
+      }
+      out[key] = value;
+      continue;
+    }
+    if (key in EMAIL_LIBRARY_MULTI_OPTIONS || key === "services_off") {
+      const options = key === "services_off" ? EMAIL_LIBRARY_PROCEDURE_IDS : EMAIL_LIBRARY_MULTI_OPTIONS[key];
+      const code = key === "services_off" ? EMAIL_LIBRARY_ANSWER_CODES.BAD_PROCEDURE : EMAIL_LIBRARY_ANSWER_CODES.BAD_OPTION;
+      if (!Array.isArray(value) || value.some((v) => typeof v !== "string" || !has(options, v))) {
+        return refuse(
+          code,
+          key,
+          key === "services_off" ? "services_off may list only this library's procedures" : `${key} may list only: ${options.join(", ")}`
+        );
+      }
+      const picked = options.filter((o) => value.includes(o));
+      if (picked.length > 0) out[key] = picked;
+      continue;
+    }
+    if (typeof value !== "string") return refuse(EMAIL_LIBRARY_ANSWER_CODES.TEXT_NOT_STRING, key, `${key} must be text`);
+    const text = value.trim();
+    if (text === "") continue;
+    if (key === EMAIL_LIBRARY_CANCEL_HOURS.key) {
+      const n = Number(text);
+      if (!CANCEL_HOURS_SHAPE.test(text) || n < EMAIL_LIBRARY_CANCEL_HOURS.min || n > EMAIL_LIBRARY_CANCEL_HOURS.max) {
+        return refuse(
+          EMAIL_LIBRARY_ANSWER_CODES.CANCEL_HOURS,
+          key,
+          `cancel_hours must be a whole number of hours from ${EMAIL_LIBRARY_CANCEL_HOURS.min} to ${EMAIL_LIBRARY_CANCEL_HOURS.max}`
+        );
+      }
+      out[key] = text;
+      continue;
+    }
+    if (has(EMAIL_LIBRARY_LINK_KEYS, key)) {
+      if (!isHttpsLink(text)) {
+        return refuse(
+          EMAIL_LIBRARY_ANSWER_CODES.LINK,
+          key,
+          `${key} must be a complete https:// link of at most ${EMAIL_LIBRARY_LINK_MAX} characters, with no spaces`
+        );
+      }
+      out[key] = text;
+      continue;
+    }
+    const max = EMAIL_LIBRARY_TEXT_MAX[key];
+    if (text.length > max) return refuse(EMAIL_LIBRARY_ANSWER_CODES.TEXT_TOO_LONG, key, `${key} must be at most ${max} characters`);
+    if (FORBIDDEN_TEXT.test(text)) {
+      return refuse(
+        EMAIL_LIBRARY_ANSWER_CODES.TEXT_FORBIDDEN_CHARACTER,
+        key,
+        `${key} cannot contain line breaks or any of { } [ ] < >`
+      );
+    }
+    out[key] = text;
+  }
+  const parsed = EmailLibraryAnswers.safeParse(out);
+  if (!parsed.success) return refuse(EMAIL_LIBRARY_ANSWER_CODES.UNKNOWN_KEY, null, "Answers did not match the contract");
+  return { ok: true, answers: parsed.data };
+}
+var QuestionOption = import_zod19.z.object({ value: import_zod19.z.string(), label: import_zod19.z.string(), phrase: import_zod19.z.string().optional() }).strict();
+var EmailLibraryQuestion = import_zod19.z.object({
+  id: import_zod19.z.enum(EMAIL_LIBRARY_ANSWER_KEYS),
+  section: import_zod19.z.string(),
+  type: import_zod19.z.enum(["text", "yesno", "select", "multi", "procedures"]),
+  label: import_zod19.z.string(),
+  help: import_zod19.z.string(),
+  options: import_zod19.z.array(QuestionOption),
+  default: import_zod19.z.union([import_zod19.z.string(), import_zod19.z.null()]),
+  show_if: import_zod19.z.union([import_zod19.z.string(), import_zod19.z.null()]),
+  placeholder: import_zod19.z.string()
+}).strict();
+var EmailLibraryProcedure = import_zod19.z.object({ id: import_zod19.z.enum(EMAIL_LIBRARY_PROCEDURE_IDS), name: import_zod19.z.string(), category: import_zod19.z.string(), audience: import_zod19.z.string() }).strict();
+var EmailLibraryStage = import_zod19.z.object({
+  id: import_zod19.z.string(),
+  label: import_zod19.z.string(),
+  phase: import_zod19.z.string(),
+  use: import_zod19.z.string(),
+  /** False when this office's answers switch the stage off (e.g. no insurance → no benefits deadline). */
+  inUse: import_zod19.z.boolean()
+}).strict();
+var EmailLibrarySequence = import_zod19.z.object({
+  id: import_zod19.z.string(),
+  name: import_zod19.z.string(),
+  track: import_zod19.z.string(),
+  use: import_zod19.z.string(),
+  exit: import_zod19.z.string(),
+  steps: import_zod19.z.array(import_zod19.z.object({ stage: import_zod19.z.string(), when: import_zod19.z.string() }).strict())
+}).strict();
+var EmailLibraryCatalogResponse = import_zod19.z.object({
+  success: import_zod19.z.literal(true),
+  office: OfficeKeySchema,
+  libraryVersion: import_zod19.z.string(),
+  /** False until the doctor's review; flips only by PR. Nothing is sent from this library either way in EL-1. */
+  clinicallyApproved: import_zod19.z.boolean(),
+  status: import_zod19.z.string(),
+  rulesOfUse: import_zod19.z.array(import_zod19.z.string()),
+  /** The procedures this office provides (after its services_off). */
+  procedures: import_zod19.z.array(EmailLibraryProcedure),
+  /** Every procedure, for the services_off question. */
+  allProcedures: import_zod19.z.array(EmailLibraryProcedure),
+  stages: import_zod19.z.array(EmailLibraryStage),
+  variants: import_zod19.z.record(import_zod19.z.enum(EMAIL_LIBRARY_VARIANTS), import_zod19.z.string()),
+  sequences: import_zod19.z.array(EmailLibrarySequence),
+  questions: import_zod19.z.array(EmailLibraryQuestion),
+  emailCount: import_zod19.z.number().int().nonnegative()
+}).strict();
+var EmailLibraryMissingSetting = import_zod19.z.object({ field: import_zod19.z.enum(EMAIL_LIBRARY_MERGE_SETTINGS), stages: import_zod19.z.array(import_zod19.z.string()) }).strict();
+var EmailLibraryProfileResponse = import_zod19.z.object({
+  success: import_zod19.z.literal(true),
+  office: OfficeKeySchema,
+  /** False until the office's first save: `answers` is then {} (every default). */
+  saved: import_zod19.z.boolean(),
+  answers: EmailLibraryAnswers,
+  /** The library version the answers were saved against (null until saved). */
+  libraryVersion: import_zod19.z.string().nullable(),
+  updatedBy: import_zod19.z.string().nullable(),
+  updatedAt: import_zod19.z.string().nullable(),
+  missing: import_zod19.z.array(EmailLibraryMissingSetting),
+  /** May this viewer save? (admin.all) — UX only; the server enforces it. */
+  canEdit: import_zod19.z.boolean()
+}).strict();
+var EmailLibraryProfilePutRequest = import_zod19.z.object({ answers: import_zod19.z.record(import_zod19.z.string(), import_zod19.z.unknown()) }).strict();
+var EmailLibraryPreviewRequest = import_zod19.z.object({
+  procedure_id: import_zod19.z.string().min(1).max(64),
+  stage: import_zod19.z.string().min(1).max(64),
+  variant: import_zod19.z.string().min(1).max(8),
+  /** Unsaved answers to preview with; absent = the office's saved answers. */
+  answers: import_zod19.z.record(import_zod19.z.string(), import_zod19.z.unknown()).optional()
+}).strict();
+var EmailLibraryPreviewResponse = import_zod19.z.object({
+  success: import_zod19.z.literal(true),
+  office: OfficeKeySchema,
+  id: import_zod19.z.string(),
+  procedureId: import_zod19.z.string(),
+  procedureName: import_zod19.z.string(),
+  stage: import_zod19.z.string(),
+  stageLabel: import_zod19.z.string(),
+  variant: import_zod19.z.enum(EMAIL_LIBRARY_VARIANTS),
+  tone: import_zod19.z.string(),
+  answersSource: import_zod19.z.enum(["saved", "unsaved"]),
+  /** Merge fields filled in; any left unresolved stay as their {{token}}. */
+  subject: import_zod19.z.string(),
+  preheader: import_zod19.z.string(),
+  bodyText: import_zod19.z.string(),
+  mergeFields: import_zod19.z.array(import_zod19.z.string()),
+  /** The merge fields with no value: shown as {{token}}, never blank, never invented. */
+  unresolved: import_zod19.z.array(import_zod19.z.string()),
+  wordCount: import_zod19.z.number().int().nonnegative(),
+  clinicallyApproved: import_zod19.z.boolean()
+}).strict();
+
 // ../backend/tc/contract.entry.ts
-var import_zod19 = __toESM(require_zod());
+var import_zod20 = __toESM(require_zod());
 
 // shared/hyg/teeth.ts
 var UPPER_PRIMARY = "ABCDEFGHIJ".split("");
@@ -20787,6 +21129,20 @@ function odToothText(tooth) {
   DividerBlock,
   DraftMessageBody,
   EMAIL_IDENTITY_LIMITS,
+  EMAIL_LIBRARY_ANSWER_CODES,
+  EMAIL_LIBRARY_ANSWER_KEYS,
+  EMAIL_LIBRARY_CANCEL_HOURS,
+  EMAIL_LIBRARY_LINK_KEYS,
+  EMAIL_LIBRARY_LINK_MAX,
+  EMAIL_LIBRARY_MERGE_SETTINGS,
+  EMAIL_LIBRARY_MULTI_OPTIONS,
+  EMAIL_LIBRARY_NEVER_STORED,
+  EMAIL_LIBRARY_PREVIEW_SAMPLES,
+  EMAIL_LIBRARY_PROCEDURE_IDS,
+  EMAIL_LIBRARY_SELECT_OPTIONS,
+  EMAIL_LIBRARY_TEXT_MAX,
+  EMAIL_LIBRARY_VARIANTS,
+  EMAIL_LIBRARY_YESNO_KEYS,
   EMAIL_MERGE_TOKENS,
   EMAIL_TEXT_ACTIONS_MAX,
   EMAIL_TEXT_BODY_CEILING,
@@ -20794,6 +21150,17 @@ function odToothText(tooth) {
   EditDraftBody,
   EmailBlock,
   EmailBlocks,
+  EmailLibraryAnswers,
+  EmailLibraryCatalogResponse,
+  EmailLibraryMissingSetting,
+  EmailLibraryPreviewRequest,
+  EmailLibraryPreviewResponse,
+  EmailLibraryProcedure,
+  EmailLibraryProfilePutRequest,
+  EmailLibraryProfileResponse,
+  EmailLibraryQuestion,
+  EmailLibrarySequence,
+  EmailLibraryStage,
   EmailTemplateCategory,
   FollowupChannel,
   FollowupKind,
@@ -21141,6 +21508,7 @@ function odToothText(tooth) {
   intensityFor,
   isContactAttemptDetail,
   isDefaultStyling,
+  isHttpsLink,
   isNotesRevisionDetail,
   isOpenCaseStatus,
   isPrimaryTooth,
@@ -21205,6 +21573,7 @@ function odToothText(tooth) {
   toothText,
   unpricedCheckoutPhases,
   userMapEntryToRow,
+  validateEmailLibraryAnswers,
   validatePrintStyling,
   validatePrintTemplate,
   validateReferralTemplate,

@@ -30,7 +30,7 @@
  * itself without `rcm.settings`.
  */
 import type { LucideIcon } from "lucide-react";
-import { Bot, BookOpen, Building2, CalendarClock, MapPin, Printer, Send, Stethoscope, Users } from "lucide-react";
+import { Bot, BookOpen, Building2, CalendarClock, Mail, MapPin, Printer, Send, Stethoscope, Users } from "lucide-react";
 import { canVisit } from "@/lib/permissions";
 import { hasModule, type ModuleId } from "@/lib/modules";
 import { tcSettingsHref } from "@/features/tc/settings/paths";
@@ -123,6 +123,20 @@ export const HUB_CARDS: readonly HubCard[] = [
     icon: BookOpen,
     title: "Treatment Coordinator settings",
     detail: "Pricing, financing, stages, the library, notifications and more",
+    module: "tc",
+    checkRoute: true,
+  },
+  {
+    // EL-1: the patient email library's wording + preview. Its own subgroup
+    // (rendered as its own block by Admin.tsx) while the library is a draft
+    // pending the doctor's review. tc.full route, checked like the TC cards.
+    id: "patient-emails",
+    group: "module",
+    subgroup: "Patient emails",
+    href: "/admin/patient-emails",
+    icon: Mail,
+    title: "Patient email library",
+    detail: "The wording of treatment follow-up emails, per office, with a live preview. Draft: nothing is sent",
     module: "tc",
     checkRoute: true,
   },
