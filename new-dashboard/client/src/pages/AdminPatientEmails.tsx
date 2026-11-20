@@ -42,6 +42,7 @@ import {
 import { asOfficeKey, servedOfficeKeys } from "@/lib/officeKeys";
 import type { OfficeId } from "@shared/tc/contract";
 import {
+  EMAIL_LIBRARY_LINK_KEYS,
   EMAIL_LIBRARY_LINK_MAX,
   EMAIL_LIBRARY_TEXT_MAX,
   validateEmailLibraryAnswers,
@@ -65,9 +66,18 @@ const MERGE_FIELD_HELP: Record<string, string> = {
   sender_name: "the team member sending it (your display name)",
   doctor_name: "Doctor name, on this page",
   schedule_link: "Online scheduling link, on this page",
-  review_link: "Review link, on this page",
   appointment_date: "the appointment date (a sample here)",
   appointment_time: "the appointment time (a sample here)",
+};
+
+/**
+ * One neutral line per optional setting the office left blank: how the emails
+ * read without it. Not a warning; since library 1.2.0 the wording is complete
+ * either way.
+ */
+const BLANK_OPTIONAL_NOTE: Record<EmailLibraryProfileResponse["blankOptional"][number], string> = {
+  schedule_link: "No online scheduling link: emails ask patients to reply or call.",
+  doctor_name: 'No doctor name: emails say "we".',
 };
 
 function sameJson(a: unknown, b: unknown): boolean {
@@ -221,7 +231,7 @@ function QuestionField({
   }
 
   const max =
-    q.id === "schedule_link" || q.id === "review_link"
+    (EMAIL_LIBRARY_LINK_KEYS as readonly string[]).includes(q.id)
       ? EMAIL_LIBRARY_LINK_MAX
       : (EMAIL_LIBRARY_TEXT_MAX as Record<string, number>)[q.id] ?? 8;
   return (
@@ -397,6 +407,15 @@ function OfficeEmailLibrary({ office }: { office: OfficeId }) {
               ))}
             </ul>
           </div>
+        )}
+        {profile.blankOptional.length > 0 && (
+          <ul className="space-y-0.5 text-sm text-muted-foreground" data-testid="patient-emails-blank-optional">
+            {profile.blankOptional.map((field) => (
+              <li key={field} data-testid={`patient-emails-blank-${field}`}>
+                {BLANK_OPTIONAL_NOTE[field]}
+              </li>
+            ))}
+          </ul>
         )}
         <p className="text-xs text-muted-foreground">
           <Mail className="mr-1 inline h-3.5 w-3.5" aria-hidden />

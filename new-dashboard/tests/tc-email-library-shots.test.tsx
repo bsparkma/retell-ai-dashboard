@@ -47,6 +47,7 @@ interface LibraryEmail {
 interface LibraryModule {
   catalog: (office: string, answers: Record<string, unknown>) => EmailLibraryCatalogResponse;
   missingSettings: (answers: Record<string, unknown>) => EmailLibraryProfileResponse["missing"];
+  blankOptionalSettings: (answers: Record<string, unknown>) => EmailLibraryProfileResponse["blankOptional"];
   composeOne: (pick: { procedureId: string; stage: string; variant: string }, answers: Record<string, unknown>) => LibraryEmail;
   resolveMergeFields: (texts: string[], values: Record<string, string | null>) => { texts: string[]; unresolved: string[] };
 }
@@ -77,10 +78,11 @@ vi.mock("@/features/tc/emailLibrary/emailLibraryApi", () => ({
     office: "roland",
     saved: true,
     answers: ANSWERS,
-    libraryVersion: "1.1.0",
+    libraryVersion: "1.2.0",
     updatedBy: "admin@example.test",
     updatedAt: "2026-11-19T15:00:00.000Z",
     missing: library!.missingSettings(ANSWERS),
+    blankOptional: library!.blankOptionalSettings(ANSWERS),
     canEdit: state.canEdit,
   }),
   saveEmailLibraryProfile: async () => {
@@ -98,7 +100,6 @@ vi.mock("@/features/tc/emailLibrary/emailLibraryApi", () => ({
       sender_name: "Sample Coordinator",
       doctor_name: typeof answers.doctor_name === "string" ? answers.doctor_name : null,
       schedule_link: null,
-      review_link: null,
     });
     return {
       success: true,
