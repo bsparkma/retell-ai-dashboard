@@ -20762,14 +20762,35 @@ var NEXT_TOUCH_REQUIRED = "NEXT_TOUCH_REQUIRED";
 // shared/tc/emailLibrary.ts
 var import_zod19 = __toESM(require_zod(), 1);
 var EMAIL_LIBRARY_NEVER_STORED = ["office_name", "office_phone"];
-var EMAIL_LIBRARY_YESNO_KEYS = ["same_day_crowns", "digital_scanner", "cbct", "laser", "buffered"];
+var EMAIL_LIBRARY_YESNO_KEYS = [
+  "same_day_crowns",
+  "digital_scanner",
+  "cbct",
+  "laser",
+  "surgical_guides",
+  "buffered",
+  "immediate_implants"
+];
 var EMAIL_LIBRARY_SELECT_OPTIONS = {
   insurance_mode: ["standard", "in_network", "files_claims", "no_insurance"],
   implant_surgery: ["in_house", "specialist"],
-  whitening_type: ["both", "in_office", "take_home"]
+  whitening_type: ["both", "in_office", "take_home"],
+  parent_in_room: ["yes", "child_first", "no"],
+  sleep_test: ["home_test", "both", "refer"]
 };
 var EMAIL_LIBRARY_MULTI_OPTIONS = {
   sedation: ["nitrous", "oral", "iv"],
+  sedation_kids: ["nitrous", "oral", "iv"],
+  new_patient_welcome: [
+    "xrays",
+    "meet_doctor",
+    "tour",
+    "coffee",
+    "tv",
+    "comfort_menu",
+    "welcome_gift",
+    "same_day_cleaning"
+  ],
   schedule_perks: ["early", "lunch", "evening", "friday", "saturday"]
 };
 var EMAIL_LIBRARY_TEXT_MAX = {
@@ -20862,11 +20883,17 @@ var EmailLibraryAnswers = import_zod19.z.object({
   digital_scanner: import_zod19.z.boolean().optional(),
   cbct: import_zod19.z.boolean().optional(),
   laser: import_zod19.z.boolean().optional(),
+  surgical_guides: import_zod19.z.boolean().optional(),
   buffered: import_zod19.z.boolean().optional(),
+  immediate_implants: import_zod19.z.boolean().optional(),
   insurance_mode: import_zod19.z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.insurance_mode).optional(),
   implant_surgery: import_zod19.z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.implant_surgery).optional(),
   whitening_type: import_zod19.z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.whitening_type).optional(),
+  parent_in_room: import_zod19.z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.parent_in_room).optional(),
+  sleep_test: import_zod19.z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.sleep_test).optional(),
   sedation: multiField(EMAIL_LIBRARY_MULTI_OPTIONS.sedation).optional(),
+  sedation_kids: multiField(EMAIL_LIBRARY_MULTI_OPTIONS.sedation_kids).optional(),
+  new_patient_welcome: multiField(EMAIL_LIBRARY_MULTI_OPTIONS.new_patient_welcome).optional(),
   schedule_perks: multiField(EMAIL_LIBRARY_MULTI_OPTIONS.schedule_perks).optional(),
   doctor_name: textField(EMAIL_LIBRARY_TEXT_MAX.doctor_name).optional(),
   same_day_length: textField(EMAIL_LIBRARY_TEXT_MAX.same_day_length).optional(),

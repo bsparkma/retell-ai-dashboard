@@ -36,18 +36,39 @@ import { OfficeKeySchema } from "../officeKey";
 export const EMAIL_LIBRARY_NEVER_STORED = ["office_name", "office_phone"] as const;
 
 /** Yes/no questions: a boolean. */
-export const EMAIL_LIBRARY_YESNO_KEYS = ["same_day_crowns", "digital_scanner", "cbct", "laser", "buffered"] as const;
+export const EMAIL_LIBRARY_YESNO_KEYS = [
+  "same_day_crowns",
+  "digital_scanner",
+  "cbct",
+  "laser",
+  "surgical_guides",
+  "buffered",
+  "immediate_implants",
+] as const;
 
 /** Single-choice questions: exactly one declared option value. */
 export const EMAIL_LIBRARY_SELECT_OPTIONS = {
   insurance_mode: ["standard", "in_network", "files_claims", "no_insurance"],
   implant_surgery: ["in_house", "specialist"],
   whitening_type: ["both", "in_office", "take_home"],
+  parent_in_room: ["yes", "child_first", "no"],
+  sleep_test: ["home_test", "both", "refer"],
 } as const;
 
 /** Multi-choice questions: a list of declared option values. */
 export const EMAIL_LIBRARY_MULTI_OPTIONS = {
   sedation: ["nitrous", "oral", "iv"],
+  sedation_kids: ["nitrous", "oral", "iv"],
+  new_patient_welcome: [
+    "xrays",
+    "meet_doctor",
+    "tour",
+    "coffee",
+    "tv",
+    "comfort_menu",
+    "welcome_gift",
+    "same_day_cleaning",
+  ],
   schedule_perks: ["early", "lunch", "evening", "friday", "saturday"],
 } as const;
 
@@ -172,11 +193,17 @@ export const EmailLibraryAnswers = z
     digital_scanner: z.boolean().optional(),
     cbct: z.boolean().optional(),
     laser: z.boolean().optional(),
+    surgical_guides: z.boolean().optional(),
     buffered: z.boolean().optional(),
+    immediate_implants: z.boolean().optional(),
     insurance_mode: z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.insurance_mode).optional(),
     implant_surgery: z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.implant_surgery).optional(),
     whitening_type: z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.whitening_type).optional(),
+    parent_in_room: z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.parent_in_room).optional(),
+    sleep_test: z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.sleep_test).optional(),
     sedation: multiField(EMAIL_LIBRARY_MULTI_OPTIONS.sedation).optional(),
+    sedation_kids: multiField(EMAIL_LIBRARY_MULTI_OPTIONS.sedation_kids).optional(),
+    new_patient_welcome: multiField(EMAIL_LIBRARY_MULTI_OPTIONS.new_patient_welcome).optional(),
     schedule_perks: multiField(EMAIL_LIBRARY_MULTI_OPTIONS.schedule_perks).optional(),
     doctor_name: textField(EMAIL_LIBRARY_TEXT_MAX.doctor_name).optional(),
     same_day_length: textField(EMAIL_LIBRARY_TEXT_MAX.same_day_length).optional(),
