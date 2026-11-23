@@ -31,7 +31,7 @@ const library = require('./index');
 const { compose } = require('./compose');
 const contract = require('../../tc/contract.gen.cjs');
 
-const SOURCE_SHA256 = '21a063957b4e075ef01c77071a8a48adffe7aab29262d28ef00f4966e35d4033';
+const SOURCE_SHA256 = 'f091ef388d9decc5561ec0fc7001a9bedb88aa2ce41fe1f56c8729dc1b663cd8';
 const golden = JSON.parse(fs.readFileSync(path.join(__dirname, '__fixtures__', 'golden.json'), 'utf8'));
 /** A fresh, unfrozen parse: the golden test must not depend on the module's copy. */
 const freshSource = () => JSON.parse(fs.readFileSync(path.join(__dirname, 'source.json'), 'utf8'));
@@ -312,4 +312,111 @@ test('W: the retired saved key list is review_link only, and none of it is an an
   assert.deepEqual([...contract.EMAIL_LIBRARY_RETIRED_SAVED_KEYS], ['review_link']);
   for (const k of contract.EMAIL_LIBRARY_RETIRED_SAVED_KEYS) assert.ok(!contract.EMAIL_LIBRARY_ANSWER_KEYS.includes(k), k);
   assert.deepEqual([...contract.EMAIL_LIBRARY_MERGE_SETTINGS], ['schedule_link', 'doctor_name']);
+});
+
+// ── EL-1c: library 1.3.0 (the doctor's clinical review) ─────────────────────
+
+/** Every printed part of an email. */
+const printed = (e) => `${e.subject}\n${e.preheader}\n${e.body_text}`;
+const PARENT_PROCEDURES = ['sealants', 'pediatric_restorative', 'space_maintainer', 'frenectomy', 'early_ortho'];
+
+test('EL-1c: the four 1.3.0 golden cases reproduce, with no slot, stray brace, review stage or review link', () => {
+  assert.equal(golden.library_version, '1.3.0');
+  assert.deepEqual(
+    golden.cases.map((c) => [c.name, c.email_count]),
+    [['blank', 1872], ['beau_offices', 1872], ['no_insurance_minimal', 1638], ['links_set', 1872]],
+  );
+  for (const c of golden.cases) {
+    const out = compose(freshSource(), c.answers);
+    assert.equal(sha(JSON.stringify(out)), c.output_sha256, `${c.name}: output hash`);
+    assert.equal(out.length, c.email_count, `${c.name}: email count`);
+    for (const e of out) {
+      const text = printed(e);
+      assert.ok(!text.includes('[['), `${c.name}: ${e.id} has a [[ slot left`);
+      assert.ok(!/[{}]/.test(outsideMerge(text)), `${c.name}: ${e.id} has a brace outside a {{merge}} token`);
+      assert.ok(!text.includes('{{review_link}}'), `${c.name}: ${e.id} prints {{review_link}}`);
+      assert.notEqual(e.stage, 'review_referral', `${c.name}: ${e.id}`);
+    }
+  }
+});
+
+test('EL-1c: the source is 1.3.0 with 36 procedures, 18 stages, 54 frames, 27 questions and 36 rules', () => {
+  const src = freshSource();
+  assert.equal(src.version, '1.3.0');
+  assert.equal(src.procedure_blocks.length, 36);
+  assert.equal(src.stages.length, 18);
+  assert.equal(src.frames.length, 54);
+  assert.equal(src.questions.length, 27);
+  assert.equal(src.rules.length, 36);
+  for (const g of ['NEW_PT_WELCOME', 'WHITENING_TOUCHUP', 'RELAX_KIDS', 'COMFORT_LIST_KIDS']) assert.ok(g in src.globals, g);
+  // 17 rules rewrite a block's FAQ, each with a list of [question, answer]
+  // pairs: 11 for same_day_crowns / no_insurance, 3 for parent_in_room, 3 for
+  // sleep_test. (The slice brief said 11; the source says 17.)
+  const faqRules = src.rules.filter((r) => r.field === 'faq');
+  assert.equal(faqRules.length, 17);
+  for (const r of faqRules) assert.ok(r.text.every((p) => Array.isArray(p) && p.length === 2), JSON.stringify(r.when));
+  assert.equal(faqRules.filter((r) => /^(parent_in_room|sleep_test)=/.test(r.when)).length, 6);
+  const byId = Object.fromEntries(src.questions.map((q) => [q.id, q]));
+  assert.equal(byId.surgical_guides.show_if, 'implant_surgery=in_house');
+  assert.equal(byId.immediate_implants.show_if, 'implant_surgery=in_house');
+});
+
+test('EL-1c: a parent-audience email never offers adult sedation; an adult email does', () => {
+  const out = compose(freshSource(), { sedation: ['nitrous', 'oral', 'iv'], sedation_kids: ['nitrous'] });
+  const kids = out.filter((e) => PARENT_PROCEDURES.includes(e.procedure_id));
+  assert.ok(kids.length > 0);
+  assert.deepEqual([...new Set(kids.map((e) => e.audience))], ['parent']);
+  for (const e of kids) {
+    assert.ok(!/oral sedation/i.test(printed(e)), `${e.id} offers oral sedation`);
+    assert.ok(!/IV sedation/i.test(printed(e)), `${e.id} offers IV sedation`);
+  }
+  const adult = out.filter((e) => e.audience !== 'parent' && /oral sedation/i.test(printed(e)) && /IV sedation/i.test(printed(e)));
+  assert.ok(adult.length > 0, 'the adult wording still offers both');
+});
+
+test('EL-1c: with no insurance, no FAQ email talks about benefits or insurance maximums', () => {
+  const phrase = /check your benefits|maximize your insurance/i;
+  const faqs = (answers) => compose(freshSource(), answers).filter((e) => e.stage === 'faq');
+  assert.ok(faqs({}).some((e) => phrase.test(printed(e))), 'control: the standard wording does say it');
+  for (const e of faqs({ insurance_mode: 'no_insurance' })) assert.ok(!phrase.test(printed(e)), e.id);
+});
+
+test('EL-1c: parent_in_room and sleep_test rewrite the FAQ answers (array rule text)', () => {
+  const peds = (a) => library.composeOne({ procedureId: 'pediatric_restorative', stage: 'faq', variant: 'B' }, a).body_text;
+  assert.ok(peds({ parent_in_room: 'child_first' }).includes('come get you'));
+  assert.ok(!peds({}).includes('come get you'), 'control: not without the answer');
+  const sleep = (a) => library.composeOne({ procedureId: 'sleep_appliance', stage: 'faq', variant: 'B' }, a).body_text;
+  assert.ok(sleep({ sleep_test: 'home_test' }).includes('home sleep test'));
+});
+
+test('EL-1c: the validator refuses a bad value for each new question class', () => {
+  const C = contract.EMAIL_LIBRARY_ANSWER_CODES;
+  const cases = [
+    [{ parent_in_room: 'maybe' }, C.BAD_OPTION, 'parent_in_room'],
+    [{ sleep_test: 'lab' }, C.BAD_OPTION, 'sleep_test'],
+    [{ sedation_kids: ['spa'] }, C.BAD_OPTION, 'sedation_kids'],
+    [{ new_patient_welcome: ['pony'] }, C.BAD_OPTION, 'new_patient_welcome'],
+    [{ surgical_guides: 'yes' }, C.NOT_BOOLEAN, 'surgical_guides'],
+    [{ immediate_implants: 1 }, C.NOT_BOOLEAN, 'immediate_implants'],
+  ];
+  for (const [answers, code, key] of cases) {
+    const v = contract.validateEmailLibraryAnswers(answers);
+    assert.equal(v.ok, false, JSON.stringify(answers));
+    assert.equal(v.code, code, JSON.stringify(answers));
+    assert.equal(v.key, key);
+  }
+  const ok = contract.validateEmailLibraryAnswers({
+    surgical_guides: true,
+    immediate_implants: false,
+    new_patient_welcome: ['tour', 'xrays', 'tour'],
+    sedation_kids: ['nitrous'],
+    parent_in_room: 'child_first',
+    sleep_test: 'home_test',
+  });
+  assert.equal(ok.ok, true);
+  // A list keeps the source's option order with duplicates collapsed, as sedation does.
+  assert.deepEqual(ok.answers.new_patient_welcome, ['xrays', 'tour']);
+  for (const k of ['office_name', 'office_phone']) {
+    assert.equal(contract.validateEmailLibraryAnswers({ [k]: 'x' }).code, C.OFFICE_FIELD, k);
+  }
 });

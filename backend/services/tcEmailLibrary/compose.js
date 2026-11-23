@@ -56,7 +56,8 @@ function blockFor(src, ans, proc) {
   const b = JSON.parse(JSON.stringify(proc));
   for (const r of src.rules) {
     if (!r.procedures.includes(b.id) || !test(src, ans, r.when)) continue;
-    const val = Array.isArray(r.text) ? r.text.map(t => interp(src, ans, t)) : interp(src, ans, r.text);
+    const ip = t => (Array.isArray(t) ? t.map(ip) : interp(src, ans, t));
+    const val = ip(r.text);
     if (r.mode === "replace") b[r.field] = val;
     else if (Array.isArray(b[r.field])) b[r.field] = b[r.field].concat(val);
     else b[r.field] = b[r.field] + " " + val;
@@ -78,6 +79,7 @@ function fill(text, b, g) {
     WHOSE: parent ? "your child's" : "your", WHOM: parent ? "your child" : "you",
     HOW_FEELING: parent ? "How is your child doing?" : "How are you feeling?",
   }, g);
+  if (parent) for (const k of Object.keys(g)) if (k.endsWith("_KIDS")) t[k.slice(0, -5)] = g[k];
   b.faq.forEach((qa, i) => { t["Q" + (i + 1)] = qa[0]; t["A" + (i + 1)] = qa[1]; });
   let out = text;
   for (let pass = 0; pass < 2; pass++) out = out.replace(/\[\[(\w+)\]\]/g, (m, k) => (k in t ? t[k] : m));
