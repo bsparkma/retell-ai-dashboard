@@ -96,10 +96,43 @@ function sortKeys(v: unknown): unknown {
   return v;
 }
 
-/** Is a question shown, given its show_if and the draft? (show_if names a yes/no answer.) */
-function shown(q: EmailLibraryQuestion, draft: Draft): boolean {
-  if (!q.show_if) return true;
-  return draft[q.show_if] === true;
+/**
+ * Is a question shown, given its show_if and the draft? The same reading the
+ * composer gives a condition (compose.js `test`): `key` is "answered" (true, a
+ * non-empty list, or text other than "no"), `key=value` compares the answer, a
+ * leading `!` negates, and an unanswered question reads as its library default
+ * (so `implant_surgery=in_house` is true until the office picks "specialist").
+ */
+function shown(q: EmailLibraryQuestion, draft: Draft, questions: readonly EmailLibraryQuestion[]): boolean {
+  const cond = q.show_if;
+  if (!cond) return true;
+  const neg = cond.startsWith("!");
+  const [key, want] = (neg ? cond.slice(1) : cond).split("=");
+  let v: unknown = draft[key];
+  if (v === undefined || v === null || v === "") {
+    const src = questions.find((x) => x.id === key);
+    v = src && src.default != null ? src.default : src && (src.type === "multi" || src.type === "procedures") ? [] : "";
+  }
+  let ok: boolean;
+  if (want !== undefined) ok = v === want;
+  else if (Array.isArray(v)) ok = v.length > 0;
+  else ok = v === true || (typeof v === "string" && v.trim() !== "" && v !== "no");
+  return neg ? !ok : ok;
+}
+
+/**
+ * The draft minus the answers of every question its show_if currently hides, so
+ * a hidden question's stale answer is never previewed or saved (the server would
+ * accept it: it is a valid key). Repeats until stable in case a hidden answer is
+ * itself another question's condition.
+ */
+function visibleAnswers(draft: Draft, questions: readonly EmailLibraryQuestion[]): Draft {
+  let out: Draft = draft;
+  for (;;) {
+    const hidden: string[] = questions.filter((q) => q.id in out && !shown(q, out, questions)).map((q) => q.id);
+    if (hidden.length === 0) return out;
+    out = Object.fromEntries(Object.entries(out).filter(([k]) => !hidden.includes(k)));
+  }
 }
 
 /** Text with {{tokens}} highlighted. */
@@ -287,7 +320,12 @@ function OfficeEmailLibrary({ office }: { office: OfficeId }) {
     void load();
   }, [load]);
 
-  const validation = useMemo(() => validateEmailLibraryAnswers(draft), [draft]);
+  // Validate (and so preview and save) only what is on screen: a question its
+  // show_if hides contributes nothing, whatever the draft still holds for it.
+  const validation = useMemo(
+    () => validateEmailLibraryAnswers(catalog ? visibleAnswers(draft, catalog.questions) : draft),
+    [draft, catalog],
+  );
   // Compare normalized to normalized, so list order alone never reads as an edit.
   const savedNormalized = useMemo(() => {
     if (!profile) return null;
@@ -425,7 +463,7 @@ function OfficeEmailLibrary({ office }: { office: OfficeId }) {
           <fieldset key={s.name} className="space-y-3 rounded-xl border border-border p-4" data-testid={`patient-emails-section-${s.name}`}>
             <legend className="px-1 text-sm font-semibold text-foreground">{s.name}</legend>
             {s.questions
-              .filter((q) => shown(q, draft))
+              .filter((q) => shown(q, draft, catalog.questions))
               .map((q) => (
                 <QuestionField
                   key={q.id}

@@ -279,3 +279,142 @@ describe("/admin/patient-emails gating and the hub card", () => {
     expect(visibleHubCards(["admin.all", "tc.full"], ["voice"]).some((c) => c.id === "patient-emails")).toBe(false);
   });
 });
+
+// ── EL-1c: library 1.3.0's six new questions ────────────────────────────────
+
+const V13_QUESTIONS = [
+  q({ id: "laser", section: "Technology", type: "yesno", label: "Do you use a dental laser?", help: "Soft-tissue or hard-tissue laser." }),
+  q({ id: "surgical_guides", section: "Technology", type: "yesno", label: "Do you place implants with surgical guides?", show_if: "implant_surgery=in_house" }),
+  q({
+    id: "sedation_kids",
+    section: "Comfort",
+    type: "multi",
+    label: "Which relaxation options do you offer children?",
+    options: [
+      { value: "nitrous", label: "Laughing gas", phrase: "laughing gas" },
+      { value: "oral", label: "Oral sedation", phrase: "oral sedation" },
+      { value: "iv", label: "IV sedation", phrase: "IV sedation" },
+    ],
+  }),
+  q({
+    id: "parent_in_room",
+    section: "Comfort",
+    type: "select",
+    label: "Can a parent stay in the room?",
+    options: [
+      { value: "yes", label: "Yes" },
+      { value: "child_first", label: "Child first, then parent" },
+      { value: "no", label: "No" },
+    ],
+  }),
+  q({
+    id: "new_patient_welcome",
+    section: "Comfort",
+    type: "multi",
+    label: "What does a new patient's first visit include?",
+    options: [
+      { value: "xrays", label: "X-rays" },
+      { value: "tour", label: "A tour" },
+    ],
+  }),
+  q({
+    id: "implant_surgery",
+    section: "Services",
+    type: "select",
+    label: "Who places implants?",
+    default: "in_house",
+    options: [
+      { value: "in_house", label: "We do" },
+      { value: "specialist", label: "A specialist" },
+    ],
+  }),
+  q({ id: "immediate_implants", section: "Services", type: "yesno", label: "Do you offer same-day implants?", show_if: "implant_surgery=in_house" }),
+  q({
+    id: "sleep_test",
+    section: "Services",
+    type: "select",
+    label: "How do patients get a sleep test?",
+    options: [
+      { value: "home_test", label: "Home sleep test" },
+      { value: "both", label: "Either" },
+      { value: "refer", label: "We refer" },
+    ],
+  }),
+];
+const CATALOG_V13: EmailLibraryCatalogResponse = {
+  ...CATALOG,
+  libraryVersion: "1.3.0",
+  questions: [...CATALOG.questions, ...V13_QUESTIONS],
+};
+
+describe("/admin/patient-emails, library 1.3.0", () => {
+  it("renders the six new questions in their sections with the existing controls", async () => {
+    apiMock.getEmailLibraryCatalog.mockResolvedValue(CATALOG_V13);
+    render(<AdminPatientEmails />);
+    const tech = await screen.findByTestId("patient-emails-section-Technology");
+    const comfort = screen.getByTestId("patient-emails-section-Comfort");
+    const services = screen.getByTestId("patient-emails-section-Services");
+    expect(within(tech).getByTestId("patient-emails-q-surgical_guides").querySelector("input[type=checkbox]")).toBeTruthy();
+    expect(within(comfort).getByTestId("patient-emails-opt-sedation_kids-oral")).toBeTruthy();
+    expect(within(comfort).getByTestId("patient-emails-opt-new_patient_welcome-tour")).toBeTruthy();
+    expect(within(comfort).getByTestId("patient-emails-q-parent_in_room").querySelector("select")).toBeTruthy();
+    expect(within(services).getByTestId("patient-emails-q-immediate_implants").querySelector("input[type=checkbox]")).toBeTruthy();
+    expect(within(services).getByTestId("patient-emails-q-sleep_test").querySelector("select")).toBeTruthy();
+    expect(within(tech).getByTestId("patient-emails-q-laser").textContent).toContain("Soft-tissue or hard-tissue laser.");
+  });
+
+  it("show_if `implant_surgery=in_house` reads the library default, and hiding drops the stale answer from preview and save", async () => {
+    apiMock.getEmailLibraryCatalog.mockResolvedValue(CATALOG_V13);
+    apiMock.getEmailLibraryProfile.mockResolvedValue(
+      profile({ saved: true, answers: { surgical_guides: true, immediate_implants: true }, libraryVersion: "1.3.0" }),
+    );
+    render(<AdminPatientEmails />);
+    // Unanswered implant_surgery reads as its default (in_house): both follow-ups show.
+    expect(await screen.findByTestId("patient-emails-q-surgical_guides")).toBeTruthy();
+    expect(screen.getByTestId("patient-emails-q-immediate_implants")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Who places implants?"), { target: { value: "specialist" } });
+    expect(screen.queryByTestId("patient-emails-q-surgical_guides")).toBeNull();
+    expect(screen.queryByTestId("patient-emails-q-immediate_implants")).toBeNull();
+
+    await waitFor(
+      () =>
+        expect(apiMock.previewEmailLibrary).toHaveBeenLastCalledWith("roland", {
+          procedure_id: "crown",
+          stage: "tp_recap",
+          variant: "A",
+          answers: { implant_surgery: "specialist" },
+        }),
+      { timeout: 2000 },
+    );
+    apiMock.saveEmailLibraryProfile.mockResolvedValue(
+      profile({ saved: true, answers: { implant_surgery: "specialist" }, updatedAt: "2026-11-23T15:00:00.000Z", updatedBy: "admin@example.test" }),
+    );
+    fireEvent.click(screen.getByTestId("patient-emails-save"));
+    expect(apiMock.saveEmailLibraryProfile).toHaveBeenCalledWith("roland", { implant_surgery: "specialist" });
+    expect(await screen.findByTestId("patient-emails-saved")).toBeTruthy();
+
+    // Back to in_house: the follow-ups return, unanswered.
+    fireEvent.change(screen.getByLabelText("Who places implants?"), { target: { value: "in_house" } });
+    const guides = within(screen.getByTestId("patient-emails-q-surgical_guides")).getByRole("checkbox") as HTMLInputElement;
+    expect(guides.checked).toBe(false);
+  });
+
+  it("the new selects and multis send declared values", async () => {
+    apiMock.getEmailLibraryCatalog.mockResolvedValue(CATALOG_V13);
+    render(<AdminPatientEmails />);
+    fireEvent.change(await screen.findByLabelText("Can a parent stay in the room?"), { target: { value: "child_first" } });
+    fireEvent.change(screen.getByLabelText("How do patients get a sleep test?"), { target: { value: "home_test" } });
+    fireEvent.click(screen.getByTestId("patient-emails-opt-sedation_kids-nitrous"));
+    fireEvent.click(screen.getByTestId("patient-emails-opt-new_patient_welcome-tour"));
+    fireEvent.click(screen.getByTestId("patient-emails-opt-new_patient_welcome-xrays"));
+    apiMock.saveEmailLibraryProfile.mockResolvedValue(profile({ saved: true }));
+    fireEvent.click(screen.getByTestId("patient-emails-save"));
+    expect(apiMock.saveEmailLibraryProfile).toHaveBeenCalledWith("roland", {
+      parent_in_room: "child_first",
+      sleep_test: "home_test",
+      sedation_kids: ["nitrous"],
+      new_patient_welcome: ["xrays", "tour"],
+    });
+  });
+});

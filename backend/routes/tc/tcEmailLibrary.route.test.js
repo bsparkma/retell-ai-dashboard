@@ -133,7 +133,7 @@ test('P: PUT replaces the whole object, reads back, audits; GET returns it; offi
   assert.equal(contract.EmailLibraryProfileResponse.safeParse(put.body).success, true, 'the answer matches its contract');
   assert.equal(put.body.saved, true);
   assert.equal(put.body.answers.doctor_name, 'Dr. Sample', 'trimmed');
-  assert.equal(put.body.libraryVersion, '1.2.0');
+  assert.equal(put.body.libraryVersion, '1.3.0');
   assert.equal(put.body.updatedBy, 'tc@carein.ai');
   assert.ok(put.body.updatedAt);
 
@@ -325,14 +325,14 @@ test('C: the catalog drops the office fields, follows services_off, and is unapp
   assert.equal(before.status, 200);
   assert.equal(contract.EmailLibraryCatalogResponse.safeParse(before.body).success, true);
   assert.equal(before.body.clinicallyApproved, false);
-  assert.equal(before.body.libraryVersion, '1.2.0');
+  assert.equal(before.body.libraryVersion, '1.3.0');
   assert.equal(before.body.procedures.length, 36);
   assert.equal(before.body.emailCount, 1872);
   const ids = before.body.questions.map((x) => x.id);
   assert.ok(!ids.includes('office_name') && !ids.includes('office_phone'));
   assert.ok(!ids.includes('review_link'), 'the review-link question is gone');
   assert.ok(!before.body.stages.some((s) => s.id === 'review_referral'), 'the review stage is gone');
-  assert.equal(ids.length, 19, 'the source has 21 questions; two are the office fields');
+  assert.equal(ids.length, 25, 'the source has 27 questions; two are the office fields');
 
   await api(baseUrl, 'PUT', q('/profile'), { answers: { services_off: ['braces', 'full_arch'], insurance_mode: 'no_insurance' } });
   const after = await api(baseUrl, 'GET', q('/catalog'));
@@ -425,4 +425,41 @@ test('N: the whole surface writes no tc_messages row', async (t) => {
   }
   assert.equal(db.table('tc_messages').length, 0);
   assert.equal(db.table('tc_communications').length, 0);
+});
+
+test('EL-1c: PUT /profile round-trips all six 1.3.0 answers; the catalog lists 25 questions', async (t) => {
+  const db = new ProfileDb();
+  const { baseUrl } = await boot(t, { db });
+  const answers = {
+    surgical_guides: true,
+    immediate_implants: true,
+    new_patient_welcome: ['xrays', 'meet_doctor', 'coffee'],
+    sedation_kids: ['nitrous'],
+    parent_in_room: 'child_first',
+    sleep_test: 'home_test',
+  };
+  const put = await api(baseUrl, 'PUT', q('/profile'), { answers });
+  assert.equal(put.status, 200, JSON.stringify(put.body));
+  assert.equal(contract.EmailLibraryProfileResponse.safeParse(put.body).success, true);
+  assert.deepEqual(put.body.answers, answers);
+  assert.equal(put.body.libraryVersion, '1.3.0');
+  const got = await api(baseUrl, 'GET', q('/profile'));
+  assert.deepEqual(got.body.answers, answers);
+
+  const cat = await api(baseUrl, 'GET', q('/catalog'));
+  assert.equal(cat.status, 200);
+  assert.equal(contract.EmailLibraryCatalogResponse.safeParse(cat.body).success, true);
+  const ids = cat.body.questions.map((x) => x.id);
+  assert.equal(ids.length, 25);
+  assert.ok(!ids.includes('office_name') && !ids.includes('office_phone'));
+  for (const k of Object.keys(answers)) assert.ok(ids.includes(k), k);
+  const byId = Object.fromEntries(cat.body.questions.map((x) => [x.id, x]));
+  assert.equal(byId.surgical_guides.show_if, 'implant_surgery=in_house', 'show_if reaches the client');
+  assert.equal(byId.immediate_implants.show_if, 'implant_surgery=in_house');
+
+  const bad = await api(baseUrl, 'PUT', q('/profile'), { answers: { parent_in_room: 'maybe' } });
+  assert.equal(bad.status, 400);
+  const after = await api(baseUrl, 'GET', q('/profile'));
+  assert.deepEqual(after.body.answers, answers, 'a refused PUT saves nothing');
+  assert.equal(db.table('tc_messages').length, 0, 'nothing is drafted or sent');
 });
