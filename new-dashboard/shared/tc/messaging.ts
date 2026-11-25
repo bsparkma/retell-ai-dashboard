@@ -6,6 +6,11 @@
  * No auto-send, no scheduled send, no bulk send. Draft → (optional edit) →
  * human clicks Send → channel adapter.
  *
+ * (EL-2c, Beau 2026-11-25) "Nothing sends that a human has not approved word
+ * for word." A library nurture email may also be APPROVED ahead of time
+ * (draft → scheduled). In EL-2c that is where it stops: nothing sends a
+ * 'scheduled' row. The automatic sender is EL-2d, reviewed on its own.
+ *
  * Every enum below mirrors a CHECK constraint written INLINE in
  * backend/migrations-tenant/1790300000000_tc_messaging.js. The two are pinned
  * against each other by backend/test/tcMessagingMigration.test.js — a value the
@@ -39,8 +44,17 @@ export type MessageChannel = z.infer<typeof MessageChannel>;
  *              never retried silently.
  *   received   an inbound message
  *   skipped    (item 47) a nurture draft a human chose NOT to send, from the
- *              Nurture Outbox. Terminal; never sendable. Added by
- *              1791100000000_tc_nurture.js, which widens the CHECK.
+ *              Nurture Outbox — or (EL-2c) one cancelled because its campaign
+ *              stopped (`skipReason` says which). Terminal; never sendable.
+ *              Added by 1791100000000_tc_nurture.js, which widens the CHECK.
+ *   scheduled  (EL-2c) a library nurture email a person APPROVED word for word,
+ *              waiting for its planned send time (`scheduledFor`). NOT
+ *              sendable by a click: it must be unapproved back to a draft
+ *              first, so the approved text is exactly what would go out.
+ *              Nothing in EL-2c sends it; an approved email WAITS. Added by
+ *              1795600000000_tc_messages_scheduled.js, which widens the CHECK
+ *              again and requires approved_by, approved_at, scheduled_for and
+ *              enrollment_id on every 'scheduled' row.
  */
 export const MessageStatus = z.enum([
   "draft",
@@ -51,11 +65,28 @@ export const MessageStatus = z.enum([
   "failed",
   "received",
   "skipped",
+  "scheduled",
 ]);
 export type MessageStatus = z.infer<typeof MessageStatus>;
 
-/** The one state a Send click can start from. */
+/**
+ * The one state a Send click can start from. 'scheduled' is deliberately NOT
+ * here (EL-2c): an approved email is unapproved before anyone sends it by hand.
+ */
 export const SENDABLE_MESSAGE_STATUSES = ["draft"] as const satisfies readonly MessageStatus[];
+
+/**
+ * (EL-2c) Why a message is `skipped` (tc_messages.skip_reason, pinned by an
+ * inline CHECK in 1795600000000_tc_messages_scheduled.js). NULL on rows
+ * skipped before EL-2c.
+ *   manual           a person clicked Skip on it
+ *   case_terminal    its campaign stopped because the case left TC work
+ *   opted_out        its campaign stopped because the patient opted out
+ *                    (STOP, a manual opt-out, or the unsubscribe link)
+ *   stopped_by_user  its campaign was stopped by a person
+ */
+export const MessageSkipReason = z.enum(["manual", "case_terminal", "opted_out", "stopped_by_user"]);
+export type MessageSkipReason = z.infer<typeof MessageSkipReason>;
 
 export const ConsentState = z.enum(["opted_in", "opted_out", "unknown"]);
 export type ConsentState = z.infer<typeof ConsentState>;
@@ -124,6 +155,16 @@ export const TcMessage = z.object({
    * plain-text view of that layout; only the subject can be edited.
    */
   emailTemplated: z.boolean().default(false),
+  /**
+   * (EL-2c) A library nurture email's planned send time (draft or scheduled),
+   * Mon–Fri 09:00–16:00 office time. null for every other message.
+   */
+  scheduledFor: IsoTimestamp.nullable().default(null),
+  /** (EL-2c) Who approved it word for word, and when. Set exactly while `scheduled`. */
+  approvedBy: z.string().max(320).nullable().default(null),
+  approvedAt: IsoTimestamp.nullable().default(null),
+  /** (EL-2c) Why it was skipped; null otherwise (and on rows skipped before EL-2c). */
+  skipReason: MessageSkipReason.nullable().default(null),
 });
 export type TcMessage = z.infer<typeof TcMessage>;
 

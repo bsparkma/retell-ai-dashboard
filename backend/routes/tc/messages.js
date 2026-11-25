@@ -166,6 +166,9 @@ router.post(
     if (!id) return;
     // No body is read. What is sent, and to whom, is the stored draft.
     const message = await messaging.sendMessage(req, req.tcOffice, id);
+    // (EL-2c) A library campaign whose last waiting email this was is now
+    // finished. Never throws, never sends: the send above already happened.
+    await messaging.settleNurtureAfterSend(req, req.tcOffice, id);
     res.json({ success: true, message });
   })
 );

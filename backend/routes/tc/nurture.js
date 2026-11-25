@@ -10,8 +10,21 @@
  *   POST /enrollments/:id/stop          { reason } — ends it
  *   GET  /enrollments?case_id=          a case's enrollments + which tracks it can start
  *   GET  /outbox                        the office's nurture DRAFTS, grouped by track
- *   POST /outbox/:messageId/skip        a human chose not to send one
+ *   POST /outbox/:messageId/skip        a human chose not to send one (EL-2c: or an approved one)
  *   GET  /config, PUT /config           the office's per-track intensity dial
+ *
+ * EL-2c — APPROVE UP FRONT (library campaigns). Start writes the WHOLE
+ * campaign: every step a draft with a planned send time, in the enrollment's
+ * own transaction (all or nothing). Then:
+ *   GET  /enrollments/:id/campaign      the campaign's emails in order (Review campaign)
+ *   POST /messages/:messageId/approve   draft → scheduled (approved word for word)
+ *   POST /messages/:messageId/unapprove scheduled → draft
+ *   POST /messages/:messageId/reschedule { date, time } in office time
+ *   POST /enrollments/:id/approve-all   every draft of one campaign, one transaction
+ *   POST /enrollments/:id/replied       a person records that the patient replied: PAUSE
+ * Stop (any reason, any kind of campaign) cancels every waiting email. An
+ * approved email WAITS: nothing in EL-2c sends it, and these routes never call
+ * sendMessage. The automatic sender is EL-2d.
  *
  * NOTHING HERE SENDS. Approving a draft is the ordinary
  * POST /api/tc/messages/:id/send (services/messaging sendMessage), which is
@@ -60,6 +73,9 @@ const adapters = require('../../services/messaging/adapters');
 const { addressFromCase } = require('../../services/messaging/address');
 const library = require('../../services/tcEmailLibrary');
 const emailIdentity = require('../../config/emailIdentity');
+// EL-2c: the library campaign is written in full at Start, by the generator's
+// own renderer + insert (so Start and the #359 catch-up write identical rows).
+const generator = require('../../services/tcNurture/generator');
 
 const { z, Uuid, NurtureEnrollBody, NurtureStopBody, LibraryNurtureConfig } = contract;
 
@@ -118,19 +134,17 @@ function reachable(tcCase, channels) {
   return channels.some((ch) => Boolean(addressFromCase(ch, tcCase)));
 }
 
-/** Enrollment rows → contract entities with their touch counts. */
+/**
+ * Enrollment rows → contract entities with their touch counts, and (EL-2c)
+ * their approved / sent / skipped counts and next planned send time.
+ */
 async function withCounts(q, office, rows) {
-  const counts = await nurtureStore.touchCounts(
-    q,
-    office,
-    rows.map((r) => r.enrollment_id)
-  );
-  return rows.map((r) => nurtureStore.toEnrollment(r, counts.get(r.enrollment_id) || 0));
+  return nurtureStore.toEnrollments(q, office, rows);
 }
 
 async function loadCaseById(q, caseId) {
   const res = await q.query(
-    `SELECT case_id, office_id, patient_name, phone, email, status, nurture_enrolled_at
+    `SELECT case_id, office_id, patient_name, phone, email, status, nurture_enrolled_at, nurture_unsubscribed, assigned_tc
        FROM tc_cases WHERE case_id = $1`,
     [caseId]
   );
@@ -274,20 +288,53 @@ router.post(
 
       const enrollmentId = randomUUID();
       const firstDue = engine.firstDueAt(tz, now, steps);
-      await nurtureStore.insertEnrollment(client, {
+      const enrollmentRow = {
         enrollment_id: enrollmentId,
         case_id: tcCase.case_id,
         office_id: office,
         track_key: body.track_key,
         intensity_at_enroll: intensity,
         status: 'active',
-        next_touch_index: 0,
-        next_touch_due_at: firstDue ? firstDue.toISOString() : null,
+        // EL-2c: a library campaign is WRITTEN IN FULL right here, so its
+        // index is already at the end and the nightly pass has nothing to
+        // draft (next_touch_due_at null). Hand-written: unchanged.
+        next_touch_index: fromLibrary ? steps.length : 0,
+        next_touch_due_at: fromLibrary ? null : firstDue ? firstDue.toISOString() : null,
+        last_touch_at: fromLibrary ? now.toISOString() : null,
         created_by: actor,
         created_at: now.toISOString(),
         library_procedure_id: fromLibrary ? body.procedure_id : null,
         library_variant: fromLibrary ? body.variant : null,
-      });
+      };
+      /** @type {Awaited<ReturnType<typeof generator.prepareLibraryDrafts>>|null} */
+      let prepared = null;
+      /** @type {Date[]} */
+      let planned = [];
+      if (fromLibrary) {
+        // EL-2c: render EVERY step before anything is written. One step that
+        // cannot render refuses the whole enrollment: no enrollment row, no
+        // emails, no status change.
+        try {
+          prepared = await generator.prepareLibraryDrafts(
+            client,
+            office,
+            enrollmentRow,
+            tcCase,
+            cfg.officeMergeValues(tenantSlug, office),
+            0
+          );
+        } catch (err) {
+          if (err instanceof library.LibraryRenderError || err instanceof library.EmailLibraryError) {
+            return { renderFailed: { code: err.code, token: err.token ?? null, status: err.status ?? 409 } };
+          }
+          throw err;
+        }
+        planned = engine.planCampaign({ tz, enrolledAt: now, steps });
+      }
+      await nurtureStore.insertEnrollment(client, enrollmentRow);
+      if (prepared) {
+        await generator.insertLibraryDrafts(client, { office, e: enrollmentRow, prepared, times: planned, now });
+      }
 
       const label = nurtureStore.trackLabel(body.track_key);
       const statusChanged = tcCase.status !== 'nurture';
@@ -320,9 +367,10 @@ router.post(
           ? `Enrolled in ${label} from the patient email library (${nurtureStore.libraryLabel(
               body.procedure_id,
               body.variant
-            )}; office dial ${intensity}, not applied): ${steps.length} emails, the first due ${
-              firstDue ? firstDue.toISOString().slice(0, 10) : 'now'
-            }. Every touch is a draft for review — nothing sends on its own.`
+            )}; office dial ${intensity}, not applied): ${steps.length} emails written for review, the first planned ${
+              planned.length ? generator.shortLocalDate(tz, planned[0]) : 'now'
+            }. Nothing sends until a person approves each one.` +
+            (prepared && prepared.hint ? ` Flagged: ${prepared.hint.replace(/_/g, ' ')}.` : '')
           : `Enrolled in ${label} (${intensity}): ${steps.length} touches, the first due ${
               firstDue ? firstDue.toISOString().slice(0, 10) : 'now'
             }. Every touch is a draft for review — nothing sends on its own.`,
@@ -330,7 +378,8 @@ router.post(
         ts: now,
       });
       const row = await nurtureStore.loadEnrollment(client, office, enrollmentId);
-      return { office, enrollment: nurtureStore.toEnrollment(row, 0), statusChanged };
+      const [enrollment] = await nurtureStore.toEnrollments(client, office, [row]);
+      return { office, enrollment, statusChanged };
     }).catch((err) => {
       if (isUniqueViolation(err)) return { already: null };
       throw err;
@@ -381,6 +430,18 @@ router.post(
           result.identityMissing
         )} set. Add it in Practice info & email identity first.`,
         { missing: result.identityMissing }
+      );
+    }
+    if (result.renderFailed) {
+      const { code, token, status } = result.renderFailed;
+      return refuse(
+        res,
+        code === 'UNRESOLVED_MERGE' ? 409 : status,
+        code,
+        code === 'UNRESOLVED_MERGE'
+          ? `One of this campaign's emails could not be written: it needs the ${String(token).replace(/_/g, ' ')}, and there is no value for it. Nothing was started.`
+          : 'One of this campaign\'s emails could not be written from the library, so nothing was started.',
+        token ? { token } : {}
       );
     }
     if (result.noAddress === 'email') {
@@ -445,7 +506,7 @@ function lifecycle(action, plan) {
     const out = await withTenantTx(req, async (client) => {
       const e = await loadOwned(client, req, res);
       if (!e) return { responded: true };
-      const decision = await plan({ client, e, body, now });
+      const decision = await plan({ client, e, body, now, actor });
       if (decision.refuse) return decision;
       const row = await nurtureStore.transition(client, e.office_id, e.enrollment_id, decision.transition);
       if (!row) {
@@ -453,22 +514,32 @@ function lifecycle(action, plan) {
           refuse: [409, 'ENROLLMENT_NOT_IN_STATE', `This campaign is ${e.status}, so it cannot be ${decision.verb}.`],
         };
       }
+      // EL-2c: what the transition does to the campaign's emails, in the
+      // same transaction (Stop cancels what is waiting; Resume re-plans the
+      // late ones). The description says how many.
+      const effect = decision.after ? await decision.after(client, row) : null;
       await nurtureStore.insertEvent(client, {
         office: e.office_id,
         caseId: e.case_id,
         type: decision.eventType,
-        description: decision.describe(row),
+        description: decision.describe(row, effect),
         actor,
         ts: now,
       });
-      const counts = await nurtureStore.touchCounts(client, e.office_id, [e.enrollment_id]);
-      return { enrollment: nurtureStore.toEnrollment(row, counts.get(e.enrollment_id) || 0), office: e.office_id };
+      const [enrollment] = await nurtureStore.toEnrollments(client, e.office_id, [row]);
+      return { enrollment, office: e.office_id, effect };
     });
     if (out.responded) return;
     if (out.refuse) return refuse(res, out.refuse[0], out.refuse[1], out.refuse[2]);
     await auditTc(req, 'UPDATE', `tc_nurture_enrollment.${action}`, out.enrollment.enrollmentId, {
       office: out.office,
     });
+    // Ids only, never PHI: each email the transition changed is on the trail too.
+    if (out.effect && Array.isArray(out.effect.messageIds)) {
+      for (const id of out.effect.messageIds) {
+        await auditTc(req, 'UPDATE', out.effect.auditAs, id, { office: out.office });
+      }
+    }
     res.json({ success: true, enrollment: out.enrollment });
   });
 }
@@ -498,6 +569,27 @@ router.post(
     }
     const steps = nurtureStore.stepsOf(e);
     const index = Number(e.next_touch_index);
+    if (e.library_procedure_id && index >= steps.length) {
+      // EL-2c: a library campaign written in full. Nothing is drafted on a
+      // due date; instead its LATE emails (planned time passed while paused)
+      // are re-planned forward from now, keeping their order, gaps and the
+      // caps — never bunched. Approvals are kept: the text did not change.
+      return {
+        verb: 'resumed',
+        transition: { from: ['paused'], to: 'active', stopReason: null, nextTouchDueAt: null },
+        eventType: 'nurture_resumed',
+        after: async (client2, row) => {
+          const moved = await messaging.replanLateEmails(client2, row.office_id, row, now);
+          return { moved: moved.length, messageIds: moved, auditAs: 'tc_message.replanned' };
+        },
+        describe: (row, effect) =>
+          `${nurtureStore.trackLabel(row.track_key)} resumed: ${
+            effect && effect.moved
+              ? `${effect.moved} late ${effect.moved === 1 ? 'email' : 'emails'} re-planned from today, in order and spaced as before (approvals kept)`
+              : 'every waiting email keeps its planned time'
+          }`,
+      };
+    }
     // NEVER BACK-FILL: the next touch is due the preset's gap from TODAY, so a
     // long pause never releases a burst of missed touches. Past the end of
     // the schedule, it is due now and the next pass completes it.
@@ -514,11 +606,43 @@ router.post(
 
 router.post(
   '/enrollments/:id/stop',
-  lifecycle('stop', async ({ body }) => ({
+  lifecycle('stop', async ({ body, actor }) => ({
     verb: 'stopped',
     transition: { from: ['active', 'paused'], to: 'stopped', stopReason: body.reason, nextTouchDueAt: null },
     eventType: 'nurture_stopped',
-    describe: (row) => `${nurtureStore.trackLabel(row.track_key)} stopped by the TC: ${body.reason}`,
+    // EL-2c: a stopped campaign leaves nothing behind that could be sent —
+    // every draft and approved email is skipped ('stopped_by_user'), for
+    // hand-written campaigns too.
+    after: async (client2, row) => {
+      const ids = await nurtureStore.cancelWaiting(client2, row.office_id, row.enrollment_id, {
+        reason: 'stopped_by_user',
+        actor,
+      });
+      return { cancelled: ids.length, messageIds: ids, auditAs: 'tc_message.skipped' };
+    },
+    describe: (row, effect) =>
+      `${nurtureStore.trackLabel(row.track_key)} stopped by the TC: ${body.reason}${nurtureStore.cancelledSuffix(
+        effect ? effect.cancelled : 0
+      )}`,
+  }))
+);
+
+// EL-2c: "Patient replied". Email replies never reach the app, so a person
+// records it: the campaign PAUSES (stop_reason 'patient_replied', cleared by
+// Resume) and nothing is cancelled — its emails wait exactly as they are.
+router.post(
+  '/enrollments/:id/replied',
+  lifecycle('replied', async ({ e, actor }) => ({
+    verb: 'paused',
+    transition: {
+      from: ['active', 'paused'],
+      to: 'paused',
+      stopReason: contract.NURTURE_PAUSE_PATIENT_REPLIED,
+      nextTouchDueAt: e.next_touch_due_at ?? null,
+    },
+    eventType: 'nurture_paused',
+    describe: (row) =>
+      `${nurtureStore.trackLabel(row.track_key)} paused: the patient replied (marked by ${actor}) — read the reply before more go out`,
   }))
 );
 
@@ -609,22 +733,24 @@ router.get(
     if (!parseBody(res, OfficeOnly, req.query)) return;
     const office = req.tcOffice;
     const enabled = await officeOn(req, office);
-    const groups = await tenantDb.withTenantDb(req, async (q) => {
+    const { groups, campaigns } = await tenantDb.withTenantDb(req, async (q) => {
+      // Hand-written drafts, and (EL-2c) library emails that are still
+      // waiting — drafts AND approved ones.
       const drafts = await q.query(
-        `SELECT ${messaging.MESSAGE_COLS.join(', ')}, enrollment_id, touch_key, consent_blocked_hint
+        `SELECT ${messaging.NURTURE_MESSAGE_COLS.join(', ')}
            FROM tc_messages
-          WHERE office_id = $1 AND status = 'draft' AND enrollment_id IS NOT NULL
+          WHERE office_id = $1 AND status = ANY($2) AND enrollment_id IS NOT NULL
           ORDER BY created_at`,
-        [office]
+        [office, [...nurtureStore.WAITING_STATUSES]]
       );
-      if (!drafts.rows.length) return [];
+      if (!drafts.rows.length) return { groups: [], campaigns: [] };
       const enrollmentIds = [...new Set(drafts.rows.map((d) => d.enrollment_id))];
       const caseIds = [...new Set(drafts.rows.map((d) => d.case_id).filter(Boolean))];
       const enr = await q.query(
-        `SELECT enrollment_id, track_key FROM tc_nurture_enrollments WHERE office_id = $1 AND enrollment_id = ANY($2)`,
+        `SELECT ${nurtureStore.ENROLLMENT_COLS.join(', ')} FROM tc_nurture_enrollments WHERE office_id = $1 AND enrollment_id = ANY($2)`,
         [office, enrollmentIds]
       );
-      const trackOf = new Map(enr.rows.map((r) => [r.enrollment_id, r.track_key]));
+      const enrollmentOf = new Map(enr.rows.map((r) => [r.enrollment_id, r]));
       const cases = caseIds.length
         ? await q.query(`SELECT case_id, patient_name FROM tc_cases WHERE office_id = $1 AND case_id = ANY($2)`, [
             office,
@@ -633,9 +759,19 @@ router.get(
         : { rows: [] };
       const nameOf = new Map(cases.rows.map((r) => [r.case_id, r.patient_name ?? null]));
       const byTrack = new Map();
+      /** @type {Map<string, Array<Record<string, any>>>} */
+      const byCampaign = new Map();
       for (const d of drafts.rows) {
-        const trackKey = trackOf.get(d.enrollment_id);
-        if (!trackKey || !d.case_id) continue;
+        const e = enrollmentOf.get(d.enrollment_id);
+        if (!e || !d.case_id) continue;
+        if (e.library_procedure_id) {
+          // EL-2c: library campaigns are listed per case, below.
+          if (!byCampaign.has(e.enrollment_id)) byCampaign.set(e.enrollment_id, []);
+          byCampaign.get(e.enrollment_id).push(d);
+          continue;
+        }
+        if (d.status !== 'draft') continue;
+        const trackKey = e.track_key;
         if (!byTrack.has(trackKey)) byTrack.set(trackKey, []);
         byTrack.get(trackKey).push({
           message: messaging.toMessage(d),
@@ -646,11 +782,37 @@ router.get(
           consentBlockedHint: d.consent_blocked_hint ?? null,
         });
       }
-      return cfg.TRACK_KEYS.filter((k) => byTrack.has(k)).map((trackKey) => ({
-        trackKey,
-        label: cfg.TRACKS[trackKey].label,
-        drafts: byTrack.get(trackKey),
-      }));
+      const libraryRows = enr.rows.filter((r) => byCampaign.has(r.enrollment_id));
+      const entities = await nurtureStore.toEnrollments(q, office, libraryRows);
+      const plannedMs = (/** @type {Record<string, any>} */ d) => {
+        const t = nurtureStore.dateOrNull(d.scheduled_for);
+        return t ? t.getTime() : Number.POSITIVE_INFINITY;
+      };
+      const out = libraryRows.map((r, k) => {
+        const steps = nurtureStore.stepsOf(r);
+        const emails = byCampaign
+          .get(r.enrollment_id)
+          .slice()
+          .sort((a, b) => plannedMs(a) - plannedMs(b))
+          .map((d) => toCampaignEmail(d, steps));
+        return {
+          enrollment: entities[k],
+          patientName: nameOf.get(r.case_id) ?? null,
+          needsApproval: emails.filter((x) => x.message.status === 'draft').length,
+          emails,
+        };
+      });
+      const firstMs = (/** @type {{ emails: Array<{ message: { scheduledFor: string|null } }> }} */ c) =>
+        c.emails.length && c.emails[0].message.scheduledFor ? Date.parse(c.emails[0].message.scheduledFor) : Number.POSITIVE_INFINITY;
+      out.sort((a, b) => firstMs(a) - firstMs(b));
+      return {
+        groups: cfg.TRACK_KEYS.filter((k) => byTrack.has(k)).map((trackKey) => ({
+          trackKey,
+          label: cfg.TRACKS[trackKey].label,
+          drafts: byTrack.get(trackKey),
+        })),
+        campaigns: out,
+      };
     });
     // Message bodies and patient names left the database: on the trail.
     await auditTc(req, 'READ', 'tc_nurture_outbox', null, { office });
@@ -659,7 +821,125 @@ router.get(
       enabled: adapters.isChannelEnabled(channel, office),
       reason: adapters.channelUnavailableReason(channel, office),
     }));
-    res.json({ success: true, ...contract.NurtureOutboxResponse.parse({ enabled, channels, groups }) });
+    res.json({
+      success: true,
+      ...contract.NurtureOutboxResponse.parse({ enabled, channels, groups, campaigns, automaticSending: AUTOMATIC_SENDING }),
+    });
+  })
+);
+
+/**
+ * EL-2c: there is NO automatic sender in this slice, for any office. The
+ * screens say so in words (contract.NURTURE_AUTOMATIC_SENDING_NOTE).
+ */
+const AUTOMATIC_SENDING = false;
+
+/** One tc_messages row (NURTURE_MESSAGE_COLS) → a campaign email, with its step. */
+function toCampaignEmail(d, steps) {
+  return {
+    message: messaging.toMessage(d),
+    stage: d.touch_key,
+    stepIndex: Math.max(0, nurtureStore.stepIndexOf(steps, d.touch_key)),
+    consentBlockedHint: d.consent_blocked_hint ?? null,
+  };
+}
+
+// ── EL-2c: Review campaign + the review actions ─────────────────────────────
+
+router.get(
+  '/enrollments/:id/campaign',
+  h(async (req, res) => {
+    if (!parseBody(res, OfficeOnly, req.query)) return;
+    const out = await tenantDb.withTenantDb(req, async (q) => {
+      const e = await loadOwned(q, req, res);
+      if (!e) return null;
+      const steps = nurtureStore.stepsOf(e);
+      const rows = (
+        await q.query(
+          `SELECT ${messaging.NURTURE_MESSAGE_COLS.join(', ')} FROM tc_messages
+            WHERE office_id = $1 AND enrollment_id = $2 ORDER BY created_at`,
+          [e.office_id, e.enrollment_id]
+        )
+      ).rows;
+      const c = await q.query(`SELECT case_id, patient_name FROM tc_cases WHERE office_id = $1 AND case_id = $2`, [
+        e.office_id,
+        e.case_id,
+      ]);
+      const emails = rows.map((d) => toCampaignEmail(d, steps)).sort((a, b) => a.stepIndex - b.stepIndex);
+      const [enrollment] = await nurtureStore.toEnrollments(q, e.office_id, [e]);
+      return {
+        office: e.office_id,
+        body: contract.NurtureCampaignResponse.parse({
+          enrollment,
+          patientName: c.rows.length ? c.rows[0].patient_name ?? null : null,
+          emails,
+          automaticSending: AUTOMATIC_SENDING,
+        }),
+      };
+    });
+    if (!out) return;
+    await auditTc(req, 'READ', 'tc_nurture_campaign', out.body.enrollment.enrollmentId, { office: out.office });
+    res.json({ success: true, ...out.body });
+  })
+);
+
+/** A message id from the path, or a 404. */
+function messageIdOf(req, res) {
+  const id = Uuid.safeParse(req.params.messageId);
+  if (!id.success) {
+    notFound(res, 'message');
+    return null;
+  }
+  return id.data;
+}
+
+router.post(
+  '/messages/:messageId/approve',
+  m(async (req, res) => {
+    const id = messageIdOf(req, res);
+    if (!id) return;
+    if (!parseBody(res, EmptyBody, req.body ?? {})) return;
+    const out = await messaging.approveNurtureEmail(req, req.tcOffice, id);
+    res.json({ success: true, message: out.message, replanned: out.replanned });
+  })
+);
+
+router.post(
+  '/messages/:messageId/unapprove',
+  m(async (req, res) => {
+    const id = messageIdOf(req, res);
+    if (!id) return;
+    if (!parseBody(res, EmptyBody, req.body ?? {})) return;
+    const message = await messaging.unapproveNurtureEmail(req, req.tcOffice, id);
+    res.json({ success: true, message });
+  })
+);
+
+router.post(
+  '/messages/:messageId/reschedule',
+  m(async (req, res) => {
+    const id = messageIdOf(req, res);
+    if (!id) return;
+    const body = parseBody(res, contract.NurtureRescheduleBody, req.body);
+    if (!body) return;
+    const message = await messaging.rescheduleNurtureEmail(req, req.tcOffice, id, body);
+    res.json({ success: true, message });
+  })
+);
+
+router.post(
+  '/enrollments/:id/approve-all',
+  m(async (req, res) => {
+    const id = Uuid.safeParse(req.params.id);
+    if (!id.success) return notFound(res, 'enrollment');
+    if (!parseBody(res, EmptyBody, req.body ?? {})) return;
+    const out = await messaging.approveAllNurtureEmails(req, req.tcOffice, id.data);
+    const enrollment = await tenantDb.withTenantDb(req, async (q) => {
+      const row = await nurtureStore.loadEnrollment(q, out.office, out.enrollmentId);
+      const [x] = await nurtureStore.toEnrollments(q, out.office, [row]);
+      return x;
+    });
+    res.json({ success: true, ...contract.NurtureApproveAllResponse.parse({ approved: out.approved, enrollment }) });
   })
 );
 

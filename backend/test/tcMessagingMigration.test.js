@@ -69,7 +69,10 @@ function checkValues(calls, table, column) {
  * what 1790300000000 told the database; the newest widening is pinned against
  * the whole contract enum by its own test (tcNurtureMigration.test.js).
  */
-const STATUSES_ADDED_LATER = ['skipped']; // 1791100000000_tc_nurture.js (item 47)
+const STATUSES_ADDED_LATER = [
+  'skipped', // 1791100000000_tc_nurture.js (item 47)
+  'scheduled', // 1795600000000_tc_messages_scheduled.js (EL-2c)
+];
 
 test('every CHECK literal equals the contract enum it mirrors', () => {
   const calls = capture();

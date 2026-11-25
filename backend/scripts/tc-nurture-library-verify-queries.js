@@ -17,8 +17,9 @@
  *     literal had), a variant without a procedure, and a variant 'D'
  *   - THE GENERATOR, for real: one pass over a due library enrollment, inside
  *     the same rolled-back transaction (its BEGIN/COMMIT become a savepoint),
- *     writes ONE tc_messages draft with the library template_id, the stage as
- *     touch_key, a preheader and jsonb email_blocks, and advances the row; a
+ *     writes (EL-2c) EVERY remaining step as a tc_messages draft with the
+ *     library template_id, the stage as touch_key, a preheader, jsonb
+ *     email_blocks and a planned time, and advances the row to the end; a
  *     second pass writes nothing; the office's saved answers are read from the
  *     real tc_email_library_profile
  *   - as the app role: the same insert and the generator's UPDATE work
@@ -170,7 +171,9 @@ async function partA(client) {
       await rawLibraryInsert(client, caseId, null, null);
     });
 
-    await step('generator: one real pass drafts ONE library email; a second pass drafts nothing', async () => {
+    // EL-2c: a library enrollment with steps left (this #359-era shape) gets ALL
+    // of them written in one pass, each with a planned time; then nothing more.
+    await step('generator: one real pass writes EVERY step of a #359-era library enrollment; a second pass writes nothing', async () => {
       await profileStore.upsertProfile(client, {
         office: OFFICE,
         answers: { same_day_crowns: true, same_day_length: 'about two hours' },
@@ -194,11 +197,12 @@ async function partA(client) {
       assert.equal(out.queued, 1, JSON.stringify(out));
       assert.equal(out.errors, 0, JSON.stringify(out));
       const drafts = await client.query(
-        `SELECT channel, status, template_id, touch_key, subject, email_preheader, email_blocks, body, created_by
-           FROM tc_messages WHERE office_id = $1 AND enrollment_id = $2`,
+        `SELECT channel, status, template_id, touch_key, subject, email_preheader, email_blocks, body, created_by, scheduled_for
+           FROM tc_messages WHERE office_id = $1 AND enrollment_id = $2 ORDER BY scheduled_for`,
         [OFFICE, row.enrollment_id]
       );
-      assert.equal(drafts.rows.length, 1);
+      assert.equal(drafts.rows.length, 10, 'every warm_followup step');
+      assert.ok(drafts.rows.every((x) => x.status === 'draft' && x.scheduled_for instanceof Date), 'each with a planned time');
       const m = drafts.rows[0];
       assert.equal(m.status, 'draft');
       assert.equal(m.channel, 'email');
@@ -209,12 +213,13 @@ async function partA(client) {
       assert.ok(!/\{\{/.test(m.subject + m.email_preheader + m.body), 'no unresolved merge field');
       assert.equal(m.created_by, 'system:nurture');
       const advanced = await store.loadEnrollment(client, OFFICE, row.enrollment_id);
-      assert.equal(Number(advanced.next_touch_index), 1);
+      assert.equal(Number(advanced.next_touch_index), 10);
+      assert.equal(advanced.status, 'active', 'running until its last email is sent or skipped');
 
       const again = await generator.runForOffice({ pool, tenantSlug: 'carein', office: OFFICE, now, tz: 'America/Chicago' });
       assert.equal(again.due, 0);
       const n = await client.query('SELECT count(*)::int AS n FROM tc_messages WHERE enrollment_id = $1', [row.enrollment_id]);
-      assert.equal(n.rows[0].n, 1, 'still one draft');
+      assert.equal(n.rows[0].n, 10, 'still ten drafts');
     });
 
     const roleRow = await client.query('SELECT 1 FROM pg_roles WHERE rolname = $1', [APP_ROLE]);

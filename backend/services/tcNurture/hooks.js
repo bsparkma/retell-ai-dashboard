@@ -20,6 +20,12 @@
  *                         address cannot be sent to — and the enrollment is
  *                         additionally marked stopped so it reads honestly.
  *
+ * EL-2c: EVERY STOP CANCELS WHAT IS WAITING. When a hook stops an enrollment,
+ * each of its 'draft' and 'scheduled' messages becomes 'skipped' (skip_reason
+ * case_terminal or opted_out) in the same transaction, and the stop event says
+ * how many — for hand-written campaigns too. A PAUSE (an inbound text) leaves
+ * every message exactly as it is.
+ *
  * Every hook takes the caller's query handle, so its writes commit or roll
  * back with the caller's, and returns the enrollment ids it changed so the
  * caller can audit them (audit rows carry ids only, never PHI).
@@ -60,11 +66,13 @@ async function stopForTerminalCase(q, { office, caseId, newStatus, actor, now = 
     });
     if (!row) continue;
     stopped.push(row.enrollment_id);
+    // EL-2c: nothing it wrote may still be sent.
+    const cancelled = await store.cancelWaiting(q, office, row.enrollment_id, { reason: 'case_terminal', actor });
     await store.insertEvent(q, {
       office,
       caseId,
       type: 'nurture_stopped',
-      description: `${store.trackLabel(row.track_key)} stopped: case moved to ${newStatus}`,
+      description: `${store.trackLabel(row.track_key)} stopped: case moved to ${newStatus}${store.cancelledSuffix(cancelled.length)}`,
       actor,
       ts: now,
     });
@@ -119,11 +127,15 @@ async function onInboundMessage(q, { office, channel, fromAddress, stop, now = n
       });
       if (!row) continue;
       out.stopped.push(row.enrollment_id);
+      const cancelled = await store.cancelWaiting(q, office, row.enrollment_id, {
+        reason: 'opted_out',
+        actor: 'system:inbound',
+      });
       await store.insertEvent(q, {
         office,
         caseId,
         type: 'nurture_stopped',
-        description: `${store.trackLabel(row.track_key)} stopped: the patient replied STOP`,
+        description: `${store.trackLabel(row.track_key)} stopped: the patient replied STOP${store.cancelledSuffix(cancelled.length)}`,
         actor: 'system:inbound',
         ts: now,
       });
@@ -170,11 +182,12 @@ async function onOptOut(q, { office, channel, address, actor, now = new Date() }
     });
     if (!row) continue;
     stopped.push(row.enrollment_id);
+    const cancelled = await store.cancelWaiting(q, office, row.enrollment_id, { reason: 'opted_out', actor });
     await store.insertEvent(q, {
       office,
       caseId,
       type: 'nurture_stopped',
-      description: `${store.trackLabel(row.track_key)} stopped: the patient opted out of ${channel === 'sms' ? 'texts' : 'email'}`,
+      description: `${store.trackLabel(row.track_key)} stopped: the patient opted out of ${channel === 'sms' ? 'texts' : 'email'}${store.cancelledSuffix(cancelled.length)}`,
       actor,
       ts: now,
     });

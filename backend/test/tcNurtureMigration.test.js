@@ -84,7 +84,13 @@ test('enrollment CHECKs equal the shared contract enums', () => {
 
 test('the three widened shared CHECKs equal the WHOLE current contract vocabulary', () => {
   const calls = capture();
-  assert.deepEqual(checkList(calls, 'tc_messages', 'tc_messages_status_check'), contract.MessageStatus.options);
+  // EL-2c (1795600000000) widened this CHECK again with 'scheduled' and now
+  // pins the WHOLE vocabulary (tcMessagesScheduledMigration.test.js); this one
+  // is the whole vocabulary as of item 47.
+  assert.deepEqual(
+    checkList(calls, 'tc_messages', 'tc_messages_status_check'),
+    contract.MessageStatus.options.filter((s) => s !== 'scheduled')
+  );
   // AT-0 (1794300000000) widened this CHECK again with 'notes_updated' and now
   // pins the WHOLE vocabulary (at0NoteHistoryMigration.test.js); this one is
   // the whole vocabulary as of item 47.
