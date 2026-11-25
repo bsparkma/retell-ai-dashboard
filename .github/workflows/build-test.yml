@@ -290,6 +290,20 @@ jobs:
           MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
         run: node scripts/tc-email-library-verify-queries.js
 
+      # Tenant migration 1795500000000 (EL-2): library procedure + tone on
+      # tc_nurture_enrollments. The both-or-neither CHECK (a procedure with a
+      # NULL tone must be REFUSED — a CHECK that evaluates to NULL passes, which
+      # is why the literal carries `library_variant IS NOT NULL`), the store's
+      # insert, ONE real generator pass drafting a library email (its own
+      # transaction mapped onto a savepoint), all rolled back — then the REAL
+      # down() and up() when it is the newest migration and no library
+      # enrollment exists. Leaves the schema as it found it.
+      - name: tc nurture library verification (real CHECK, generator pass, down/up)
+        working-directory: backend
+        env:
+          MIGRATE_TENANT_DB_URL: postgres://carein_owner:carein_owner_devpw@localhost:5432/carein_t_carein
+        run: node scripts/tc-nurture-library-verify-queries.js
+
       - name: spine smoke test (registry / tenantDb / append-only audit / entitlement)
         working-directory: backend
         env:

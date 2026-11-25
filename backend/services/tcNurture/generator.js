@@ -30,6 +30,17 @@
  * conditional on (status = 'active', next_touch_index = i), so a stop that
  * lands mid-pass, or a second pass over the same row, writes no draft.
  *
+ * LIBRARY ENROLLMENTS (EL-2). An enrollment that carries library_procedure_id
+ * follows the patient email library's sequence for its track (store.stepsOf)
+ * instead of the hand-written touches: each step is ONE email composed by
+ * services/tcEmailLibrary renderLibraryEmail from the office's SAVED wording
+ * answers, merged with the patient's first name, the office's name and phone
+ * (config, as above) and the sender line. Same claim, same caps, same consent
+ * hint, same events, same counts — the only differences are where the copy
+ * comes from and that it is always email. A merge field with no honest value
+ * (the office phone was unset after enrolling) THROWS inside the transaction:
+ * no draft, no advance, counted in `errors`, and the next pass tries again.
+ *
  * NO AUDIT ROWS, like the opportunities sync: nobody is looking at anything at
  * 05:00, and writing a draft into our own database discloses nothing. The
  * disclosure is a person opening the outbox (audited) or clicking Send
@@ -43,6 +54,8 @@ const contract = require('../../tc/contract.gen.cjs');
 const cfg = require('../../config/tcNurture');
 const store = require('./store');
 const engine = require('./engine');
+const library = require('../tcEmailLibrary');
+const { firstNameOf } = require('../messaging/templates');
 const { addressFromCase } = require('../messaging/address');
 const { getConsentRow } = require('../messaging/consent');
 
@@ -77,7 +90,7 @@ async function withTx(pool, fn) {
 
 async function loadCase(q, office, caseId) {
   const res = await q.query(
-    `SELECT case_id, office_id, patient_name, phone, email, status, nurture_unsubscribed
+    `SELECT case_id, office_id, patient_name, phone, email, status, nurture_unsubscribed, assigned_tc
        FROM tc_cases WHERE office_id = $1 AND case_id = $2`,
     [office, caseId]
   );
@@ -94,6 +107,39 @@ async function consentHint(q, office, channel, address, tcCase) {
   if (row && row.state === 'opted_out') return 'opted_out';
   if (channel === 'email' && tcCase.nurture_unsubscribed === true) return 'email_unsubscribed';
   return null;
+}
+
+/**
+ * The sender line of a library email (EL-2): the case's assigned TC, shown the
+ * way the TC app shows assigned_tc (the stored string, as the case card prints
+ * it) — but only when that string reads as a person's name. assigned_tc is an
+ * SSO email when a route stamped it, and a patient must not see a staff email
+ * address as a signature; nor a value carrying token or markup characters.
+ * Anything else signs as "The team at <office name>".
+ * @param {unknown} assignedTc
+ * @param {string|null} officeName
+ * @returns {string|null}
+ */
+function senderNameFor(assignedTc, officeName) {
+  const name = typeof assignedTc === 'string' ? assignedTc.trim() : '';
+  if (name && name.length <= 80 && /^[\p{L}\p{M}][\p{L}\p{M} .'\-]*$/u.test(name)) return name;
+  return officeName ? `The team at ${officeName}` : null;
+}
+
+/**
+ * The library merge values for one draft. A value this pass cannot honestly
+ * fill is null, and renderLibraryEmail refuses a null (UNRESOLVED_MERGE):
+ *   office_name   config's display name; the 'Unmapped' placeholder is no name
+ *   office_phone  only a CONFIGURED phone (not officeMergeValues' "the office")
+ */
+function libraryMerge(merge, tcCase) {
+  const officeName = merge.officeName && merge.officeName !== 'Unmapped' ? merge.officeName : null;
+  return {
+    first_name: firstNameOf(tcCase.patient_name) || 'there',
+    office_name: officeName,
+    office_phone: merge.phoneConfigured ? merge.officePhone : null,
+    sender_name: senderNameFor(tcCase.assigned_tc, officeName),
+  };
 }
 
 /**
@@ -126,7 +172,9 @@ async function processEnrollment(pool, office, e, { tz, now, merge }) {
       return 'stopped';
     }
 
-    const steps = cfg.schedule(e.track_key, e.intensity_at_enroll);
+    // Hand-written preset or library sequence: store.stepsOf decides (EL-2).
+    const steps = store.stepsOf(e);
+    const isLibrary = Boolean(e.library_procedure_id);
     const index = Number(e.next_touch_index);
     const prior = await store.touchesOf(q, office, e.enrollment_id);
 
@@ -157,17 +205,49 @@ async function processEnrollment(pool, office, e, { tz, now, merge }) {
     }
 
     const step = steps[index];
-    const touch = cfg.touch(e.track_key, step.touch);
-    const address = addressFromCase(touch.channel, tcCase);
-    const hint = await consentHint(q, office, touch.channel, address, tcCase);
-    const smsAlreadyLeft = prior.some((m) => m.channel === 'sms' && SMS_LEFT.has(m.status));
-    const rendered = engine.renderTouch({
-      trackKey: e.track_key,
-      touchKey: step.touch,
-      patientName: tcCase.patient_name,
-      merge,
-      withStopSuffix: touch.channel === 'sms' && !smsAlreadyLeft,
-    });
+    /** @type {'sms'|'email'} */
+    let channel;
+    /** @type {{ channel: 'sms'|'email', body: string, subject: string|null, emailBlocks: object[]|null, preheader: string }} */
+    let rendered;
+    let templateId;
+    if (isLibrary) {
+      // EL-2: one composed library email, from the office's SAVED answers.
+      // A throw here (UNRESOLVED_MERGE, stale answers) rolls the whole
+      // enrollment back before anything is claimed or written.
+      channel = 'email';
+      const answers = await library.savedAnswersFor(q, office);
+      const email = library.renderLibraryEmail({
+        office,
+        answers,
+        procedureId: e.library_procedure_id,
+        stage: step.touch,
+        variant: e.library_variant,
+        merge: libraryMerge(merge, tcCase),
+      });
+      rendered = {
+        channel,
+        body: email.bodyText.slice(0, 8000),
+        subject: email.subject.slice(0, 300),
+        emailBlocks: email.emailBlocks,
+        preheader: email.preheader,
+      };
+      templateId = contract.libraryTemplateId(e.library_procedure_id, step.touch, e.library_variant);
+    } else {
+      const touch = cfg.touch(e.track_key, step.touch);
+      channel = touch.channel;
+      const smsAlreadyLeft = prior.some((m) => m.channel === 'sms' && SMS_LEFT.has(m.status));
+      const r = engine.renderTouch({
+        trackKey: e.track_key,
+        touchKey: step.touch,
+        patientName: tcCase.patient_name,
+        merge,
+        withStopSuffix: touch.channel === 'sms' && !smsAlreadyLeft,
+      });
+      rendered = { ...r, preheader: '' };
+      templateId = cfg.templateId(e.track_key, step.touch);
+    }
+    const address = addressFromCase(channel, tcCase);
+    const hint = await consentHint(q, office, channel, address, tcCase);
 
     const nextIndex = index + 1;
     const exhausted = nextIndex >= steps.length;
@@ -195,11 +275,11 @@ async function processEnrollment(pool, office, e, { tz, now, merge }) {
         address,
         rendered.body,
         rendered.subject,
-        cfg.templateId(e.track_key, step.touch),
+        templateId,
         'draft',
         store.SYSTEM_ACTOR,
         rendered.emailBlocks ? JSON.stringify(rendered.emailBlocks) : null,
-        rendered.emailBlocks ? '' : null,
+        rendered.emailBlocks ? rendered.preheader : null,
         e.enrollment_id,
         step.touch,
         hint,
@@ -208,7 +288,7 @@ async function processEnrollment(pool, office, e, { tz, now, merge }) {
         now.toISOString(),
       ]
     );
-    const what = touch.channel === 'sms' ? 'text' : 'email';
+    const what = channel === 'sms' ? 'text' : 'email';
     await store.insertEvent(q, {
       office,
       caseId: e.case_id,
@@ -261,4 +341,4 @@ async function runForOffice({ pool, tenantSlug, office, now = new Date(), tz = c
   return { office, ...counts, phoneConfigured: merge.phoneConfigured, durationMs: Date.now() - started };
 }
 
-module.exports = { runForOffice, processEnrollment, consentHint, SMS_LEFT };
+module.exports = { runForOffice, processEnrollment, consentHint, senderNameFor, libraryMerge, SMS_LEFT };
