@@ -16,6 +16,14 @@
  * reason in words); the picker only shows it. The strip then names the
  * procedure and tone.
  *
+ * EL-2c — APPROVE UP FRONT. Starting from the library writes the WHOLE
+ * campaign at once and opens "Review campaign" (NurtureCampaignReview), where a
+ * person approves each email word for word. The strip then reads "Library:
+ * Dental Crown · Warm · 3 of 10 approved · 0 sent · next Dec 1", with Review
+ * and "Patient replied" (email replies never reach the app, so a person marks
+ * it: the campaign pauses and nothing is cancelled), and says in words that
+ * automatic sending is not switched on: approved emails wait.
+ *
  * The cadence is not editable here or anywhere: the office's dial picks one of
  * three frozen schedules. Every touch the campaign produces is a DRAFT that a
  * person approves in the Nurture Outbox (Texts page) — the copy says so at the
@@ -24,11 +32,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import { toast } from "sonner";
-import { BookOpen, Loader2, Pause, Play, Sprout, Square } from "lucide-react";
+import { BookOpen, ClipboardCheck, Loader2, MessageCircleReply, Pause, Play, Sprout, Square } from "lucide-react";
 import type { OfficeId } from "@shared/tc/contract";
 import type { EmailLibraryCatalogResponse } from "@shared/tc/emailLibrary";
 import {
   isLibrarySequenceTrack,
+  NURTURE_AUTOMATIC_SENDING_NOTE,
+  NURTURE_PAUSE_PATIENT_REPLIED,
   NURTURE_TRACKS,
   NurtureLibraryVariant,
   nurtureSchedule,
@@ -50,6 +60,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { CHANNEL_LABEL } from "../messaging/copy";
 import {
   getCaseNurture,
+  markPatientReplied,
   pauseNurture,
   resumeNurture,
   startNurture,
@@ -62,9 +73,11 @@ import {
   LIBRARY_TONE_LABEL,
   UNAVAILABLE_COPY,
   nurtureErrorText,
+  officeShortDate,
   shortDate,
 } from "./campaignCopy";
 import { libraryProcedureName, useLibraryCatalog } from "./useLibraryCatalog";
+import { NurtureCampaignReview } from "./NurtureCampaignReview";
 
 export interface NurtureCampaignBarProps {
   office: OfficeId;
@@ -79,6 +92,8 @@ export function NurtureCampaignBar({ office, caseId, onCaseChanged }: NurtureCam
   const [busy, setBusy] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [stopOpen, setStopOpen] = useState(false);
+  /** EL-2c: the library campaign whose Review screen is open. */
+  const [reviewId, setReviewId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -139,6 +154,13 @@ export function NurtureCampaignBar({ office, caseId, onCaseChanged }: NurtureCam
             void act(() => resumeNurture(office, open.enrollmentId), "Campaign resumed. The next draft is scheduled from today.")
           }
           onStop={() => setStopOpen(true)}
+          onReview={() => setReviewId(open.enrollmentId)}
+          onReplied={() =>
+            void act(
+              () => markPatientReplied(office, open.enrollmentId),
+              "Marked: the patient replied. The campaign is paused; nothing was cancelled. Resume it when you're ready.",
+            )
+          }
         />
       ) : (
         <>
@@ -169,10 +191,12 @@ export function NurtureCampaignBar({ office, caseId, onCaseChanged }: NurtureCam
           setPickerOpen(false);
           if (choice) {
             const what = `${libraryProcedureName(library.catalog, choice.procedureId)}, ${LIBRARY_TONE_LABEL[choice.variant].toLowerCase()}`;
-            void act(
-              () => startNurture(office, caseId, t.trackKey, choice),
-              `${t.label} started from the patient email library (${what}). Each email will wait in the Nurture Outbox for someone to approve it — nothing sends on its own.`,
-            );
+            // EL-2c: the whole campaign is written now; open Review campaign
+            // so a person can read and approve each email.
+            void act(async () => {
+              const started = await startNurture(office, caseId, t.trackKey, choice);
+              if (started && started.enrollmentId) setReviewId(started.enrollmentId);
+            }, `${t.label} started from the patient email library (${what}). Every email is written as a draft — review and approve each one. Nothing sends on its own.`);
             return;
           }
           void act(
@@ -180,6 +204,14 @@ export function NurtureCampaignBar({ office, caseId, onCaseChanged }: NurtureCam
             `${t.label} started. Each touch will wait in the Nurture Outbox for someone to approve it — nothing sends on its own.`,
           );
         }}
+      />
+
+      <NurtureCampaignReview
+        office={office}
+        enrollmentId={reviewId}
+        open={reviewId !== null}
+        onOpenChange={(v) => !v && setReviewId(null)}
+        onChanged={() => void load()}
       />
 
       {open && (
@@ -204,6 +236,8 @@ function EnrollmentChip({
   onPause,
   onResume,
   onStop,
+  onReview,
+  onReplied,
 }: {
   enrollment: TcNurtureEnrollment;
   catalog: EmailLibraryCatalogResponse | null;
@@ -211,6 +245,8 @@ function EnrollmentChip({
   onPause: () => void;
   onResume: () => void;
   onStop: () => void;
+  onReview: () => void;
+  onReplied: () => void;
 }) {
   // The server's count (preset or library sequence); the preset's for an older server.
   const total =
@@ -226,29 +262,61 @@ function EnrollmentChip({
         LIBRARY_TONE_LABEL[enrollment.libraryVariant ?? "A"]
       }`
     : INTENSITY_LABEL[enrollment.intensityAtEnroll];
+  // EL-2c: a library campaign is written in full at Start, so its progress is
+  // APPROVALS and SENDS, not drafts. (An older server sends no counts: the
+  // item-47 "N of M drafted" line stands.)
+  const approveUpFront = Boolean(fromLibrary) && typeof enrollment.approvedCount === "number";
+  const replied = paused && enrollment.stopReason === NURTURE_PAUSE_PATIENT_REPLIED;
   return (
     <>
       <span className="font-medium text-foreground" data-testid="nurture-chip">
         {trackLabelOf(enrollment)}
       </span>
       <Badge variant={paused ? "outline" : "secondary"}>{ENROLLMENT_STATUS_LABEL[enrollment.status]}</Badge>
-      <span className="text-xs text-muted-foreground" data-testid="nurture-chip-pace">
-        {pace} · {enrollment.touchCount} of {total} drafted
-        {enrollment.nextTouchKey
-          ? paused
-            ? " · next draft waits until resumed"
-            : ` · next draft ${shortDate(enrollment.nextTouchDueAt)}`
-          : ""}
-      </span>
+      {approveUpFront ? (
+        <span className="text-xs text-muted-foreground" data-testid="nurture-chip-pace">
+          {pace} · {enrollment.approvedCount} of {total} approved · {enrollment.sentCount} sent
+          {enrollment.nextSendAt ? ` · next ${officeShortDate(enrollment.nextSendAt)}` : ""}
+        </span>
+      ) : (
+        <span className="text-xs text-muted-foreground" data-testid="nurture-chip-pace">
+          {pace} · {enrollment.touchCount} of {total} drafted
+          {enrollment.nextTouchKey
+            ? paused
+              ? " · next draft waits until resumed"
+              : ` · next draft ${shortDate(enrollment.nextTouchDueAt)}`
+            : ""}
+        </span>
+      )}
       {paused && (
-        <span className="text-xs text-amber-700 dark:text-amber-400">
-          No drafts until someone resumes it. If the patient replied, read the thread first.
+        <span className="text-xs text-amber-700 dark:text-amber-400" data-testid="nurture-chip-paused">
+          {approveUpFront
+            ? `${replied ? "Paused: the patient replied." : "Paused."} Its emails wait as they are and nothing is cancelled. Read the reply before resuming.`
+            : "No drafts until someone resumes it. If the patient replied, read the thread first."}
+        </span>
+      )}
+      {approveUpFront && (
+        <span className="basis-full text-xs text-muted-foreground" data-testid="nurture-strip-auto-note">
+          {NURTURE_AUTOMATIC_SENDING_NOTE}
         </span>
       )}
       <div className="ml-auto flex items-center gap-1">
-        <Link href="/tc/texts" className="text-xs text-primary underline-offset-2 hover:underline">
-          Outbox
-        </Link>
+        {approveUpFront ? (
+          <>
+            <Button size="sm" variant="outline" className="gap-1" disabled={busy} onClick={onReview} data-testid="nurture-review-open">
+              <ClipboardCheck className="h-3.5 w-3.5" /> Review
+            </Button>
+            {!replied && (
+              <Button size="sm" variant="ghost" className="gap-1" disabled={busy} onClick={onReplied} data-testid="nurture-replied">
+                <MessageCircleReply className="h-3.5 w-3.5" /> Patient replied
+              </Button>
+            )}
+          </>
+        ) : (
+          <Link href="/tc/texts" className="text-xs text-primary underline-offset-2 hover:underline">
+            Outbox
+          </Link>
+        )}
         {paused ? (
           <Button size="sm" variant="outline" className="gap-1" disabled={busy} onClick={onResume}>
             {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />} Resume
@@ -473,8 +541,8 @@ function StopDialog({
         <DialogHeader>
           <DialogTitle>Stop this campaign?</DialogTitle>
           <DialogDescription>
-            No more drafts will be written for it. Drafts already in the outbox stay there until someone approves or skips
-            them. A stopped campaign can't be resumed — start a new one if needed.
+            No more drafts will be written for it, and every message it has still waiting — drafts and approved emails —
+            is cancelled, so nothing from it can go out. A stopped campaign can't be resumed — start a new one if needed.
           </DialogDescription>
         </DialogHeader>
         <Textarea

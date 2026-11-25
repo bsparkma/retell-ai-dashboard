@@ -3,7 +3,7 @@
  * Record over a CLOSED contract enum, so a new reason, hint or status in
  * shared/tc/nurture.ts without a sentence here is a compile error.
  */
-import { MessageBlockCode } from "@shared/tc/messaging";
+import { MessageBlockCode, type MessageSkipReason, type MessageStatus, type TcMessage } from "@shared/tc/messaging";
 import type {
   NurtureConsentHint,
   NurtureEnrollmentStatus,
@@ -72,6 +72,79 @@ export function approveErrorText(e: unknown): string {
     if (known) return known;
   }
   return tcErrorMessage(e);
+}
+
+// ── EL-2c: approve up front ─────────────────────────────────────────────────
+
+/** The office's zone: planned send times are office time, whoever is looking. */
+export const OFFICE_TIME_ZONE = "America/Chicago";
+
+/** Why an email was skipped, after "Skipped: ". A Record over the closed enum. */
+export const SKIP_REASON_LABEL: Record<MessageSkipReason, string> = {
+  manual: "by a person",
+  case_terminal: "the case closed",
+  opted_out: "the patient opted out",
+  stopped_by_user: "the campaign was stopped",
+};
+
+/** The Review campaign chip's tone, per message status (closed: a new status is a compile error). */
+export const REVIEW_CHIP_TONE: Record<MessageStatus, "attention" | "approved" | "done" | "muted" | "bad"> = {
+  draft: "attention",
+  scheduled: "approved",
+  queued: "done",
+  sending: "done",
+  sent: "done",
+  delivered: "done",
+  failed: "bad",
+  received: "muted",
+  skipped: "muted",
+};
+
+/** "Tue, Dec 1 · 10:00 AM" in office time. */
+export function plannedLabel(iso: string | null): string {
+  if (!iso) return "Not planned yet";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const day = d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: OFFICE_TIME_ZONE });
+  const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: OFFICE_TIME_ZONE });
+  return `${day} · ${time}`;
+}
+
+/** "Dec 1" in office time. */
+export function officeShortDate(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: OFFICE_TIME_ZONE });
+}
+
+/** The words on a Review campaign chip. */
+export function reviewChipText(m: Pick<TcMessage, "status" | "scheduledFor" | "skipReason">): string {
+  switch (m.status) {
+    case "draft":
+      return "Needs approval";
+    case "scheduled":
+      return `Approved, sends ${officeShortDate(m.scheduledFor)}`;
+    case "skipped":
+      return m.skipReason ? `Skipped: ${SKIP_REASON_LABEL[m.skipReason]}` : "Skipped";
+    case "failed":
+      return "Not sent";
+    case "sending":
+      return "Sending…";
+    case "queued":
+    case "sent":
+    case "delivered":
+      return "Sent";
+    case "received":
+      return "Received";
+  }
+}
+
+/** 'YYYY-MM-DD' and 'HH:MM' of an instant, in office time (for the Change date inputs). */
+export function officeDateTimeParts(iso: string | null): { date: string; time: string } {
+  const d = iso ? new Date(iso) : new Date();
+  const date = d.toLocaleDateString("en-CA", { timeZone: OFFICE_TIME_ZONE });
+  const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: OFFICE_TIME_ZONE });
+  return { date, time };
 }
 
 /** "Oct 14" — a due date, in the viewer's zone. */

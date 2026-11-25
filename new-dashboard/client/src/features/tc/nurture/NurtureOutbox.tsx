@@ -24,16 +24,26 @@
  * names the procedure and tone and shows the stage's label ("Why it matters")
  * where a hand-written draft shows its touch key. Labels come from the
  * library catalog, fetched only when such a draft is on screen.
+ *
+ * LIBRARY CAMPAIGNS (EL-2c). A library campaign is written in full at Start
+ * and approved up front, so it is listed per CASE ("Library campaigns"): its
+ * waiting emails by planned time, how many still need approval, and a Review
+ * button that opens the campaign's Review screen. Approving there marks the
+ * text approved — it does NOT send. Automatic sending is not switched on, and
+ * the section says so.
  */
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "wouter";
 import { toast } from "sonner";
-import { CheckCheck, Loader2, Mail, MessageSquare, RefreshCw, Send, SkipForward, Sprout } from "lucide-react";
+import { CheckCheck, ClipboardCheck, Info, Loader2, Mail, MessageSquare, RefreshCw, Send, SkipForward, Sprout } from "lucide-react";
 import type { OfficeId } from "@shared/tc/contract";
 import type { MessageChannel } from "@shared/tc/messaging";
 import type { EmailLibraryCatalogResponse } from "@shared/tc/emailLibrary";
 import {
+  NURTURE_AUTOMATIC_SENDING_NOTE,
+  NURTURE_TRACKS,
   parseLibraryTemplateId,
+  type NurtureOutboxCampaign,
   type NurtureOutboxDraft,
   type NurtureOutboxGroup,
   type NurtureOutboxResponse,
@@ -51,7 +61,16 @@ import {
 import { sendMessage } from "../messaging/messagingApi";
 import { adapterReasonCopy, CHANNEL_LABEL } from "../messaging/copy";
 import { getNurtureOutbox, skipNurtureDraft } from "./campaignApi";
-import { approveErrorText, HINT_COPY, LIBRARY_TONE_LABEL, nurtureErrorText } from "./campaignCopy";
+import {
+  approveErrorText,
+  HINT_COPY,
+  LIBRARY_TONE_LABEL,
+  nurtureErrorText,
+  officeShortDate,
+  plannedLabel,
+  reviewChipText,
+} from "./campaignCopy";
+import { NurtureCampaignReview } from "./NurtureCampaignReview";
 import { libraryProcedureName, libraryStageLabel, useLibraryCatalog } from "./useLibraryCatalog";
 
 type ChannelState = NurtureOutboxResponse["channels"][number];
@@ -71,9 +90,12 @@ export function NurtureOutbox({ office }: { office: OfficeId }) {
   /** message ids with a request in flight */
   const [working, setWorking] = useState<ReadonlySet<string>>(new Set());
   const [confirmGroup, setConfirmGroup] = useState<NurtureOutboxGroup | null>(null);
-  const hasLibraryDraft = Boolean(
-    data?.groups.some((g) => g.drafts.some((d) => parseLibraryTemplateId(d.message.templateId) !== null)),
-  );
+  /** EL-2c: the library campaign whose Review screen is open. */
+  const [reviewId, setReviewId] = useState<string | null>(null);
+  const campaigns = data?.campaigns ?? [];
+  const hasLibraryDraft =
+    campaigns.length > 0 ||
+    Boolean(data?.groups.some((g) => g.drafts.some((d) => parseLibraryTemplateId(d.message.templateId) !== null)));
   const library = useLibraryCatalog(office, hasLibraryDraft);
 
   const load = useCallback(async () => {
@@ -186,8 +208,17 @@ export function NurtureOutbox({ office }: { office: OfficeId }) {
           onApprove={(d) => void onApprove(d)}
           onSkip={(d) => void onSkip(d)}
           onApproveAll={(g) => setConfirmGroup(g)}
+          onReview={(id) => setReviewId(id)}
         />
       ) : null}
+
+      <NurtureCampaignReview
+        office={office}
+        enrollmentId={reviewId}
+        open={reviewId !== null}
+        onOpenChange={(v) => !v && setReviewId(null)}
+        onChanged={() => void load()}
+      />
 
       <Dialog open={confirmGroup !== null} onOpenChange={(v) => !v && setConfirmGroup(null)}>
         <DialogContent className="max-w-md">
@@ -225,6 +256,7 @@ function OutboxBody({
   onApprove,
   onSkip,
   onApproveAll,
+  onReview,
 }: {
   data: NurtureOutboxResponse;
   catalog: EmailLibraryCatalogResponse | null;
@@ -232,8 +264,10 @@ function OutboxBody({
   onApprove: (d: NurtureOutboxDraft) => void;
   onSkip: (d: NurtureOutboxDraft) => void;
   onApproveAll: (g: NurtureOutboxGroup) => void;
+  onReview: (enrollmentId: string) => void;
 }) {
   const offChannels = data.channels.filter((c) => !c.enabled);
+  const campaigns = data.campaigns ?? [];
   return (
     <div className="space-y-3">
       {!data.enabled && (
@@ -256,8 +290,12 @@ function OutboxBody({
         </p>
       ))}
 
+      {campaigns.length > 0 && (
+        <LibraryCampaigns campaigns={campaigns} catalog={catalog} onReview={onReview} />
+      )}
+
       {data.groups.length === 0 ? (
-        data.enabled ? (
+        data.enabled && campaigns.length === 0 ? (
           <p className="text-sm text-muted-foreground" data-testid="nurture-outbox-empty">
             No nurture drafts waiting. New ones are written each morning for campaigns with a touch due.
           </p>
@@ -299,6 +337,79 @@ function OutboxBody({
 }
 
 const CHANNEL_ICON: Record<MessageChannel, typeof Mail> = { sms: MessageSquare, email: Mail };
+
+/** EL-2c: library campaigns, one per case, earliest planned email first. */
+function LibraryCampaigns({
+  campaigns,
+  catalog,
+  onReview,
+}: {
+  campaigns: NurtureOutboxCampaign[];
+  catalog: EmailLibraryCatalogResponse | null;
+  onReview: (enrollmentId: string) => void;
+}) {
+  return (
+    <div className="space-y-2" data-testid="outbox-library-campaigns">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Library campaigns</h3>
+      </div>
+      <p
+        className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200"
+        data-testid="outbox-auto-send-note"
+      >
+        <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden /> {NURTURE_AUTOMATIC_SENDING_NOTE}
+      </p>
+      {campaigns.map((c) => {
+        const e = c.enrollment;
+        return (
+          <div key={e.enrollmentId} className="rounded-lg border border-border" data-testid="outbox-campaign">
+            <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+              <Link href={`/tc/cases/${e.caseId}`} className="text-sm font-medium text-foreground hover:underline">
+                {c.patientName ?? "Unnamed case"}
+              </Link>
+              <span className="text-xs text-muted-foreground">
+                · {NURTURE_TRACKS[e.trackKey].label} · Library: {libraryProcedureName(catalog, e.libraryProcedureId ?? "")} ·{" "}
+                {LIBRARY_TONE_LABEL[e.libraryVariant ?? "A"]}
+              </span>
+              {c.needsApproval > 0 ? (
+                <Badge variant="outline" className="border-amber-400 text-amber-800 dark:text-amber-300" data-testid="outbox-campaign-needs">
+                  {c.needsApproval} need{c.needsApproval === 1 ? "s" : ""} approval
+                </Badge>
+              ) : (
+                <Badge variant="secondary" data-testid="outbox-campaign-needs">
+                  All approved
+                </Badge>
+              )}
+              {e.status === "paused" && <Badge variant="outline">Paused</Badge>}
+              <span className="text-xs text-muted-foreground">
+                {e.approvedCount} of {e.stepCount} approved · next {officeShortDate(e.nextSendAt)}
+              </span>
+              <Button size="sm" variant="outline" className="ml-auto gap-1" onClick={() => onReview(e.enrollmentId)} data-testid="outbox-campaign-review">
+                <ClipboardCheck className="h-3.5 w-3.5" /> Review
+              </Button>
+            </div>
+            <ul className="divide-y divide-border">
+              {c.emails.slice(0, 3).map((x) => (
+                <li key={x.message.messageId} className="flex flex-wrap items-center gap-2 px-3 py-2 text-xs" data-testid="outbox-campaign-email">
+                  <Mail className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+                  <span className="text-muted-foreground">{plannedLabel(x.message.scheduledFor)}</span>
+                  <span className="text-muted-foreground">· {libraryStageLabel(catalog, x.stage)}</span>
+                  <span className="min-w-0 flex-1 truncate font-medium text-foreground">{x.message.subject}</span>
+                  <span className="rounded-full border border-border px-2 py-0.5 text-muted-foreground">{reviewChipText(x.message)}</span>
+                </li>
+              ))}
+              {c.emails.length > 3 && (
+                <li className="px-3 py-1.5 text-xs text-muted-foreground">
+                  …and {c.emails.length - 3} more waiting
+                </li>
+              )}
+            </ul>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function DraftRow({
   d,
