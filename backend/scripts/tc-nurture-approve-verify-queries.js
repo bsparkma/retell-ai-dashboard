@@ -20,7 +20,10 @@
  *       draft with scheduled_for, in one transaction; a render failure writes
  *       nothing; approve / unapprove / approve-all / reschedule / stop each
  *       write rows the CHECKs accept; sendMessage is replaced with a thrower
- *       for the whole run (NOTHING SENDS)
+ *       for the whole run (NOTHING SENDS). The routes' clocks are PINNED
+ *       to Sat 12:00 office time (outside the send window), never the wall
+ *       clock, and the planned times are checked against the sequence-gap
+ *       rule (no gap shorter than the sequence's, in local days)
  *   - as the app role: the approve UPDATE and the stop's cancel UPDATE work
  *     (no new grants needed)
  *
@@ -49,6 +52,7 @@ const library = require('../services/tcEmailLibrary');
 const engine = require('../services/tcNurture/engine');
 const registry = require('../platform/registry');
 const { bootTcApp, api } = require('../routes/tc/tcTestUtils');
+const nurtureRoute = require('../routes/tc/nurture');
 
 const SELF = '1795600000000_tc_messages_scheduled';
 const OFFICE = 'roland';
@@ -56,6 +60,8 @@ const ACTOR = 'tc@carein.ai'; // bootTcApp's synthetic signed-in user
 const APP_ROLE = (process.env.AUDIT_APP_ROLE || 'carein_app').trim();
 const TZ = 'America/Chicago';
 const PG_CHECK_VIOLATION = '23514';
+/** The clock the routes read for the whole run: Sat 2026-12-05 12:00 CST, OUTSIDE the send window. */
+const VERIFY_NOW = new Date('2026-12-05T18:00:00.000Z');
 
 /** Run `fn` inside a savepoint and require Postgres to refuse it with `code`. */
 async function mustRefuse(client, code, fn, what) {
@@ -190,6 +196,8 @@ async function partA(client) {
     const origSetting = registry.getPlatformSetting;
     registry.getPlatformSetting = async (key) => (key === 'tc_nurture_enabled' ? { value: { roland: true } } : null);
     const app = await bootTcApp({ db: savepointPool(client) });
+    nurtureRoute.setClockForTests(() => new Date(VERIFY_NOW.getTime()));
+    messaging.setClockForTests(() => new Date(VERIFY_NOW.getTime()));
     // The real audit_log keys tenant_id as a uuid (the test harness's 'T1' is
     // not one): a synthetic tenant uuid, so every audit row really is written
     // into the rolled-back transaction. bootTcApp restores both on close.
@@ -222,6 +230,14 @@ async function partA(client) {
         );
         assert.equal(engine.capViolation(TZ, rows.map((x) => x.scheduled_for)), null);
         assert.ok(rows.every((x) => engine.isInSendWindow(TZ, x.scheduled_for)));
+        // Started on a Saturday: the first email is Monday's opening, and every
+        // later one keeps at least the sequence's gap from where it was PLACED.
+        const steps = library.sequenceFor('reactivation', 'crown');
+        assert.ok(rows.every((x) => x.scheduled_for >= VERIFY_NOW), 'nothing before the (pinned) now');
+        for (let i = 1; i < rows.length; i++) {
+          const gap = engine.localDaysBetween(TZ, rows[i - 1].scheduled_for, rows[i].scheduled_for);
+          assert.ok(gap >= steps[i].day - steps[i - 1].day, `gap ${i} is ${gap}, the sequence says ${steps[i].day - steps[i - 1].day}`);
+        }
         const e = await client.query(
           'SELECT status, next_touch_index, next_touch_due_at FROM tc_nurture_enrollments WHERE enrollment_id = $1',
           [enrollmentId]
@@ -296,6 +312,8 @@ async function partA(client) {
       });
     } finally {
       await app.close();
+      nurtureRoute.resetClock();
+      messaging.resetClock();
       registry.getPlatformSetting = origSetting;
     }
 

@@ -80,6 +80,22 @@ const generator = require('../../services/tcNurture/generator');
 const { z, Uuid, NurtureEnrollBody, NurtureStopBody, LibraryNurtureConfig } = contract;
 
 const router = express.Router();
+
+/**
+ * The clock Start and the lifecycle actions (Pause / Resume / Stop / Patient
+ * replied) read: it anchors a new campaign's planned times and Resume's
+ * re-plan. A seam for the tests ONLY, the way services/messaging's clock is —
+ * there is no request parameter, header or env var that reaches it.
+ */
+let clock = () => new Date();
+/** TESTS ONLY. @param {() => Date} fn */
+router.setClockForTests = (fn) => {
+  clock = fn;
+};
+/** TESTS ONLY. */
+router.resetClock = () => {
+  clock = () => new Date();
+};
 router.use(requireOffice);
 
 const TERMINAL = new Set(contract.TERMINAL_CASE_STATUSES);
@@ -231,7 +247,7 @@ router.post(
     const body = parseBody(res, NurtureEnrollBody, req.body);
     if (!body) return;
     const actor = actorEmail(req);
-    const now = new Date();
+    const now = clock();
     const tz = cfg.timezone();
     const fromLibrary = body.procedure_id !== undefined;
 
@@ -502,7 +518,7 @@ function lifecycle(action, plan) {
     const body = parseBody(res, schema, req.body ?? {});
     if (!body) return;
     const actor = actorEmail(req);
-    const now = new Date();
+    const now = clock();
     const out = await withTenantTx(req, async (client) => {
       const e = await loadOwned(client, req, res);
       if (!e) return { responded: true };
