@@ -7,18 +7,30 @@
  *   Running or paused     a chip: track, status, the next touch and when it is
  *                         due, with Pause / Resume and Stop (Stop asks why).
  *
+ * EL-2 — THE PATIENT EMAIL LIBRARY. The picker's optional "Use the patient
+ * email library for…" section picks a procedure (this office's catalog, by
+ * category) and a tone. A track started that way drafts the library's own
+ * email sequence instead of the hand-written touches: email only, one cadence
+ * (the office's dial does not apply). Whether each track can start from the
+ * library on this case is the SERVER's answer (libraryAvailable, with its
+ * reason in words); the picker only shows it. The strip then names the
+ * procedure and tone.
+ *
  * The cadence is not editable here or anywhere: the office's dial picks one of
  * three frozen schedules. Every touch the campaign produces is a DRAFT that a
  * person approves in the Nurture Outbox (Texts page) — the copy says so at the
  * moment of starting one, so nobody believes they just scheduled sends.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import { toast } from "sonner";
-import { Loader2, Pause, Play, Sprout, Square } from "lucide-react";
+import { BookOpen, Loader2, Pause, Play, Sprout, Square } from "lucide-react";
 import type { OfficeId } from "@shared/tc/contract";
+import type { EmailLibraryCatalogResponse } from "@shared/tc/emailLibrary";
 import {
+  isLibrarySequenceTrack,
   NURTURE_TRACKS,
+  NurtureLibraryVariant,
   nurtureSchedule,
   type NurtureCaseResponse,
   type NurtureTrackAvailability,
@@ -36,14 +48,23 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { CHANNEL_LABEL } from "../messaging/copy";
-import { getCaseNurture, pauseNurture, resumeNurture, startNurture, stopNurture } from "./campaignApi";
+import {
+  getCaseNurture,
+  pauseNurture,
+  resumeNurture,
+  startNurture,
+  stopNurture,
+  type LibraryChoice,
+} from "./campaignApi";
 import {
   ENROLLMENT_STATUS_LABEL,
   INTENSITY_LABEL,
+  LIBRARY_TONE_LABEL,
   UNAVAILABLE_COPY,
   nurtureErrorText,
   shortDate,
 } from "./campaignCopy";
+import { libraryProcedureName, useLibraryCatalog } from "./useLibraryCatalog";
 
 export interface NurtureCampaignBarProps {
   office: OfficeId;
@@ -73,6 +94,8 @@ export function NurtureCampaignBar({ office, caseId, onCaseChanged }: NurtureCam
   }, [load]);
 
   const open = data?.enrollments.find((e) => e.status === "active" || e.status === "paused") ?? null;
+  // The library catalog: for the picker, and for the strip of a library enrollment.
+  const library = useLibraryCatalog(office, pickerOpen || Boolean(open?.libraryProcedureId));
 
   const act = async (fn: () => Promise<unknown>, done: string) => {
     setBusy(true);
@@ -109,6 +132,7 @@ export function NurtureCampaignBar({ office, caseId, onCaseChanged }: NurtureCam
       {open ? (
         <EnrollmentChip
           enrollment={open}
+          catalog={library.catalog}
           busy={busy}
           onPause={() => void act(() => pauseNurture(office, open.enrollmentId), "Campaign paused. No new drafts until it's resumed.")}
           onResume={() =>
@@ -138,9 +162,19 @@ export function NurtureCampaignBar({ office, caseId, onCaseChanged }: NurtureCam
         open={pickerOpen}
         onOpenChange={setPickerOpen}
         tracks={data.tracks}
+        catalog={library.catalog}
+        catalogError={library.error}
         busy={busy}
-        onPick={(t) => {
+        onPick={(t, choice) => {
           setPickerOpen(false);
+          if (choice) {
+            const what = `${libraryProcedureName(library.catalog, choice.procedureId)}, ${LIBRARY_TONE_LABEL[choice.variant].toLowerCase()}`;
+            void act(
+              () => startNurture(office, caseId, t.trackKey, choice),
+              `${t.label} started from the patient email library (${what}). Each email will wait in the Nurture Outbox for someone to approve it — nothing sends on its own.`,
+            );
+            return;
+          }
           void act(
             () => startNurture(office, caseId, t.trackKey),
             `${t.label} started. Each touch will wait in the Nurture Outbox for someone to approve it — nothing sends on its own.`,
@@ -165,27 +199,41 @@ export function NurtureCampaignBar({ office, caseId, onCaseChanged }: NurtureCam
 
 function EnrollmentChip({
   enrollment,
+  catalog,
   busy,
   onPause,
   onResume,
   onStop,
 }: {
   enrollment: TcNurtureEnrollment;
+  catalog: EmailLibraryCatalogResponse | null;
   busy: boolean;
   onPause: () => void;
   onResume: () => void;
   onStop: () => void;
 }) {
-  const total = nurtureSchedule(enrollment.trackKey, enrollment.intensityAtEnroll).length;
+  // The server's count (preset or library sequence); the preset's for an older server.
+  const total =
+    typeof enrollment.stepCount === "number"
+      ? enrollment.stepCount
+      : nurtureSchedule(enrollment.trackKey, enrollment.intensityAtEnroll).length;
   const paused = enrollment.status === "paused";
+  const fromLibrary = enrollment.libraryProcedureId && enrollment.libraryVariant;
+  // A library enrollment runs the library's one cadence: its pace is the
+  // procedure and tone, not the office dial.
+  const pace = fromLibrary
+    ? `Library: ${libraryProcedureName(catalog, enrollment.libraryProcedureId ?? "")} · ${
+        LIBRARY_TONE_LABEL[enrollment.libraryVariant ?? "A"]
+      }`
+    : INTENSITY_LABEL[enrollment.intensityAtEnroll];
   return (
     <>
       <span className="font-medium text-foreground" data-testid="nurture-chip">
         {trackLabelOf(enrollment)}
       </span>
       <Badge variant={paused ? "outline" : "secondary"}>{ENROLLMENT_STATUS_LABEL[enrollment.status]}</Badge>
-      <span className="text-xs text-muted-foreground">
-        {INTENSITY_LABEL[enrollment.intensityAtEnroll]} · {enrollment.touchCount} of {total} drafted
+      <span className="text-xs text-muted-foreground" data-testid="nurture-chip-pace">
+        {pace} · {enrollment.touchCount} of {total} drafted
         {enrollment.nextTouchKey
           ? paused
             ? " · next draft waits until resumed"
@@ -222,19 +270,51 @@ function trackLabelOf(e: TcNurtureEnrollment): string {
   return NURTURE_TRACKS[e.trackKey].label;
 }
 
+const TONES = NurtureLibraryVariant.options;
+
 function TrackPicker({
   open,
   onOpenChange,
   tracks,
+  catalog,
+  catalogError,
   busy,
   onPick,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   tracks: NurtureTrackAvailability[];
+  catalog: EmailLibraryCatalogResponse | null;
+  catalogError: string | null;
   busy: boolean;
-  onPick: (t: NurtureTrackAvailability) => void;
+  onPick: (t: NurtureTrackAvailability, library: LibraryChoice | null) => void;
 }) {
+  const [useLibrary, setUseLibrary] = useState(false);
+  const [procedureId, setProcedureId] = useState("");
+  const [variant, setVariant] = useState<NurtureLibraryVariant>("A");
+  useEffect(() => {
+    if (open) {
+      setUseLibrary(false);
+      setProcedureId("");
+      setVariant("A");
+    }
+  }, [open]);
+
+  // The library section is offered only for the tracks the library has a sequence for.
+  const libraryTracks = tracks.filter((t) => isLibrarySequenceTrack(t.trackKey));
+  const anyLibrary = libraryTracks.some((t) => t.libraryAvailable === true);
+  // Procedures by category, in the catalog's order (this office's, after services_off).
+  const groups = useMemo(() => {
+    const out: Array<{ category: string; procedures: Array<{ id: string; name: string }> }> = [];
+    for (const p of catalog?.procedures ?? []) {
+      const g = out.find((x) => x.category === p.category);
+      if (g) g.procedures.push({ id: p.id, name: p.name });
+      else out.push({ category: p.category, procedures: [{ id: p.id, name: p.name }] });
+    }
+    return out;
+  }, [catalog]);
+  const choice: LibraryChoice | null = useLibrary && procedureId ? { procedureId, variant } : null;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg">
@@ -245,31 +325,126 @@ function TrackPicker({
             approve in the Nurture Outbox — nothing sends on its own.
           </DialogDescription>
         </DialogHeader>
-        <ul className="space-y-2">
-          {tracks.map((t) => (
-            <li key={t.trackKey}>
-              <button
-                type="button"
-                disabled={!t.available || busy}
-                onClick={() => onPick(t)}
-                className="w-full rounded-lg border border-border p-3 text-left transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
-                data-testid={`track-${t.trackKey}`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium text-foreground">{t.label}</span>
-                  <span className="text-xs text-muted-foreground">
-                    {INTENSITY_LABEL[t.intensity]} · {t.touchCount} touches · {t.channels.map((c) => CHANNEL_LABEL[c]).join(" + ")}
-                  </span>
-                </div>
-                <p className="mt-0.5 text-xs text-muted-foreground">{t.goal}</p>
-                {!t.available && t.reason && (
-                  <p className="mt-1 text-xs text-amber-700 dark:text-amber-400" data-testid={`track-reason-${t.trackKey}`}>
-                    {UNAVAILABLE_COPY[t.reason]}
+
+        {libraryTracks.length > 0 && (
+          <div className="space-y-2 rounded-lg border border-border bg-muted/40 p-3" data-testid="nurture-library-section">
+            <label className="flex items-center gap-2 text-sm font-medium text-foreground">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-violet-600"
+                checked={useLibrary}
+                disabled={!anyLibrary || busy}
+                onChange={(e) => setUseLibrary(e.target.checked)}
+                data-testid="nurture-library-toggle"
+              />
+              <BookOpen className="h-4 w-4 text-violet-600 dark:text-violet-400" aria-hidden />
+              Use the patient email library for…
+            </label>
+            {!anyLibrary && (
+              <p className="text-xs text-muted-foreground" data-testid="nurture-library-unavailable">
+                {libraryTracks[0]?.libraryBlockedReason ?? "The patient email library is not available for this case."}
+              </p>
+            )}
+            {useLibrary && (
+              <div className="space-y-2 pl-6">
+                {catalogError ? (
+                  <p className="text-xs text-red-600 dark:text-red-400" data-testid="nurture-library-catalog-error">
+                    Couldn't load the email library: {catalogError}
                   </p>
+                ) : (
+                  <label className="block text-xs text-muted-foreground">
+                    Procedure
+                    <select
+                      className="mt-1 block w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm text-foreground"
+                      value={procedureId}
+                      onChange={(e) => setProcedureId(e.target.value)}
+                      disabled={!catalog || busy}
+                      data-testid="nurture-library-procedure"
+                    >
+                      <option value="">{catalog ? "Choose a procedure" : "Loading…"}</option>
+                      {groups.map((g) => (
+                        <optgroup key={g.category} label={g.category}>
+                          {g.procedures.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </label>
                 )}
-              </button>
-            </li>
-          ))}
+                <div className="text-xs text-muted-foreground">
+                  Tone
+                  <div className="mt-1 flex gap-1" role="radiogroup" aria-label="Tone">
+                    {TONES.map((v) => (
+                      <button
+                        key={v}
+                        type="button"
+                        role="radio"
+                        aria-checked={variant === v}
+                        onClick={() => setVariant(v)}
+                        disabled={busy}
+                        className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${
+                          variant === v
+                            ? "border-violet-500 bg-violet-50 text-violet-900 dark:border-violet-400 dark:bg-violet-950 dark:text-violet-100"
+                            : "border-border bg-background text-foreground hover:bg-muted"
+                        }`}
+                        data-testid={`nurture-library-tone-${v}`}
+                      >
+                        {LIBRARY_TONE_LABEL[v]}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Email only, on the library's own day-by-day sequence — the office's pace does not apply. Each email is
+                  written from this office's saved wording, as a draft for review.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        <ul className="space-y-2">
+          {tracks.map((t) => {
+            const viaLibrary = useLibrary && isLibrarySequenceTrack(t.trackKey);
+            const libraryBlocked = viaLibrary && t.libraryAvailable !== true;
+            const disabled = !t.available || busy || (viaLibrary && (libraryBlocked || !choice));
+            return (
+              <li key={t.trackKey}>
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => onPick(t, viaLibrary ? choice : null)}
+                  className="w-full rounded-lg border border-border p-3 text-left transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+                  data-testid={`track-${t.trackKey}`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium text-foreground">{t.label}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {viaLibrary
+                        ? "Library sequence · Email"
+                        : `${INTENSITY_LABEL[t.intensity]} · ${t.touchCount} touches · ${t.channels.map((c) => CHANNEL_LABEL[c]).join(" + ")}`}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-xs text-muted-foreground">{t.goal}</p>
+                  {!t.available && t.reason ? (
+                    <p className="mt-1 text-xs text-amber-700 dark:text-amber-400" data-testid={`track-reason-${t.trackKey}`}>
+                      {UNAVAILABLE_COPY[t.reason]}
+                    </p>
+                  ) : libraryBlocked ? (
+                    <p
+                      className="mt-1 text-xs text-amber-700 dark:text-amber-400"
+                      data-testid={`track-library-reason-${t.trackKey}`}
+                    >
+                      {t.libraryBlockedReason ?? "The patient email library is not available for this track."}
+                    </p>
+                  ) : null}
+                </button>
+              </li>
+            );
+          })}
         </ul>
       </DialogContent>
     </Dialog>

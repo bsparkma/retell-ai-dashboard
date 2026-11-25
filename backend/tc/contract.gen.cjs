@@ -14890,6 +14890,7 @@ __export(contract_entry_exports, {
   HygCheckoutQuestionBadgesResponse: () => HygCheckoutQuestionBadgesResponse,
   HygCheckoutThreadResponse: () => HygCheckoutThreadResponse,
   ImageBlock: () => ImageBlock,
+  LIBRARY_SEQUENCE_TRACKS: () => LIBRARY_SEQUENCE_TRACKS,
   LOWER_PRIMARY: () => LOWER_PRIMARY,
   LibraryCadenceConfig: () => LibraryCadenceConfig,
   LibraryCadenceTier: () => LibraryCadenceTier,
@@ -14912,6 +14913,7 @@ __export(contract_entry_exports, {
   NEXT_TOUCH_REQUIRED: () => NEXT_TOUCH_REQUIRED,
   NURTURE_CAPS: () => NURTURE_CAPS,
   NURTURE_DEFAULT_INTENSITY: () => NURTURE_DEFAULT_INTENSITY,
+  NURTURE_LIBRARY_PROCEDURE_MAX: () => NURTURE_LIBRARY_PROCEDURE_MAX,
   NURTURE_SMS_STOP_SUFFIX: () => NURTURE_SMS_STOP_SUFFIX,
   NURTURE_STOP_CASE_TERMINAL: () => NURTURE_STOP_CASE_TERMINAL,
   NURTURE_STOP_OPTED_OUT: () => NURTURE_STOP_OPTED_OUT,
@@ -14926,6 +14928,7 @@ __export(contract_entry_exports, {
   NurtureEnrollBody: () => NurtureEnrollBody,
   NurtureEnrollmentStatus: () => NurtureEnrollmentStatus,
   NurtureIntensity: () => NurtureIntensity,
+  NurtureLibraryVariant: () => NurtureLibraryVariant,
   NurtureOutboxDraft: () => NurtureOutboxDraft,
   NurtureOutboxGroup: () => NurtureOutboxGroup,
   NurtureOutboxResponse: () => NurtureOutboxResponse,
@@ -15226,6 +15229,7 @@ __export(contract_entry_exports, {
   isContactAttemptDetail: () => isContactAttemptDetail,
   isDefaultStyling: () => isDefaultStyling,
   isHttpsLink: () => isHttpsLink,
+  isLibrarySequenceTrack: () => isLibrarySequenceTrack,
   isNotesRevisionDetail: () => isNotesRevisionDetail,
   isOpenCaseStatus: () => isOpenCaseStatus,
   isPrimaryTooth: () => isPrimaryTooth,
@@ -15233,6 +15237,7 @@ __export(contract_entry_exports, {
   isReferralTemplateKind: () => isReferralTemplateKind,
   isVoiceHandoffDetail: () => isVoiceHandoffDetail,
   layoutPrintDocument: () => layoutPrintDocument,
+  libraryTemplateId: () => libraryTemplateId,
   nextTouchByCase: () => nextTouchByCase,
   nextTouchState: () => nextTouchState,
   nurtureSchedule: () => nurtureSchedule,
@@ -15243,6 +15248,7 @@ __export(contract_entry_exports, {
   odToothText: () => odToothText,
   openQuestionCount: () => openQuestionCount,
   ownerInitials: () => ownerInitials,
+  parseLibraryTemplateId: () => parseLibraryTemplateId,
   pickNextTouch: () => pickNextTouch,
   preauthToRow: () => preauthToRow,
   presetViolations: () => presetViolations,
@@ -15280,6 +15286,7 @@ __export(contract_entry_exports, {
   resolveNotificationLevel: () => resolveNotificationLevel,
   safeUrl: () => safeUrl,
   samplePrintValues: () => samplePrintValues,
+  scheduleCapViolations: () => scheduleCapViolations,
   signoffModeRequiresSignoff: () => signoffModeRequiresSignoff,
   simulationToRow: () => simulationToRow,
   teethText: () => teethText,
@@ -17101,12 +17108,360 @@ function renderEmail(input) {
 }
 
 // shared/tc/nurture.ts
+var import_zod8 = __toESM(require_zod(), 1);
+
+// shared/tc/emailLibrary.ts
 var import_zod7 = __toESM(require_zod(), 1);
-var IsoTimestamp3 = import_zod7.z.string().datetime({ offset: true });
-var NurtureEnrollmentStatus = import_zod7.z.enum(["active", "paused", "completed", "stopped"]);
+var EMAIL_LIBRARY_NEVER_STORED = ["office_name", "office_phone"];
+var EMAIL_LIBRARY_YESNO_KEYS = [
+  "same_day_crowns",
+  "digital_scanner",
+  "cbct",
+  "laser",
+  "surgical_guides",
+  "buffered",
+  "immediate_implants"
+];
+var EMAIL_LIBRARY_SELECT_OPTIONS = {
+  insurance_mode: ["standard", "in_network", "files_claims", "no_insurance"],
+  implant_surgery: ["in_house", "specialist"],
+  whitening_type: ["both", "in_office", "take_home"],
+  parent_in_room: ["yes", "child_first", "no"],
+  sleep_test: ["home_test", "both", "refer"]
+};
+var EMAIL_LIBRARY_MULTI_OPTIONS = {
+  sedation: ["nitrous", "oral", "iv"],
+  sedation_kids: ["nitrous", "oral", "iv"],
+  new_patient_welcome: [
+    "xrays",
+    "meet_doctor",
+    "tour",
+    "coffee",
+    "tv",
+    "comfort_menu",
+    "welcome_gift",
+    "same_day_cleaning"
+  ],
+  schedule_perks: ["early", "lunch", "evening", "friday", "saturday"]
+};
+var EMAIL_LIBRARY_TEXT_MAX = {
+  doctor_name: 120,
+  same_day_length: 120,
+  amenities: 200,
+  financing_partners: 120,
+  membership_name: 120,
+  aligner_brand: 120
+};
+var EMAIL_LIBRARY_LINK_KEYS = ["schedule_link"];
+var EMAIL_LIBRARY_LINK_MAX = 300;
+var EMAIL_LIBRARY_CANCEL_HOURS = { key: "cancel_hours", min: 1, max: 168 };
+var EMAIL_LIBRARY_PROCEDURE_IDS = [
+  "filling",
+  "crown",
+  "onlay",
+  "root_canal",
+  "bridge",
+  "extraction",
+  "wisdom_teeth",
+  "bone_graft",
+  "implant",
+  "implant_denture",
+  "full_arch",
+  "denture",
+  "partial",
+  "reline",
+  "deep_cleaning",
+  "perio_maintenance",
+  "gum_graft",
+  "recare",
+  "new_patient",
+  "night_guard",
+  "whitening",
+  "veneers",
+  "bonding",
+  "smile_makeover",
+  "aligners",
+  "braces",
+  "early_ortho",
+  "retainer",
+  "sleep_appliance",
+  "tmj",
+  "sealants",
+  "pediatric_restorative",
+  "space_maintainer",
+  "frenectomy",
+  "large_case",
+  "emergency_followup"
+];
+var EMAIL_LIBRARY_VARIANTS = ["A", "B", "C"];
+var EMAIL_LIBRARY_MERGE_SETTINGS = ["schedule_link", "doctor_name"];
+var EMAIL_LIBRARY_RETIRED_SAVED_KEYS = ["review_link"];
+var EMAIL_LIBRARY_PREVIEW_SAMPLES = {
+  first_name: "Jordan",
+  appointment_date: "Tuesday, March 3",
+  appointment_time: "9:00 AM"
+};
+var EMAIL_LIBRARY_ANSWER_KEYS = [
+  ...EMAIL_LIBRARY_YESNO_KEYS,
+  ...Object.keys(EMAIL_LIBRARY_SELECT_OPTIONS),
+  ...Object.keys(EMAIL_LIBRARY_MULTI_OPTIONS),
+  ...Object.keys(EMAIL_LIBRARY_TEXT_MAX),
+  ...EMAIL_LIBRARY_LINK_KEYS,
+  EMAIL_LIBRARY_CANCEL_HOURS.key,
+  "services_off"
+];
+var EMAIL_LIBRARY_ANSWER_CODES = {
+  NOT_AN_OBJECT: "EMAIL_LIBRARY_ANSWERS_NOT_OBJECT",
+  OFFICE_FIELD: "EMAIL_LIBRARY_OFFICE_FIELD_REFUSED",
+  UNKNOWN_KEY: "EMAIL_LIBRARY_UNKNOWN_KEY",
+  NOT_BOOLEAN: "EMAIL_LIBRARY_NOT_BOOLEAN",
+  BAD_OPTION: "EMAIL_LIBRARY_BAD_OPTION",
+  BAD_PROCEDURE: "EMAIL_LIBRARY_BAD_PROCEDURE",
+  TEXT_NOT_STRING: "EMAIL_LIBRARY_TEXT_NOT_STRING",
+  TEXT_TOO_LONG: "EMAIL_LIBRARY_TEXT_TOO_LONG",
+  TEXT_FORBIDDEN_CHARACTER: "EMAIL_LIBRARY_TEXT_FORBIDDEN_CHARACTER",
+  CANCEL_HOURS: "EMAIL_LIBRARY_CANCEL_HOURS_INVALID",
+  LINK: "EMAIL_LIBRARY_LINK_INVALID"
+};
+var LINE_SEPARATORS = String.fromCharCode(8232, 8233);
+var BIDI_AND_FORMAT = "\\u200b-\\u200f\\u202a-\\u202e\\u2066-\\u2069\\ufeff";
+var FORBIDDEN_TEXT = new RegExp(`[{}\\[\\]<>\\x00-\\x1f\\x7f-\\x9f${LINE_SEPARATORS}${BIDI_AND_FORMAT}]`);
+var CANCEL_HOURS_SHAPE = /^[1-9][0-9]{0,2}$/;
+var textField = (max) => import_zod7.z.string().min(1).max(max).refine((v) => v === v.trim() && !FORBIDDEN_TEXT.test(v));
+var linkField = import_zod7.z.string().min(1).max(EMAIL_LIBRARY_LINK_MAX).refine((v) => isHttpsLink(v));
+var multiField = (values) => import_zod7.z.array(import_zod7.z.enum(values)).min(1);
+var EmailLibraryAnswers = import_zod7.z.object({
+  same_day_crowns: import_zod7.z.boolean().optional(),
+  digital_scanner: import_zod7.z.boolean().optional(),
+  cbct: import_zod7.z.boolean().optional(),
+  laser: import_zod7.z.boolean().optional(),
+  surgical_guides: import_zod7.z.boolean().optional(),
+  buffered: import_zod7.z.boolean().optional(),
+  immediate_implants: import_zod7.z.boolean().optional(),
+  insurance_mode: import_zod7.z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.insurance_mode).optional(),
+  implant_surgery: import_zod7.z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.implant_surgery).optional(),
+  whitening_type: import_zod7.z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.whitening_type).optional(),
+  parent_in_room: import_zod7.z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.parent_in_room).optional(),
+  sleep_test: import_zod7.z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.sleep_test).optional(),
+  sedation: multiField(EMAIL_LIBRARY_MULTI_OPTIONS.sedation).optional(),
+  sedation_kids: multiField(EMAIL_LIBRARY_MULTI_OPTIONS.sedation_kids).optional(),
+  new_patient_welcome: multiField(EMAIL_LIBRARY_MULTI_OPTIONS.new_patient_welcome).optional(),
+  schedule_perks: multiField(EMAIL_LIBRARY_MULTI_OPTIONS.schedule_perks).optional(),
+  doctor_name: textField(EMAIL_LIBRARY_TEXT_MAX.doctor_name).optional(),
+  same_day_length: textField(EMAIL_LIBRARY_TEXT_MAX.same_day_length).optional(),
+  amenities: textField(EMAIL_LIBRARY_TEXT_MAX.amenities).optional(),
+  financing_partners: textField(EMAIL_LIBRARY_TEXT_MAX.financing_partners).optional(),
+  membership_name: textField(EMAIL_LIBRARY_TEXT_MAX.membership_name).optional(),
+  aligner_brand: textField(EMAIL_LIBRARY_TEXT_MAX.aligner_brand).optional(),
+  schedule_link: linkField.optional(),
+  cancel_hours: import_zod7.z.string().refine((v) => CANCEL_HOURS_SHAPE.test(v) && Number(v) >= EMAIL_LIBRARY_CANCEL_HOURS.min && Number(v) <= EMAIL_LIBRARY_CANCEL_HOURS.max).optional(),
+  services_off: multiField(EMAIL_LIBRARY_PROCEDURE_IDS).optional()
+}).strict();
+function isHttpsLink(v) {
+  if (v.length === 0 || v.length > EMAIL_LIBRARY_LINK_MAX) return false;
+  if (/\s/.test(v) || FORBIDDEN_TEXT.test(v)) return false;
+  let url;
+  try {
+    url = new URL(v);
+  } catch {
+    return false;
+  }
+  return url.protocol === "https:" && url.hostname.length > 0;
+}
+var has = (list, v) => list.includes(v);
+var refuse = (code, key, message) => ({
+  ok: false,
+  code,
+  key,
+  message
+});
+function validateEmailLibraryAnswers(raw) {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return refuse(EMAIL_LIBRARY_ANSWER_CODES.NOT_AN_OBJECT, null, "Answers must be an object");
+  }
+  const out = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (has(EMAIL_LIBRARY_NEVER_STORED, key)) {
+      return refuse(
+        EMAIL_LIBRARY_ANSWER_CODES.OFFICE_FIELD,
+        key,
+        `${key} comes from the office's email identity and cannot be set here`
+      );
+    }
+    if (!has(EMAIL_LIBRARY_ANSWER_KEYS, key)) {
+      return refuse(EMAIL_LIBRARY_ANSWER_CODES.UNKNOWN_KEY, key, `${key} is not a question in this library`);
+    }
+    if (value === void 0 || value === null) continue;
+    if (has(EMAIL_LIBRARY_YESNO_KEYS, key)) {
+      if (typeof value !== "boolean") return refuse(EMAIL_LIBRARY_ANSWER_CODES.NOT_BOOLEAN, key, `${key} must be yes or no`);
+      out[key] = value;
+      continue;
+    }
+    if (key in EMAIL_LIBRARY_SELECT_OPTIONS) {
+      const options = EMAIL_LIBRARY_SELECT_OPTIONS[key];
+      if (value === "") continue;
+      if (typeof value !== "string" || !has(options, value)) {
+        return refuse(EMAIL_LIBRARY_ANSWER_CODES.BAD_OPTION, key, `${key} must be one of: ${options.join(", ")}`);
+      }
+      out[key] = value;
+      continue;
+    }
+    if (key in EMAIL_LIBRARY_MULTI_OPTIONS || key === "services_off") {
+      const options = key === "services_off" ? EMAIL_LIBRARY_PROCEDURE_IDS : EMAIL_LIBRARY_MULTI_OPTIONS[key];
+      const code = key === "services_off" ? EMAIL_LIBRARY_ANSWER_CODES.BAD_PROCEDURE : EMAIL_LIBRARY_ANSWER_CODES.BAD_OPTION;
+      if (!Array.isArray(value) || value.some((v) => typeof v !== "string" || !has(options, v))) {
+        return refuse(
+          code,
+          key,
+          key === "services_off" ? "services_off may list only this library's procedures" : `${key} may list only: ${options.join(", ")}`
+        );
+      }
+      const picked = options.filter((o) => value.includes(o));
+      if (picked.length > 0) out[key] = picked;
+      continue;
+    }
+    if (typeof value !== "string") return refuse(EMAIL_LIBRARY_ANSWER_CODES.TEXT_NOT_STRING, key, `${key} must be text`);
+    const text = value.trim();
+    if (text === "") continue;
+    if (key === EMAIL_LIBRARY_CANCEL_HOURS.key) {
+      const n = Number(text);
+      if (!CANCEL_HOURS_SHAPE.test(text) || n < EMAIL_LIBRARY_CANCEL_HOURS.min || n > EMAIL_LIBRARY_CANCEL_HOURS.max) {
+        return refuse(
+          EMAIL_LIBRARY_ANSWER_CODES.CANCEL_HOURS,
+          key,
+          `cancel_hours must be a whole number of hours from ${EMAIL_LIBRARY_CANCEL_HOURS.min} to ${EMAIL_LIBRARY_CANCEL_HOURS.max}`
+        );
+      }
+      out[key] = text;
+      continue;
+    }
+    if (has(EMAIL_LIBRARY_LINK_KEYS, key)) {
+      if (!isHttpsLink(text)) {
+        return refuse(
+          EMAIL_LIBRARY_ANSWER_CODES.LINK,
+          key,
+          `${key} must be a complete https:// link of at most ${EMAIL_LIBRARY_LINK_MAX} characters, with no spaces`
+        );
+      }
+      out[key] = text;
+      continue;
+    }
+    const max = EMAIL_LIBRARY_TEXT_MAX[key];
+    if (text.length > max) return refuse(EMAIL_LIBRARY_ANSWER_CODES.TEXT_TOO_LONG, key, `${key} must be at most ${max} characters`);
+    if (FORBIDDEN_TEXT.test(text)) {
+      return refuse(
+        EMAIL_LIBRARY_ANSWER_CODES.TEXT_FORBIDDEN_CHARACTER,
+        key,
+        `${key} cannot contain line breaks or any of { } [ ] < >`
+      );
+    }
+    out[key] = text;
+  }
+  const parsed = EmailLibraryAnswers.safeParse(out);
+  if (!parsed.success) return refuse(EMAIL_LIBRARY_ANSWER_CODES.UNKNOWN_KEY, null, "Answers did not match the contract");
+  return { ok: true, answers: parsed.data };
+}
+var QuestionOption = import_zod7.z.object({ value: import_zod7.z.string(), label: import_zod7.z.string(), phrase: import_zod7.z.string().optional() }).strict();
+var EmailLibraryQuestion = import_zod7.z.object({
+  id: import_zod7.z.enum(EMAIL_LIBRARY_ANSWER_KEYS),
+  section: import_zod7.z.string(),
+  type: import_zod7.z.enum(["text", "yesno", "select", "multi", "procedures"]),
+  label: import_zod7.z.string(),
+  help: import_zod7.z.string(),
+  options: import_zod7.z.array(QuestionOption),
+  default: import_zod7.z.union([import_zod7.z.string(), import_zod7.z.null()]),
+  show_if: import_zod7.z.union([import_zod7.z.string(), import_zod7.z.null()]),
+  placeholder: import_zod7.z.string()
+}).strict();
+var EmailLibraryProcedure = import_zod7.z.object({ id: import_zod7.z.enum(EMAIL_LIBRARY_PROCEDURE_IDS), name: import_zod7.z.string(), category: import_zod7.z.string(), audience: import_zod7.z.string() }).strict();
+var EmailLibraryStage = import_zod7.z.object({
+  id: import_zod7.z.string(),
+  label: import_zod7.z.string(),
+  phase: import_zod7.z.string(),
+  use: import_zod7.z.string(),
+  /** False when this office's answers switch the stage off (e.g. no insurance → no benefits deadline). */
+  inUse: import_zod7.z.boolean()
+}).strict();
+var EmailLibrarySequence = import_zod7.z.object({
+  id: import_zod7.z.string(),
+  name: import_zod7.z.string(),
+  track: import_zod7.z.string(),
+  use: import_zod7.z.string(),
+  exit: import_zod7.z.string(),
+  steps: import_zod7.z.array(import_zod7.z.object({ stage: import_zod7.z.string(), when: import_zod7.z.string() }).strict())
+}).strict();
+var EmailLibraryCatalogResponse = import_zod7.z.object({
+  success: import_zod7.z.literal(true),
+  office: OfficeKeySchema,
+  libraryVersion: import_zod7.z.string(),
+  /** True since EL-2 (1.3.0 is the doctor-reviewed wording); flips only by PR. While false, nurture cannot start a library enrollment (409 LIBRARY_NOT_APPROVED). */
+  clinicallyApproved: import_zod7.z.boolean(),
+  status: import_zod7.z.string(),
+  rulesOfUse: import_zod7.z.array(import_zod7.z.string()),
+  /** The procedures this office provides (after its services_off). */
+  procedures: import_zod7.z.array(EmailLibraryProcedure),
+  /** Every procedure, for the services_off question. */
+  allProcedures: import_zod7.z.array(EmailLibraryProcedure),
+  stages: import_zod7.z.array(EmailLibraryStage),
+  variants: import_zod7.z.record(import_zod7.z.enum(EMAIL_LIBRARY_VARIANTS), import_zod7.z.string()),
+  sequences: import_zod7.z.array(EmailLibrarySequence),
+  questions: import_zod7.z.array(EmailLibraryQuestion),
+  emailCount: import_zod7.z.number().int().nonnegative()
+}).strict();
+var EmailLibraryMissingSetting = import_zod7.z.object({ field: import_zod7.z.enum(EMAIL_LIBRARY_MERGE_SETTINGS), stages: import_zod7.z.array(import_zod7.z.string()) }).strict();
+var EmailLibraryProfileResponse = import_zod7.z.object({
+  success: import_zod7.z.literal(true),
+  office: OfficeKeySchema,
+  /** False until the office's first save: `answers` is then {} (every default). */
+  saved: import_zod7.z.boolean(),
+  answers: EmailLibraryAnswers,
+  /** The library version the answers were saved against (null until saved). */
+  libraryVersion: import_zod7.z.string().nullable(),
+  updatedBy: import_zod7.z.string().nullable(),
+  updatedAt: import_zod7.z.string().nullable(),
+  /** Settings some composed email still prints as a {{token}} (normally none since 1.2.0). */
+  missing: import_zod7.z.array(EmailLibraryMissingSetting),
+  /** The optional settings this office has left blank (server-computed; the wording works without them). */
+  blankOptional: import_zod7.z.array(import_zod7.z.enum(EMAIL_LIBRARY_MERGE_SETTINGS)),
+  /** May this viewer save? (admin.all) — UX only; the server enforces it. */
+  canEdit: import_zod7.z.boolean()
+}).strict();
+var EmailLibraryProfilePutRequest = import_zod7.z.object({ answers: import_zod7.z.record(import_zod7.z.string(), import_zod7.z.unknown()) }).strict();
+var EmailLibraryPreviewRequest = import_zod7.z.object({
+  procedure_id: import_zod7.z.string().min(1).max(64),
+  stage: import_zod7.z.string().min(1).max(64),
+  variant: import_zod7.z.string().min(1).max(8),
+  /** Unsaved answers to preview with; absent = the office's saved answers. */
+  answers: import_zod7.z.record(import_zod7.z.string(), import_zod7.z.unknown()).optional()
+}).strict();
+var EmailLibraryPreviewResponse = import_zod7.z.object({
+  success: import_zod7.z.literal(true),
+  office: OfficeKeySchema,
+  id: import_zod7.z.string(),
+  procedureId: import_zod7.z.string(),
+  procedureName: import_zod7.z.string(),
+  stage: import_zod7.z.string(),
+  stageLabel: import_zod7.z.string(),
+  variant: import_zod7.z.enum(EMAIL_LIBRARY_VARIANTS),
+  tone: import_zod7.z.string(),
+  answersSource: import_zod7.z.enum(["saved", "unsaved"]),
+  /** Merge fields filled in; any left unresolved stay as their {{token}}. */
+  subject: import_zod7.z.string(),
+  preheader: import_zod7.z.string(),
+  bodyText: import_zod7.z.string(),
+  mergeFields: import_zod7.z.array(import_zod7.z.string()),
+  /** The merge fields with no value: shown as {{token}}, never blank, never invented. */
+  unresolved: import_zod7.z.array(import_zod7.z.string()),
+  wordCount: import_zod7.z.number().int().nonnegative(),
+  clinicallyApproved: import_zod7.z.boolean()
+}).strict();
+
+// shared/tc/nurture.ts
+var IsoTimestamp3 = import_zod8.z.string().datetime({ offset: true });
+var NurtureEnrollmentStatus = import_zod8.z.enum(["active", "paused", "completed", "stopped"]);
 var NURTURE_STOP_CASE_TERMINAL = "case_terminal";
 var NURTURE_STOP_OPTED_OUT = "opted_out";
-var NurtureConsentHint = import_zod7.z.enum(["opted_out", "email_unsubscribed", "no_address"]);
+var NurtureConsentHint = import_zod8.z.enum(["opted_out", "email_unsubscribed", "no_address"]);
 var NURTURE_CAPS = Object.freeze({
   /** At most this many touches in any rolling 7-day window. */
   maxTouchesPer7Days: 3,
@@ -17428,13 +17783,9 @@ function presetViolations(key, intensity, tracks = NURTURE_TRACKS) {
   const steps = tracks[key].presets[intensity];
   const where = `${key}/${intensity}`;
   const out = [];
-  const minDays = NURTURE_CAPS.minHoursBetweenTouches / 24;
-  if (steps.length === 0) out.push(`${where}: no touches`);
-  if (steps.length > NURTURE_CAPS.maxTouchesPerEnrollment) {
-    out.push(`${where}: ${steps.length} touches > ${NURTURE_CAPS.maxTouchesPerEnrollment}`);
-  }
+  out.push(...scheduleCountViolations(where, steps));
   steps.forEach((s, i) => {
-    if (!Number.isInteger(s.day) || s.day < 1) out.push(`${where}: step ${i} day ${s.day} is not a whole day \u2265 1`);
+    out.push(...stepDayViolations(where, s, i, 1));
     let touch = null;
     try {
       touch = touchOf(s.touch);
@@ -17449,9 +17800,7 @@ function presetViolations(key, intensity, tracks = NURTURE_TRACKS) {
     }
     if (i > 0) {
       const prev = steps[i - 1];
-      if (s.day - prev.day < minDays) {
-        out.push(`${where}: ${prev.touch}@${prev.day} \u2192 ${s.touch}@${s.day} is under ${NURTURE_CAPS.minHoursBetweenTouches}h`);
-      }
+      out.push(...stepGapViolations(where, prev, s));
       let prevTouch = null;
       try {
         prevTouch = touchOf(prev.touch);
@@ -17462,10 +17811,36 @@ function presetViolations(key, intensity, tracks = NURTURE_TRACKS) {
         out.push(`${where}: ${prev.touch} \u2192 ${s.touch} stacks SMS back to back`);
       }
     }
-    const inWindow = steps.filter((t) => t.day >= s.day && t.day <= s.day + 6).length;
-    if (inWindow > NURTURE_CAPS.maxTouchesPer7Days) {
-      out.push(`${where}: ${inWindow} touches in the 7 days from day ${s.day}`);
-    }
+    out.push(...stepWindowViolations(where, steps, s));
+  });
+  return out;
+}
+function scheduleCountViolations(where, steps) {
+  const out = [];
+  if (steps.length === 0) out.push(`${where}: no touches`);
+  if (steps.length > NURTURE_CAPS.maxTouchesPerEnrollment) {
+    out.push(`${where}: ${steps.length} touches > ${NURTURE_CAPS.maxTouchesPerEnrollment}`);
+  }
+  return out;
+}
+function stepDayViolations(where, s, i, minDay) {
+  return !Number.isInteger(s.day) || s.day < minDay ? [`${where}: step ${i} day ${s.day} is not a whole day \u2265 ${minDay}`] : [];
+}
+function stepGapViolations(where, prev, s) {
+  const minDays = NURTURE_CAPS.minHoursBetweenTouches / 24;
+  return s.day - prev.day < minDays ? [`${where}: ${prev.touch}@${prev.day} \u2192 ${s.touch}@${s.day} is under ${NURTURE_CAPS.minHoursBetweenTouches}h`] : [];
+}
+function stepWindowViolations(where, steps, s) {
+  const inWindow = steps.filter((t) => t.day >= s.day && t.day <= s.day + 6).length;
+  return inWindow > NURTURE_CAPS.maxTouchesPer7Days ? [`${where}: ${inWindow} touches in the 7 days from day ${s.day}`] : [];
+}
+function scheduleCapViolations(where, steps) {
+  const out = [];
+  out.push(...scheduleCountViolations(where, steps));
+  steps.forEach((s, i) => {
+    out.push(...stepDayViolations(where, s, i, 0));
+    if (i > 0) out.push(...stepGapViolations(where, steps[i - 1], s));
+    out.push(...stepWindowViolations(where, steps, s));
   });
   return out;
 }
@@ -17492,112 +17867,160 @@ function nurtureTokensIn(text) {
 function intensityFor(config, key) {
   return config?.tracks?.[key]?.intensity ?? NURTURE_DEFAULT_INTENSITY;
 }
-var TcNurtureEnrollment = import_zod7.z.object({
+var LIBRARY_SEQUENCE_TRACKS = [
+  "warm_followup",
+  "large_case",
+  "reactivation",
+  "no_show_recovery"
+];
+function isLibrarySequenceTrack(key) {
+  return LIBRARY_SEQUENCE_TRACKS.includes(key);
+}
+var NurtureLibraryVariant = import_zod8.z.enum(EMAIL_LIBRARY_VARIANTS);
+var NURTURE_LIBRARY_PROCEDURE_MAX = 60;
+function libraryTemplateId(procedureId, stage, variant) {
+  return `library.${procedureId}.${stage}.${variant}`;
+}
+function parseLibraryTemplateId(templateId) {
+  if (!templateId) return null;
+  const m = /^library\.([a-z0-9_]+)\.([a-z0-9_]+)\.([A-Z])$/.exec(templateId);
+  if (!m) return null;
+  const variant = NurtureLibraryVariant.safeParse(m[3]);
+  return variant.success ? { procedureId: m[1], stage: m[2], variant: variant.data } : null;
+}
+var TcNurtureEnrollment = import_zod8.z.object({
   enrollmentId: Uuid,
   caseId: Uuid,
   officeId: OfficeId,
   trackKey: NurtureTrackKey,
   intensityAtEnroll: NurtureIntensity,
   status: NurtureEnrollmentStatus,
-  stopReason: import_zod7.z.string().max(200).nullable(),
-  nextTouchIndex: import_zod7.z.number().int().min(0),
+  stopReason: import_zod8.z.string().max(200).nullable(),
+  nextTouchIndex: import_zod8.z.number().int().min(0),
   nextTouchDueAt: IsoTimestamp3.nullable(),
   lastTouchAt: IsoTimestamp3.nullable(),
   /** The touch the next draft will be, or null when the schedule is exhausted. */
-  nextTouchKey: import_zod7.z.string().max(20).nullable(),
-  touchCount: import_zod7.z.number().int().min(0),
-  createdBy: import_zod7.z.string().max(320).nullable(),
+  nextTouchKey: import_zod8.z.string().max(20).nullable(),
+  touchCount: import_zod8.z.number().int().min(0),
+  createdBy: import_zod8.z.string().max(320).nullable(),
   createdAt: IsoTimestamp3,
-  updatedAt: IsoTimestamp3
+  updatedAt: IsoTimestamp3,
+  /** EL-2: the library procedure this enrollment drafts from, or null for the hand-written touches. */
+  libraryProcedureId: import_zod8.z.string().max(NURTURE_LIBRARY_PROCEDURE_MAX).nullable(),
+  /** EL-2: the library tone, set exactly when libraryProcedureId is. */
+  libraryVariant: NurtureLibraryVariant.nullable(),
+  /**
+   * EL-2: how many touches this enrollment's schedule has — the preset's at
+   * its intensity, or the library sequence's (minus any stage its procedure
+   * skips). Server-computed, so the strip's "N of M drafted" is never a guess.
+   */
+  stepCount: import_zod8.z.number().int().min(0)
 });
-var NurtureTrackUnavailableReason = import_zod7.z.enum([
+var NurtureTrackUnavailableReason = import_zod8.z.enum([
   "switched_off",
   "case_terminal",
   "already_enrolled",
   "no_address"
 ]);
-var NurtureTrackAvailability = import_zod7.z.object({
+var NurtureTrackAvailability = import_zod8.z.object({
   trackKey: NurtureTrackKey,
-  label: import_zod7.z.string(),
-  goal: import_zod7.z.string(),
+  label: import_zod8.z.string(),
+  goal: import_zod8.z.string(),
   intensity: NurtureIntensity,
-  touchCount: import_zod7.z.number().int().min(0),
-  channels: import_zod7.z.array(MessageChannel),
-  available: import_zod7.z.boolean(),
-  reason: NurtureTrackUnavailableReason.nullable()
+  touchCount: import_zod8.z.number().int().min(0),
+  channels: import_zod8.z.array(MessageChannel),
+  available: import_zod8.z.boolean(),
+  reason: NurtureTrackUnavailableReason.nullable(),
+  /**
+   * EL-2: can this track be started from the patient email library on this
+   * case? Computed server-side (the library is doctor-approved, the office's
+   * name and phone are set, the case has an email). False for a track the
+   * library has no sequence for.
+   */
+  libraryAvailable: import_zod8.z.boolean(),
+  /** Why not, in words the picker shows as-is; null when libraryAvailable. */
+  libraryBlockedReason: import_zod8.z.string().max(300).nullable()
 });
-var NurtureCaseResponse = import_zod7.z.object({
-  enabled: import_zod7.z.boolean(),
-  enrollments: import_zod7.z.array(TcNurtureEnrollment),
-  tracks: import_zod7.z.array(NurtureTrackAvailability)
+var NurtureCaseResponse = import_zod8.z.object({
+  enabled: import_zod8.z.boolean(),
+  enrollments: import_zod8.z.array(TcNurtureEnrollment),
+  tracks: import_zod8.z.array(NurtureTrackAvailability)
 });
-var NurtureEnrollBody = import_zod7.z.object({ case_id: Uuid, track_key: NurtureTrackKey }).strict();
-var NurtureStopBody = import_zod7.z.object({ reason: import_zod7.z.string().trim().min(1).max(200) }).strict();
-var NurtureOutboxDraft = import_zod7.z.object({
+var NurtureEnrollBody = import_zod8.z.object({
+  case_id: Uuid,
+  track_key: NurtureTrackKey,
+  procedure_id: import_zod8.z.string().min(1).max(NURTURE_LIBRARY_PROCEDURE_MAX).optional(),
+  variant: NurtureLibraryVariant.optional()
+}).strict().refine((b) => b.procedure_id === void 0 === (b.variant === void 0), {
+  message: "procedure_id and variant come together: send both, or neither",
+  path: ["procedure_id"]
+});
+var NurtureStopBody = import_zod8.z.object({ reason: import_zod8.z.string().trim().min(1).max(200) }).strict();
+var NurtureOutboxDraft = import_zod8.z.object({
   message: TcMessage,
   enrollmentId: Uuid,
   caseId: Uuid,
-  patientName: import_zod7.z.string().max(200).nullable(),
+  patientName: import_zod8.z.string().max(200).nullable(),
   // PHI
-  touchKey: import_zod7.z.string().max(20),
+  touchKey: import_zod8.z.string().max(20),
   consentBlockedHint: NurtureConsentHint.nullable()
 });
-var NurtureOutboxGroup = import_zod7.z.object({
+var NurtureOutboxGroup = import_zod8.z.object({
   trackKey: NurtureTrackKey,
-  label: import_zod7.z.string(),
-  drafts: import_zod7.z.array(NurtureOutboxDraft)
+  label: import_zod8.z.string(),
+  drafts: import_zod8.z.array(NurtureOutboxDraft)
 });
-var NurtureChannelState = import_zod7.z.object({
+var NurtureChannelState = import_zod8.z.object({
   channel: MessageChannel,
-  enabled: import_zod7.z.boolean(),
-  reason: import_zod7.z.enum(["switched_off", "not_configured", "office_not_configured"]).nullable()
+  enabled: import_zod8.z.boolean(),
+  reason: import_zod8.z.enum(["switched_off", "not_configured", "office_not_configured"]).nullable()
 });
-var NurtureOutboxResponse = import_zod7.z.object({
-  enabled: import_zod7.z.boolean(),
-  channels: import_zod7.z.array(NurtureChannelState),
-  groups: import_zod7.z.array(NurtureOutboxGroup)
+var NurtureOutboxResponse = import_zod8.z.object({
+  enabled: import_zod8.z.boolean(),
+  channels: import_zod8.z.array(NurtureChannelState),
+  groups: import_zod8.z.array(NurtureOutboxGroup)
 });
-var NurtureConfigResponse = import_zod7.z.object({
-  enabled: import_zod7.z.boolean(),
-  tracks: import_zod7.z.array(
-    import_zod7.z.object({
+var NurtureConfigResponse = import_zod8.z.object({
+  enabled: import_zod8.z.boolean(),
+  tracks: import_zod8.z.array(
+    import_zod8.z.object({
       trackKey: NurtureTrackKey,
-      label: import_zod7.z.string(),
+      label: import_zod8.z.string(),
       intensity: NurtureIntensity,
-      stored: import_zod7.z.boolean()
+      stored: import_zod8.z.boolean()
     })
   )
 });
 
 // shared/tc/checkout.ts
-var import_zod9 = __toESM(require_zod(), 1);
+var import_zod10 = __toESM(require_zod(), 1);
 
 // shared/hyg/prescriptions.ts
-var import_zod8 = __toESM(require_zod(), 1);
+var import_zod9 = __toESM(require_zod(), 1);
 var HYG_RX_NEEDED_MAX = 1e3;
 var HYG_PHARMACY_MAX = 200;
-var HygPrescriptionsSchema = import_zod8.z.object({
-  rxNeeded: import_zod8.z.string().max(HYG_RX_NEEDED_MAX, `Keep prescriptions under ${HYG_RX_NEEDED_MAX} characters`),
-  pharmacy: import_zod8.z.string().max(HYG_PHARMACY_MAX, `Keep the pharmacy under ${HYG_PHARMACY_MAX} characters`).refine((v) => !/[\r\n]/.test(v), "The pharmacy is one line")
+var HygPrescriptionsSchema = import_zod9.z.object({
+  rxNeeded: import_zod9.z.string().max(HYG_RX_NEEDED_MAX, `Keep prescriptions under ${HYG_RX_NEEDED_MAX} characters`),
+  pharmacy: import_zod9.z.string().max(HYG_PHARMACY_MAX, `Keep the pharmacy under ${HYG_PHARMACY_MAX} characters`).refine((v) => !/[\r\n]/.test(v), "The pharmacy is one line")
 }).strict();
 var EMPTY_HYG_PRESCRIPTIONS = Object.freeze({ rxNeeded: "", pharmacy: "" });
-var HygPrescriptionsResponseSchema = import_zod8.z.object({
-  success: import_zod8.z.literal(true),
+var HygPrescriptionsResponseSchema = import_zod9.z.object({
+  success: import_zod9.z.literal(true),
   office: OfficeKeySchema,
-  aptNum: import_zod8.z.number().int().positive(),
+  aptNum: import_zod9.z.number().int().positive(),
   prescriptions: HygPrescriptionsSchema
 });
 
 // shared/tc/checkout.ts
-var TcIntakeKind = import_zod9.z.enum(["hygiene", "ortho", "checkout"]);
+var TcIntakeKind = import_zod10.z.enum(["hygiene", "ortho", "checkout"]);
 var TC_INTAKE_KIND_LABELS = {
   hygiene: "Treatment",
   ortho: "Ortho screening",
   checkout: "Checkout"
 };
-var TcIntakeSourceKey = import_zod9.z.string().min(8).max(200).regex(/^[A-Za-z0-9:_-]+$/, "a source key is letters, digits, ':', '_' and '-' only");
-var TcCheckoutPriority = import_zod9.z.enum(["urgent", "preventative", "cosmetic"]);
-var TcCheckoutItemPriority = import_zod9.z.enum(["urgent", "preventative", "cosmetic", "holding"]);
+var TcIntakeSourceKey = import_zod10.z.string().min(8).max(200).regex(/^[A-Za-z0-9:_-]+$/, "a source key is letters, digits, ':', '_' and '-' only");
+var TcCheckoutPriority = import_zod10.z.enum(["urgent", "preventative", "cosmetic"]);
+var TcCheckoutItemPriority = import_zod10.z.enum(["urgent", "preventative", "cosmetic", "holding"]);
 var TC_CHECKOUT_PRIORITY_LABELS = {
   urgent: "Urgent",
   preventative: "Preventative",
@@ -17615,37 +18038,37 @@ function holdingLast(rows, priorityOf) {
     ...rows.filter((r) => priorityOf(r) === "holding")
   ];
 }
-var TcCheckoutProcedure = import_zod9.z.object({
+var TcCheckoutProcedure = import_zod10.z.object({
   /** Universal tooth numbers, or "mouth" for a whole-mouth item. */
-  teeth: import_zod9.z.union([import_zod9.z.array(import_zod9.z.number().int()), import_zod9.z.literal("mouth")]),
-  code: import_zod9.z.string().min(1).max(60),
-  category: import_zod9.z.string().min(1).max(40),
+  teeth: import_zod10.z.union([import_zod10.z.array(import_zod10.z.number().int()), import_zod10.z.literal("mouth")]),
+  code: import_zod10.z.string().min(1).max(60),
+  category: import_zod10.z.string().min(1).max(40),
   priority: TcCheckoutItemPriority,
-  status: import_zod9.z.string().min(1).max(40),
-  surfaces: import_zod9.z.array(import_zod9.z.string().max(4)).max(10),
+  status: import_zod10.z.string().min(1).max(40),
+  surfaces: import_zod10.z.array(import_zod10.z.string().max(4)).max(10),
   /** The hygienist marked this to schedule at the next visit. */
-  scheduleNext: import_zod9.z.boolean(),
-  note: import_zod9.z.string().max(500),
+  scheduleNext: import_zod10.z.boolean(),
+  note: import_zod10.z.string().max(500),
   /**
    * The routing slip's diagnosis shorthand ("D", "RD", "FX"…), verbatim (CO-1).
    * OPTIONAL and additive: every snapshot stored before CO-1 has no such key
    * and parses as it did. Kept as short strings rather than the hygiene
    * enum, so a code the slip gains later cannot make TC refuse a handoff.
    */
-  dx: import_zod9.z.array(import_zod9.z.string().regex(/^[A-Za-z]{1,8}$/)).max(20).optional(),
+  dx: import_zod10.z.array(import_zod10.z.string().regex(/^[A-Za-z]{1,8}$/)).max(20).optional(),
   /** The hygienist's free-text diagnosis note, when there is one (CO-1). */
-  dxNote: import_zod9.z.string().max(500).optional()
+  dxNote: import_zod10.z.string().max(500).optional()
 }).strict();
-var TcCheckoutNextVisit = import_zod9.z.object({
-  type: import_zod9.z.string().max(120).nullable(),
-  intervalMonths: import_zod9.z.number().int().min(1).max(24).nullable(),
-  lengthMin: import_zod9.z.number().int().min(5).max(240).nullable(),
-  withDoctor: import_zod9.z.boolean(),
+var TcCheckoutNextVisit = import_zod10.z.object({
+  type: import_zod10.z.string().max(120).nullable(),
+  intervalMonths: import_zod10.z.number().int().min(1).max(24).nullable(),
+  lengthMin: import_zod10.z.number().int().min(5).max(240).nullable(),
+  withDoctor: import_zod10.z.boolean(),
   /** The note's return-to-clinic line, verbatim. */
-  rtc: import_zod9.z.string().max(4e3)
+  rtc: import_zod10.z.string().max(4e3)
 }).strict();
-var TcCollectAtCheckout = import_zod9.z.array(import_zod9.z.string().min(1).max(200)).max(6);
-var TcCheckoutRecordStatus = import_zod9.z.enum(["needed", "on_file", "taken_today"]);
+var TcCollectAtCheckout = import_zod10.z.array(import_zod10.z.string().min(1).max(200)).max(6);
+var TcCheckoutRecordStatus = import_zod10.z.enum(["needed", "on_file", "taken_today"]);
 var TC_CHECKOUT_RECORD_STATUS_LABELS = {
   needed: "Needed",
   on_file: "On file",
@@ -17653,9 +18076,9 @@ var TC_CHECKOUT_RECORD_STATUS_LABELS = {
 };
 var TC_CHECKOUT_RECORDS_MAX = 60;
 var TC_CHECKOUT_PA_DETAILS_MAX = 1e3;
-var TcCheckoutRecord = import_zod9.z.object({ record: import_zod9.z.string().min(1).max(120), status: TcCheckoutRecordStatus }).strict();
-var TcCheckoutSnapshot = import_zod9.z.object({
-  procedures: import_zod9.z.array(TcCheckoutProcedure).max(100),
+var TcCheckoutRecord = import_zod10.z.object({ record: import_zod10.z.string().min(1).max(120), status: TcCheckoutRecordStatus }).strict();
+var TcCheckoutSnapshot = import_zod10.z.object({
+  procedures: import_zod10.z.array(TcCheckoutProcedure).max(100),
   /**
    * The highest priority among the NON-HOLDING procedures; null when there
    * are none (no procedures, or only holding ones).
@@ -17667,16 +18090,16 @@ var TcCheckoutSnapshot = import_zod9.z.object({
    * "Alert checkout" (the visit Send has not run); the visit Send's update
    * says whether the note landed.
    */
-  notesPending: import_zod9.z.boolean(),
-  frontDeskNote: import_zod9.z.string().max(4e3),
-  financialNote: import_zod9.z.string().max(4e3),
+  notesPending: import_zod10.z.boolean(),
+  frontDeskNote: import_zod10.z.string().max(4e3),
+  financialNote: import_zod10.z.string().max(4e3),
   /**
    * The patient's EXISTING Open Dental plan and what was said about it
    * (hygiene Slice 2b). OPTIONAL and additive: every snapshot stored before
    * this has no such key and parses exactly as it did, and a visit whose plan
    * was never loaded sends none.
    */
-  existingTx: import_zod9.z.array(ExistingTxHandoffItemSchema).max(EXISTING_TX_HANDOFF_MAX).optional(),
+  existingTx: import_zod10.z.array(ExistingTxHandoffItemSchema).max(EXISTING_TX_HANDOFF_MAX).optional(),
   /**
    * What to take payment for at the desk (checkout v2): the slip's chips and
    * "Other", as the front desk reads them. OPTIONAL and additive for the same
@@ -17687,7 +18110,7 @@ var TcCheckoutSnapshot = import_zod9.z.object({
    * The records the staged treatment needs and where each stands (checkout
    * v2). OPTIONAL and additive; absent when the treatment needs none.
    */
-  records: import_zod9.z.array(TcCheckoutRecord).max(TC_CHECKOUT_RECORDS_MAX).optional(),
+  records: import_zod10.z.array(TcCheckoutRecord).max(TC_CHECKOUT_RECORDS_MAX).optional(),
   /**
    * What the hygienist noted for the doctor / front desk: the prescription(s)
    * needed and the pharmacy. IN-APP ONLY — never sent to Open Dental.
@@ -17699,21 +18122,21 @@ var TcCheckoutSnapshot = import_zod9.z.object({
    * X-rays taken. OPTIONAL and additive, like existingTx: absent when there
    * are none, so a visit without them sends exactly the snapshot it did.
    */
-  paDetails: import_zod9.z.string().min(1).max(TC_CHECKOUT_PA_DETAILS_MAX).optional()
+  paDetails: import_zod10.z.string().min(1).max(TC_CHECKOUT_PA_DETAILS_MAX).optional()
 }).strict();
-var TcCheckoutSubmit = import_zod9.z.object({
-  kind: import_zod9.z.literal("checkout"),
+var TcCheckoutSubmit = import_zod10.z.object({
+  kind: import_zod10.z.literal("checkout"),
   sourceKey: TcIntakeSourceKey,
-  final: import_zod9.z.boolean(),
-  patientName: import_zod9.z.string().min(1).max(200),
-  odPatientId: import_zod9.z.number().int().positive(),
-  provider: import_zod9.z.string().max(200),
-  providerSeen: import_zod9.z.string().max(200),
-  operatory: import_zod9.z.string().max(200),
-  visitDate: import_zod9.z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  final: import_zod10.z.boolean(),
+  patientName: import_zod10.z.string().min(1).max(200),
+  odPatientId: import_zod10.z.number().int().positive(),
+  provider: import_zod10.z.string().max(200),
+  providerSeen: import_zod10.z.string().max(200),
+  operatory: import_zod10.z.string().max(200),
+  visitDate: import_zod10.z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   snapshot: TcCheckoutSnapshot
 }).strict();
-var TcCheckoutStatus = import_zod9.z.enum([
+var TcCheckoutStatus = import_zod10.z.enum([
   "open",
   "claimed",
   "scheduled",
@@ -17732,17 +18155,17 @@ var TC_CHECKOUT_STATUS_LABELS = {
   expired: "Expired"
 };
 var TC_CHECKOUT_WAITING = ["open", "claimed"];
-var TcCheckoutOutcome = import_zod9.z.enum(["scheduled", "not_scheduled", "nothing_needed"]);
+var TcCheckoutOutcome = import_zod10.z.enum(["scheduled", "not_scheduled", "nothing_needed"]);
 var TC_CHECKOUT_OUTCOME_LABELS = {
   scheduled: "Scheduled",
   not_scheduled: "Not scheduled",
   nothing_needed: "Nothing needed"
 };
-var TcCheckoutWorkupMark = import_zod9.z.object({ by: import_zod9.z.string(), at: import_zod9.z.string() }).strict();
-var TcCheckoutKeyedMark = TcCheckoutWorkupMark.extend({ key: import_zod9.z.string() });
-var TcCheckoutWorkup = import_zod9.z.object({
-  workedUp: import_zod9.z.record(import_zod9.z.string().regex(/^\d{1,3}$/), TcCheckoutKeyedMark).default({}),
-  present: import_zod9.z.record(import_zod9.z.string(), TcCheckoutKeyedMark).default({}),
+var TcCheckoutWorkupMark = import_zod10.z.object({ by: import_zod10.z.string(), at: import_zod10.z.string() }).strict();
+var TcCheckoutKeyedMark = TcCheckoutWorkupMark.extend({ key: import_zod10.z.string() });
+var TcCheckoutWorkup = import_zod10.z.object({
+  workedUp: import_zod10.z.record(import_zod10.z.string().regex(/^\d{1,3}$/), TcCheckoutKeyedMark).default({}),
+  present: import_zod10.z.record(import_zod10.z.string(), TcCheckoutKeyedMark).default({}),
   collected: TcCheckoutKeyedMark.nullable().default(null),
   referrals: TcCheckoutWorkupMark.nullable().default(null)
 }).strict();
@@ -17757,11 +18180,11 @@ function checkoutCollectKey(collect) {
 function emptyCheckoutWorkup() {
   return { workedUp: {}, present: {}, collected: null, referrals: null };
 }
-var TcCheckoutWorkupRequest = import_zod9.z.discriminatedUnion("section", [
-  import_zod9.z.object({ section: import_zod9.z.literal("workup"), index: import_zod9.z.number().int().min(0).max(99), done: import_zod9.z.boolean() }).strict(),
-  import_zod9.z.object({ section: import_zod9.z.literal("present"), group: import_zod9.z.string().min(1).max(40), done: import_zod9.z.boolean() }).strict(),
-  import_zod9.z.object({ section: import_zod9.z.literal("collect"), done: import_zod9.z.boolean() }).strict(),
-  import_zod9.z.object({ section: import_zod9.z.literal("referrals"), done: import_zod9.z.boolean() }).strict()
+var TcCheckoutWorkupRequest = import_zod10.z.discriminatedUnion("section", [
+  import_zod10.z.object({ section: import_zod10.z.literal("workup"), index: import_zod10.z.number().int().min(0).max(99), done: import_zod10.z.boolean() }).strict(),
+  import_zod10.z.object({ section: import_zod10.z.literal("present"), group: import_zod10.z.string().min(1).max(40), done: import_zod10.z.boolean() }).strict(),
+  import_zod10.z.object({ section: import_zod10.z.literal("collect"), done: import_zod10.z.boolean() }).strict(),
+  import_zod10.z.object({ section: import_zod10.z.literal("referrals"), done: import_zod10.z.boolean() }).strict()
 ]);
 var TC_CHECKOUT_WORKUP_SECTIONS = ["workup", "present", "collect", "referrals"];
 var TC_CHECKOUT_WORKUP_SECTION_LABELS = {
@@ -17799,7 +18222,7 @@ function checkoutWorkupProgress(h) {
 function checkoutWorkupProgressLabel(p) {
   return `${p.done} of ${p.total} ${p.total === 1 ? "section" : "sections"} done`;
 }
-var TcCheckoutSource = import_zod9.z.enum(["hygiene", "manual", "schedule"]);
+var TcCheckoutSource = import_zod10.z.enum(["hygiene", "manual", "schedule"]);
 function emptyCheckoutSnapshot() {
   return {
     procedures: [],
@@ -17810,22 +18233,22 @@ function emptyCheckoutSnapshot() {
     financialNote: ""
   };
 }
-var TcCheckoutUpcomingAppointment = import_zod9.z.object({
-  aptNum: import_zod9.z.number().int().positive(),
-  dateTime: import_zod9.z.string(),
-  provider: import_zod9.z.string(),
-  appointmentType: import_zod9.z.string(),
-  operatory: import_zod9.z.string()
+var TcCheckoutUpcomingAppointment = import_zod10.z.object({
+  aptNum: import_zod10.z.number().int().positive(),
+  dateTime: import_zod10.z.string(),
+  provider: import_zod10.z.string(),
+  appointmentType: import_zod10.z.string(),
+  operatory: import_zod10.z.string()
 });
 var TcCheckoutAppointmentAnchor = TcCheckoutUpcomingAppointment.extend({
-  linkedBy: import_zod9.z.string().nullable(),
-  linkedAt: import_zod9.z.string().nullable()
+  linkedBy: import_zod10.z.string().nullable(),
+  linkedAt: import_zod10.z.string().nullable()
 });
-var TcCheckoutAppointmentsResponse = import_zod9.z.object({
-  success: import_zod9.z.literal(true),
-  appointments: import_zod9.z.array(TcCheckoutUpcomingAppointment)
+var TcCheckoutAppointmentsResponse = import_zod10.z.object({
+  success: import_zod10.z.literal(true),
+  appointments: import_zod10.z.array(TcCheckoutUpcomingAppointment)
 });
-var TcCheckoutAppointmentLinkRequest = import_zod9.z.object({ aptNum: import_zod9.z.number().int().positive().nullable() }).strict();
+var TcCheckoutAppointmentLinkRequest = import_zod10.z.object({ aptNum: import_zod10.z.number().int().positive().nullable() }).strict();
 function appointmentWhenLabel(dateTime) {
   const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(dateTime);
   if (!m) return dateTime;
@@ -17836,46 +18259,46 @@ function appointmentWhenLabel(dateTime) {
   const time = `${h % 12 === 0 ? 12 : h % 12}:${mm} ${h < 12 ? "AM" : "PM"}`;
   return `${date}, ${time}`;
 }
-var TcCheckoutReopened = import_zod9.z.object({
+var TcCheckoutReopened = import_zod10.z.object({
   outcome: TcCheckoutOutcome,
-  outcomeBy: import_zod9.z.string().nullable(),
-  outcomeAt: import_zod9.z.string().nullable(),
-  appointmentNote: import_zod9.z.string().nullable(),
+  outcomeBy: import_zod10.z.string().nullable(),
+  outcomeAt: import_zod10.z.string().nullable(),
+  appointmentNote: import_zod10.z.string().nullable(),
   /** The case that outcome made or moved. The case itself is left as it is. */
-  caseId: import_zod9.z.string().uuid().nullable(),
-  reopenedAt: import_zod9.z.string(),
+  caseId: import_zod10.z.string().uuid().nullable(),
+  reopenedAt: import_zod10.z.string(),
   /** CO-4a: the appointment that answer was anchored to, if any. */
   appointment: TcCheckoutAppointmentAnchor.nullable().default(null)
 });
-var TcCheckoutHandoff = import_zod9.z.object({
-  handoffId: import_zod9.z.string().uuid(),
+var TcCheckoutHandoff = import_zod10.z.object({
+  handoffId: import_zod10.z.string().uuid(),
   officeId: OfficeKeySchema,
-  odPatientId: import_zod9.z.number().int().positive(),
-  patientName: import_zod9.z.string(),
-  provider: import_zod9.z.string(),
-  providerSeen: import_zod9.z.string(),
-  operatory: import_zod9.z.string(),
-  visitDate: import_zod9.z.string(),
+  odPatientId: import_zod10.z.number().int().positive(),
+  patientName: import_zod10.z.string(),
+  provider: import_zod10.z.string(),
+  providerSeen: import_zod10.z.string(),
+  operatory: import_zod10.z.string(),
+  visitDate: import_zod10.z.string(),
   snapshot: TcCheckoutSnapshot,
-  final: import_zod9.z.boolean(),
-  revision: import_zod9.z.number().int().positive(),
-  submittedBy: import_zod9.z.string(),
-  createdAt: import_zod9.z.string(),
-  updatedAt: import_zod9.z.string(),
+  final: import_zod10.z.boolean(),
+  revision: import_zod10.z.number().int().positive(),
+  submittedBy: import_zod10.z.string(),
+  createdAt: import_zod10.z.string(),
+  updatedAt: import_zod10.z.string(),
   // Item 50 — the front desk's side. Defaulted so an item-49 reader still parses.
   status: TcCheckoutStatus.default("open"),
-  claimedBy: import_zod9.z.string().nullable().default(null),
-  claimedAt: import_zod9.z.string().nullable().default(null),
-  dismissedReason: import_zod9.z.string().nullable().default(null),
-  dismissedBy: import_zod9.z.string().nullable().default(null),
-  dismissedAt: import_zod9.z.string().nullable().default(null),
-  outcomeBy: import_zod9.z.string().nullable().default(null),
-  outcomeAt: import_zod9.z.string().nullable().default(null),
-  appointmentNote: import_zod9.z.string().nullable().default(null),
-  caseId: import_zod9.z.string().uuid().nullable().default(null),
-  expiredAt: import_zod9.z.string().nullable().default(null),
+  claimedBy: import_zod10.z.string().nullable().default(null),
+  claimedAt: import_zod10.z.string().nullable().default(null),
+  dismissedReason: import_zod10.z.string().nullable().default(null),
+  dismissedBy: import_zod10.z.string().nullable().default(null),
+  dismissedAt: import_zod10.z.string().nullable().default(null),
+  outcomeBy: import_zod10.z.string().nullable().default(null),
+  outcomeAt: import_zod10.z.string().nullable().default(null),
+  appointmentNote: import_zod10.z.string().nullable().default(null),
+  caseId: import_zod10.z.string().uuid().nullable().default(null),
+  expiredAt: import_zod10.z.string().nullable().default(null),
   /** Always `system:checkout_expiry` when set — the system closed it, not a person. */
-  expiredBy: import_zod9.z.string().nullable().default(null),
+  expiredBy: import_zod10.z.string().nullable().default(null),
   /** CO-1. Defaulted so a pre-CO-1 reader and a pre-CO-1 record both parse. */
   workup: TcCheckoutWorkup.default(emptyCheckoutWorkup),
   /**
@@ -17889,7 +18312,7 @@ var TcCheckoutHandoff = import_zod9.z.object({
    * manual card and merged onto it. Null on a hygiene card, and on a manual
    * card that has no hygiene visit data.
    */
-  hygieneMergedAt: import_zod9.z.string().nullable().default(null),
+  hygieneMergedAt: import_zod10.z.string().nullable().default(null),
   /**
    * CO-5a fix. Set when a hygiene visit arrived after this card was ANSWERED
    * and reopened it: the answer it had, kept as history. Null otherwise.
@@ -17911,59 +18334,59 @@ var TcCheckoutHandoff = import_zod9.z.object({
 function checkoutHasHygieneData(h) {
   return h.source === "hygiene" || h.hygieneMergedAt !== null;
 }
-var TcCheckoutScheduleCheckStatus = import_zod9.z.enum(["off", "pending", "ok", "failed"]);
-var TcCheckoutScheduleCheck = import_zod9.z.object({
-  success: import_zod9.z.literal(true),
+var TcCheckoutScheduleCheckStatus = import_zod10.z.enum(["off", "pending", "ok", "failed"]);
+var TcCheckoutScheduleCheck = import_zod10.z.object({
+  success: import_zod10.z.literal(true),
   office: OfficeKeySchema,
   status: TcCheckoutScheduleCheckStatus,
-  running: import_zod9.z.boolean(),
-  lastSuccessAt: import_zod9.z.string().nullable(),
-  lastAttemptAt: import_zod9.z.string().nullable(),
+  running: import_zod10.z.boolean(),
+  lastSuccessAt: import_zod10.z.string().nullable(),
+  lastAttemptAt: import_zod10.z.string().nullable(),
   /**
    * Cards made since the server started. Monotonic, so the page reloads its
    * list after ANY read that made cards — even when a later one made none.
    */
-  createdTotal: import_zod9.z.number().int().nonnegative().default(0),
+  createdTotal: import_zod10.z.number().int().nonnegative().default(0),
   /** Counts from the last read that finished. Never a PatNum or a name. */
-  summary: import_zod9.z.object({
-    completedNonHygiene: import_zod9.z.number().int().nonnegative(),
-    created: import_zod9.z.number().int().nonnegative(),
-    alreadyCarded: import_zod9.z.number().int().nonnegative(),
-    skippedHygiene: import_zod9.z.number().int().nonnegative(),
-    skippedNoPatient: import_zod9.z.number().int().nonnegative(),
-    deferred: import_zod9.z.number().int().nonnegative(),
-    partial: import_zod9.z.boolean()
+  summary: import_zod10.z.object({
+    completedNonHygiene: import_zod10.z.number().int().nonnegative(),
+    created: import_zod10.z.number().int().nonnegative(),
+    alreadyCarded: import_zod10.z.number().int().nonnegative(),
+    skippedHygiene: import_zod10.z.number().int().nonnegative(),
+    skippedNoPatient: import_zod10.z.number().int().nonnegative(),
+    deferred: import_zod10.z.number().int().nonnegative(),
+    partial: import_zod10.z.boolean()
   }).nullable()
 });
-var TcCheckoutManualAddRequest = import_zod9.z.object({ patNum: import_zod9.z.number().int().positive() }).strict();
-var TcCheckoutOutcomeRequest = import_zod9.z.object({
+var TcCheckoutManualAddRequest = import_zod10.z.object({ patNum: import_zod10.z.number().int().positive() }).strict();
+var TcCheckoutOutcomeRequest = import_zod10.z.object({
   outcome: TcCheckoutOutcome,
   /** Optional, and only meaningful for "Scheduled" ("Tue 9am, Dr. chair"). */
-  appointmentNote: import_zod9.z.string().trim().max(500).default(""),
+  appointmentNote: import_zod10.z.string().trim().max(500).default(""),
   /**
    * CO-4a, Scheduled only. The AptNum picked from the patient's upcoming
    * appointments, or null / absent for "Not in Open Dental yet". Re-read
    * from Open Dental before anything is stored.
    */
-  aptNum: import_zod9.z.number().int().positive().nullable().optional()
+  aptNum: import_zod10.z.number().int().positive().nullable().optional()
 }).strict();
-var TcCheckoutDismissRequest = import_zod9.z.object({ reason: import_zod9.z.string().trim().min(1).max(500) }).strict();
-var TcCheckoutSummary = import_zod9.z.object({
-  success: import_zod9.z.literal(true),
+var TcCheckoutDismissRequest = import_zod10.z.object({ reason: import_zod10.z.string().trim().min(1).max(500) }).strict();
+var TcCheckoutSummary = import_zod10.z.object({
+  success: import_zod10.z.literal(true),
   office: OfficeKeySchema,
-  enabled: import_zod9.z.boolean(),
+  enabled: import_zod10.z.boolean(),
   /** The office's own day, `YYYY-MM-DD`, that "today" means here. */
-  today: import_zod9.z.string().nullable(),
-  waiting: import_zod9.z.number().int().nonnegative(),
+  today: import_zod10.z.string().nullable(),
+  waiting: import_zod10.z.number().int().nonnegative(),
   /** The newest waiting handoff — what an arrival toast names. Null when none. */
-  newest: import_zod9.z.object({ handoffId: import_zod9.z.string().uuid(), patientName: import_zod9.z.string(), createdAt: import_zod9.z.string() }).nullable()
+  newest: import_zod10.z.object({ handoffId: import_zod10.z.string().uuid(), patientName: import_zod10.z.string(), createdAt: import_zod10.z.string() }).nullable()
 });
-var TcCheckoutSubmitResponse = import_zod9.z.object({
-  success: import_zod9.z.literal(true),
-  kind: import_zod9.z.literal("checkout"),
+var TcCheckoutSubmitResponse = import_zod10.z.object({
+  success: import_zod10.z.literal(true),
+  kind: import_zod10.z.literal("checkout"),
   handoff: TcCheckoutHandoff,
   /** True when the key was already known and nothing new was stored. */
-  replayed: import_zod9.z.boolean()
+  replayed: import_zod10.z.boolean()
 });
 function checkoutPriorityOf(procedures) {
   for (const p of TC_CHECKOUT_PRIORITY_ORDER) {
@@ -17984,33 +18407,33 @@ function checkoutPhaseNames(phases) {
 function checkoutItemKey(p) {
   return JSON.stringify([p.code, p.teeth, p.surfaces]);
 }
-var TcCheckoutPanelItem = import_zod9.z.object({
-  index: import_zod9.z.number().int().nonnegative(),
+var TcCheckoutPanelItem = import_zod10.z.object({
+  index: import_zod10.z.number().int().nonnegative(),
   procedure: TcCheckoutProcedure,
   /** Set while a CURRENT (non-stale) attestation exists. */
-  enteredBy: import_zod9.z.string().nullable(),
-  enteredAt: import_zod9.z.string().nullable(),
+  enteredBy: import_zod10.z.string().nullable(),
+  enteredAt: import_zod10.z.string().nullable(),
   /** An attestation exists but was made against an item that has since changed. */
-  stale: import_zod9.z.boolean()
+  stale: import_zod10.z.boolean()
 });
-var TcCheckoutCaseTreatment = import_zod9.z.object({
-  success: import_zod9.z.literal(true),
-  caseId: import_zod9.z.string().uuid(),
+var TcCheckoutCaseTreatment = import_zod10.z.object({
+  success: import_zod10.z.literal(true),
+  caseId: import_zod10.z.string().uuid(),
   /** Admin-only: may undo an attestation. */
-  canUnattest: import_zod9.z.boolean(),
-  visits: import_zod9.z.array(
-    import_zod9.z.object({
+  canUnattest: import_zod10.z.boolean(),
+  visits: import_zod10.z.array(
+    import_zod10.z.object({
       handoff: TcCheckoutHandoff,
-      items: import_zod9.z.array(TcCheckoutPanelItem),
+      items: import_zod10.z.array(TcCheckoutPanelItem),
       /** CO-4a: a Scheduled visit whose case is still open may be (re)linked to an appointment. */
-      canLinkAppointment: import_zod9.z.boolean().default(false)
+      canLinkAppointment: import_zod10.z.boolean().default(false)
     })
   )
 });
 
 // shared/tc/checkoutRouting.ts
-var import_zod10 = __toESM(require_zod(), 1);
-var IsoDate2 = import_zod10.z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD");
+var import_zod11 = __toESM(require_zod(), 1);
+var IsoDate2 = import_zod11.z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD");
 var TC_CHECKOUT_PIPELINE_STATUSES = [
   "diagnosed",
   "pending_tc",
@@ -18020,7 +18443,7 @@ var TC_CHECKOUT_PIPELINE_STATUSES = [
   "financing_pending",
   "nurture"
 ];
-var TcCheckoutPipelineStatus = import_zod10.z.enum(TC_CHECKOUT_PIPELINE_STATUSES);
+var TcCheckoutPipelineStatus = import_zod11.z.enum(TC_CHECKOUT_PIPELINE_STATUSES);
 var TC_CHECKOUT_ROUTE_DESTINATIONS = ["preauth", "pipeline", "followup", "inbox"];
 var TC_CHECKOUT_ROUTE_LABELS = {
   preauth: "Pre-auth",
@@ -18028,87 +18451,87 @@ var TC_CHECKOUT_ROUTE_LABELS = {
   followup: "Follow-up",
   inbox: "TC Inbox"
 };
-var Words = (max) => import_zod10.z.string().trim().max(max);
-var TcCheckoutRouteRequest = import_zod10.z.discriminatedUnion("destination", [
-  import_zod10.z.object({
-    destination: import_zod10.z.literal("preauth"),
+var Words = (max) => import_zod11.z.string().trim().max(max);
+var TcCheckoutRouteRequest = import_zod11.z.discriminatedUnion("destination", [
+  import_zod11.z.object({
+    destination: import_zod11.z.literal("preauth"),
     preauthType: PreauthType.default("treatment"),
     insuranceCarrier: Words(200).default(""),
     /** Absent = the card's staged procedures, one per line. */
     description: Words(8e3).optional(),
     notes: Words(8e3).default("")
   }).strict(),
-  import_zod10.z.object({
-    destination: import_zod10.z.literal("pipeline"),
+  import_zod11.z.object({
+    destination: import_zod11.z.literal("pipeline"),
     status: TcCheckoutPipelineStatus,
     note: Words(500).default("")
   }).strict(),
-  import_zod10.z.object({
-    destination: import_zod10.z.literal("followup"),
+  import_zod11.z.object({
+    destination: import_zod11.z.literal("followup"),
     dueDate: IsoDate2,
-    talkingPoint: import_zod10.z.string().trim().min(1, "A talking point is required").max(8e3),
+    talkingPoint: import_zod11.z.string().trim().min(1, "A talking point is required").max(8e3),
     channel: FollowupChannel.default("phone_call")
   }).strict(),
-  import_zod10.z.object({
-    destination: import_zod10.z.literal("inbox"),
+  import_zod11.z.object({
+    destination: import_zod11.z.literal("inbox"),
     note: Words(500).default("")
   }).strict()
 ]);
-var TcCheckoutRouteResponse = import_zod10.z.object({
-  success: import_zod10.z.literal(true),
-  destination: import_zod10.z.enum(TC_CHECKOUT_ROUTE_DESTINATIONS),
+var TcCheckoutRouteResponse = import_zod11.z.object({
+  success: import_zod11.z.literal(true),
+  destination: import_zod11.z.enum(TC_CHECKOUT_ROUTE_DESTINATIONS),
   handoff: TcCheckoutHandoff,
   /** The case the routing wrote to, or null (a pre-auth for a patient with no case). */
-  caseId: import_zod10.z.string().uuid().nullable(),
-  url: import_zod10.z.string().nullable(),
+  caseId: import_zod11.z.string().uuid().nullable(),
+  url: import_zod11.z.string().nullable(),
   /** True when the routing joined an existing case; false when it made one or used none. */
-  attached: import_zod10.z.boolean(),
-  preauthId: import_zod10.z.string().uuid().nullable(),
-  followupId: import_zod10.z.string().uuid().nullable(),
+  attached: import_zod11.z.boolean(),
+  preauthId: import_zod11.z.string().uuid().nullable(),
+  followupId: import_zod11.z.string().uuid().nullable(),
   /** Pipeline: whether the status actually moved (false = it was already there). */
-  statusChanged: import_zod10.z.boolean().nullable(),
+  statusChanged: import_zod11.z.boolean().nullable(),
   /** True when the routing closed the card (the Inbox). */
-  resolved: import_zod10.z.boolean()
+  resolved: import_zod11.z.boolean()
 });
 var CHECKOUT_INBOX_DISMISS_REASON = "Sent to the TC Inbox for a coordinator to claim";
-var TcCheckoutQuestionRole = import_zod10.z.enum(["tc", "hygienist"]);
+var TcCheckoutQuestionRole = import_zod11.z.enum(["tc", "hygienist"]);
 var CHECKOUT_QUESTION_MAX = 2e3;
-var TcCheckoutQuestion = import_zod10.z.object({
-  questionId: import_zod10.z.string().uuid(),
-  handoffId: import_zod10.z.string().uuid(),
-  authorEmail: import_zod10.z.string(),
+var TcCheckoutQuestion = import_zod11.z.object({
+  questionId: import_zod11.z.string().uuid(),
+  handoffId: import_zod11.z.string().uuid(),
+  authorEmail: import_zod11.z.string(),
   authorRole: TcCheckoutQuestionRole,
-  body: import_zod10.z.string(),
-  createdAt: import_zod10.z.string(),
-  resolvedAt: import_zod10.z.string().nullable()
+  body: import_zod11.z.string(),
+  createdAt: import_zod11.z.string(),
+  resolvedAt: import_zod11.z.string().nullable()
 });
-var TcCheckoutQuestionPost = import_zod10.z.object({ body: import_zod10.z.string().trim().min(1, "Say what you need to ask").max(CHECKOUT_QUESTION_MAX) }).strict();
-var TcCheckoutQuestionThread = import_zod10.z.object({
-  handoffId: import_zod10.z.string().uuid(),
-  open: import_zod10.z.number().int().min(0),
-  messages: import_zod10.z.array(TcCheckoutQuestion)
+var TcCheckoutQuestionPost = import_zod11.z.object({ body: import_zod11.z.string().trim().min(1, "Say what you need to ask").max(CHECKOUT_QUESTION_MAX) }).strict();
+var TcCheckoutQuestionThread = import_zod11.z.object({
+  handoffId: import_zod11.z.string().uuid(),
+  open: import_zod11.z.number().int().min(0),
+  messages: import_zod11.z.array(TcCheckoutQuestion)
 });
-var TcCheckoutQuestionThreadResponse = import_zod10.z.object({
-  success: import_zod10.z.literal(true),
+var TcCheckoutQuestionThreadResponse = import_zod11.z.object({
+  success: import_zod11.z.literal(true),
   thread: TcCheckoutQuestionThread
 });
-var HygCheckoutQuestionBadge = import_zod10.z.object({
-  aptNum: import_zod10.z.number().int().positive(),
-  handoffId: import_zod10.z.string().uuid(),
-  open: import_zod10.z.number().int().min(0),
-  total: import_zod10.z.number().int().min(1)
+var HygCheckoutQuestionBadge = import_zod11.z.object({
+  aptNum: import_zod11.z.number().int().positive(),
+  handoffId: import_zod11.z.string().uuid(),
+  open: import_zod11.z.number().int().min(0),
+  total: import_zod11.z.number().int().min(1)
 });
-var HygCheckoutQuestionBadgesResponse = import_zod10.z.object({
-  success: import_zod10.z.literal(true),
+var HygCheckoutQuestionBadgesResponse = import_zod11.z.object({
+  success: import_zod11.z.literal(true),
   office: OfficeKeySchema,
   /** False when checkout is switched off for the office: no badges. */
-  enabled: import_zod10.z.boolean(),
-  badges: import_zod10.z.array(HygCheckoutQuestionBadge)
+  enabled: import_zod11.z.boolean(),
+  badges: import_zod11.z.array(HygCheckoutQuestionBadge)
 });
-var HygCheckoutThreadResponse = import_zod10.z.object({
-  success: import_zod10.z.literal(true),
+var HygCheckoutThreadResponse = import_zod11.z.object({
+  success: import_zod11.z.literal(true),
   office: OfficeKeySchema,
-  aptNum: import_zod10.z.number().int().positive(),
+  aptNum: import_zod11.z.number().int().positive(),
   thread: TcCheckoutQuestionThread
 });
 function openQuestionCount(messages) {
@@ -18116,45 +18539,45 @@ function openQuestionCount(messages) {
 }
 
 // shared/tc/notifications.ts
-var import_zod11 = __toESM(require_zod(), 1);
-var TcNotificationEvent = import_zod11.z.enum(["checkout_handoff", "referral_signoff"]);
+var import_zod12 = __toESM(require_zod(), 1);
+var TcNotificationEvent = import_zod12.z.enum(["checkout_handoff", "referral_signoff"]);
 var TC_NOTIFICATION_EVENT_LABELS = {
   checkout_handoff: "A patient is headed to checkout",
   referral_signoff: "A referral is waiting for the doctor's sign-off"
 };
-var TcNotificationLevel = import_zod11.z.enum(["silent", "banner", "sound_banner"]);
+var TcNotificationLevel = import_zod12.z.enum(["silent", "banner", "sound_banner"]);
 var TC_NOTIFICATION_LEVEL_LABELS = {
   silent: "Badge only",
   banner: "Banner",
   sound_banner: "Sound + banner"
 };
 var DEFAULT_NOTIFICATION_LEVEL = "banner";
-var TcNotificationSource = import_zod11.z.enum(["user", "office", "default"]);
+var TcNotificationSource = import_zod12.z.enum(["user", "office", "default"]);
 function resolveNotificationLevel(mine, officeDefault) {
   if (mine) return { level: mine, source: "user" };
   if (officeDefault) return { level: officeDefault, source: "office" };
   return { level: DEFAULT_NOTIFICATION_LEVEL, source: "default" };
 }
-var TcNotificationPrefRow = import_zod11.z.object({
+var TcNotificationPrefRow = import_zod12.z.object({
   event: TcNotificationEvent,
   level: TcNotificationLevel,
   source: TcNotificationSource,
   mine: TcNotificationLevel.nullable(),
   officeDefault: TcNotificationLevel.nullable()
 });
-var TcNotificationPrefsResponse = import_zod11.z.object({
-  success: import_zod11.z.literal(true),
+var TcNotificationPrefsResponse = import_zod12.z.object({
+  success: import_zod12.z.literal(true),
   office: OfficeKeySchema,
   /** Whether the caller may change the office default (admin). */
-  canEditOffice: import_zod11.z.boolean(),
-  events: import_zod11.z.array(TcNotificationPrefRow)
+  canEditOffice: import_zod12.z.boolean(),
+  events: import_zod12.z.array(TcNotificationPrefRow)
 });
-var TcNotificationMineRequest = import_zod11.z.object({ level: TcNotificationLevel.nullable() }).strict();
-var TcNotificationOfficeRequest = import_zod11.z.object({ level: TcNotificationLevel.nullable() }).strict();
+var TcNotificationMineRequest = import_zod12.z.object({ level: TcNotificationLevel.nullable() }).strict();
+var TcNotificationOfficeRequest = import_zod12.z.object({ level: TcNotificationLevel.nullable() }).strict();
 
 // shared/tc/referrals.ts
-var import_zod12 = __toESM(require_zod(), 1);
-var TcReferralStatus = import_zod12.z.enum([
+var import_zod13 = __toESM(require_zod(), 1);
+var TcReferralStatus = import_zod13.z.enum([
   "draft",
   "pending_signoff",
   "approved",
@@ -18176,7 +18599,7 @@ var TC_REFERRAL_STATUS_LABELS = {
   declined: "Declined",
   cancelled: "Cancelled"
 };
-var TcReferralUrgency = import_zod12.z.enum(["routine", "soon", "urgent"]);
+var TcReferralUrgency = import_zod13.z.enum(["routine", "soon", "urgent"]);
 var TC_REFERRAL_URGENCY_LABELS = {
   routine: "Routine",
   soon: "Soon",
@@ -18192,9 +18615,9 @@ var TC_REFERRAL_ATTACHMENT_TYPES = [
 var TC_REFERRAL_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 var TC_REFERRAL_ATTACHMENT_MAX_FILES = 5;
 var DIRECTORY_EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
-var Field = (max) => import_zod12.z.string().trim().max(max);
-var TcReferralDirectoryInput = import_zod12.z.object({
-  practiceName: import_zod12.z.string().trim().min(1, "Practice name is required").max(200),
+var Field = (max) => import_zod13.z.string().trim().max(max);
+var TcReferralDirectoryInput = import_zod13.z.object({
+  practiceName: import_zod13.z.string().trim().min(1, "Practice name is required").max(200),
   specialistName: Field(200).default(""),
   specialty: Field(120).default(""),
   contactPerson: Field(200).default(""),
@@ -18203,70 +18626,70 @@ var TcReferralDirectoryInput = import_zod12.z.object({
   fax: Field(40).default(""),
   notes: Field(2e3).default(""),
   preferredFormatNotes: Field(2e3).default(""),
-  active: import_zod12.z.boolean().default(true)
+  active: import_zod13.z.boolean().default(true)
 }).strict();
-var TcReferralDirectoryEntry = import_zod12.z.object({
-  entryId: import_zod12.z.string().uuid(),
+var TcReferralDirectoryEntry = import_zod13.z.object({
+  entryId: import_zod13.z.string().uuid(),
   officeId: OfficeKeySchema,
-  practiceName: import_zod12.z.string(),
-  specialistName: import_zod12.z.string(),
-  specialty: import_zod12.z.string(),
-  contactPerson: import_zod12.z.string(),
-  email: import_zod12.z.string(),
-  phone: import_zod12.z.string(),
-  fax: import_zod12.z.string(),
-  notes: import_zod12.z.string(),
-  preferredFormatNotes: import_zod12.z.string(),
-  active: import_zod12.z.boolean(),
-  createdBy: import_zod12.z.string(),
-  createdAt: import_zod12.z.string(),
-  updatedBy: import_zod12.z.string(),
-  updatedAt: import_zod12.z.string()
+  practiceName: import_zod13.z.string(),
+  specialistName: import_zod13.z.string(),
+  specialty: import_zod13.z.string(),
+  contactPerson: import_zod13.z.string(),
+  email: import_zod13.z.string(),
+  phone: import_zod13.z.string(),
+  fax: import_zod13.z.string(),
+  notes: import_zod13.z.string(),
+  preferredFormatNotes: import_zod13.z.string(),
+  active: import_zod13.z.boolean(),
+  createdBy: import_zod13.z.string(),
+  createdAt: import_zod13.z.string(),
+  updatedBy: import_zod13.z.string(),
+  updatedAt: import_zod13.z.string()
 });
-var TcReferralPolicy = import_zod12.z.object({
-  value: import_zod12.z.boolean(),
-  source: import_zod12.z.enum(["env", "office", "default"])
+var TcReferralPolicy = import_zod13.z.object({
+  value: import_zod13.z.boolean(),
+  source: import_zod13.z.enum(["env", "office", "default"])
 });
 var TC_REFERRAL_SIGNOFF_MODES = ["doctor", "verbal", "off"];
-var TcReferralSignoffMode = import_zod12.z.enum(TC_REFERRAL_SIGNOFF_MODES);
+var TcReferralSignoffMode = import_zod13.z.enum(TC_REFERRAL_SIGNOFF_MODES);
 function signoffModeRequiresSignoff(mode) {
   return mode !== "off";
 }
-var TcReferralSignoffModePolicy = import_zod12.z.object({
+var TcReferralSignoffModePolicy = import_zod13.z.object({
   value: TcReferralSignoffMode,
-  source: import_zod12.z.enum(["env", "office", "default"])
+  source: import_zod13.z.enum(["env", "office", "default"])
 });
-var TcReferralSettingsResponse = import_zod12.z.object({
-  success: import_zod12.z.literal(true),
+var TcReferralSettingsResponse = import_zod13.z.object({
+  success: import_zod13.z.literal(true),
   office: OfficeKeySchema,
   signoffRequired: TcReferralPolicy,
   /** The mode signoffRequired is derived from. Optional only for an older server. */
   signoffMode: TcReferralSignoffModePolicy.optional(),
   autosendOnApproval: TcReferralPolicy,
   /** Admin-only for now: may this user change the two policies? */
-  canEdit: import_zod12.z.boolean(),
-  updatedBy: import_zod12.z.string().nullable(),
-  updatedAt: import_zod12.z.string().nullable()
+  canEdit: import_zod13.z.boolean(),
+  updatedBy: import_zod13.z.string().nullable(),
+  updatedAt: import_zod13.z.string().nullable()
 });
-var TcReferralSettingsRequest = import_zod12.z.object({
+var TcReferralSettingsRequest = import_zod13.z.object({
   /** Legacy: true = 'doctor', false = 'off'. Never together with signoffMode. */
-  signoffRequired: import_zod12.z.boolean().optional(),
+  signoffRequired: import_zod13.z.boolean().optional(),
   signoffMode: TcReferralSignoffMode.optional(),
-  autosendOnApproval: import_zod12.z.boolean().optional()
+  autosendOnApproval: import_zod13.z.boolean().optional()
 }).strict().refine(
   (v) => v.signoffRequired !== void 0 || v.signoffMode !== void 0 || v.autosendOnApproval !== void 0,
   "Nothing to change"
 ).refine((v) => v.signoffRequired === void 0 || v.signoffMode === void 0, "Send signoffMode or signoffRequired, not both");
-var TcReferralEmailUnavailable = import_zod12.z.enum([
+var TcReferralEmailUnavailable = import_zod13.z.enum([
   "switched_off",
   "not_configured",
   "office_not_configured"
 ]);
-var TcReferralEmailMissing = import_zod12.z.enum(["sending_address", "reply_to"]);
-var TcReferralsStatus = import_zod12.z.object({
-  success: import_zod12.z.literal(true),
+var TcReferralEmailMissing = import_zod13.z.enum(["sending_address", "reply_to"]);
+var TcReferralsStatus = import_zod13.z.object({
+  success: import_zod13.z.literal(true),
   office: OfficeKeySchema,
-  enabled: import_zod12.z.boolean(),
+  enabled: import_zod13.z.boolean(),
   /**
    * R5: referral email. `enabled` is the per-office dark-launch switch
    * (tc_referral_email_enabled) — off means no send UI at all. `unavailable`
@@ -18274,36 +18697,36 @@ var TcReferralsStatus = import_zod12.z.object({
    * = off. `missing` (R5c) rides only with `office_not_configured` and names
    * which detail; absent = the generic sentence.
    */
-  emailSend: import_zod12.z.object({
-    enabled: import_zod12.z.boolean(),
+  emailSend: import_zod13.z.object({
+    enabled: import_zod13.z.boolean(),
     unavailable: TcReferralEmailUnavailable.nullable(),
-    missing: import_zod12.z.array(TcReferralEmailMissing).optional()
+    missing: import_zod13.z.array(TcReferralEmailMissing).optional()
   }).optional()
 });
 var TC_REFERRAL_SOURCE_KINDS_R2 = ["case", "checkout", "hyg_visit", "call"];
-var TcReferralSourceKind = import_zod12.z.enum([...TC_REFERRAL_SOURCE_KINDS_R2, "manual"]);
-var TcReferralTeeth = import_zod12.z.union([
-  import_zod12.z.array(import_zod12.z.number().int().min(1).max(32)).max(32),
-  import_zod12.z.literal("mouth")
+var TcReferralSourceKind = import_zod13.z.enum([...TC_REFERRAL_SOURCE_KINDS_R2, "manual"]);
+var TcReferralTeeth = import_zod13.z.union([
+  import_zod13.z.array(import_zod13.z.number().int().min(1).max(32)).max(32),
+  import_zod13.z.literal("mouth")
 ]);
-var TcReferralInput = import_zod12.z.object({
-  directoryEntryId: import_zod12.z.string().uuid().nullable().default(null),
-  referringProvider: import_zod12.z.string().trim().max(200).default(""),
-  specialty: import_zod12.z.string().trim().max(120).default(""),
-  reason: import_zod12.z.string().trim().min(1, "Say why you are referring").max(2e3),
+var TcReferralInput = import_zod13.z.object({
+  directoryEntryId: import_zod13.z.string().uuid().nullable().default(null),
+  referringProvider: import_zod13.z.string().trim().max(200).default(""),
+  specialty: import_zod13.z.string().trim().max(120).default(""),
+  reason: import_zod13.z.string().trim().min(1, "Say why you are referring").max(2e3),
   teeth: TcReferralTeeth.default([]),
   urgency: TcReferralUrgency.default("routine"),
-  narrative: import_zod12.z.string().trim().max(8e3).default("")
+  narrative: import_zod13.z.string().trim().max(8e3).default("")
 }).strict();
-var TcReferralCreateRequest = import_zod12.z.object({
-  source: import_zod12.z.union([
-    import_zod12.z.object({ caseId: import_zod12.z.string().uuid() }).strict(),
-    import_zod12.z.object({ handoffId: import_zod12.z.string().uuid() }).strict(),
-    import_zod12.z.object({ patNum: import_zod12.z.number().int().positive() }).strict()
+var TcReferralCreateRequest = import_zod13.z.object({
+  source: import_zod13.z.union([
+    import_zod13.z.object({ caseId: import_zod13.z.string().uuid() }).strict(),
+    import_zod13.z.object({ handoffId: import_zod13.z.string().uuid() }).strict(),
+    import_zod13.z.object({ patNum: import_zod13.z.number().int().positive() }).strict()
   ]),
   referral: TcReferralInput
 }).strict();
-var TcReferralDeclineRequest = import_zod12.z.object({ reason: import_zod12.z.string().trim().min(1, "Say why").max(500) }).strict();
+var TcReferralDeclineRequest = import_zod13.z.object({ reason: import_zod13.z.string().trim().min(1, "Say why").max(500) }).strict();
 var TC_REFERRAL_EVENT_VERBS = [
   "create",
   "edit",
@@ -18337,29 +18760,29 @@ var TC_REFERRAL_CORRESPONDENCE_EVENT_VERBS = ["correspondence"];
 var TC_REFERRAL_R69_EVENT_VERBS = [...TC_REFERRAL_R5B_EVENT_VERBS, ...TC_REFERRAL_CORRESPONDENCE_EVENT_VERBS];
 var TC_REFERRAL_CHART_NOTE_EVENT_VERBS = ["chart_note_written"];
 var TC_REFERRAL_ALL_EVENT_VERBS = [...TC_REFERRAL_R69_EVENT_VERBS, ...TC_REFERRAL_CHART_NOTE_EVENT_VERBS];
-var TcReferralEventVerb = import_zod12.z.enum(TC_REFERRAL_ALL_EVENT_VERBS);
+var TcReferralEventVerb = import_zod13.z.enum(TC_REFERRAL_ALL_EVENT_VERBS);
 var TC_REFERRAL_CORRESPONDENCE_DIRECTIONS = ["to", "from"];
 var TC_REFERRAL_CORRESPONDENCE_PARTIES = ["specialist", "patient"];
 var TC_REFERRAL_CORRESPONDENCE_CHANNELS = ["phone", "email", "fax", "other"];
-var TcReferralCorrespondenceDirection = import_zod12.z.enum(TC_REFERRAL_CORRESPONDENCE_DIRECTIONS);
-var TcReferralCorrespondenceParty = import_zod12.z.enum(TC_REFERRAL_CORRESPONDENCE_PARTIES);
-var TcReferralCorrespondenceChannel = import_zod12.z.enum(TC_REFERRAL_CORRESPONDENCE_CHANNELS);
+var TcReferralCorrespondenceDirection = import_zod13.z.enum(TC_REFERRAL_CORRESPONDENCE_DIRECTIONS);
+var TcReferralCorrespondenceParty = import_zod13.z.enum(TC_REFERRAL_CORRESPONDENCE_PARTIES);
+var TcReferralCorrespondenceChannel = import_zod13.z.enum(TC_REFERRAL_CORRESPONDENCE_CHANNELS);
 var TC_REFERRAL_CORRESPONDENCE_NOTE_MAX = 2e3;
-var TcReferralCorrespondenceKind = import_zod12.z.object({
+var TcReferralCorrespondenceKind = import_zod13.z.object({
   direction: TcReferralCorrespondenceDirection,
   party: TcReferralCorrespondenceParty,
   channel: TcReferralCorrespondenceChannel
 });
 var TcReferralCorrespondenceRequest = TcReferralCorrespondenceKind.extend({
-  note: import_zod12.z.string().trim().min(1, "Say what was said").max(TC_REFERRAL_CORRESPONDENCE_NOTE_MAX)
+  note: import_zod13.z.string().trim().min(1, "Say what was said").max(TC_REFERRAL_CORRESPONDENCE_NOTE_MAX)
 }).strict();
 var TcReferralLastCorrespondence = TcReferralCorrespondenceKind.extend({
-  note: import_zod12.z.string(),
-  actor: import_zod12.z.string(),
-  at: import_zod12.z.string()
+  note: import_zod13.z.string(),
+  actor: import_zod13.z.string(),
+  at: import_zod13.z.string()
 });
 var TC_REFERRAL_CHART_MILESTONES = ["sent", "received", "scheduled", "seen", "declined", "closed"];
-var TcReferralChartMilestone = import_zod12.z.enum(TC_REFERRAL_CHART_MILESTONES);
+var TcReferralChartMilestone = import_zod13.z.enum(TC_REFERRAL_CHART_MILESTONES);
 var TC_REFERRAL_CHART_MILESTONE_LABELS = {
   sent: "Referral sent",
   received: "Specialist confirmed receipt",
@@ -18369,27 +18792,27 @@ var TC_REFERRAL_CHART_MILESTONE_LABELS = {
   closed: "Referral closed"
 };
 var TC_REFERRAL_CHART_NOTE_MAX = 2e3;
-var TcReferralChartNoteRequest = import_zod12.z.object({
+var TcReferralChartNoteRequest = import_zod13.z.object({
   milestone: TcReferralChartMilestone,
-  note: import_zod12.z.string().trim().min(1, "Write the note").max(TC_REFERRAL_CHART_NOTE_MAX)
+  note: import_zod13.z.string().trim().min(1, "Write the note").max(TC_REFERRAL_CHART_NOTE_MAX)
 }).strict();
-var TcReferralChartNoteRecord = import_zod12.z.object({
+var TcReferralChartNoteRecord = import_zod13.z.object({
   milestone: TcReferralChartMilestone,
-  commLogNum: import_zod12.z.number().int().positive(),
-  commType: import_zod12.z.number().int().positive()
+  commLogNum: import_zod13.z.number().int().positive(),
+  commType: import_zod13.z.number().int().positive()
 });
-var TcReferralChartNoteAvailability = import_zod12.z.object({
-  available: import_zod12.z.boolean(),
-  code: import_zod12.z.string().nullable(),
-  reason: import_zod12.z.string().nullable()
+var TcReferralChartNoteAvailability = import_zod13.z.object({
+  available: import_zod13.z.boolean(),
+  code: import_zod13.z.string().nullable(),
+  reason: import_zod13.z.string().nullable()
 });
-var TcReferralEvent = import_zod12.z.object({
-  eventId: import_zod12.z.string().uuid(),
+var TcReferralEvent = import_zod13.z.object({
+  eventId: import_zod13.z.string().uuid(),
   fromStatus: TcReferralStatus.nullable(),
   toStatus: TcReferralStatus,
-  actor: import_zod12.z.string(),
-  at: import_zod12.z.string(),
-  note: import_zod12.z.string(),
+  actor: import_zod13.z.string(),
+  at: import_zod13.z.string(),
+  note: import_zod13.z.string(),
   /** R6: what happened. null on rows written before R6. */
   verb: TcReferralEventVerb.nullable().optional(),
   /** R6.9: on a `correspondence` row, which way, with whom, how. null otherwise. */
@@ -18401,75 +18824,75 @@ var TcReferralEvent = import_zod12.z.object({
    * for a doctor, the doctor (provider directory id + the name as it read
    * then). `actor` is the recorder. Absent on every other row.
    */
-  verbal: import_zod12.z.object({ providerId: import_zod12.z.string().uuid(), providerName: import_zod12.z.string() }).optional()
+  verbal: import_zod13.z.object({ providerId: import_zod13.z.string().uuid(), providerName: import_zod13.z.string() }).optional()
 });
-var TcReferralReceived = import_zod12.z.object({
-  at: import_zod12.z.string(),
-  via: import_zod12.z.enum(["link", "staff"])
+var TcReferralReceived = import_zod13.z.object({
+  at: import_zod13.z.string(),
+  via: import_zod13.z.enum(["link", "staff"])
 });
-var TcReferralPatientEmailRecord = import_zod12.z.object({
-  status: import_zod12.z.enum(["sent", "skipped", "failed"]),
+var TcReferralPatientEmailRecord = import_zod13.z.object({
+  status: import_zod13.z.enum(["sent", "skipped", "failed"]),
   /** The history row's own words ("Patient not emailed: ..."). No address, no PHI. */
-  note: import_zod12.z.string(),
-  at: import_zod12.z.string()
+  note: import_zod13.z.string(),
+  at: import_zod13.z.string()
 });
-var TcReferral = import_zod12.z.object({
-  referralId: import_zod12.z.string().uuid(),
+var TcReferral = import_zod13.z.object({
+  referralId: import_zod13.z.string().uuid(),
   officeId: OfficeKeySchema,
-  odPatientId: import_zod12.z.number().int().positive(),
-  patientName: import_zod12.z.string(),
-  tcCaseId: import_zod12.z.string().uuid().nullable(),
+  odPatientId: import_zod13.z.number().int().positive(),
+  patientName: import_zod13.z.string(),
+  tcCaseId: import_zod13.z.string().uuid().nullable(),
   sourceKind: TcReferralSourceKind,
-  sourceRef: import_zod12.z.string(),
-  referringProvider: import_zod12.z.string(),
-  directoryEntryId: import_zod12.z.string().uuid().nullable(),
+  sourceRef: import_zod13.z.string(),
+  referringProvider: import_zod13.z.string(),
+  directoryEntryId: import_zod13.z.string().uuid().nullable(),
   /** The directory entry's current name, for display; null when none is chosen. */
-  practiceName: import_zod12.z.string().nullable(),
-  specialty: import_zod12.z.string(),
-  reason: import_zod12.z.string(),
+  practiceName: import_zod13.z.string().nullable(),
+  specialty: import_zod13.z.string(),
+  reason: import_zod13.z.string(),
   teeth: TcReferralTeeth,
   urgency: TcReferralUrgency,
-  narrative: import_zod12.z.string(),
+  narrative: import_zod13.z.string(),
   status: TcReferralStatus,
-  statusChangedAt: import_zod12.z.string(),
-  statusChangedBy: import_zod12.z.string(),
-  createdBy: import_zod12.z.string(),
-  createdAt: import_zod12.z.string(),
-  updatedAt: import_zod12.z.string(),
+  statusChangedAt: import_zod13.z.string(),
+  statusChangedBy: import_zod13.z.string(),
+  createdBy: import_zod13.z.string(),
+  createdAt: import_zod13.z.string(),
+  updatedAt: import_zod13.z.string(),
   /** Only on the detail read. */
-  events: import_zod12.z.array(TcReferralEvent).optional(),
+  events: import_zod13.z.array(TcReferralEvent).optional(),
   /** R6: the doctor's own note, written at sign-off. null when none. */
-  doctorNote: import_zod12.z.string().nullable().optional(),
+  doctorNote: import_zod13.z.string().nullable().optional(),
   /**
    * The reason in plain words, for the PATIENT's email only (see
    * TC_REFERRAL_PATIENT_REASON_MAX). null when none was written.
    */
-  patientReason: import_zod12.z.string().nullable().optional(),
+  patientReason: import_zod13.z.string().nullable().optional(),
   /** R6: only on the hub list — how many files are attached. */
-  attachmentCount: import_zod12.z.number().int().nonnegative().optional(),
+  attachmentCount: import_zod13.z.number().int().nonnegative().optional(),
   /**
    * R6: set while a draft's latest STATUS MOVE is the doctor's `return` — the
    * question the submitter must answer. null otherwise. On list and detail reads.
    */
-  returned: import_zod12.z.object({ note: import_zod12.z.string(), actor: import_zod12.z.string(), at: import_zod12.z.string() }).nullable().optional(),
+  returned: import_zod13.z.object({ note: import_zod13.z.string(), actor: import_zod13.z.string(), at: import_zod13.z.string() }).nullable().optional(),
   /**
    * R5: the chosen specialist's email as the directory holds it NOW, when it is
    * a usable address; null when there is none. On list and detail reads. The
    * send always re-reads the directory row; this is only for the button.
    */
-  specialistEmail: import_zod12.z.string().nullable().optional(),
+  specialistEmail: import_zod13.z.string().nullable().optional(),
   /**
    * R5: while it is approved, the last email attempt that did not end in
    * `sent` — a failure (retry allowed) or a conflict (the email went out but
    * the referral was not marked sent; no retry). null otherwise.
    */
-  sendProblem: import_zod12.z.object({ kind: import_zod12.z.enum(["failed", "conflict"]), note: import_zod12.z.string(), actor: import_zod12.z.string(), at: import_zod12.z.string() }).nullable().optional(),
+  sendProblem: import_zod13.z.object({ kind: import_zod13.z.enum(["failed", "conflict"]), note: import_zod13.z.string(), actor: import_zod13.z.string(), at: import_zod13.z.string() }).nullable().optional(),
   /**
    * R5b: the appointment date the specialist's office or the patient gave from
    * the link in their email ("YYYY-MM-DD"), the latest one given. null when
    * nobody gave a date. The history row says who and when.
    */
-  scheduledDate: import_zod12.z.string().nullable().optional(),
+  scheduledDate: import_zod13.z.string().nullable().optional(),
   /**
    * The specialist confirmed receipt since the referral was last sent: the
    * `mark_acknowledged` move, from their email link (`via: "link"`) or marked
@@ -18491,11 +18914,11 @@ var TcReferral = import_zod12.z.object({
    * R6.10: the chosen directory entry's specialist name, for the drafted chart
    * notes. null when none is chosen or the entry names nobody. Detail read only.
    */
-  specialistName: import_zod12.z.string().nullable().optional(),
+  specialistName: import_zod13.z.string().nullable().optional(),
   /** R6.10: can this office's charts take a referral note right now? Detail read only. */
   chartNotes: TcReferralChartNoteAvailability.optional()
 });
-var TcReferralVerb = import_zod12.z.enum([
+var TcReferralVerb = import_zod13.z.enum([
   "submit",
   "withdraw",
   "cancel",
@@ -18508,7 +18931,7 @@ var TcReferralVerb = import_zod12.z.enum([
   "mark_patient_seen",
   "close"
 ]);
-var TcReferralSendVerb = import_zod12.z.literal("send");
+var TcReferralSendVerb = import_zod13.z.literal("send");
 var REFERRAL_CANCELLABLE_STATUSES = [
   "draft",
   "pending_signoff",
@@ -18535,14 +18958,14 @@ function referralDeleteBlocker(status, events) {
   if ((events ?? []).some((e) => e.verb != null && blocking.includes(e.verb))) return "has_history";
   return null;
 }
-var TcReferralMoveRequest = import_zod12.z.object({ note: import_zod12.z.string().trim().max(300).optional() }).strict();
-var TcReferralDeleteResponse = import_zod12.z.object({
-  success: import_zod12.z.literal(true),
-  referralId: import_zod12.z.string().uuid(),
+var TcReferralMoveRequest = import_zod13.z.object({ note: import_zod13.z.string().trim().max(300).optional() }).strict();
+var TcReferralDeleteResponse = import_zod13.z.object({
+  success: import_zod13.z.literal(true),
+  referralId: import_zod13.z.string().uuid(),
   /** Attachment files removed from storage. */
-  filesRemoved: import_zod12.z.number().int().nonnegative(),
+  filesRemoved: import_zod13.z.number().int().nonnegative(),
   /** Files storage did not confirm removing (left behind; no row points at them). */
-  filesLeft: import_zod12.z.number().int().nonnegative()
+  filesLeft: import_zod13.z.number().int().nonnegative()
 });
 function referralNextStatus(from, verb, opts) {
   switch (verb) {
@@ -18585,24 +19008,24 @@ var REFERRAL_DOCTOR_EDITABLE_STATUSES = ["pending_signoff"];
 var TC_REFERRAL_DOCTOR_NOTE_MAX = 4e3;
 var TC_REFERRAL_PATIENT_REASON_MAX = 200;
 var fieldShape = {
-  directoryEntryId: import_zod12.z.string().uuid().nullable().optional(),
+  directoryEntryId: import_zod13.z.string().uuid().nullable().optional(),
   /** Provider directory: a pick from the office's list, or "Other" free text. */
-  referringProvider: import_zod12.z.string().trim().max(200).optional(),
+  referringProvider: import_zod13.z.string().trim().max(200).optional(),
   urgency: TcReferralUrgency.optional(),
-  reason: import_zod12.z.string().trim().min(1, "Say why you are referring").max(2e3).optional(),
+  reason: import_zod13.z.string().trim().min(1, "Say why you are referring").max(2e3).optional(),
   teeth: TcReferralTeeth.optional(),
-  patientReason: import_zod12.z.string().trim().max(TC_REFERRAL_PATIENT_REASON_MAX, `Keep the reason in plain words under ${TC_REFERRAL_PATIENT_REASON_MAX} characters`).nullable().optional()
+  patientReason: import_zod13.z.string().trim().max(TC_REFERRAL_PATIENT_REASON_MAX, `Keep the reason in plain words under ${TC_REFERRAL_PATIENT_REASON_MAX} characters`).nullable().optional()
 };
 var hasAnyField = (v) => Object.values(v).some((x) => x !== void 0);
-var TcReferralFieldsEdit = import_zod12.z.object(fieldShape).strict().refine(hasAnyField, "Nothing to change");
-var TcReferralDoctorEdit = import_zod12.z.object({
+var TcReferralFieldsEdit = import_zod13.z.object(fieldShape).strict().refine(hasAnyField, "Nothing to change");
+var TcReferralDoctorEdit = import_zod13.z.object({
   ...fieldShape,
-  doctorNote: import_zod12.z.string().trim().max(TC_REFERRAL_DOCTOR_NOTE_MAX).nullable().optional()
+  doctorNote: import_zod13.z.string().trim().max(TC_REFERRAL_DOCTOR_NOTE_MAX).nullable().optional()
 }).strict().refine(hasAnyField, "Nothing to change");
-var TcReferralReopenRequest = import_zod12.z.object({ fields: TcReferralFieldsEdit.optional() }).strict();
-var TcReferralReturnRequest = import_zod12.z.object({ comment: import_zod12.z.string().trim().min(1, "Say what you need").max(1e3) }).strict();
-var VerbalProvider = { providerId: import_zod12.z.string().uuid("Pick the doctor who gave the OK") };
-var TcReferralVerbalApproveRequest = import_zod12.z.object({ ...VerbalProvider, note: import_zod12.z.string().trim().max(500).optional() }).strict();
+var TcReferralReopenRequest = import_zod13.z.object({ fields: TcReferralFieldsEdit.optional() }).strict();
+var TcReferralReturnRequest = import_zod13.z.object({ comment: import_zod13.z.string().trim().min(1, "Say what you need").max(1e3) }).strict();
+var VerbalProvider = { providerId: import_zod13.z.string().uuid("Pick the doctor who gave the OK") };
+var TcReferralVerbalApproveRequest = import_zod13.z.object({ ...VerbalProvider, note: import_zod13.z.string().trim().max(500).optional() }).strict();
 var TcReferralVerbalDeclineRequest = TcReferralDeclineRequest.extend(VerbalProvider).strict();
 var TcReferralVerbalReturnRequest = TcReferralReturnRequest.extend(VerbalProvider).strict();
 var TC_REFERRAL_VERBAL_VERBS = ["approve", "decline", "return"];
@@ -18610,8 +19033,8 @@ function verbalDoctorLabel(providerName) {
   const n = providerName.trim();
   return /^dr\.?\s/i.test(n) ? n : `Dr. ${n}`;
 }
-var TcReferralMarkSentRequest = import_zod12.z.object({ how: import_zod12.z.string().trim().min(1, "Say how it was sent").max(300) }).strict();
-var TcReferralMarkRequest = import_zod12.z.object({ note: import_zod12.z.string().trim().max(300).optional() }).strict();
+var TcReferralMarkSentRequest = import_zod13.z.object({ how: import_zod13.z.string().trim().min(1, "Say how it was sent").max(300) }).strict();
+var TcReferralMarkRequest = import_zod13.z.object({ note: import_zod13.z.string().trim().max(300).optional() }).strict();
 var TC_REFERRAL_HUB_GROUPS = [
   { key: "drafts", label: "Drafts", statuses: ["draft"] },
   { key: "signoff", label: "Awaiting sign-off", statuses: ["pending_signoff"] },
@@ -18624,12 +19047,12 @@ function referralHubGroup(status) {
   const g = TC_REFERRAL_HUB_GROUPS.find((x) => x.statuses.includes(status));
   return g ? g.key : "done";
 }
-var TcReferralHubQuery = import_zod12.z.object({
+var TcReferralHubQuery = import_zod13.z.object({
   status: TcReferralStatus.optional(),
-  directoryEntryId: import_zod12.z.string().uuid().optional(),
+  directoryEntryId: import_zod13.z.string().uuid().optional(),
   sourceKind: TcReferralSourceKind.optional(),
   /** Only referrals that have sat in their status at least this many days. */
-  minAgeDays: import_zod12.z.coerce.number().int().min(0).max(3650).optional()
+  minAgeDays: import_zod13.z.coerce.number().int().min(0).max(3650).optional()
 }).strict();
 function referralStatusAge(status, statusChangedAt, now) {
   const ms = now.getTime() - new Date(statusChangedAt).getTime();
@@ -18884,16 +19307,16 @@ function referralChipFor(referrals) {
   return referralChipTop(referrals)?.chip ?? "none";
 }
 var REFERRAL_READY_TO_SEND_COPY = "Ready to send \u2014 sending ships in a later update.";
-var TcReferralSendRequest = import_zod12.z.object({}).strict();
-var TcReferralPatientEmailOutcome = import_zod12.z.object({
-  status: import_zod12.z.enum(["sent", "skipped", "failed"]),
-  message: import_zod12.z.string()
+var TcReferralSendRequest = import_zod13.z.object({}).strict();
+var TcReferralPatientEmailOutcome = import_zod13.z.object({
+  status: import_zod13.z.enum(["sent", "skipped", "failed"]),
+  message: import_zod13.z.string()
 });
-var TcReferralSendOutcome = import_zod12.z.object({
-  status: import_zod12.z.enum(["sent", "failed", "conflict", "skipped"]),
+var TcReferralSendOutcome = import_zod13.z.object({
+  status: import_zod13.z.enum(["sent", "failed", "conflict", "skipped"]),
   /** The honest sentence: why it failed, or where it went. */
-  message: import_zod12.z.string(),
-  code: import_zod12.z.string().nullable(),
+  message: import_zod13.z.string(),
+  code: import_zod13.z.string().nullable(),
   /** R5b: only on a `sent` outcome. Absent from an older server. */
   patientEmail: TcReferralPatientEmailOutcome.optional()
 });
@@ -18925,21 +19348,21 @@ function referralSendBlocker(r, email) {
   if (!r.specialistEmail) return REFERRAL_NO_EMAIL_COPY;
   return null;
 }
-var TcReferralSignoffSummary = import_zod12.z.object({
-  success: import_zod12.z.literal(true),
+var TcReferralSignoffSummary = import_zod13.z.object({
+  success: import_zod13.z.literal(true),
   office: OfficeKeySchema,
-  enabled: import_zod12.z.boolean(),
-  waiting: import_zod12.z.number().int().nonnegative(),
-  newest: import_zod12.z.object({ referralId: import_zod12.z.string().uuid(), patientName: import_zod12.z.string(), at: import_zod12.z.string() }).nullable()
+  enabled: import_zod13.z.boolean(),
+  waiting: import_zod13.z.number().int().nonnegative(),
+  newest: import_zod13.z.object({ referralId: import_zod13.z.string().uuid(), patientName: import_zod13.z.string(), at: import_zod13.z.string() }).nullable()
 });
-var TcReferralAttachment = import_zod12.z.object({
-  attachmentId: import_zod12.z.string().uuid(),
-  referralId: import_zod12.z.string().uuid(),
-  fileName: import_zod12.z.string(),
-  contentType: import_zod12.z.enum(TC_REFERRAL_ATTACHMENT_TYPES),
-  sizeBytes: import_zod12.z.number().int().positive(),
-  uploadedBy: import_zod12.z.string(),
-  uploadedAt: import_zod12.z.string()
+var TcReferralAttachment = import_zod13.z.object({
+  attachmentId: import_zod13.z.string().uuid(),
+  referralId: import_zod13.z.string().uuid(),
+  fileName: import_zod13.z.string(),
+  contentType: import_zod13.z.enum(TC_REFERRAL_ATTACHMENT_TYPES),
+  sizeBytes: import_zod13.z.number().int().positive(),
+  uploadedBy: import_zod13.z.string(),
+  uploadedAt: import_zod13.z.string()
 });
 var REFERRAL_ATTACHMENT_HINT = "Press Win+Shift+S to snip the X-ray, then drag it here.";
 function attachmentProblem(file, alreadyChosen) {
@@ -18957,7 +19380,7 @@ function attachmentProblem(file, alreadyChosen) {
 }
 
 // shared/tc/emailIdentity.ts
-var import_zod13 = __toESM(require_zod(), 1);
+var import_zod14 = __toESM(require_zod(), 1);
 var EMAIL_IDENTITY_LIMITS = {
   replyTo: 254,
   practiceName: 120,
@@ -18967,8 +19390,8 @@ var EMAIL_IDENTITY_LIMITS = {
 };
 var TC_EMAIL_IDENTITY_ADDRESS = "practiceAddress";
 var TC_EMAIL_IDENTITY_ADDRESS_LABEL = "Practice address";
-var TcEmailIdentityField = import_zod13.z.enum(["replyTo", "practiceName", "practicePhone"]);
-var TcEmailIdentityStoredField = import_zod13.z.enum([
+var TcEmailIdentityField = import_zod14.z.enum(["replyTo", "practiceName", "practicePhone"]);
+var TcEmailIdentityStoredField = import_zod14.z.enum([
   ...TcEmailIdentityField.options,
   TC_EMAIL_IDENTITY_ADDRESS,
   "referralBcc"
@@ -18978,22 +19401,22 @@ var TC_EMAIL_IDENTITY_FIELD_LABELS = {
   practiceName: "Practice name",
   practicePhone: "Practice phone"
 };
-var TcEmailIdentitySource = import_zod13.z.enum(["stored", "env", "none"]);
-var TcEmailIdentityFieldState = import_zod13.z.object({
+var TcEmailIdentitySource = import_zod14.z.enum(["stored", "env", "none"]);
+var TcEmailIdentityFieldState = import_zod14.z.object({
   /** What an email sent right now would use, or null. */
-  value: import_zod13.z.string().nullable(),
+  value: import_zod14.z.string().nullable(),
   source: TcEmailIdentitySource,
   /** The value saved in the app for this office, or null when none is. */
-  stored: import_zod13.z.string().nullable(),
+  stored: import_zod14.z.string().nullable(),
   /** The app setting's value (the fallback), or null when unset or unusable. */
-  fallback: import_zod13.z.string().nullable(),
+  fallback: import_zod14.z.string().nullable(),
   /** The NAME of that app setting, e.g. ACS_EMAIL_REPLY_TO_ROLAND. */
-  fallbackSetting: import_zod13.z.string()
+  fallbackSetting: import_zod14.z.string()
 });
-var TcEmailIdentityResponse = import_zod13.z.object({
-  success: import_zod13.z.literal(true),
+var TcEmailIdentityResponse = import_zod14.z.object({
+  success: import_zod14.z.literal(true),
   office: OfficeKeySchema,
-  fields: import_zod13.z.object({
+  fields: import_zod14.z.object({
     replyTo: TcEmailIdentityFieldState,
     practiceName: TcEmailIdentityFieldState,
     practicePhone: TcEmailIdentityFieldState,
@@ -19005,85 +19428,85 @@ var TcEmailIdentityResponse = import_zod13.z.object({
    * to, or null for no copy. Saved here only (no app-setting fallback). Absent
    * from an older server = no copy.
    */
-  referralBcc: import_zod13.z.string().nullable().optional(),
+  referralBcc: import_zod14.z.string().nullable().optional(),
   /** Read-only: managed by the platform, bound to the verified sending domain. */
-  from: import_zod13.z.object({
+  from: import_zod14.z.object({
     /** The sender a patient email uses (this office's own, else the shared one). */
-    patientEmail: import_zod13.z.string().nullable(),
+    patientEmail: import_zod14.z.string().nullable(),
     /** The sender a referral letter uses (this office's own only). */
-    referral: import_zod13.z.string().nullable()
+    referral: import_zod14.z.string().nullable()
   }),
   /** False when the saved values could not be read since boot (env answers). */
-  policyKnown: import_zod13.z.boolean(),
-  updatedAt: import_zod13.z.string().nullable(),
-  updatedBy: import_zod13.z.string().nullable()
+  policyKnown: import_zod14.z.boolean(),
+  updatedAt: import_zod14.z.string().nullable(),
+  updatedBy: import_zod14.z.string().nullable()
 });
 var SINGLE_LINE = /^[^\u0000-\u001f\u007f]*$/;
 function line(max) {
-  return import_zod13.z.string().trim().min(1).max(max).regex(SINGLE_LINE, "must be a single line of plain text");
+  return import_zod14.z.string().trim().min(1).max(max).regex(SINGLE_LINE, "must be a single line of plain text");
 }
 var MULTI_LINE = /^[^\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f]*$/;
 var ONE_ADDRESS = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/;
-var TcEmailIdentityRequest = import_zod13.z.object({
+var TcEmailIdentityRequest = import_zod14.z.object({
   replyTo: line(EMAIL_IDENTITY_LIMITS.replyTo).regex(ONE_ADDRESS, "must be one plain email address").nullable(),
   practiceName: line(EMAIL_IDENTITY_LIMITS.practiceName).nullable(),
   practicePhone: line(EMAIL_IDENTITY_LIMITS.practicePhone).nullable(),
   referralBcc: line(EMAIL_IDENTITY_LIMITS.referralBcc).regex(ONE_ADDRESS, "must be one plain email address").nullable().optional(),
   // Setup polish: optional; absent = unchanged, null = back to the app setting.
-  practiceAddress: import_zod13.z.string().trim().min(1).max(EMAIL_IDENTITY_LIMITS.practiceAddress).regex(MULTI_LINE, "must be plain text").nullable().optional()
+  practiceAddress: import_zod14.z.string().trim().min(1).max(EMAIL_IDENTITY_LIMITS.practiceAddress).regex(MULTI_LINE, "must be plain text").nullable().optional()
 }).strict();
 
 // shared/tc/providers.ts
-var import_zod14 = __toESM(require_zod(), 1);
+var import_zod15 = __toESM(require_zod(), 1);
 var TC_PROVIDER_NAME_MAX = 200;
 var TC_PROVIDER_SUFFIX_MAX = 40;
-var TcProviderInput = import_zod14.z.object({
-  name: import_zod14.z.string().trim().min(1, "Name is required").max(TC_PROVIDER_NAME_MAX),
+var TcProviderInput = import_zod15.z.object({
+  name: import_zod15.z.string().trim().min(1, "Name is required").max(TC_PROVIDER_NAME_MAX),
   /** "DDS", "DMD", "RDH" — printed after the name. Optional. */
-  credentialSuffix: import_zod14.z.string().trim().max(TC_PROVIDER_SUFFIX_MAX).default(""),
-  active: import_zod14.z.boolean().default(true)
+  credentialSuffix: import_zod15.z.string().trim().max(TC_PROVIDER_SUFFIX_MAX).default(""),
+  active: import_zod15.z.boolean().default(true)
 }).strict();
-var TcProviderEntry = import_zod14.z.object({
-  providerId: import_zod14.z.string().uuid(),
+var TcProviderEntry = import_zod15.z.object({
+  providerId: import_zod15.z.string().uuid(),
   officeId: OfficeKeySchema,
-  name: import_zod14.z.string(),
-  credentialSuffix: import_zod14.z.string(),
-  active: import_zod14.z.boolean(),
+  name: import_zod15.z.string(),
+  credentialSuffix: import_zod15.z.string(),
+  active: import_zod15.z.boolean(),
   /** Open Dental's ProvNum when the row came from an import; null when added by hand. */
-  odProvNum: import_zod14.z.number().int().positive().nullable(),
-  createdBy: import_zod14.z.string(),
-  createdAt: import_zod14.z.string(),
-  updatedBy: import_zod14.z.string(),
-  updatedAt: import_zod14.z.string()
+  odProvNum: import_zod15.z.number().int().positive().nullable(),
+  createdBy: import_zod15.z.string(),
+  createdAt: import_zod15.z.string(),
+  updatedBy: import_zod15.z.string(),
+  updatedAt: import_zod15.z.string()
 });
-var TcProviderListResponse = import_zod14.z.object({
-  success: import_zod14.z.literal(true),
-  entries: import_zod14.z.array(TcProviderEntry),
-  canEdit: import_zod14.z.boolean().optional()
+var TcProviderListResponse = import_zod15.z.object({
+  success: import_zod15.z.literal(true),
+  entries: import_zod15.z.array(TcProviderEntry),
+  canEdit: import_zod15.z.boolean().optional()
 });
-var TcProviderImportRequest = import_zod14.z.object({}).strict();
-var TcProviderImportResponse = import_zod14.z.object({
-  success: import_zod14.z.literal(true),
-  added: import_zod14.z.number().int().nonnegative(),
-  updated: import_zod14.z.number().int().nonnegative(),
-  unchanged: import_zod14.z.number().int().nonnegative(),
-  skippedHidden: import_zod14.z.number().int().nonnegative(),
-  skippedHygienists: import_zod14.z.number().int().nonnegative(),
-  skippedNoName: import_zod14.z.number().int().nonnegative(),
-  entries: import_zod14.z.array(TcProviderEntry)
+var TcProviderImportRequest = import_zod15.z.object({}).strict();
+var TcProviderImportResponse = import_zod15.z.object({
+  success: import_zod15.z.literal(true),
+  added: import_zod15.z.number().int().nonnegative(),
+  updated: import_zod15.z.number().int().nonnegative(),
+  unchanged: import_zod15.z.number().int().nonnegative(),
+  skippedHidden: import_zod15.z.number().int().nonnegative(),
+  skippedHygienists: import_zod15.z.number().int().nonnegative(),
+  skippedNoName: import_zod15.z.number().int().nonnegative(),
+  entries: import_zod15.z.array(TcProviderEntry)
 });
 function providerDisplayName(p) {
   const name = p.name.trim();
   const suffix = p.credentialSuffix.trim();
   return suffix ? `${name}, ${suffix}` : name;
 }
-var TcPreauthStartCaseRequest = import_zod14.z.object({}).strict();
+var TcPreauthStartCaseRequest = import_zod15.z.object({}).strict();
 
 // shared/tc/printTemplates.ts
-var import_zod16 = __toESM(require_zod(), 1);
+var import_zod17 = __toESM(require_zod(), 1);
 
 // shared/tc/printStyling.ts
-var import_zod15 = __toESM(require_zod(), 1);
+var import_zod16 = __toESM(require_zod(), 1);
 var PRINT_FONT_FACES = {
   helvetica: {
     file: null,
@@ -20029,12 +20452,12 @@ var PRINT_LAYOUTS = {
 var PRINT_LOGO_PLACEMENTS = { left: "Left", center: "Center", right: "Right" };
 var PRINT_LOGO_SIZES = { small: { label: "Small", box: 48 }, medium: { label: "Medium", box: 72 } };
 var keysOf = (o) => Object.keys(o);
-var PrintStyling = import_zod15.z.object({
-  accentColor: import_zod15.z.string().regex(/^#[0-9a-f]{6}$/),
-  fontPair: import_zod15.z.enum(keysOf(PRINT_FONT_PAIRS)),
-  logoPlacement: import_zod15.z.enum(keysOf(PRINT_LOGO_PLACEMENTS)),
-  logoSize: import_zod15.z.enum(keysOf(PRINT_LOGO_SIZES)),
-  layout: import_zod15.z.enum(keysOf(PRINT_LAYOUTS))
+var PrintStyling = import_zod16.z.object({
+  accentColor: import_zod16.z.string().regex(/^#[0-9a-f]{6}$/),
+  fontPair: import_zod16.z.enum(keysOf(PRINT_FONT_PAIRS)),
+  logoPlacement: import_zod16.z.enum(keysOf(PRINT_LOGO_PLACEMENTS)),
+  logoSize: import_zod16.z.enum(keysOf(PRINT_LOGO_SIZES)),
+  layout: import_zod16.z.enum(keysOf(PRINT_LAYOUTS))
 }).strict();
 var PRINT_STYLING_DEFAULTS = Object.freeze({
   accentColor: "#000000",
@@ -20370,7 +20793,7 @@ function layoutPrintDocument(doc, styling, logo) {
   }
   return { styling, faces, pages };
 }
-var PrintStylingSaveRequest = import_zod15.z.object({ styling: import_zod15.z.unknown() }).strict();
+var PrintStylingSaveRequest = import_zod16.z.object({ styling: import_zod16.z.unknown() }).strict();
 
 // shared/tc/printTemplates.ts
 var PRINT_PLACEHOLDERS = [
@@ -20429,17 +20852,17 @@ var PRINT_TEMPLATE_TYPES = {
   }
 };
 var PRINT_TEMPLATE_TYPE_KEYS = Object.keys(PRINT_TEMPLATE_TYPES);
-var PrintTemplateTypeSchema = import_zod16.z.enum(PRINT_TEMPLATE_TYPE_KEYS);
+var PrintTemplateTypeSchema = import_zod17.z.enum(PRINT_TEMPLATE_TYPE_KEYS);
 function isPrintTemplateType(value) {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(PRINT_TEMPLATE_TYPES, value);
 }
-var PrintTemplateFields = import_zod16.z.object({
-  heading: import_zod16.z.string().trim().max(120),
-  letterheadName: import_zod16.z.string().trim().max(120),
-  letterheadAddress: import_zod16.z.string().trim().max(300),
-  letterheadPhone: import_zod16.z.string().trim().max(40),
-  body: import_zod16.z.string().max(4e3),
-  signatureLine: import_zod16.z.string().trim().max(200)
+var PrintTemplateFields = import_zod17.z.object({
+  heading: import_zod17.z.string().trim().max(120),
+  letterheadName: import_zod17.z.string().trim().max(120),
+  letterheadAddress: import_zod17.z.string().trim().max(300),
+  letterheadPhone: import_zod17.z.string().trim().max(40),
+  body: import_zod17.z.string().max(4e3),
+  signatureLine: import_zod17.z.string().trim().max(200)
 }).strict();
 function defaultPrintTemplate(type, prefill) {
   const d = PRINT_TEMPLATE_TYPES[type];
@@ -20532,42 +20955,42 @@ function samplePrintValues(t) {
     provider_name: "Dr. Sample Provider"
   };
 }
-var PrintTemplateState = import_zod16.z.object({
+var PrintTemplateState = import_zod17.z.object({
   type: PrintTemplateTypeSchema,
-  label: import_zod16.z.string(),
+  label: import_zod17.z.string(),
   /** False: nobody has saved one; this is the shipped default. */
-  stored: import_zod16.z.boolean(),
+  stored: import_zod17.z.boolean(),
   fields: PrintTemplateFields,
-  logo: import_zod16.z.object({ present: import_zod16.z.boolean(), contentType: import_zod16.z.string().nullable() }),
+  logo: import_zod17.z.object({ present: import_zod17.z.boolean(), contentType: import_zod17.z.string().nullable() }),
   /** CO-3b: how it prints — the saved styling, or the defaults (today's printout). */
   styling: PrintStyling.default({ ...PRINT_STYLING_DEFAULTS }),
   /** CO-3b: false — no styling saved; it prints exactly as before CO-3b. */
-  styled: import_zod16.z.boolean().default(false),
-  updatedBy: import_zod16.z.string().nullable(),
-  updatedAt: import_zod16.z.string().nullable()
+  styled: import_zod17.z.boolean().default(false),
+  updatedBy: import_zod17.z.string().nullable(),
+  updatedAt: import_zod17.z.string().nullable()
 });
-var PrintTemplatesResponse = import_zod16.z.object({
-  success: import_zod16.z.literal(true),
+var PrintTemplatesResponse = import_zod17.z.object({
+  success: import_zod17.z.literal(true),
   office: OfficeKeySchema,
-  prefill: import_zod16.z.object({ name: import_zod16.z.string(), address: import_zod16.z.string(), phone: import_zod16.z.string() }),
-  templates: import_zod16.z.array(PrintTemplateState),
+  prefill: import_zod17.z.object({ name: import_zod17.z.string(), address: import_zod17.z.string(), phone: import_zod17.z.string() }),
+  templates: import_zod17.z.array(PrintTemplateState),
   /** False: logo upload is refused here until the storage container exists. */
-  logoStorageConfigured: import_zod16.z.boolean()
+  logoStorageConfigured: import_zod17.z.boolean()
 });
-var PrintTemplateSaveResponse = import_zod16.z.object({ success: import_zod16.z.literal(true), template: PrintTemplateState });
-var PrintEditableValues = import_zod16.z.object({
-  timeSeenRange: import_zod16.z.string().trim().max(80).default(""),
-  nextAppointmentDate: import_zod16.z.string().trim().max(80).default(""),
-  nextAppointmentTime: import_zod16.z.string().trim().max(40).default("")
+var PrintTemplateSaveResponse = import_zod17.z.object({ success: import_zod17.z.literal(true), template: PrintTemplateState });
+var PrintEditableValues = import_zod17.z.object({
+  timeSeenRange: import_zod17.z.string().trim().max(80).default(""),
+  nextAppointmentDate: import_zod17.z.string().trim().max(80).default(""),
+  nextAppointmentTime: import_zod17.z.string().trim().max(40).default("")
 }).strict();
 var TcCheckoutPrintRequest = PrintEditableValues.extend({ templateType: PrintTemplateTypeSchema }).strict();
-var TcCheckoutPrintDefaults = import_zod16.z.object({
-  success: import_zod16.z.literal(true),
-  templates: import_zod16.z.array(import_zod16.z.object({ type: PrintTemplateTypeSchema, label: import_zod16.z.string() })),
+var TcCheckoutPrintDefaults = import_zod17.z.object({
+  success: import_zod17.z.literal(true),
+  templates: import_zod17.z.array(import_zod17.z.object({ type: PrintTemplateTypeSchema, label: import_zod17.z.string() })),
   /** Server-derived, shown read-only: the card's own patient, day and provider, and the office. */
-  fixed: import_zod16.z.object({ patientFullName: import_zod16.z.string(), dateSeen: import_zod16.z.string(), providerName: import_zod16.z.string(), officeName: import_zod16.z.string() }),
+  fixed: import_zod17.z.object({ patientFullName: import_zod17.z.string(), dateSeen: import_zod17.z.string(), providerName: import_zod17.z.string(), officeName: import_zod17.z.string() }),
   /** Pre-filled where known, editable before generating. */
-  editable: import_zod16.z.object({ timeSeenRange: import_zod16.z.string(), nextAppointmentDate: import_zod16.z.string(), nextAppointmentTime: import_zod16.z.string() })
+  editable: import_zod17.z.object({ timeSeenRange: import_zod17.z.string(), nextAppointmentDate: import_zod17.z.string(), nextAppointmentTime: import_zod17.z.string() })
 });
 function printNameParts(stored) {
   const s = stored.trim();
@@ -20597,7 +21020,7 @@ function printTimeLabel(dateTime) {
 }
 
 // shared/tc/referralTemplates.ts
-var import_zod17 = __toESM(require_zod(), 1);
+var import_zod18 = __toESM(require_zod(), 1);
 var REFERRAL_TEMPLATE_PLACEHOLDERS = [
   "specialist_name",
   "specialty",
@@ -20615,7 +21038,7 @@ var REFERRAL_TEMPLATE_PLACEHOLDER_LABELS = {
 var REFERRAL_TEMPLATE_BLANK = "____";
 var REFERRAL_TEMPLATE_BODY_MAX = 2e3;
 var REFERRAL_TEMPLATE_KINDS = ["specialist_message", "correspondence_note"];
-var ReferralTemplateKind = import_zod17.z.enum(REFERRAL_TEMPLATE_KINDS);
+var ReferralTemplateKind = import_zod18.z.enum(REFERRAL_TEMPLATE_KINDS);
 var REFERRAL_TEMPLATE_KIND_LABELS = {
   specialist_message: {
     title: "Message to the specialist",
@@ -20664,29 +21087,29 @@ var REFERRAL_TEMPLATE_SAMPLE_VALUES = {
   teeth: "#3, #14",
   reason: "Evaluate for root canal therapy"
 };
-var ReferralTemplateState = import_zod17.z.object({
+var ReferralTemplateState = import_zod18.z.object({
   kind: ReferralTemplateKind,
-  body: import_zod17.z.string(),
-  updatedBy: import_zod17.z.string().nullable(),
-  updatedAt: import_zod17.z.string().nullable()
+  body: import_zod18.z.string(),
+  updatedBy: import_zod18.z.string().nullable(),
+  updatedAt: import_zod18.z.string().nullable()
 });
-var ReferralTemplatesResponse = import_zod17.z.object({
-  success: import_zod17.z.literal(true),
+var ReferralTemplatesResponse = import_zod18.z.object({
+  success: import_zod18.z.literal(true),
   office: OfficeKeySchema,
   /** May this user change them? (Settings only; the same rule as the referral policies.) */
-  canEdit: import_zod17.z.boolean(),
-  templates: import_zod17.z.array(ReferralTemplateState)
+  canEdit: import_zod18.z.boolean(),
+  templates: import_zod18.z.array(ReferralTemplateState)
 });
-var ReferralTemplateSaveRequest = import_zod17.z.object({
-  body: import_zod17.z.string().max(REFERRAL_TEMPLATE_BODY_MAX, `Keep a template under ${REFERRAL_TEMPLATE_BODY_MAX} characters`)
+var ReferralTemplateSaveRequest = import_zod18.z.object({
+  body: import_zod18.z.string().max(REFERRAL_TEMPLATE_BODY_MAX, `Keep a template under ${REFERRAL_TEMPLATE_BODY_MAX} characters`)
 }).strict();
-var ReferralTemplateSaveResponse = import_zod17.z.object({ success: import_zod17.z.literal(true), template: ReferralTemplateState });
+var ReferralTemplateSaveResponse = import_zod18.z.object({ success: import_zod18.z.literal(true), template: ReferralTemplateState });
 function templateBody(templates, kind) {
   return templates?.find((t) => t.kind === kind)?.body ?? "";
 }
 
 // shared/tc/nextTouch.ts
-var import_zod18 = __toESM(require_zod(), 1);
+var import_zod19 = __toESM(require_zod(), 1);
 var OPEN = new Set(OPEN_CASE_STATUSES);
 function isOpenCaseStatus(status) {
   return OPEN.has(status);
@@ -20751,358 +21174,13 @@ function ownerInitials(owner) {
   const last = parts[parts.length - 1] ?? "";
   return `${first.charAt(0)}${last.charAt(0)}`.toUpperCase();
 }
-var NextTouchInput = import_zod18.z.object({
-  dueDate: import_zod18.z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD"),
-  owner: import_zod18.z.string().trim().min(1, "An owner is required").max(200),
+var NextTouchInput = import_zod19.z.object({
+  dueDate: import_zod19.z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD"),
+  owner: import_zod19.z.string().trim().min(1, "An owner is required").max(200),
   channel: FollowupChannel.default("phone_call"),
-  talkingPoint: import_zod18.z.string().max(8e3).default("")
+  talkingPoint: import_zod19.z.string().max(8e3).default("")
 }).strict();
 var NEXT_TOUCH_REQUIRED = "NEXT_TOUCH_REQUIRED";
-
-// shared/tc/emailLibrary.ts
-var import_zod19 = __toESM(require_zod(), 1);
-var EMAIL_LIBRARY_NEVER_STORED = ["office_name", "office_phone"];
-var EMAIL_LIBRARY_YESNO_KEYS = [
-  "same_day_crowns",
-  "digital_scanner",
-  "cbct",
-  "laser",
-  "surgical_guides",
-  "buffered",
-  "immediate_implants"
-];
-var EMAIL_LIBRARY_SELECT_OPTIONS = {
-  insurance_mode: ["standard", "in_network", "files_claims", "no_insurance"],
-  implant_surgery: ["in_house", "specialist"],
-  whitening_type: ["both", "in_office", "take_home"],
-  parent_in_room: ["yes", "child_first", "no"],
-  sleep_test: ["home_test", "both", "refer"]
-};
-var EMAIL_LIBRARY_MULTI_OPTIONS = {
-  sedation: ["nitrous", "oral", "iv"],
-  sedation_kids: ["nitrous", "oral", "iv"],
-  new_patient_welcome: [
-    "xrays",
-    "meet_doctor",
-    "tour",
-    "coffee",
-    "tv",
-    "comfort_menu",
-    "welcome_gift",
-    "same_day_cleaning"
-  ],
-  schedule_perks: ["early", "lunch", "evening", "friday", "saturday"]
-};
-var EMAIL_LIBRARY_TEXT_MAX = {
-  doctor_name: 120,
-  same_day_length: 120,
-  amenities: 200,
-  financing_partners: 120,
-  membership_name: 120,
-  aligner_brand: 120
-};
-var EMAIL_LIBRARY_LINK_KEYS = ["schedule_link"];
-var EMAIL_LIBRARY_LINK_MAX = 300;
-var EMAIL_LIBRARY_CANCEL_HOURS = { key: "cancel_hours", min: 1, max: 168 };
-var EMAIL_LIBRARY_PROCEDURE_IDS = [
-  "filling",
-  "crown",
-  "onlay",
-  "root_canal",
-  "bridge",
-  "extraction",
-  "wisdom_teeth",
-  "bone_graft",
-  "implant",
-  "implant_denture",
-  "full_arch",
-  "denture",
-  "partial",
-  "reline",
-  "deep_cleaning",
-  "perio_maintenance",
-  "gum_graft",
-  "recare",
-  "new_patient",
-  "night_guard",
-  "whitening",
-  "veneers",
-  "bonding",
-  "smile_makeover",
-  "aligners",
-  "braces",
-  "early_ortho",
-  "retainer",
-  "sleep_appliance",
-  "tmj",
-  "sealants",
-  "pediatric_restorative",
-  "space_maintainer",
-  "frenectomy",
-  "large_case",
-  "emergency_followup"
-];
-var EMAIL_LIBRARY_VARIANTS = ["A", "B", "C"];
-var EMAIL_LIBRARY_MERGE_SETTINGS = ["schedule_link", "doctor_name"];
-var EMAIL_LIBRARY_RETIRED_SAVED_KEYS = ["review_link"];
-var EMAIL_LIBRARY_PREVIEW_SAMPLES = {
-  first_name: "Jordan",
-  appointment_date: "Tuesday, March 3",
-  appointment_time: "9:00 AM"
-};
-var EMAIL_LIBRARY_ANSWER_KEYS = [
-  ...EMAIL_LIBRARY_YESNO_KEYS,
-  ...Object.keys(EMAIL_LIBRARY_SELECT_OPTIONS),
-  ...Object.keys(EMAIL_LIBRARY_MULTI_OPTIONS),
-  ...Object.keys(EMAIL_LIBRARY_TEXT_MAX),
-  ...EMAIL_LIBRARY_LINK_KEYS,
-  EMAIL_LIBRARY_CANCEL_HOURS.key,
-  "services_off"
-];
-var EMAIL_LIBRARY_ANSWER_CODES = {
-  NOT_AN_OBJECT: "EMAIL_LIBRARY_ANSWERS_NOT_OBJECT",
-  OFFICE_FIELD: "EMAIL_LIBRARY_OFFICE_FIELD_REFUSED",
-  UNKNOWN_KEY: "EMAIL_LIBRARY_UNKNOWN_KEY",
-  NOT_BOOLEAN: "EMAIL_LIBRARY_NOT_BOOLEAN",
-  BAD_OPTION: "EMAIL_LIBRARY_BAD_OPTION",
-  BAD_PROCEDURE: "EMAIL_LIBRARY_BAD_PROCEDURE",
-  TEXT_NOT_STRING: "EMAIL_LIBRARY_TEXT_NOT_STRING",
-  TEXT_TOO_LONG: "EMAIL_LIBRARY_TEXT_TOO_LONG",
-  TEXT_FORBIDDEN_CHARACTER: "EMAIL_LIBRARY_TEXT_FORBIDDEN_CHARACTER",
-  CANCEL_HOURS: "EMAIL_LIBRARY_CANCEL_HOURS_INVALID",
-  LINK: "EMAIL_LIBRARY_LINK_INVALID"
-};
-var LINE_SEPARATORS = String.fromCharCode(8232, 8233);
-var FORBIDDEN_TEXT = new RegExp(`[{}\\[\\]<>\\x00-\\x1f\\x7f-\\x9f${LINE_SEPARATORS}]`);
-var CANCEL_HOURS_SHAPE = /^[1-9][0-9]{0,2}$/;
-var textField = (max) => import_zod19.z.string().min(1).max(max).refine((v) => v === v.trim() && !FORBIDDEN_TEXT.test(v));
-var linkField = import_zod19.z.string().min(1).max(EMAIL_LIBRARY_LINK_MAX).refine((v) => isHttpsLink(v));
-var multiField = (values) => import_zod19.z.array(import_zod19.z.enum(values)).min(1);
-var EmailLibraryAnswers = import_zod19.z.object({
-  same_day_crowns: import_zod19.z.boolean().optional(),
-  digital_scanner: import_zod19.z.boolean().optional(),
-  cbct: import_zod19.z.boolean().optional(),
-  laser: import_zod19.z.boolean().optional(),
-  surgical_guides: import_zod19.z.boolean().optional(),
-  buffered: import_zod19.z.boolean().optional(),
-  immediate_implants: import_zod19.z.boolean().optional(),
-  insurance_mode: import_zod19.z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.insurance_mode).optional(),
-  implant_surgery: import_zod19.z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.implant_surgery).optional(),
-  whitening_type: import_zod19.z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.whitening_type).optional(),
-  parent_in_room: import_zod19.z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.parent_in_room).optional(),
-  sleep_test: import_zod19.z.enum(EMAIL_LIBRARY_SELECT_OPTIONS.sleep_test).optional(),
-  sedation: multiField(EMAIL_LIBRARY_MULTI_OPTIONS.sedation).optional(),
-  sedation_kids: multiField(EMAIL_LIBRARY_MULTI_OPTIONS.sedation_kids).optional(),
-  new_patient_welcome: multiField(EMAIL_LIBRARY_MULTI_OPTIONS.new_patient_welcome).optional(),
-  schedule_perks: multiField(EMAIL_LIBRARY_MULTI_OPTIONS.schedule_perks).optional(),
-  doctor_name: textField(EMAIL_LIBRARY_TEXT_MAX.doctor_name).optional(),
-  same_day_length: textField(EMAIL_LIBRARY_TEXT_MAX.same_day_length).optional(),
-  amenities: textField(EMAIL_LIBRARY_TEXT_MAX.amenities).optional(),
-  financing_partners: textField(EMAIL_LIBRARY_TEXT_MAX.financing_partners).optional(),
-  membership_name: textField(EMAIL_LIBRARY_TEXT_MAX.membership_name).optional(),
-  aligner_brand: textField(EMAIL_LIBRARY_TEXT_MAX.aligner_brand).optional(),
-  schedule_link: linkField.optional(),
-  cancel_hours: import_zod19.z.string().refine((v) => CANCEL_HOURS_SHAPE.test(v) && Number(v) >= EMAIL_LIBRARY_CANCEL_HOURS.min && Number(v) <= EMAIL_LIBRARY_CANCEL_HOURS.max).optional(),
-  services_off: multiField(EMAIL_LIBRARY_PROCEDURE_IDS).optional()
-}).strict();
-function isHttpsLink(v) {
-  if (v.length === 0 || v.length > EMAIL_LIBRARY_LINK_MAX) return false;
-  if (/\s/.test(v) || FORBIDDEN_TEXT.test(v)) return false;
-  let url;
-  try {
-    url = new URL(v);
-  } catch {
-    return false;
-  }
-  return url.protocol === "https:" && url.hostname.length > 0;
-}
-var has = (list, v) => list.includes(v);
-var refuse = (code, key, message) => ({
-  ok: false,
-  code,
-  key,
-  message
-});
-function validateEmailLibraryAnswers(raw) {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    return refuse(EMAIL_LIBRARY_ANSWER_CODES.NOT_AN_OBJECT, null, "Answers must be an object");
-  }
-  const out = {};
-  for (const [key, value] of Object.entries(raw)) {
-    if (has(EMAIL_LIBRARY_NEVER_STORED, key)) {
-      return refuse(
-        EMAIL_LIBRARY_ANSWER_CODES.OFFICE_FIELD,
-        key,
-        `${key} comes from the office's email identity and cannot be set here`
-      );
-    }
-    if (!has(EMAIL_LIBRARY_ANSWER_KEYS, key)) {
-      return refuse(EMAIL_LIBRARY_ANSWER_CODES.UNKNOWN_KEY, key, `${key} is not a question in this library`);
-    }
-    if (value === void 0 || value === null) continue;
-    if (has(EMAIL_LIBRARY_YESNO_KEYS, key)) {
-      if (typeof value !== "boolean") return refuse(EMAIL_LIBRARY_ANSWER_CODES.NOT_BOOLEAN, key, `${key} must be yes or no`);
-      out[key] = value;
-      continue;
-    }
-    if (key in EMAIL_LIBRARY_SELECT_OPTIONS) {
-      const options = EMAIL_LIBRARY_SELECT_OPTIONS[key];
-      if (value === "") continue;
-      if (typeof value !== "string" || !has(options, value)) {
-        return refuse(EMAIL_LIBRARY_ANSWER_CODES.BAD_OPTION, key, `${key} must be one of: ${options.join(", ")}`);
-      }
-      out[key] = value;
-      continue;
-    }
-    if (key in EMAIL_LIBRARY_MULTI_OPTIONS || key === "services_off") {
-      const options = key === "services_off" ? EMAIL_LIBRARY_PROCEDURE_IDS : EMAIL_LIBRARY_MULTI_OPTIONS[key];
-      const code = key === "services_off" ? EMAIL_LIBRARY_ANSWER_CODES.BAD_PROCEDURE : EMAIL_LIBRARY_ANSWER_CODES.BAD_OPTION;
-      if (!Array.isArray(value) || value.some((v) => typeof v !== "string" || !has(options, v))) {
-        return refuse(
-          code,
-          key,
-          key === "services_off" ? "services_off may list only this library's procedures" : `${key} may list only: ${options.join(", ")}`
-        );
-      }
-      const picked = options.filter((o) => value.includes(o));
-      if (picked.length > 0) out[key] = picked;
-      continue;
-    }
-    if (typeof value !== "string") return refuse(EMAIL_LIBRARY_ANSWER_CODES.TEXT_NOT_STRING, key, `${key} must be text`);
-    const text = value.trim();
-    if (text === "") continue;
-    if (key === EMAIL_LIBRARY_CANCEL_HOURS.key) {
-      const n = Number(text);
-      if (!CANCEL_HOURS_SHAPE.test(text) || n < EMAIL_LIBRARY_CANCEL_HOURS.min || n > EMAIL_LIBRARY_CANCEL_HOURS.max) {
-        return refuse(
-          EMAIL_LIBRARY_ANSWER_CODES.CANCEL_HOURS,
-          key,
-          `cancel_hours must be a whole number of hours from ${EMAIL_LIBRARY_CANCEL_HOURS.min} to ${EMAIL_LIBRARY_CANCEL_HOURS.max}`
-        );
-      }
-      out[key] = text;
-      continue;
-    }
-    if (has(EMAIL_LIBRARY_LINK_KEYS, key)) {
-      if (!isHttpsLink(text)) {
-        return refuse(
-          EMAIL_LIBRARY_ANSWER_CODES.LINK,
-          key,
-          `${key} must be a complete https:// link of at most ${EMAIL_LIBRARY_LINK_MAX} characters, with no spaces`
-        );
-      }
-      out[key] = text;
-      continue;
-    }
-    const max = EMAIL_LIBRARY_TEXT_MAX[key];
-    if (text.length > max) return refuse(EMAIL_LIBRARY_ANSWER_CODES.TEXT_TOO_LONG, key, `${key} must be at most ${max} characters`);
-    if (FORBIDDEN_TEXT.test(text)) {
-      return refuse(
-        EMAIL_LIBRARY_ANSWER_CODES.TEXT_FORBIDDEN_CHARACTER,
-        key,
-        `${key} cannot contain line breaks or any of { } [ ] < >`
-      );
-    }
-    out[key] = text;
-  }
-  const parsed = EmailLibraryAnswers.safeParse(out);
-  if (!parsed.success) return refuse(EMAIL_LIBRARY_ANSWER_CODES.UNKNOWN_KEY, null, "Answers did not match the contract");
-  return { ok: true, answers: parsed.data };
-}
-var QuestionOption = import_zod19.z.object({ value: import_zod19.z.string(), label: import_zod19.z.string(), phrase: import_zod19.z.string().optional() }).strict();
-var EmailLibraryQuestion = import_zod19.z.object({
-  id: import_zod19.z.enum(EMAIL_LIBRARY_ANSWER_KEYS),
-  section: import_zod19.z.string(),
-  type: import_zod19.z.enum(["text", "yesno", "select", "multi", "procedures"]),
-  label: import_zod19.z.string(),
-  help: import_zod19.z.string(),
-  options: import_zod19.z.array(QuestionOption),
-  default: import_zod19.z.union([import_zod19.z.string(), import_zod19.z.null()]),
-  show_if: import_zod19.z.union([import_zod19.z.string(), import_zod19.z.null()]),
-  placeholder: import_zod19.z.string()
-}).strict();
-var EmailLibraryProcedure = import_zod19.z.object({ id: import_zod19.z.enum(EMAIL_LIBRARY_PROCEDURE_IDS), name: import_zod19.z.string(), category: import_zod19.z.string(), audience: import_zod19.z.string() }).strict();
-var EmailLibraryStage = import_zod19.z.object({
-  id: import_zod19.z.string(),
-  label: import_zod19.z.string(),
-  phase: import_zod19.z.string(),
-  use: import_zod19.z.string(),
-  /** False when this office's answers switch the stage off (e.g. no insurance → no benefits deadline). */
-  inUse: import_zod19.z.boolean()
-}).strict();
-var EmailLibrarySequence = import_zod19.z.object({
-  id: import_zod19.z.string(),
-  name: import_zod19.z.string(),
-  track: import_zod19.z.string(),
-  use: import_zod19.z.string(),
-  exit: import_zod19.z.string(),
-  steps: import_zod19.z.array(import_zod19.z.object({ stage: import_zod19.z.string(), when: import_zod19.z.string() }).strict())
-}).strict();
-var EmailLibraryCatalogResponse = import_zod19.z.object({
-  success: import_zod19.z.literal(true),
-  office: OfficeKeySchema,
-  libraryVersion: import_zod19.z.string(),
-  /** False until the doctor's review; flips only by PR. Nothing is sent from this library either way in EL-1. */
-  clinicallyApproved: import_zod19.z.boolean(),
-  status: import_zod19.z.string(),
-  rulesOfUse: import_zod19.z.array(import_zod19.z.string()),
-  /** The procedures this office provides (after its services_off). */
-  procedures: import_zod19.z.array(EmailLibraryProcedure),
-  /** Every procedure, for the services_off question. */
-  allProcedures: import_zod19.z.array(EmailLibraryProcedure),
-  stages: import_zod19.z.array(EmailLibraryStage),
-  variants: import_zod19.z.record(import_zod19.z.enum(EMAIL_LIBRARY_VARIANTS), import_zod19.z.string()),
-  sequences: import_zod19.z.array(EmailLibrarySequence),
-  questions: import_zod19.z.array(EmailLibraryQuestion),
-  emailCount: import_zod19.z.number().int().nonnegative()
-}).strict();
-var EmailLibraryMissingSetting = import_zod19.z.object({ field: import_zod19.z.enum(EMAIL_LIBRARY_MERGE_SETTINGS), stages: import_zod19.z.array(import_zod19.z.string()) }).strict();
-var EmailLibraryProfileResponse = import_zod19.z.object({
-  success: import_zod19.z.literal(true),
-  office: OfficeKeySchema,
-  /** False until the office's first save: `answers` is then {} (every default). */
-  saved: import_zod19.z.boolean(),
-  answers: EmailLibraryAnswers,
-  /** The library version the answers were saved against (null until saved). */
-  libraryVersion: import_zod19.z.string().nullable(),
-  updatedBy: import_zod19.z.string().nullable(),
-  updatedAt: import_zod19.z.string().nullable(),
-  /** Settings some composed email still prints as a {{token}} (normally none since 1.2.0). */
-  missing: import_zod19.z.array(EmailLibraryMissingSetting),
-  /** The optional settings this office has left blank (server-computed; the wording works without them). */
-  blankOptional: import_zod19.z.array(import_zod19.z.enum(EMAIL_LIBRARY_MERGE_SETTINGS)),
-  /** May this viewer save? (admin.all) — UX only; the server enforces it. */
-  canEdit: import_zod19.z.boolean()
-}).strict();
-var EmailLibraryProfilePutRequest = import_zod19.z.object({ answers: import_zod19.z.record(import_zod19.z.string(), import_zod19.z.unknown()) }).strict();
-var EmailLibraryPreviewRequest = import_zod19.z.object({
-  procedure_id: import_zod19.z.string().min(1).max(64),
-  stage: import_zod19.z.string().min(1).max(64),
-  variant: import_zod19.z.string().min(1).max(8),
-  /** Unsaved answers to preview with; absent = the office's saved answers. */
-  answers: import_zod19.z.record(import_zod19.z.string(), import_zod19.z.unknown()).optional()
-}).strict();
-var EmailLibraryPreviewResponse = import_zod19.z.object({
-  success: import_zod19.z.literal(true),
-  office: OfficeKeySchema,
-  id: import_zod19.z.string(),
-  procedureId: import_zod19.z.string(),
-  procedureName: import_zod19.z.string(),
-  stage: import_zod19.z.string(),
-  stageLabel: import_zod19.z.string(),
-  variant: import_zod19.z.enum(EMAIL_LIBRARY_VARIANTS),
-  tone: import_zod19.z.string(),
-  answersSource: import_zod19.z.enum(["saved", "unsaved"]),
-  /** Merge fields filled in; any left unresolved stay as their {{token}}. */
-  subject: import_zod19.z.string(),
-  preheader: import_zod19.z.string(),
-  bodyText: import_zod19.z.string(),
-  mergeFields: import_zod19.z.array(import_zod19.z.string()),
-  /** The merge fields with no value: shown as {{token}}, never blank, never invented. */
-  unresolved: import_zod19.z.array(import_zod19.z.string()),
-  wordCount: import_zod19.z.number().int().nonnegative(),
-  clinicallyApproved: import_zod19.z.boolean()
-}).strict();
 
 // ../backend/tc/contract.entry.ts
 var import_zod20 = __toESM(require_zod());
@@ -21205,6 +21283,7 @@ function odToothText(tooth) {
   HygCheckoutQuestionBadgesResponse,
   HygCheckoutThreadResponse,
   ImageBlock,
+  LIBRARY_SEQUENCE_TRACKS,
   LOWER_PRIMARY,
   LibraryCadenceConfig,
   LibraryCadenceTier,
@@ -21227,6 +21306,7 @@ function odToothText(tooth) {
   NEXT_TOUCH_REQUIRED,
   NURTURE_CAPS,
   NURTURE_DEFAULT_INTENSITY,
+  NURTURE_LIBRARY_PROCEDURE_MAX,
   NURTURE_SMS_STOP_SUFFIX,
   NURTURE_STOP_CASE_TERMINAL,
   NURTURE_STOP_OPTED_OUT,
@@ -21241,6 +21321,7 @@ function odToothText(tooth) {
   NurtureEnrollBody,
   NurtureEnrollmentStatus,
   NurtureIntensity,
+  NurtureLibraryVariant,
   NurtureOutboxDraft,
   NurtureOutboxGroup,
   NurtureOutboxResponse,
@@ -21541,6 +21622,7 @@ function odToothText(tooth) {
   isContactAttemptDetail,
   isDefaultStyling,
   isHttpsLink,
+  isLibrarySequenceTrack,
   isNotesRevisionDetail,
   isOpenCaseStatus,
   isPrimaryTooth,
@@ -21548,6 +21630,7 @@ function odToothText(tooth) {
   isReferralTemplateKind,
   isVoiceHandoffDetail,
   layoutPrintDocument,
+  libraryTemplateId,
   nextTouchByCase,
   nextTouchState,
   nurtureSchedule,
@@ -21558,6 +21641,7 @@ function odToothText(tooth) {
   odToothText,
   openQuestionCount,
   ownerInitials,
+  parseLibraryTemplateId,
   pickNextTouch,
   preauthToRow,
   presetViolations,
@@ -21595,6 +21679,7 @@ function odToothText(tooth) {
   resolveNotificationLevel,
   safeUrl,
   samplePrintValues,
+  scheduleCapViolations,
   signoffModeRequiresSignoff,
   simulationToRow,
   teethText,

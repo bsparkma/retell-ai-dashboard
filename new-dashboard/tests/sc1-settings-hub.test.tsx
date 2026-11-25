@@ -279,7 +279,9 @@ describe("/admin is the settings card map", () => {
       "/admin/print-templates",
       "/admin/users",
     ]);
-    expect(hrefsIn("admin-module-tc")).toEqual(["/admin/tc/settings"]);
+    // EL-2: the patient email library card moved into the TC block.
+    expect(hrefsIn("admin-module-tc")).toEqual(["/admin/tc/settings", "/admin/patient-emails"]);
+    expect(screen.queryByTestId("admin-module-tc-email-library")).toBeNull();
     expect(hrefsIn("admin-module-voice")).toEqual(["/agents", "/scheduling"]);
     expect(screen.getByTestId("admin-voice-notifications")).toBeTruthy();
     // Practice staff was retired in #304; no card points at it.

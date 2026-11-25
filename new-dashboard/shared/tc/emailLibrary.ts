@@ -172,10 +172,17 @@ export type EmailLibraryAnswerCode = (typeof EMAIL_LIBRARY_ANSWER_CODES)[keyof t
 /**
  * Characters a printed answer may never hold: braces and brackets (they are the
  * library's token syntax), angle brackets, every C0/C1 control character
- * (newlines and tabs included) and the Unicode line/paragraph separators.
+ * (newlines and tabs included), the Unicode line/paragraph separators, and
+ * (EL-2) the invisible bidi and format controls: zero-width space/joiners and
+ * the LRM/RLM marks (U+200B–U+200F), the embeddings and overrides
+ * (U+202A–U+202E), the isolates (U+2066–U+2069) and the BOM (U+FEFF). Those
+ * print nothing but can reorder or hide what a patient reads next to them, and
+ * an answer is printed into patient email, so they are refused with the same
+ * code as any other control character.
  */
 const LINE_SEPARATORS = String.fromCharCode(0x2028, 0x2029);
-const FORBIDDEN_TEXT = new RegExp(`[{}\\[\\]<>\\x00-\\x1f\\x7f-\\x9f${LINE_SEPARATORS}]`);
+const BIDI_AND_FORMAT = "\\u200b-\\u200f\\u202a-\\u202e\\u2066-\\u2069\\ufeff";
+const FORBIDDEN_TEXT = new RegExp(`[{}\\[\\]<>\\x00-\\x1f\\x7f-\\x9f${LINE_SEPARATORS}${BIDI_AND_FORMAT}]`);
 const CANCEL_HOURS_SHAPE = /^[1-9][0-9]{0,2}$/;
 
 /** The stored, normalized answers. Every key optional: absent = the library's default. */
@@ -409,7 +416,7 @@ export const EmailLibraryCatalogResponse = z
     success: z.literal(true),
     office: OfficeKeySchema,
     libraryVersion: z.string(),
-    /** False until the doctor's review; flips only by PR. Nothing is sent from this library either way in EL-1. */
+    /** True since EL-2 (1.3.0 is the doctor-reviewed wording); flips only by PR. While false, nurture cannot start a library enrollment (409 LIBRARY_NOT_APPROVED). */
     clinicallyApproved: z.boolean(),
     status: z.string(),
     rulesOfUse: z.array(z.string()),

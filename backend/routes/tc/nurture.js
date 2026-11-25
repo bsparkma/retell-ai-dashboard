@@ -24,6 +24,19 @@
  * voice → TC handoff. The enrollment-id routes take the office from the
  * enrollment row (which took it from its case) the same way.
  *
+ * LIBRARY ENROLLMENTS (EL-2). POST /enrollments may carry `procedure_id` +
+ * `variant`: the track then drafts the patient email library's sequence for it
+ * (one composed email per step, email only, one cadence) instead of the
+ * hand-written touches. Refusals, in evaluation order, after the ordinary ones
+ * (case missing, office mismatch, switched off, terminal, already enrolled):
+ *   400 LIBRARY_TRACK_UNSUPPORTED          the library has no sequence for the track
+ *   409 LIBRARY_NOT_APPROVED               the library is not doctor-approved
+ *   409 EMAIL_LIBRARY_SAVED_ANSWERS_STALE  the office's saved wording no longer validates
+ *   400 LIBRARY_PROCEDURE_UNKNOWN          not in the office's catalog (after services_off)
+ *   409 LIBRARY_OFFICE_IDENTITY_INCOMPLETE the office's name and/or phone are unset
+ *   409 NO_ADDRESS                         the case has no email (library touches are email only)
+ * The first two need no database and are answered before the transaction.
+ *
  * SHIPS DARK: starting an enrollment needs platform_setting['tc_nurture_enabled']
  * to switch the case's office on (config/tcNurture.js). Pause and stop always
  * work — that is the safe direction — and resume works too, since nothing is
@@ -45,6 +58,8 @@ const messaging = require('../../services/messaging');
 const { MessagingError } = require('../../services/messaging/errors');
 const adapters = require('../../services/messaging/adapters');
 const { addressFromCase } = require('../../services/messaging/address');
+const library = require('../../services/tcEmailLibrary');
+const emailIdentity = require('../../config/emailIdentity');
 
 const { z, Uuid, NurtureEnrollBody, NurtureStopBody, LibraryNurtureConfig } = contract;
 
@@ -122,6 +137,59 @@ async function loadCaseById(q, caseId) {
   return res.rows.length ? res.rows[0] : null;
 }
 
+// ── EL-2: library enrollment checks ─────────────────────────────────────────
+
+/** Read at call time, so a test (or a future rollback) sees the current flag. */
+function libraryApproved() {
+  return library.LIBRARY_CLINICALLY_APPROVED === true;
+}
+
+/**
+ * The office identity the library's merge fields need, and what is missing.
+ * Name and phone come from config + the saved email identity, exactly what the
+ * generator will merge (config/tcNurture officeMergeValues). The identity is
+ * cached process-wide; it is read fresh first, as the preview does. A failed
+ * read leaves the cached values, and an unset phone still refuses.
+ * @param {string} tenantSlug @param {string} office
+ * @returns {Promise<{ missing: string[] }>}
+ */
+async function officeIdentityGaps(tenantSlug, office) {
+  try {
+    await emailIdentity.refreshFromDb(tenantSlug);
+  } catch {
+    // the cached identity stands; an unset phone below still refuses
+  }
+  const merge = cfg.officeMergeValues(tenantSlug, office);
+  const missing = [];
+  if (!merge.officeName || merge.officeName === 'Unmapped') missing.push('office name');
+  if (!merge.phoneConfigured) missing.push('office phone');
+  return { missing };
+}
+
+/** "office name and office phone" @param {string[]} items */
+function andList(items) {
+  return items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+/**
+ * The office's saved library answers, or null when they no longer validate
+ * (EMAIL_LIBRARY_SAVED_ANSWERS_STALE). The same read the generator makes.
+ */
+async function savedAnswersOrNull(q, office) {
+  try {
+    return await library.savedAnswersFor(q, office);
+  } catch (err) {
+    if (err instanceof library.LibraryRenderError && err.code === 'SAVED_ANSWERS_STALE') return null;
+    throw err;
+  }
+}
+
+/** Is `procedureId` in this office's catalog (the library's procedures minus services_off)? */
+function inOfficeCatalog(answers, procedureId) {
+  const off = Array.isArray(answers.services_off) ? answers.services_off : [];
+  return library.SOURCE.procedure_blocks.some((/** @type {any} */ p) => p.id === procedureId) && !off.includes(procedureId);
+}
+
 /** Postgres unique violation (the one-active-per-case index). */
 function isUniqueViolation(err) {
   return Boolean(err && err.code === '23505');
@@ -151,6 +219,28 @@ router.post(
     const actor = actorEmail(req);
     const now = new Date();
     const tz = cfg.timezone();
+    const fromLibrary = body.procedure_id !== undefined;
+
+    if (fromLibrary) {
+      if (!library.isLibraryTrack(body.track_key)) {
+        return refuse(
+          res,
+          400,
+          'LIBRARY_TRACK_UNSUPPORTED',
+          `The patient email library has no sequence for ${nurtureStore.trackLabel(body.track_key)}.`,
+          { supportedTracks: [...contract.LIBRARY_SEQUENCE_TRACKS] }
+        );
+      }
+      if (!libraryApproved()) {
+        return refuse(
+          res,
+          409,
+          'LIBRARY_NOT_APPROVED',
+          'The patient email library is not doctor-approved, so nothing can be drafted from it yet.'
+        );
+      }
+    }
+    const tenantSlug = sessionTenantSlug(req);
 
     const result = await withTenantTx(req, async (client) => {
       const tcCase = await loadCaseById(client, body.case_id);
@@ -163,9 +253,24 @@ router.post(
       if (open.length) return { already: open[0].enrollment_id };
 
       const { config } = await loadConfig(client, office);
+      // The office's current dial is recorded either way (the event names it);
+      // a library enrollment runs the library's one cadence regardless.
       const intensity = cfg.intensityFor(config, body.track_key);
-      const steps = cfg.schedule(body.track_key, intensity);
-      if (!reachable(tcCase, channelsOf(body.track_key, intensity))) return { noAddress: true };
+      /** @type {ReadonlyArray<{ day: number }>} */
+      let steps;
+      if (fromLibrary) {
+        const answers = await savedAnswersOrNull(client, office);
+        if (!answers) return { staleAnswers: true };
+        if (!inOfficeCatalog(answers, body.procedure_id)) return { unknownProcedure: true };
+        const { missing } = await officeIdentityGaps(tenantSlug, office);
+        if (missing.length) return { identityMissing: missing };
+        // Library touches are email only: the case needs an email address.
+        if (!addressFromCase('email', tcCase)) return { noAddress: 'email' };
+        steps = library.sequenceFor(body.track_key, body.procedure_id);
+      } else {
+        steps = cfg.schedule(body.track_key, intensity);
+        if (!reachable(tcCase, channelsOf(body.track_key, intensity))) return { noAddress: 'any' };
+      }
 
       const enrollmentId = randomUUID();
       const firstDue = engine.firstDueAt(tz, now, steps);
@@ -180,6 +285,8 @@ router.post(
         next_touch_due_at: firstDue ? firstDue.toISOString() : null,
         created_by: actor,
         created_at: now.toISOString(),
+        library_procedure_id: fromLibrary ? body.procedure_id : null,
+        library_variant: fromLibrary ? body.variant : null,
       });
 
       const label = nurtureStore.trackLabel(body.track_key);
@@ -209,9 +316,16 @@ router.post(
         office,
         caseId: tcCase.case_id,
         type: 'nurture_enrolled',
-        description: `Enrolled in ${label} (${intensity}): ${steps.length} touches, the first due ${
-          firstDue ? firstDue.toISOString().slice(0, 10) : 'now'
-        }. Every touch is a draft for review — nothing sends on its own.`,
+        description: fromLibrary
+          ? `Enrolled in ${label} from the patient email library (${nurtureStore.libraryLabel(
+              body.procedure_id,
+              body.variant
+            )}; office dial ${intensity}, not applied): ${steps.length} emails, the first due ${
+              firstDue ? firstDue.toISOString().slice(0, 10) : 'now'
+            }. Every touch is a draft for review — nothing sends on its own.`
+          : `Enrolled in ${label} (${intensity}): ${steps.length} touches, the first due ${
+              firstDue ? firstDue.toISOString().slice(0, 10) : 'now'
+            }. Every touch is a draft for review — nothing sends on its own.`,
         actor,
         ts: now,
       });
@@ -241,6 +355,41 @@ router.post(
       return refuse(res, 409, 'ALREADY_ENROLLED', 'This case already has a nurture campaign running or paused.', {
         enrollmentId: result.already,
       });
+    }
+    if (result.staleAnswers) {
+      return refuse(
+        res,
+        409,
+        'EMAIL_LIBRARY_SAVED_ANSWERS_STALE',
+        "This office's saved email wording no longer matches the library. Review it on the Patient email library page and save again."
+      );
+    }
+    if (result.unknownProcedure) {
+      return refuse(
+        res,
+        400,
+        'LIBRARY_PROCEDURE_UNKNOWN',
+        "That procedure is not in this office's patient email library (it may be switched off for the office)."
+      );
+    }
+    if (result.identityMissing) {
+      return refuse(
+        res,
+        409,
+        'LIBRARY_OFFICE_IDENTITY_INCOMPLETE',
+        `Library emails sign with the office's name and phone, and this office has no ${andList(
+          result.identityMissing
+        )} set. Add it in Practice info & email identity first.`,
+        { missing: result.identityMissing }
+      );
+    }
+    if (result.noAddress === 'email') {
+      return refuse(
+        res,
+        409,
+        'NO_ADDRESS',
+        'This case has no email address, and patient email library campaigns are email only. Add one to the case first.'
+      );
     }
     if (result.noAddress) {
       return refuse(
@@ -347,7 +496,7 @@ router.post(
         ],
       };
     }
-    const steps = cfg.schedule(e.track_key, e.intensity_at_enroll);
+    const steps = nurtureStore.stepsOf(e);
     const index = Number(e.next_touch_index);
     // NEVER BACK-FILL: the next touch is due the preset's gap from TODAY, so a
     // long pause never releases a burst of missed touches. Past the end of
@@ -384,6 +533,7 @@ router.get(
     if (!query) return;
     const office = req.tcOffice;
     const enabled = await officeOn(req, office);
+    const identity = await officeIdentityGaps(sessionTenantSlug(req), office);
     const out = await tenantDb.withTenantDb(req, async (q) => {
       const r = await q.query(
         `SELECT case_id, office_id, patient_name, phone, email, status FROM tc_cases
@@ -396,6 +546,30 @@ router.get(
       const enrollments = await withCounts(q, office, rows);
       const { config } = await loadConfig(q, office);
       const hasOpen = enrollments.some((x) => x.status === 'active' || x.status === 'paused');
+      const answersOk = (await savedAnswersOrNull(q, office)) !== null;
+      const hasEmail = Boolean(addressFromCase('email', tcCase));
+      /**
+       * EL-2: why this track cannot start from the library on this case, in
+       * words the picker shows as-is; null = it can. The track-wide reasons
+       * (switched off, terminal, already running) come first, so the library
+       * section never offers what the track itself cannot do.
+       * @param {string} trackKey
+       */
+      const libraryBlocked = (trackKey) => {
+        if (!library.isLibraryTrack(trackKey)) return 'The patient email library has no sequence for this track.';
+        if (!enabled) return 'Nurture campaigns are switched off for this office.';
+        if (TERMINAL.has(tcCase.status)) return 'This case is no longer TC work.';
+        if (hasOpen) return 'This case already has a campaign running or paused.';
+        if (!libraryApproved()) return 'The patient email library is not doctor-approved yet.';
+        if (!answersOk) {
+          return "This office's saved email wording no longer matches the library. Review it on the Patient email library page.";
+        }
+        if (identity.missing.length) {
+          return `Set the office's ${andList(identity.missing)} in Practice info & email identity first.`;
+        }
+        if (!hasEmail) return 'This case has no email address. Library campaigns are email only.';
+        return null;
+      };
       const tracks = cfg.TRACK_KEYS.map((trackKey) => {
         const intensity = cfg.intensityFor(config, trackKey);
         const channels = channelsOf(trackKey, intensity);
@@ -414,6 +588,8 @@ router.get(
           channels,
           available: reason === null,
           reason,
+          libraryAvailable: libraryBlocked(trackKey) === null,
+          libraryBlockedReason: libraryBlocked(trackKey),
         };
       });
       return { enrollments, tracks };

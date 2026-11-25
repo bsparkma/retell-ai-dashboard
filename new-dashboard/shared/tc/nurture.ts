@@ -46,6 +46,7 @@ import {
   Uuid,
 } from "./contract";
 import { MessageChannel, TcMessage } from "./messaging";
+import { EMAIL_LIBRARY_VARIANTS } from "./emailLibrary";
 
 const IsoTimestamp = z.string().datetime({ offset: true });
 
@@ -471,13 +472,9 @@ export function presetViolations(
   const steps = tracks[key].presets[intensity];
   const where = `${key}/${intensity}`;
   const out: string[] = [];
-  const minDays = NURTURE_CAPS.minHoursBetweenTouches / 24;
-  if (steps.length === 0) out.push(`${where}: no touches`);
-  if (steps.length > NURTURE_CAPS.maxTouchesPerEnrollment) {
-    out.push(`${where}: ${steps.length} touches > ${NURTURE_CAPS.maxTouchesPerEnrollment}`);
-  }
+  out.push(...scheduleCountViolations(where, steps));
   steps.forEach((s, i) => {
-    if (!Number.isInteger(s.day) || s.day < 1) out.push(`${where}: step ${i} day ${s.day} is not a whole day ≥ 1`);
+    out.push(...stepDayViolations(where, s, i, 1));
     let touch: NurtureTouch | null = null;
     try {
       touch = touchOf(s.touch);
@@ -492,9 +489,7 @@ export function presetViolations(
     }
     if (i > 0) {
       const prev = steps[i - 1];
-      if (s.day - prev.day < minDays) {
-        out.push(`${where}: ${prev.touch}@${prev.day} → ${s.touch}@${s.day} is under ${NURTURE_CAPS.minHoursBetweenTouches}h`);
-      }
+      out.push(...stepGapViolations(where, prev, s));
       let prevTouch: NurtureTouch | null = null;
       try {
         prevTouch = touchOf(prev.touch);
@@ -505,11 +500,58 @@ export function presetViolations(
         out.push(`${where}: ${prev.touch} → ${s.touch} stacks SMS back to back`);
       }
     }
-    // Rolling 7 days: the window [day, day + 6].
-    const inWindow = steps.filter((t) => t.day >= s.day && t.day <= s.day + 6).length;
-    if (inWindow > NURTURE_CAPS.maxTouchesPer7Days) {
-      out.push(`${where}: ${inWindow} touches in the 7 days from day ${s.day}`);
-    }
+    out.push(...stepWindowViolations(where, steps, s));
+  });
+  return out;
+}
+
+// The three HARD-CAP checks, shared by presetViolations and the email library's
+// sequence check (EL-2, scheduleCapViolations below), so both are held to the
+// one implementation of "3 per rolling 7 days, 48h apart, at most 12".
+
+/** Empty, or over the per-enrollment ceiling. */
+function scheduleCountViolations(where: string, steps: readonly NurtureStep[]): string[] {
+  const out: string[] = [];
+  if (steps.length === 0) out.push(`${where}: no touches`);
+  if (steps.length > NURTURE_CAPS.maxTouchesPerEnrollment) {
+    out.push(`${where}: ${steps.length} touches > ${NURTURE_CAPS.maxTouchesPerEnrollment}`);
+  }
+  return out;
+}
+
+/** A step day must be a whole day ≥ `minDay` (presets: 1; library sequences: 0, "due on enrollment day"). */
+function stepDayViolations(where: string, s: NurtureStep, i: number, minDay: number): string[] {
+  return !Number.isInteger(s.day) || s.day < minDay ? [`${where}: step ${i} day ${s.day} is not a whole day ≥ ${minDay}`] : [];
+}
+
+/** ≥ 48h (2 whole days: the engine runs once a day) between consecutive touches. */
+function stepGapViolations(where: string, prev: NurtureStep, s: NurtureStep): string[] {
+  const minDays = NURTURE_CAPS.minHoursBetweenTouches / 24;
+  return s.day - prev.day < minDays
+    ? [`${where}: ${prev.touch}@${prev.day} → ${s.touch}@${s.day} is under ${NURTURE_CAPS.minHoursBetweenTouches}h`]
+    : [];
+}
+
+/** ≤ 3 touches in the rolling 7 days [day, day + 6]. */
+function stepWindowViolations(where: string, steps: readonly NurtureStep[], s: NurtureStep): string[] {
+  const inWindow = steps.filter((t) => t.day >= s.day && t.day <= s.day + 6).length;
+  return inWindow > NURTURE_CAPS.maxTouchesPer7Days ? [`${where}: ${inWindow} touches in the 7 days from day ${s.day}`] : [];
+}
+
+/**
+ * The hard caps alone, for a schedule that is not a frozen preset (EL-2: the
+ * email library's sequences, whose steps are library stages rather than touches
+ * of a track, and which may start on day 0). Same checks, same sentences, as
+ * presetViolations; no copy or channel checks, since a library step is always
+ * one composed email.
+ */
+export function scheduleCapViolations(where: string, steps: readonly NurtureStep[]): string[] {
+  const out: string[] = [];
+  out.push(...scheduleCountViolations(where, steps));
+  steps.forEach((s, i) => {
+    out.push(...stepDayViolations(where, s, i, 0));
+    if (i > 0) out.push(...stepGapViolations(where, steps[i - 1], s));
+    out.push(...stepWindowViolations(where, steps, s));
   });
   return out;
 }
@@ -554,6 +596,59 @@ export function intensityFor(config: LibraryNurtureConfig | null | undefined, ke
   return config?.tracks?.[key]?.intensity ?? NURTURE_DEFAULT_INTENSITY;
 }
 
+// ── Library-drafted enrollments (EL-2) ──────────────────────────────────────
+
+/**
+ * The tracks an enrollment may run from the patient email library instead of
+ * the hand-written touches above. Each key is ALSO the id of its library
+ * sequence in backend/services/tcEmailLibrary/source.json (warm_followup,
+ * large_case, reactivation, no_show_recovery), so the lookup is by sequence id,
+ * never by the sequence's own `track` field (two library sequences say
+ * `track: "no_show"`; only no_show_recovery is this track's).
+ *
+ * Library touches are EMAIL ONLY, run ONE cadence (the library's day offsets;
+ * the intensity dial does not apply), and are drafts like every nurture touch.
+ */
+export const LIBRARY_SEQUENCE_TRACKS = [
+  "warm_followup",
+  "large_case",
+  "reactivation",
+  "no_show_recovery",
+] as const satisfies readonly NurtureTrackKey[];
+export type LibrarySequenceTrack = (typeof LIBRARY_SEQUENCE_TRACKS)[number];
+
+/** Is this track one the library can draft? */
+export function isLibrarySequenceTrack(key: string): key is LibrarySequenceTrack {
+  return (LIBRARY_SEQUENCE_TRACKS as readonly string[]).includes(key);
+}
+
+/**
+ * The library tone on an enrollment (tc_nurture_enrollments.library_variant,
+ * pinned by the inline CHECK in 1795500000000_tc_nurture_library.js):
+ * A Warm and personal, B Short and direct, C Educational.
+ */
+export const NurtureLibraryVariant = z.enum(EMAIL_LIBRARY_VARIANTS);
+export type NurtureLibraryVariant = z.infer<typeof NurtureLibraryVariant>;
+
+/** The longest library procedure id an enrollment may carry. */
+export const NURTURE_LIBRARY_PROCEDURE_MAX = 60;
+
+/** tc_messages.template_id for a library touch: 'library.<procedure>.<stage>.<variant>'. */
+export function libraryTemplateId(procedureId: string, stage: string, variant: NurtureLibraryVariant): string {
+  return `library.${procedureId}.${stage}.${variant}`;
+}
+
+/** The parts of a library template id, or null for any other template id (a hand-written touch, a TC draft). */
+export function parseLibraryTemplateId(
+  templateId: string | null | undefined,
+): { procedureId: string; stage: string; variant: NurtureLibraryVariant } | null {
+  if (!templateId) return null;
+  const m = /^library\.([a-z0-9_]+)\.([a-z0-9_]+)\.([A-Z])$/.exec(templateId);
+  if (!m) return null;
+  const variant = NurtureLibraryVariant.safeParse(m[3]);
+  return variant.success ? { procedureId: m[1], stage: m[2], variant: variant.data } : null;
+}
+
 // ── Entities + wire shapes ──────────────────────────────────────────────────
 
 export const TcNurtureEnrollment = z.object({
@@ -573,6 +668,16 @@ export const TcNurtureEnrollment = z.object({
   createdBy: z.string().max(320).nullable(),
   createdAt: IsoTimestamp,
   updatedAt: IsoTimestamp,
+  /** EL-2: the library procedure this enrollment drafts from, or null for the hand-written touches. */
+  libraryProcedureId: z.string().max(NURTURE_LIBRARY_PROCEDURE_MAX).nullable(),
+  /** EL-2: the library tone, set exactly when libraryProcedureId is. */
+  libraryVariant: NurtureLibraryVariant.nullable(),
+  /**
+   * EL-2: how many touches this enrollment's schedule has — the preset's at
+   * its intensity, or the library sequence's (minus any stage its procedure
+   * skips). Server-computed, so the strip's "N of M drafted" is never a guess.
+   */
+  stepCount: z.number().int().min(0),
 });
 export type TcNurtureEnrollment = z.infer<typeof TcNurtureEnrollment>;
 
@@ -594,6 +699,15 @@ export const NurtureTrackAvailability = z.object({
   channels: z.array(MessageChannel),
   available: z.boolean(),
   reason: NurtureTrackUnavailableReason.nullable(),
+  /**
+   * EL-2: can this track be started from the patient email library on this
+   * case? Computed server-side (the library is doctor-approved, the office's
+   * name and phone are set, the case has an email). False for a track the
+   * library has no sequence for.
+   */
+  libraryAvailable: z.boolean(),
+  /** Why not, in words the picker shows as-is; null when libraryAvailable. */
+  libraryBlockedReason: z.string().max(300).nullable(),
 });
 export type NurtureTrackAvailability = z.infer<typeof NurtureTrackAvailability>;
 
@@ -605,8 +719,23 @@ export const NurtureCaseResponse = z.object({
 });
 export type NurtureCaseResponse = z.infer<typeof NurtureCaseResponse>;
 
-/** POST /api/tc/nurture/enrollments. NO office field: the office is the case's. */
-export const NurtureEnrollBody = z.object({ case_id: Uuid, track_key: NurtureTrackKey }).strict();
+/**
+ * POST /api/tc/nurture/enrollments. NO office field: the office is the case's.
+ * EL-2: `procedure_id` + `variant` start the track from the patient email
+ * library instead of the hand-written touches. Both or neither.
+ */
+export const NurtureEnrollBody = z
+  .object({
+    case_id: Uuid,
+    track_key: NurtureTrackKey,
+    procedure_id: z.string().min(1).max(NURTURE_LIBRARY_PROCEDURE_MAX).optional(),
+    variant: NurtureLibraryVariant.optional(),
+  })
+  .strict()
+  .refine((b) => (b.procedure_id === undefined) === (b.variant === undefined), {
+    message: "procedure_id and variant come together: send both, or neither",
+    path: ["procedure_id"],
+  });
 export type NurtureEnrollBody = z.infer<typeof NurtureEnrollBody>;
 
 export const NurtureStopBody = z.object({ reason: z.string().trim().min(1).max(200) }).strict();

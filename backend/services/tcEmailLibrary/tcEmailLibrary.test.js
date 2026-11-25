@@ -10,7 +10,7 @@
  *   N  composeOne (the preview's narrowed compose) yields exactly the email the
  *      full compose yields, for every email in two answer sets
  *   C  the shared contract's key / option / procedure lists ARE the source's
- *   A  LIBRARY_CLINICALLY_APPROVED is false
+ *   A  LIBRARY_CLINICALLY_APPROVED is true (EL-2: v1.3.0 is the doctor-reviewed wording)
  *   R  the library requires no messaging service, no channel adapter, no Open
  *      Dental client and no AI client
  *   V  answer validation: one refusal code per failure, normalization
@@ -141,10 +141,10 @@ test('C: every saved-answers default composes (the source defaults validate)', (
   }
 });
 
-test('A: the library is not clinically approved', () => {
-  assert.equal(library.LIBRARY_CLINICALLY_APPROVED, false);
+test('A: the library is clinically approved (v1.3.0, the doctor-reviewed wording)', () => {
+  assert.equal(library.LIBRARY_CLINICALLY_APPROVED, true);
   const cat = library.catalog('roland', {});
-  assert.equal(cat.clinicallyApproved, false);
+  assert.equal(cat.clinicallyApproved, true);
   assert.equal(contract.EmailLibraryCatalogResponse.safeParse(cat).success, true, 'the catalog matches its contract');
 });
 

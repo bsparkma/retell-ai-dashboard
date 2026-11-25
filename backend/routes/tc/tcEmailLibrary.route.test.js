@@ -15,7 +15,7 @@
  *      and without the STALE 409, the row untouched; a PUT sending it is
  *      refused; any other unknown saved key is still STALE
  *   C  the catalog drops office_name / office_phone, follows services_off, and
- *      says clinicallyApproved: false
+ *      says clinicallyApproved: true (EL-2)
  *   X  preview: saved or unsaved answers, never persisted; unset merge values
  *      are returned unresolved and listed; office name + phone come from the
  *      email identity; first_name is the sample; sender is the signed-in user
@@ -319,12 +319,12 @@ test('R: any other unknown saved key is still the STALE 409', async (t) => {
   }
 });
 
-test('C: the catalog drops the office fields, follows services_off, and is unapproved', async (t) => {
+test('C: the catalog drops the office fields, follows services_off, and is approved', async (t) => {
   const { baseUrl } = await boot(t);
   const before = await api(baseUrl, 'GET', q('/catalog'));
   assert.equal(before.status, 200);
   assert.equal(contract.EmailLibraryCatalogResponse.safeParse(before.body).success, true);
-  assert.equal(before.body.clinicallyApproved, false);
+  assert.equal(before.body.clinicallyApproved, true);
   assert.equal(before.body.libraryVersion, '1.3.0');
   assert.equal(before.body.procedures.length, 36);
   assert.equal(before.body.emailCount, 1872);
@@ -349,7 +349,7 @@ test('X: preview with unset values returns them unresolved and lists them', asyn
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(contract.EmailLibraryPreviewResponse.safeParse(r.body).success, true);
   assert.equal(r.body.answersSource, 'saved');
-  assert.equal(r.body.clinicallyApproved, false);
+  assert.equal(r.body.clinicallyApproved, true);
   assert.match(r.body.subject, /Jordan/, 'first_name is the sample');
   // No phone configured: it stays a token. No scheduling link saved: since
   // 1.2.0 the booking sentence is simply absent, never a {{schedule_link}} hole.

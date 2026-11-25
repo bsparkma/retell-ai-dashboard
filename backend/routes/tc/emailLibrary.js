@@ -67,7 +67,6 @@ const {
   EmailLibraryProfilePutRequest,
   EmailLibraryPreviewRequest,
   EMAIL_LIBRARY_PREVIEW_SAMPLES,
-  EMAIL_LIBRARY_RETIRED_SAVED_KEYS,
   validateEmailLibraryAnswers,
 } = contract;
 
@@ -98,16 +97,11 @@ async function loadSaved(req) {
 
 /**
  * A saved answers object without the keys a later library retired. Read-side
- * only: the row itself is left as it is.
- * @param {unknown} answers
- * @returns {unknown}
+ * only: the row itself is left as it is. EL-2 moved the one implementation into
+ * services/tcEmailLibrary so the nurture generator reads a profile exactly the
+ * way this route does.
  */
-function withoutRetiredKeys(answers) {
-  if (answers === null || typeof answers !== 'object' || Array.isArray(answers)) return answers;
-  const out = { .../** @type {Record<string, unknown>} */ (answers) };
-  for (const key of EMAIL_LIBRARY_RETIRED_SAVED_KEYS) delete out[key];
-  return out;
-}
+const { withoutRetiredKeys } = library;
 
 /**
  * @param {import('express').Request} req

@@ -17,6 +17,7 @@ const { randomUUID } = require('node:crypto');
 const caseStore = require('../../routes/tc/caseStore');
 const contract = require('../../tc/contract.gen.cjs');
 const cfg = require('../../config/tcNurture');
+const library = require('../tcEmailLibrary');
 
 const ENROLLMENT_COLS = [
   'enrollment_id',
@@ -32,6 +33,8 @@ const ENROLLMENT_COLS = [
   'created_by',
   'created_at',
   'updated_at',
+  'library_procedure_id',
+  'library_variant',
 ];
 
 /** The actor stamped on everything the engine itself does. Not a person. */
@@ -45,12 +48,30 @@ function iso(v) {
 }
 
 /**
+ * THE schedule of one enrollment row, as [{ touch, day }] — the one place that
+ * decides which kind it is, so the generator, the resume route and the entity
+ * mapping can never disagree.
+ *   hand-written  the frozen preset for its track at its intensity (item 47)
+ *   library       (EL-2) the library sequence for its track, minus the stages
+ *                 its procedure skips; `touch` is the library STAGE id. The
+ *                 intensity dial does not apply: one cadence.
+ * @param {{ track_key: string, intensity_at_enroll: string, library_procedure_id?: string|null }} r
+ * @returns {ReadonlyArray<{ touch: string, day: number }>}
+ */
+function stepsOf(r) {
+  if (r.library_procedure_id) {
+    return library.sequenceFor(r.track_key, r.library_procedure_id).map((s) => ({ touch: s.stage, day: s.day }));
+  }
+  return cfg.schedule(r.track_key, r.intensity_at_enroll);
+}
+
+/**
  * DB row → contract entity. `touchCount` is how many touches it has queued.
  * @param {Record<string, any>} r
  * @param {number} touchCount
  */
 function toEnrollment(r, touchCount) {
-  const steps = cfg.schedule(r.track_key, r.intensity_at_enroll);
+  const steps = stepsOf(r);
   const index = Number(r.next_touch_index);
   return contract.TcNurtureEnrollment.parse({
     enrollmentId: r.enrollment_id,
@@ -68,6 +89,9 @@ function toEnrollment(r, touchCount) {
     createdBy: r.created_by ?? null,
     createdAt: iso(r.created_at),
     updatedAt: iso(r.updated_at),
+    libraryProcedureId: r.library_procedure_id ?? null,
+    libraryVariant: r.library_variant ?? null,
+    stepCount: steps.length,
   });
 }
 
@@ -137,8 +161,9 @@ async function touchCounts(q, office, enrollmentIds) {
 async function insertEnrollment(q, row) {
   await q.query(
     `INSERT INTO tc_nurture_enrollments (enrollment_id, case_id, office_id, track_key, intensity_at_enroll,
-       status, stop_reason, next_touch_index, next_touch_due_at, last_touch_at, created_by, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+       status, stop_reason, next_touch_index, next_touch_due_at, last_touch_at, created_by, created_at, updated_at,
+     library_procedure_id, library_variant)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
     [
       row.enrollment_id,
       row.case_id,
@@ -153,6 +178,8 @@ async function insertEnrollment(q, row) {
       row.created_by,
       row.created_at,
       row.created_at,
+      row.library_procedure_id ?? null,
+      row.library_variant ?? null,
     ]
   );
 }
@@ -217,6 +244,17 @@ async function insertEvent(q, { office, caseId, type, description, actor, ts }) 
   });
 }
 
+/**
+ * "Crown, warm and personal" — the library procedure and tone of an
+ * enrollment, for event descriptions. Wording choices, never PHI.
+ * @param {string} procedureId @param {string} variant
+ */
+function libraryLabel(procedureId, variant) {
+  const p = library.SOURCE.procedure_blocks.find((/** @type {any} */ b) => b.id === procedureId);
+  const tone = library.SOURCE.variants[variant];
+  return `${p ? p.name : procedureId}, ${tone ? String(tone).toLowerCase() : variant}`;
+}
+
 /** "No-Show Recovery" — for event descriptions. Never PHI. */
 function trackLabel(trackKey) {
   const t = cfg.TRACKS[trackKey];
@@ -239,4 +277,6 @@ module.exports = {
   defer,
   insertEvent,
   trackLabel,
+  stepsOf,
+  libraryLabel,
 };
