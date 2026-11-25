@@ -57,7 +57,10 @@ export { NurtureTrackKey, NurtureIntensity };
 /**
  *   active     the generator drafts its touches as they come due
  *   paused     a human must look: the patient wrote back, or a TC paused it
- *   completed  every touch in the schedule was queued (no auto-chaining in v1)
+ *   completed  hand-written: every touch in the schedule was queued (no
+ *              auto-chaining in v1). Library (EL-2c): every one of its emails
+ *              was sent or skipped — a campaign written in full at Start stays
+ *              'active' while any email is still waiting.
  *   stopped    ended early: the case left TC work, the patient opted out, or a TC stopped it
  */
 export const NurtureEnrollmentStatus = z.enum(["active", "paused", "completed", "stopped"]);
@@ -649,6 +652,68 @@ export function parseLibraryTemplateId(
   return variant.success ? { procedureId: m[1], stage: m[2], variant: variant.data } : null;
 }
 
+// ── Approve up front (EL-2c) ────────────────────────────────────────────────
+
+/**
+ * WHEN A LIBRARY EMAIL MAY BE PLANNED (EL-2c, Beau 2026-11-25). A library
+ * campaign is written in full at Start: every step is a draft with a planned
+ * send time, `enrollment day + step day` at 10:00 office time. A time outside
+ * Mon–Fri 09:00–16:00 office time moves to the next opening of that window,
+ * and the hard caps (NURTURE_CAPS, checked by the engine's existing cap logic)
+ * are re-checked after every move, pushing later steps LATER — never earlier
+ * than the sequence says. A person approves each email word for word; an
+ * approved email WAITS for its time. EL-2c has no sender: nothing sends it.
+ *
+ * Minutes are minutes after local midnight; days are ISO weekdays (1 = Mon).
+ * Both ends of the window are allowed instants (09:00 and 16:00 inclusive).
+ */
+export const NURTURE_SEND_WINDOW = Object.freeze({
+  weekdays: Object.freeze([1, 2, 3, 4, 5] as const),
+  startMinute: 9 * 60,
+  endMinute: 16 * 60,
+  /** The time of day a step is planned at before the window and caps move it. */
+  plannedMinute: 10 * 60,
+});
+
+/**
+ * The reason stored on a PAUSED enrollment when a person records that the
+ * patient replied (POST /enrollments/:id/replied). Email replies never reach
+ * the app, so a person marks it. A pause cancels nothing; resume clears it.
+ */
+export const NURTURE_PAUSE_PATIENT_REPLIED = "patient_replied";
+
+/** POST /api/tc/nurture/messages/:id/reschedule — a date and a time in OFFICE time. */
+export const NurtureRescheduleBody = z
+  .object({
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+  })
+  .strict();
+export type NurtureRescheduleBody = z.infer<typeof NurtureRescheduleBody>;
+
+/** The longest body a library email may be edited to (tc_messages.body's contract max). */
+export const NURTURE_EMAIL_BODY_MAX = 8000;
+
+/**
+ * Why an edited library email's text cannot be saved, or null. The same rule
+ * as the office's free-text answers, adjusted for a whole email: newlines are
+ * allowed (they are its paragraphs), and so are brackets (the text is escaped
+ * into the email's blocks), but a "{{" merge token, any other C0/C1 control
+ * character, the Unicode line separators, and the invisible bidi / format
+ * controls are refused — they can hide or reorder what the patient reads.
+ */
+export type NurtureEmailTextProblem = "EMPTY" | "TOO_LONG" | "MERGE_TOKEN" | "FORBIDDEN_CHARACTER";
+const EMAIL_TEXT_FORBIDDEN = new RegExp(
+  `[\\x00-\\x09\\x0b-\\x1f\\x7f-\\x9f${String.fromCharCode(0x2028, 0x2029)}\\u200b-\\u200f\\u202a-\\u202e\\u2066-\\u2069\\ufeff]`,
+);
+export function nurtureEmailTextProblem(text: string, max: number = NURTURE_EMAIL_BODY_MAX): NurtureEmailTextProblem | null {
+  if (!text.trim()) return "EMPTY";
+  if (text.length > max) return "TOO_LONG";
+  if (text.includes("{{")) return "MERGE_TOKEN";
+  if (EMAIL_TEXT_FORBIDDEN.test(text)) return "FORBIDDEN_CHARACTER";
+  return null;
+}
+
 // ── Entities + wire shapes ──────────────────────────────────────────────────
 
 export const TcNurtureEnrollment = z.object({
@@ -678,6 +743,16 @@ export const TcNurtureEnrollment = z.object({
    * skips). Server-computed, so the strip's "N of M drafted" is never a guess.
    */
   stepCount: z.number().int().min(0),
+  /**
+   * EL-2c: of this enrollment's emails, how many are approved and waiting
+   * ('scheduled'), how many went out (sent, queued or delivered), and how many
+   * were skipped. Server-computed from its tc_messages rows.
+   */
+  approvedCount: z.number().int().min(0).default(0),
+  sentCount: z.number().int().min(0).default(0),
+  skippedCount: z.number().int().min(0).default(0),
+  /** EL-2c: the earliest planned time among its waiting emails (draft or scheduled), or null. */
+  nextSendAt: IsoTimestamp.nullable().default(null),
 });
 export type TcNurtureEnrollment = z.infer<typeof TcNurtureEnrollment>;
 
@@ -765,11 +840,64 @@ export const NurtureChannelState = z.object({
   reason: z.enum(["switched_off", "not_configured", "office_not_configured"]).nullable(),
 });
 
+/**
+ * EL-2c: one email of a library campaign, in sequence order, as the Review
+ * campaign screen and the outbox show it. `stage` is the library stage id
+ * (tc_messages.touch_key); the planned time is `message.scheduledFor`.
+ */
+export const NurtureCampaignEmail = z.object({
+  message: TcMessage,
+  stage: z.string().max(20),
+  /** 0-based position in the enrollment's sequence. */
+  stepIndex: z.number().int().min(0),
+  consentBlockedHint: NurtureConsentHint.nullable(),
+});
+export type NurtureCampaignEmail = z.infer<typeof NurtureCampaignEmail>;
+
+/**
+ * Whether anything sends approved emails for this office. ALWAYS false in
+ * EL-2c (there is no sender), so the screens can say so in words.
+ */
+export const NURTURE_AUTOMATIC_SENDING_NOTE =
+  "Automatic sending is not switched on for this office. Approved emails will wait.";
+
+/** GET /api/tc/nurture/enrollments/:id/campaign */
+export const NurtureCampaignResponse = z.object({
+  enrollment: TcNurtureEnrollment,
+  patientName: z.string().max(200).nullable(), // PHI
+  emails: z.array(NurtureCampaignEmail),
+  automaticSending: z.boolean(),
+});
+export type NurtureCampaignResponse = z.infer<typeof NurtureCampaignResponse>;
+
+/** EL-2c: a library campaign in the outbox — one per case, its waiting emails by planned time. */
+export const NurtureOutboxCampaign = z.object({
+  enrollment: TcNurtureEnrollment,
+  patientName: z.string().max(200).nullable(), // PHI
+  /** How many of its emails still need a person to approve them. */
+  needsApproval: z.number().int().min(0),
+  /** Its waiting emails (draft or scheduled), earliest planned time first. */
+  emails: z.array(NurtureCampaignEmail),
+});
+export type NurtureOutboxCampaign = z.infer<typeof NurtureOutboxCampaign>;
+
+/** POST /enrollments/:id/approve-all */
+export const NurtureApproveAllResponse = z.object({
+  approved: z.number().int().min(0),
+  enrollment: TcNurtureEnrollment,
+});
+export type NurtureApproveAllResponse = z.infer<typeof NurtureApproveAllResponse>;
+
 /** GET /api/tc/nurture/outbox */
 export const NurtureOutboxResponse = z.object({
   enabled: z.boolean(),
   channels: z.array(NurtureChannelState),
+  /** Hand-written campaigns' drafts, grouped by track (item 47). */
   groups: z.array(NurtureOutboxGroup),
+  /** EL-2c: library campaigns, grouped per case, sorted by their next planned time. */
+  campaigns: z.array(NurtureOutboxCampaign).default([]),
+  /** EL-2c: always false — nothing sends approved emails yet. */
+  automaticSending: z.boolean().default(false),
 });
 export type NurtureOutboxResponse = z.infer<typeof NurtureOutboxResponse>;
 

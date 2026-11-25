@@ -3,13 +3,14 @@
 /**
  * EL-2: the nightly generator drafting from the patient email library.
  *
- *   - a library enrollment writes ONE email draft whose subject, preheader and
- *     body are exactly what compose() produces for the office's SAVED answers,
- *     merged; template_id library.<procedure>.<stage>.<variant>, touch_key the
- *     stage; nothing is sent (sendMessage THROWS if reached)
- *   - a second pass writes no second draft (the claim)
- *   - an unresolved merge field (the office phone unset after enrolling) writes
- *     no draft and does not advance; it is counted in `errors`
+ *   - (EL-2c) a #359-era library enrollment with nothing written yet gets EVERY
+ *     step written in one pass, each email exactly what compose() produces for
+ *     the office's SAVED answers, merged, with a planned time; template_id
+ *     library.<procedure>.<stage>.<variant>, touch_key the stage; nothing is
+ *     sent (sendMessage THROWS if reached)
+ *   - a second pass writes nothing (the claim: exactly once)
+ *   - an unresolved merge field (the office phone unset) writes no draft at
+ *     all and does not advance; it is counted in `errors`
  *   - the boot cap check passes for the four library sequences and throws for a
  *     fixture that breaks the 48h gap
  *   - neither tcNurture nor tcEmailLibrary reaches Open Dental
@@ -145,7 +146,7 @@ function expectedEmail(answers, id, merge) {
 
 const ANSWERS = { same_day_crowns: true, same_day_length: 'about two hours', insurance_mode: 'in_network' };
 
-test('a library enrollment writes ONE email draft, exactly compose() for the saved answers — and nothing is sent', async (t) => {
+test('EL-2c catch-up: a #359-era library enrollment gets EVERY step written in one pass, exactly compose() — and nothing is sent', async (t) => {
   withEnv(t, PHONE_ENV.roland, OFFICE_PHONE);
   const hits = armSendTripwires(t);
   const db = new FakeTenantDb();
@@ -161,7 +162,12 @@ test('a library enrollment writes ONE email draft, exactly compose() for the sav
   assert.deepEqual(hits, { adapter: 0, sendMessage: 0 });
 
   const msgs = db.table('tc_messages');
-  assert.equal(msgs.length, 1);
+  assert.equal(msgs.length, 10, 'all ten warm_followup steps, at once');
+  assert.deepEqual(
+    msgs.map((x) => x.touch_key),
+    library.sequenceFor('warm_followup', 'crown').map((s) => s.stage)
+  );
+  assert.ok(msgs.every((x) => x.status === 'draft' && x.scheduled_for), 'every one a draft with a planned time');
   const m = msgs[0];
   const officeName = require('../../config/odOffices').describeOffice('roland').officeName;
   const want = expectedEmail(saved, 'crown.tp_recap.A', {
@@ -192,50 +198,58 @@ test('a library enrollment writes ONE email draft, exactly compose() for the sav
   assert.ok(blocks.every((b) => contract.EmailBlock.safeParse(b).success));
   assert.match(blocks[blocks.length - 1].html, /Test Coordinator<br>/);
 
-  // The enrollment advanced on the library's cadence: why_it_matters is day 3, tp_recap day 1.
-  assert.equal(e.next_touch_index, 1);
+  // EL-2c: the index is at the end, nothing is due again, and the campaign is
+  // still ACTIVE (it completes when its last email is sent or skipped).
+  assert.equal(e.next_touch_index, 10);
   assert.equal(e.last_touch_at, now.toISOString());
-  assert.equal(require('./engine').localDaysBetween(TZ, now, new Date(e.next_touch_due_at)), 2);
+  assert.equal(e.next_touch_due_at, null);
+  assert.equal(e.status, 'active');
+  // Planned from today, on the library's gaps, inside the window, within the caps.
+  const engine = require('./engine');
+  const planned = msgs.map((x) => new Date(x.scheduled_for));
+  assert.ok(planned.every((p) => engine.isInSendWindow(TZ, p)));
+  assert.equal(engine.capViolation(TZ, planned), null);
+  for (let i = 1; i < planned.length; i++) assert.ok(planned[i] > planned[i - 1], 'in sequence order');
   const ev = db.table('tc_case_events');
-  assert.deepEqual(ev.map((x) => x.type), ['nurture_touch_queued']);
-  assert.match(ev[0].description, /email draft queued for review \(tp_recap, 1 of 10\)/);
+  assert.deepEqual(ev.map((x) => x.type), ['nurture_touch_queued'], 'ONE event, not ten');
+  assert.match(ev[0].description, /10 emails written for review at once \(steps 1–10 of 10\)/);
   // No audit rows from a 05:00 system pass.
   assert.equal(db.table('audit_log').length, 0);
 });
 
-test('a second pass over the same enrollment writes no second draft (the claim)', async (t) => {
+test('EL-2c catch-up happens exactly once: a second pass writes nothing (the claim)', async (t) => {
   withEnv(t, PHONE_ENV.roland, OFFICE_PHONE);
+  armSendTripwires(t);
   const db = new FakeTenantDb();
   seedProfile(db, 'roland', ANSWERS);
-  seedLibraryEnrollment(db, seedCase(db));
+  const e = seedLibraryEnrollment(db, seedCase(db));
   const now = fiveAm('2026-10-14');
   await generator.runForOffice({ pool: db, tenantSlug: 'carein', office: 'roland', now, tz: TZ });
   const again = await generator.runForOffice({ pool: db, tenantSlug: 'carein', office: 'roland', now, tz: TZ });
   assert.equal(again.due, 0);
-  assert.equal(db.table('tc_messages').length, 1);
+  assert.equal(again.completed, 0, 'ten emails waiting: not completed');
+  assert.equal(db.table('tc_messages').length, 10);
 
   // And a stale read of the same row (the race the claim exists for) loses it.
-  const due = await store.listDue(db, 'roland', fiveAm('2026-10-20').toISOString());
-  const stale = { ...due[0], next_touch_index: 0 };
+  const stale = { ...e, next_touch_index: 0 };
   const outcome = await generator.processEnrollment(db, 'roland', stale, {
     tz: TZ,
     now: fiveAm('2026-10-20'),
     merge: require('../../config/tcNurture').officeMergeValues('carein', 'roland'),
   });
   assert.equal(outcome, 'lost_claim');
-  assert.equal(db.table('tc_messages').length, 1);
+  assert.equal(db.table('tc_messages').length, 10);
 });
 
-test('UNRESOLVED_MERGE: the office phone unset after enrolling ⇒ no draft, no advance, counts.errors = 1', async (t) => {
+test('UNRESOLVED_MERGE: the office phone unset before the catch-up ⇒ not one draft, no advance, counts.errors = 1', async (t) => {
   withEnv(t, PHONE_ENV.roland, OFFICE_PHONE);
   const db = new FakeTenantDb();
   seedProfile(db, 'roland', ANSWERS);
   const e = seedLibraryEnrollment(db, seedCase(db));
-  await generator.runForOffice({ pool: db, tenantSlug: 'carein', office: 'roland', now: fiveAm('2026-10-14'), tz: TZ });
-  assert.equal(db.table('tc_messages').length, 1);
   const before = { index: e.next_touch_index, due: e.next_touch_due_at, last: e.last_touch_at, status: e.status };
 
-  // Mid-stream: the office's phone is cleared, and the next touch comes due.
+  // The office's phone is cleared before the pass: no step can render, so
+  // none is written (all are rendered before any row is).
   delete process.env[PHONE_ENV.roland];
   const errors = [];
   const origError = console.error;
@@ -249,9 +263,9 @@ test('UNRESOLVED_MERGE: the office phone unset after enrolling ⇒ no draft, no 
   assert.equal(out.due, 1);
   assert.equal(out.errors, 1);
   assert.equal(out.queued, 0);
-  assert.equal(db.table('tc_messages').length, 1, 'no second draft');
+  assert.equal(db.table('tc_messages').length, 0, 'not one draft');
   assert.deepEqual({ index: e.next_touch_index, due: e.next_touch_due_at, last: e.last_touch_at, status: e.status }, before);
-  assert.deepEqual(db.table('tc_case_events').map((x) => x.type), ['nurture_touch_queued'], 'no new event type, no new event');
+  assert.deepEqual(db.table('tc_case_events').map((x) => x.type), [], 'no event');
   assert.equal(errors.length, 1);
   assert.match(errors[0], /UNRESOLVED_MERGE: \{\{office_phone\}\}/);
   assert.ok(!errors[0].includes('Stedi'), 'the log line carries no patient name');
@@ -288,10 +302,13 @@ test('a procedure that skips a stage leaves that step out, so every remaining st
   const db = new FakeTenantDb();
   const e = seedLibraryEnrollment(db, seedCase(db), { library_procedure_id: 'recare', next_touch_index: 7 });
   await generator.runForOffice({ pool: db, tenantSlug: 'carein', office: 'roland', now: fiveAm('2026-10-14'), tz: TZ });
-  const m = db.table('tc_messages')[0];
+  const msgs = db.table('tc_messages');
+  const m = msgs[0];
   assert.equal(m.touch_key, 'objection_time', 'index 7 of the recare sequence is objection_time');
   assert.equal(m.template_id, 'library.recare.objection_time.A');
-  assert.equal(store.toEnrollment(e, 1).nextTouchKey, 'last_touch');
+  // EL-2c: the catch-up writes the two remaining steps (7 and 8 of recare's 9).
+  assert.deepEqual(msgs.map((x) => x.touch_key), ['objection_time', 'last_touch']);
+  assert.equal(store.toEnrollment(e, 2, msgs).nextTouchKey, 'objection_time', 'the next WAITING email');
 });
 
 test('the sender line: a name-shaped assigned TC signs; an SSO email or blank signs as the office team', async (t) => {

@@ -41,6 +41,20 @@
  * (the office phone was unset after enrolling) THROWS inside the transaction:
  * no draft, no advance, counted in `errors`, and the next pass tries again.
  *
+ * EL-2c — WRITTEN IN FULL, APPROVED UP FRONT. A library campaign is now
+ * written ENTIRELY when it starts (routes/tc/nurture.js POST /enrollments,
+ * using prepareLibraryDrafts + insertLibraryDrafts below), every email a
+ * draft with a planned send time (engine.planCampaign). So the nightly pass
+ * does nothing for a library enrollment, except:
+ *   - one started under #359 that still has unwritten steps gets ALL of them
+ *     at once, planned from today (processLibraryEnrollment), exactly once;
+ *   - an active one whose emails are all sent or skipped is completed (the
+ *     sweep at the end of runForOffice). It is never completed merely for
+ *     being fully written: the campaign is running until its last email is
+ *     settled.
+ * A planned time is a date on a DRAFT. Nothing here — and nothing anywhere in
+ * EL-2c — sends a draft or an approved ('scheduled') email.
+ *
  * NO AUDIT ROWS, like the opportunities sync: nobody is looking at anything at
  * 05:00, and writing a draft into our own database discloses nothing. The
  * disclosure is a person opening the outbox (audited) or clicking Send
@@ -159,12 +173,16 @@ async function processEnrollment(pool, office, e, { tz, now, merge }) {
         stopReason: cfg.STOP_CASE_TERMINAL,
         nextTouchDueAt: null,
       });
+      // EL-2c: a stopped campaign leaves nothing that could still be sent.
+      const cancelled = row
+        ? await store.cancelWaiting(q, office, e.enrollment_id, { reason: 'case_terminal', actor: store.SYSTEM_ACTOR })
+        : [];
       if (row && tcCase) {
         await store.insertEvent(q, {
           office,
           caseId: e.case_id,
           type: 'nurture_stopped',
-          description: `${store.trackLabel(e.track_key)} stopped: case is ${tcCase.status}`,
+          description: `${store.trackLabel(e.track_key)} stopped: case is ${tcCase.status}${store.cancelledSuffix(cancelled.length)}`,
           actor: store.SYSTEM_ACTOR,
           ts: now,
         });
@@ -172,9 +190,11 @@ async function processEnrollment(pool, office, e, { tz, now, merge }) {
       return 'stopped';
     }
 
-    // Hand-written preset or library sequence: store.stepsOf decides (EL-2).
+    // EL-2c: a library campaign is written IN FULL, never one step a night.
+    if (e.library_procedure_id) return processLibraryEnrollment(q, office, e, tcCase, { tz, now, merge });
+
+    // Hand-written preset (item 47), unchanged: one touch per due date.
     const steps = store.stepsOf(e);
-    const isLibrary = Boolean(e.library_procedure_id);
     const index = Number(e.next_touch_index);
     const prior = await store.touchesOf(q, office, e.enrollment_id);
 
@@ -205,47 +225,20 @@ async function processEnrollment(pool, office, e, { tz, now, merge }) {
     }
 
     const step = steps[index];
+    const touch = cfg.touch(e.track_key, step.touch);
     /** @type {'sms'|'email'} */
-    let channel;
+    const channel = touch.channel;
+    const smsAlreadyLeft = prior.some((m) => m.channel === 'sms' && SMS_LEFT.has(m.status));
+    const r = engine.renderTouch({
+      trackKey: e.track_key,
+      touchKey: step.touch,
+      patientName: tcCase.patient_name,
+      merge,
+      withStopSuffix: touch.channel === 'sms' && !smsAlreadyLeft,
+    });
     /** @type {{ channel: 'sms'|'email', body: string, subject: string|null, emailBlocks: object[]|null, preheader: string }} */
-    let rendered;
-    let templateId;
-    if (isLibrary) {
-      // EL-2: one composed library email, from the office's SAVED answers.
-      // A throw here (UNRESOLVED_MERGE, stale answers) rolls the whole
-      // enrollment back before anything is claimed or written.
-      channel = 'email';
-      const answers = await library.savedAnswersFor(q, office);
-      const email = library.renderLibraryEmail({
-        office,
-        answers,
-        procedureId: e.library_procedure_id,
-        stage: step.touch,
-        variant: e.library_variant,
-        merge: libraryMerge(merge, tcCase),
-      });
-      rendered = {
-        channel,
-        body: email.bodyText.slice(0, 8000),
-        subject: email.subject.slice(0, 300),
-        emailBlocks: email.emailBlocks,
-        preheader: email.preheader,
-      };
-      templateId = contract.libraryTemplateId(e.library_procedure_id, step.touch, e.library_variant);
-    } else {
-      const touch = cfg.touch(e.track_key, step.touch);
-      channel = touch.channel;
-      const smsAlreadyLeft = prior.some((m) => m.channel === 'sms' && SMS_LEFT.has(m.status));
-      const r = engine.renderTouch({
-        trackKey: e.track_key,
-        touchKey: step.touch,
-        patientName: tcCase.patient_name,
-        merge,
-        withStopSuffix: touch.channel === 'sms' && !smsAlreadyLeft,
-      });
-      rendered = { ...r, preheader: '' };
-      templateId = cfg.templateId(e.track_key, step.touch);
-    }
+    const rendered = { ...r, preheader: '' };
+    const templateId = cfg.templateId(e.track_key, step.touch);
     const address = addressFromCase(channel, tcCase);
     const hint = await consentHint(q, office, channel, address, tcCase);
 
@@ -313,6 +306,164 @@ async function processEnrollment(pool, office, e, { tz, now, merge }) {
   });
 }
 
+// ── EL-2c: library campaigns, written in full ──────────────────────────────
+
+/**
+ * Render steps [fromIndex, n) of a library enrollment — ALL of them before a
+ * single row is written, so one step that cannot render (UNRESOLVED_MERGE,
+ * stale saved answers, a procedure the office switched off) throws and
+ * nothing at all is written. Content only: nothing here sends.
+ * @param {{ query: Function }} q
+ * @param {string} office
+ * @param {Record<string, any>} e the enrollment (inserted or about to be)
+ * @param {Record<string, any>} tcCase its case row (patient_name, email, nurture_unsubscribed, assigned_tc)
+ * @param {ReturnType<typeof cfg.officeMergeValues>} merge
+ * @param {number} fromIndex
+ */
+async function prepareLibraryDrafts(q, office, e, tcCase, merge, fromIndex) {
+  const steps = store.stepsOf(e);
+  const answers = await library.savedAnswersFor(q, office);
+  const values = libraryMerge(merge, tcCase);
+  const drafts = steps.slice(fromIndex).map((step, k) => {
+    const email = library.renderLibraryEmail({
+      office,
+      answers,
+      procedureId: e.library_procedure_id,
+      stage: step.touch,
+      variant: e.library_variant,
+      merge: values,
+    });
+    return {
+      index: fromIndex + k,
+      stage: step.touch,
+      day: step.day,
+      body: email.bodyText.slice(0, 8000),
+      subject: email.subject.slice(0, 300),
+      emailBlocks: email.emailBlocks,
+      preheader: email.preheader,
+      templateId: contract.libraryTemplateId(e.library_procedure_id, step.touch, e.library_variant),
+    };
+  });
+  const address = addressFromCase('email', tcCase);
+  const hint = await consentHint(q, office, 'email', address, tcCase);
+  return { drafts, address, hint, stepCount: steps.length };
+}
+
+/**
+ * INSERT prepared library drafts, each with its planned send time. Status
+ * 'draft' — a person approves each one word for word before it can be sent.
+ * @param {{ query: Function }} q
+ * @param {{ office: string, e: Record<string, any>, prepared: Awaited<ReturnType<typeof prepareLibraryDrafts>>, times: Date[], now: Date }} input
+ */
+async function insertLibraryDrafts(q, { office, e, prepared, times, now }) {
+  for (let k = 0; k < prepared.drafts.length; k++) {
+    const d = prepared.drafts[k];
+    await q.query(
+      `INSERT INTO tc_messages (message_id, office_id, case_id, direction, channel, to_address, body, subject,
+         template_id, status, created_by, email_blocks, email_preheader, enrollment_id, touch_key, consent_blocked_hint,
+         created_at, scheduled_for)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+      [
+        randomUUID(),
+        office,
+        e.case_id,
+        'outbound',
+        'email',
+        prepared.address,
+        d.body,
+        d.subject,
+        d.templateId,
+        'draft',
+        store.SYSTEM_ACTOR,
+        JSON.stringify(d.emailBlocks),
+        d.preheader,
+        e.enrollment_id,
+        d.stage,
+        prepared.hint,
+        now.toISOString(),
+        times[k].toISOString(),
+      ]
+    );
+  }
+}
+
+/** "Dec 1" in the office's zone, for event text. @param {string} tz @param {Date} d */
+function shortLocalDate(tz, d) {
+  return d.toLocaleDateString('en-US', { timeZone: tz, month: 'short', day: 'numeric' });
+}
+
+/**
+ * The nightly pass over ONE library enrollment (EL-2c).
+ *   steps left to write (a campaign started under #359, which wrote one a
+ *   night)  → ALL of them now, in one transaction, with planned times from
+ *              today; the earlier drafts that have no planned time get one in
+ *              the same re-plan, so order, gaps and caps hold across all of
+ *              them. Exactly once: the claim moves the index to the end.
+ *   every step written → nothing to write; it stops being listed as due, and
+ *              it completes only when every email was sent or skipped.
+ * @returns {Promise<'queued'|'completed'|'idle'|'lost_claim'>}
+ */
+async function processLibraryEnrollment(q, office, e, tcCase, { tz, now, merge }) {
+  const steps = store.stepsOf(e);
+  const index = Number(e.next_touch_index);
+  if (index >= steps.length) {
+    await store.defer(q, office, e.enrollment_id, null);
+    return (await store.completeIfFinished(q, office, e.enrollment_id, { now })) ? 'completed' : 'idle';
+  }
+
+  // Render everything first: a throw here writes nothing and claims nothing.
+  const prepared = await prepareLibraryDrafts(q, office, e, tcCase, merge, index);
+  const rows = await store.messagesOfEnrollments(q, office, [e.enrollment_id]);
+  const earlier = rows
+    .filter((m) => store.WAITING_STATUSES.includes(m.status))
+    .map((m) => ({ m, i: store.stepIndexOf(steps, m.touch_key) }))
+    .filter((x) => x.i >= 0 && x.i < index)
+    .sort((a, b) => a.i - b.i);
+  // What already went out (or failed) counts against the caps; skipped never left.
+  const fixed = rows
+    .filter((m) => !store.WAITING_STATUSES.includes(m.status) && m.status !== 'skipped')
+    .map((m) => store.dateOrNull(m.sent_at) || store.dateOrNull(m.created_at))
+    .filter(Boolean);
+  const pending = [
+    ...earlier.map((x) => ({ day: steps[x.i].day, time: store.dateOrNull(x.m.scheduled_for) })),
+    ...prepared.drafts.map((d) => ({ day: d.day, time: null })),
+  ];
+  const times = engine.replanForward({ tz, now, pending, fixed });
+  if (!times) throw new Error('[tcNurture] library catch-up found nothing to plan');
+
+  const claimed = await store.advance(q, office, e.enrollment_id, {
+    expectIndex: index,
+    nextIndex: steps.length,
+    lastTouchAt: now.toISOString(),
+    nextTouchDueAt: null,
+    status: 'active',
+  });
+  if (!claimed) return 'lost_claim';
+
+  for (let k = 0; k < earlier.length; k++) {
+    await q.query(
+      `UPDATE tc_messages SET scheduled_for = $3
+        WHERE office_id = $1 AND message_id = $2 AND status = ANY($4)`,
+      [office, earlier[k].m.message_id, times[k].toISOString(), [...store.WAITING_STATUSES]]
+    );
+  }
+  await insertLibraryDrafts(q, { office, e, prepared, times: times.slice(earlier.length), now });
+  const n = prepared.drafts.length;
+  await store.insertEvent(q, {
+    office,
+    caseId: e.case_id,
+    type: 'nurture_touch_queued',
+    description:
+      `${store.trackLabel(e.track_key)}: ${n} ${n === 1 ? 'email' : 'emails'} written for review at once ` +
+      `(steps ${index + 1}–${steps.length} of ${steps.length}), the first planned ${shortLocalDate(tz, times[earlier.length])}. ` +
+      'Nothing sends until a person approves each one.' +
+      (prepared.hint ? ` — flagged: ${prepared.hint.replace(/_/g, ' ')}` : ''),
+    actor: store.SYSTEM_ACTOR,
+    ts: now,
+  });
+  return 'queued';
+}
+
 /**
  * One office's pass. Never throws per enrollment: one bad row is counted as
  * an error and the rest of the office still runs.
@@ -326,10 +477,13 @@ async function runForOffice({ pool, tenantSlug, office, now = new Date(), tz = c
   const merge = cfg.officeMergeValues(tenantSlug, office);
   const due = await store.listDue(pool, office, now.toISOString());
   counts.due = due.length;
+  /** @type {Set<string>} */
+  const seen = new Set();
   for (const e of due) {
+    seen.add(e.enrollment_id);
     try {
       const outcome = await processEnrollment(pool, office, e, { tz, now, merge });
-      counts[outcome] += 1;
+      if (Object.prototype.hasOwnProperty.call(counts, outcome)) counts[outcome] += 1;
     } catch (err) {
       counts.errors += 1;
       // The enrollment id only — never a name, a phone or a body.
@@ -338,7 +492,33 @@ async function runForOffice({ pool, tenantSlug, office, now = new Date(), tz = c
       );
     }
   }
+  // EL-2c: a library campaign written in full is never "due" again; it
+  // completes once every email was sent or skipped (a send in between, a
+  // discard, a failure). Writes nothing else and sends nothing.
+  for (const e of await store.listActiveLibrary(pool, office)) {
+    if (seen.has(e.enrollment_id)) continue;
+    try {
+      if (await withTx(pool, (q) => store.completeIfFinished(q, office, e.enrollment_id, { now }))) counts.completed += 1;
+    } catch (err) {
+      counts.errors += 1;
+      console.error(
+        `[tcNurture] office=${office} enrollment=${e.enrollment_id} completion check failed: ${(err && err.message) || err}`
+      );
+    }
+  }
   return { office, ...counts, phoneConfigured: merge.phoneConfigured, durationMs: Date.now() - started };
 }
 
-module.exports = { runForOffice, processEnrollment, consentHint, senderNameFor, libraryMerge, SMS_LEFT };
+module.exports = {
+  runForOffice,
+  processEnrollment,
+  consentHint,
+  senderNameFor,
+  libraryMerge,
+  SMS_LEFT,
+  // EL-2c
+  prepareLibraryDrafts,
+  insertLibraryDrafts,
+  processLibraryEnrollment,
+  shortLocalDate,
+};

@@ -113,7 +113,7 @@ const libraryBody = (caseId, over = {}) => ({
   ...over,
 });
 
-test('library enroll: 201, procedure + tone stored, the library cadence (no dial), an event naming both, nothing drafted', async (t) => {
+test('library enroll: 201, procedure + tone stored, the library cadence (no dial), an event naming both, every email written as a draft', async (t) => {
   switchNurture(t, { roland: true });
   withEnv(t, PHONE_ENV, OFFICE_PHONE);
   const app = await boot(t);
@@ -141,7 +141,9 @@ test('library enroll: 201, procedure + tone stored, the library cadence (no dial
   const ev = app.db.table('tc_case_events').find((x) => x.type === 'nurture_enrolled');
   assert.match(ev.description, /from the patient email library \(Dental Crown, warm and personal; office dial assertive, not applied\): 10 emails/);
   assert.equal(c.status, 'nurture');
-  assert.equal(app.db.table('tc_messages').length, 0, 'enrolling drafts nothing');
+  // EL-2c: the whole campaign is written at Start, every email a draft.
+  assert.equal(app.db.table('tc_messages').length, 10, 'enrolling writes all ten emails');
+  assert.ok(app.db.table('tc_messages').every((x) => x.status === 'draft'));
 });
 
 test('library enroll: procedure and variant come together — either alone is 400', async (t) => {

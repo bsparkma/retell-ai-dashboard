@@ -198,6 +198,227 @@ function renderTouch({ trackKey, touchKey, patientName, merge, withStopSuffix })
   return { channel: 'email', body: text.slice(0, 8000), subject, emailBlocks: blocks, ctaOmitted };
 }
 
+// ── EL-2c: planned send times for a library campaign ───────────────────────
+//
+// A library campaign is written IN FULL at Start (and #359-era campaigns are
+// caught up by the nightly pass), so every email gets a planned send time:
+//
+//   1. enrollment day + the step's day, at 10:00 office time
+//   2. outside Mon–Fri 09:00–16:00 office time → the next opening of the window
+//   3. the hard caps, re-checked with capCheck above (the existing cap logic,
+//      counted in local days) against every email already placed; a violation
+//      moves the email to the day capCheck names (at 10:00, then step 2 again),
+//      and every later email is placed after it — so later steps only ever
+//      move LATER. Nothing is planned earlier than the sequence says.
+//
+// Pure: no database, no clock of its own. Nothing here sends; a planned time
+// is a date on a draft, and EL-2c has no sender.
+
+const WINDOW = contract.NURTURE_SEND_WINDOW;
+const MINUTE_MS = 60 * 1000;
+
+/** @type {Map<string, Intl.DateTimeFormat>} */
+const partsFormatters = new Map();
+const WEEKDAY = Object.freeze({ Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 });
+
+/**
+ * The wall clock of an instant in `tz`.
+ * @param {string} tz @param {Date} d
+ * @returns {{ ymd: string, minute: number, second: number, weekday: number }}
+ */
+function localParts(tz, d) {
+  let f = partsFormatters.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      weekday: 'short',
+    });
+    partsFormatters.set(tz, f);
+  }
+  /** @type {Record<string, string>} */
+  const p = {};
+  for (const part of f.formatToParts(d)) p[part.type] = part.value;
+  return {
+    ymd: `${p.year}-${p.month}-${p.day}`,
+    minute: Number(p.hour) * 60 + Number(p.minute),
+    second: Number(p.second),
+    weekday: WEEKDAY[/** @type {keyof typeof WEEKDAY} */ (p.weekday)],
+  };
+}
+
+/** 'YYYY-MM-DD' + n calendar days. @param {string} ymd @param {number} n */
+function addDaysYmd(ymd, n) {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+}
+
+/** ISO weekday (1 = Mon … 7 = Sun) of a calendar date. @param {string} ymd */
+function weekdayOfYmd(ymd) {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const js = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  return js === 0 ? 7 : js;
+}
+
+/**
+ * The instant a local wall-clock time names in `tz` (DST-safe: the offset is
+ * found by asking Intl, then corrected once more for a boundary).
+ * @param {string} tz @param {string} ymd @param {number} minute minutes after local midnight
+ * @returns {Date}
+ */
+function localInstant(tz, ymd, minute) {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const want = Date.UTC(y, m - 1, d, 0, minute);
+  let guess = want;
+  for (let i = 0; i < 3; i++) {
+    const p = localParts(tz, new Date(guess));
+    const [gy, gm, gd] = p.ymd.split('-').map(Number);
+    const got = Date.UTC(gy, gm - 1, gd, 0, p.minute);
+    if (got === want) break;
+    guess += want - got;
+  }
+  return new Date(guess);
+}
+
+/** 10:00 office time on a local calendar date. @param {string} tz @param {string} ymd */
+function plannedAtOn(tz, ymd) {
+  return localInstant(tz, ymd, WINDOW.plannedMinute);
+}
+
+/** Is `t` inside Mon–Fri 09:00–16:00 office time (both ends allowed)? @param {string} tz @param {Date} t */
+function isInSendWindow(tz, t) {
+  const p = localParts(tz, t);
+  if (!WINDOW.weekdays.includes(/** @type {any} */ (p.weekday))) return false;
+  const at = p.minute + p.second / 60;
+  return at >= WINDOW.startMinute && at <= WINDOW.endMinute;
+}
+
+/**
+ * The earliest allowed instant at or after `t`: `t` itself when it is inside
+ * the window, otherwise the next 09:00 on a weekday.
+ * @param {string} tz @param {Date} t
+ * @returns {Date}
+ */
+function nextAllowedSlot(tz, t) {
+  if (isInSendWindow(tz, t)) return t;
+  const p = localParts(tz, t);
+  if (WINDOW.weekdays.includes(/** @type {any} */ (p.weekday)) && p.minute < WINDOW.startMinute) {
+    return localInstant(tz, p.ymd, WINDOW.startMinute);
+  }
+  let ymd = addDaysYmd(p.ymd, 1);
+  while (!WINDOW.weekdays.includes(/** @type {any} */ (weekdayOfYmd(ymd)))) ymd = addDaysYmd(ymd, 1);
+  return localInstant(tz, ymd, WINDOW.startMinute);
+}
+
+class PlanError extends Error {
+  /** @param {'MAX_PER_ENROLLMENT'} code */
+  constructor(code) {
+    super(`[tcNurture] cannot plan: ${code}`);
+    this.name = 'PlanError';
+    this.code = code;
+  }
+}
+
+/**
+ * Place emails in order. Each starts from its `base` (never earlier than
+ * `notBefore`, never at or before the email placed just before it), moves into
+ * the send window, then is re-checked against the hard caps — `fixed` (emails
+ * already out or already placed elsewhere) plus every email placed so far —
+ * and moved later until capCheck passes.
+ * @param {{ tz: string, bases: Date[], fixed?: Date[], notBefore?: Date|null }} input
+ * @returns {Date[]} one planned time per base, strictly increasing
+ */
+function planTimes({ tz, bases, fixed = [], notBefore = null }) {
+  /** @type {Date[]} */
+  const placed = [];
+  for (const base of bases) {
+    let cand = base;
+    if (notBefore && cand.getTime() < notBefore.getTime()) cand = notBefore;
+    const prev = placed[placed.length - 1];
+    if (prev && cand.getTime() <= prev.getTime()) cand = new Date(prev.getTime() + MINUTE_MS);
+    cand = nextAllowedSlot(tz, cand);
+    // Each pass moves at least one local day later; 400 days is far beyond any
+    // lawful sequence, so hitting the guard is a bug, not a schedule.
+    for (let guard = 0; ; guard++) {
+      if (guard > 400) throw new Error('[tcNurture] planTimes did not converge');
+      const r = capCheck({ tz, now: cand, priorTouches: [...fixed, ...placed] });
+      if (r.ok) break;
+      if (r.code === 'MAX_PER_ENROLLMENT') throw new PlanError('MAX_PER_ENROLLMENT');
+      cand = nextAllowedSlot(tz, plannedAtOn(tz, localDayKey(tz, r.deferUntil)));
+    }
+    placed.push(cand);
+  }
+  return placed;
+}
+
+/**
+ * The planned times for a campaign written in full at Start: step i at
+ * `enrolledAt`'s local day + steps[i].day, 10:00, then the window and caps.
+ * Nothing before `enrolledAt` itself.
+ * @param {{ tz: string, enrolledAt: Date, steps: readonly { day: number }[] }} input
+ * @returns {Date[]}
+ */
+function planCampaign({ tz, enrolledAt, steps }) {
+  const day0 = localDayKey(tz, enrolledAt);
+  return planTimes({
+    tz,
+    bases: steps.map((s) => plannedAtOn(tz, addDaysYmd(day0, s.day))),
+    notBefore: enrolledAt,
+  });
+}
+
+/**
+ * RE-PLAN FORWARD (Resume, a late approval, the #359 catch-up). `pending` are a
+ * campaign's waiting emails in SEQUENCE order, each with its step `day` and its
+ * planned `time` (null = never planned). When the first one's time is past (or
+ * null), all of them are re-anchored on today: email j at today + (day_j −
+ * day_0), 10:00, never earlier than its current planned time and never before
+ * `now` — so their order and their gaps are kept and nothing is bunched — then
+ * the window and caps place them, counted against `fixed` (what already went
+ * out). Returns null when nothing is late (nothing moves).
+ * @param {{ tz: string, now: Date, pending: Array<{ day: number, time: Date|null }>, fixed?: Date[] }} input
+ * @returns {Date[]|null}
+ */
+function replanForward({ tz, now, pending, fixed = [] }) {
+  if (!pending.length) return null;
+  const first = pending[0];
+  if (first.time && first.time.getTime() >= now.getTime()) return null;
+  const today = localDayKey(tz, now);
+  const bases = pending.map((p) => {
+    const anchored = plannedAtOn(tz, addDaysYmd(today, p.day - first.day));
+    return p.time && p.time.getTime() > anchored.getTime() ? p.time : anchored;
+  });
+  return planTimes({ tz, bases, fixed, notBefore: now });
+}
+
+/** The rule a cap code names, in words a person reads. */
+const CAP_RULE = Object.freeze({
+  MIN_GAP: `at least ${cfg.CAPS.minHoursBetweenTouches} hours between two emails of a campaign`,
+  MAX_PER_7_DAYS: `at most ${cfg.CAPS.maxTouchesPer7Days} emails in any 7 days`,
+  MAX_PER_ENROLLMENT: `at most ${cfg.CAPS.maxTouchesPerEnrollment} emails in one campaign`,
+});
+
+/**
+ * The first hard-cap violation in a set of send times, by the existing cap
+ * logic (capCheck at each time against the ones before it), or null.
+ * @param {string} tz @param {Date[]} times
+ * @returns {{ code: 'MIN_GAP'|'MAX_PER_7_DAYS'|'MAX_PER_ENROLLMENT', rule: string } | null}
+ */
+function capViolation(tz, times) {
+  const sorted = times.slice().sort((a, b) => a.getTime() - b.getTime());
+  for (let i = 0; i < sorted.length; i++) {
+    const r = capCheck({ tz, now: sorted[i], priorTouches: sorted.slice(0, i) });
+    if (!r.ok) return { code: r.code, rule: CAP_RULE[r.code] };
+  }
+  return null;
+}
+
 module.exports = {
   addLocalDays,
   localDaysBetween,
@@ -206,4 +427,17 @@ module.exports = {
   dueAfter,
   capCheck,
   renderTouch,
+  // EL-2c
+  localParts,
+  localInstant,
+  addDaysYmd,
+  plannedAtOn,
+  isInSendWindow,
+  nextAllowedSlot,
+  planTimes,
+  planCampaign,
+  replanForward,
+  capViolation,
+  CAP_RULE,
+  PlanError,
 };

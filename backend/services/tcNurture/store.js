@@ -65,14 +65,106 @@ function stepsOf(r) {
   return cfg.schedule(r.track_key, r.intensity_at_enroll);
 }
 
+// ── EL-2c: a campaign's emails ──────────────────────────────────────────────
+
+/** Message statuses that are still WAITING (nothing has happened to them yet). */
+const WAITING_STATUSES = Object.freeze(['draft', 'scheduled']);
+/** …plus 'sending': a send in flight. A campaign with any of these is not finished. */
+const UNSETTLED_STATUSES = Object.freeze(['draft', 'scheduled', 'sending']);
+/** Statuses that mean the message went out. */
+const WENT_OUT_STATUSES = Object.freeze(['queued', 'sent', 'delivered']);
+
+/** The tc_messages columns the nurture slice reads about a campaign's emails. No SELECT *. */
+const CAMPAIGN_MESSAGE_COLS = [
+  'message_id',
+  'enrollment_id',
+  'channel',
+  'status',
+  'touch_key',
+  'scheduled_for',
+  'sent_at',
+  'created_at',
+];
+
+/**
+ * Every message of these enrollments (any status), oldest first.
+ * @param {{ query: Function }} q @param {string} office @param {string[]} enrollmentIds
+ * @returns {Promise<Array<Record<string, any>>>}
+ */
+async function messagesOfEnrollments(q, office, enrollmentIds) {
+  if (!enrollmentIds.length) return [];
+  const res = await q.query(
+    `SELECT ${CAMPAIGN_MESSAGE_COLS.join(', ')} FROM tc_messages
+      WHERE office_id = $1 AND enrollment_id = ANY($2) ORDER BY created_at`,
+    [office, enrollmentIds]
+  );
+  return res.rows;
+}
+
+/** A Date from a timestamp column, or null. */
+function dateOrNull(v) {
+  if (v == null) return null;
+  const d = v instanceof Date ? v : new Date(String(v));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * The position of a message in its enrollment's sequence (by touch_key), or
+ * -1 when it names no step of it.
+ * @param {ReadonlyArray<{ touch: string }>} steps @param {string|null} touchKey
+ */
+function stepIndexOf(steps, touchKey) {
+  return touchKey == null ? -1 : steps.findIndex((s) => s.touch === touchKey);
+}
+
+/**
+ * The counts and the next waiting email of ONE enrollment, from its message
+ * rows. `nextKey` is the stage of the first waiting email in sequence order.
+ * @param {Record<string, any>} e the enrollment row
+ * @param {Array<Record<string, any>>} rows its messages
+ */
+function campaignStats(e, rows) {
+  const steps = stepsOf(e);
+  let approved = 0;
+  let sent = 0;
+  let skipped = 0;
+  /** @type {Date|null} */
+  let nextSendAt = null;
+  /** @type {{ index: number, key: string }|null} */
+  let next = null;
+  for (const m of rows) {
+    if (m.status === 'scheduled') approved += 1;
+    if (WENT_OUT_STATUSES.includes(m.status)) sent += 1;
+    if (m.status === 'skipped') skipped += 1;
+    if (WAITING_STATUSES.includes(m.status)) {
+      const at = dateOrNull(m.scheduled_for);
+      if (at && (!nextSendAt || at.getTime() < nextSendAt.getTime())) nextSendAt = at;
+      const i = stepIndexOf(steps, m.touch_key);
+      if (i >= 0 && (!next || i < next.index)) next = { index: i, key: m.touch_key };
+    }
+  }
+  return { approved, sent, skipped, nextSendAt, nextKey: next ? next.key : null };
+}
+
 /**
  * DB row → contract entity. `touchCount` is how many touches it has queued.
+ *
+ * EL-2c: with `rows` (its tc_messages rows), the entity also carries the
+ * approved / sent / skipped counts and the next planned send time; and for a
+ * LIBRARY enrollment `nextTouchKey` is the stage of its next WAITING email —
+ * a library campaign is written in full at Start, so "the next step to draft"
+ * would always read as none.
  * @param {Record<string, any>} r
  * @param {number} touchCount
+ * @param {Array<Record<string, any>>} [rows]
  */
-function toEnrollment(r, touchCount) {
+function toEnrollment(r, touchCount, rows) {
   const steps = stepsOf(r);
   const index = Number(r.next_touch_index);
+  const open = r.status === 'active' || r.status === 'paused';
+  const stats = rows ? campaignStats(r, rows) : null;
+  let nextTouchKey = index < steps.length && open ? steps[index].touch : null;
+  if (r.library_procedure_id && stats && open && index >= steps.length) nextTouchKey = stats.nextKey;
   return contract.TcNurtureEnrollment.parse({
     enrollmentId: r.enrollment_id,
     caseId: r.case_id,
@@ -82,9 +174,9 @@ function toEnrollment(r, touchCount) {
     status: r.status,
     stopReason: r.stop_reason ?? null,
     nextTouchIndex: index,
-    nextTouchDueAt: r.status === 'active' || r.status === 'paused' ? iso(r.next_touch_due_at) : null,
+    nextTouchDueAt: open ? iso(r.next_touch_due_at) : null,
     lastTouchAt: iso(r.last_touch_at),
-    nextTouchKey: index < steps.length && (r.status === 'active' || r.status === 'paused') ? steps[index].touch : null,
+    nextTouchKey,
     touchCount,
     createdBy: r.created_by ?? null,
     createdAt: iso(r.created_at),
@@ -92,7 +184,102 @@ function toEnrollment(r, touchCount) {
     libraryProcedureId: r.library_procedure_id ?? null,
     libraryVariant: r.library_variant ?? null,
     stepCount: steps.length,
+    approvedCount: stats ? stats.approved : 0,
+    sentCount: stats ? stats.sent : 0,
+    skippedCount: stats ? stats.skipped : 0,
+    nextSendAt: stats && open && stats.nextSendAt ? stats.nextSendAt.toISOString() : null,
   });
+}
+
+/**
+ * Rows → entities with their counts, in one read of their messages.
+ * @param {{ query: Function }} q @param {string} office @param {Array<Record<string, any>>} rows
+ */
+async function toEnrollments(q, office, rows) {
+  const msgs = await messagesOfEnrollments(
+    q,
+    office,
+    rows.map((r) => r.enrollment_id)
+  );
+  return rows.map((r) => {
+    const mine = msgs.filter((m) => m.enrollment_id === r.enrollment_id);
+    return toEnrollment(r, mine.length, mine);
+  });
+}
+
+/**
+ * CANCEL WHAT IS WAITING (EL-2c): when an enrollment stops, for any reason,
+ * every one of its 'draft' and 'scheduled' messages becomes 'skipped' with
+ * `reason`, in the caller's transaction — a stopped campaign leaves nothing
+ * behind that could still be sent (hand-written campaigns too). Conditional on
+ * the status, so a message a person is sending right now ('sending') is left
+ * to finish. Returns the ids it cancelled.
+ * @param {{ query: Function }} q
+ * @param {string} office
+ * @param {string} enrollmentId
+ * @param {{ reason: 'case_terminal'|'opted_out'|'stopped_by_user', actor: string }} input
+ * @returns {Promise<string[]>}
+ */
+async function cancelWaiting(q, office, enrollmentId, { reason, actor }) {
+  const res = await q.query(
+    `UPDATE tc_messages SET status = 'skipped', skip_reason = $4, skipped_by = $5, skipped_at = now()
+      WHERE office_id = $1 AND enrollment_id = $2 AND status = ANY($3)
+      RETURNING message_id`,
+    [office, enrollmentId, [...WAITING_STATUSES], reason, actor]
+  );
+  return res.rows.map((r) => r.message_id);
+}
+
+/** " — 3 waiting messages cancelled", or '' for none. For a stop event's description. */
+function cancelledSuffix(n) {
+  if (!n) return '';
+  return ` — ${n} waiting ${n === 1 ? 'message' : 'messages'} cancelled`;
+}
+
+/**
+ * EL-2c: a LIBRARY campaign is finished when every step is written and none of
+ * its emails is still waiting or being sent (each was sent, skipped, or failed
+ * — a failed send is terminal and never retried). Then it moves to
+ * 'completed', with an event. Conditional on 'active', so a pause, a stop or a
+ * second caller matches nothing. Returns whether it completed.
+ * @param {{ query: Function }} q
+ * @param {string} office
+ * @param {string} enrollmentId
+ * @param {{ now?: Date }} [opts]
+ * @returns {Promise<boolean>}
+ */
+async function completeIfFinished(q, office, enrollmentId, { now = new Date() } = {}) {
+  const e = await loadEnrollment(q, office, enrollmentId);
+  if (!e || e.status !== 'active' || !e.library_procedure_id) return false;
+  if (Number(e.next_touch_index) < stepsOf(e).length) return false;
+  const rows = await messagesOfEnrollments(q, office, [enrollmentId]);
+  if (rows.some((m) => UNSETTLED_STATUSES.includes(m.status))) return false;
+  const row = await transition(q, office, enrollmentId, {
+    from: ['active'],
+    to: 'completed',
+    stopReason: null,
+    nextTouchDueAt: null,
+  });
+  if (!row) return false;
+  await insertEvent(q, {
+    office,
+    caseId: e.case_id,
+    type: 'nurture_completed',
+    description: `${trackLabel(e.track_key)} completed: every email was sent or skipped`,
+    actor: SYSTEM_ACTOR,
+    ts: now,
+  });
+  return true;
+}
+
+/** Active LIBRARY enrollments in this office (the nightly completion sweep). */
+async function listActiveLibrary(q, office) {
+  const res = await q.query(
+    `SELECT ${ENROLLMENT_COLS.join(', ')} FROM tc_nurture_enrollments
+      WHERE office_id = $1 AND status = 'active' AND library_procedure_id IS NOT NULL`,
+    [office]
+  );
+  return res.rows;
 }
 
 async function loadEnrollment(q, office, enrollmentId) {
@@ -279,4 +466,18 @@ module.exports = {
   trackLabel,
   stepsOf,
   libraryLabel,
+  // EL-2c
+  WAITING_STATUSES,
+  UNSETTLED_STATUSES,
+  WENT_OUT_STATUSES,
+  CAMPAIGN_MESSAGE_COLS,
+  messagesOfEnrollments,
+  stepIndexOf,
+  campaignStats,
+  toEnrollments,
+  cancelWaiting,
+  cancelledSuffix,
+  completeIfFinished,
+  listActiveLibrary,
+  dateOrNull,
 };

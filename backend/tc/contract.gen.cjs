@@ -14909,18 +14909,26 @@ __export(contract_entry_exports, {
   MessageBlockCode: () => MessageBlockCode,
   MessageChannel: () => MessageChannel,
   MessageDirection: () => MessageDirection,
+  MessageSkipReason: () => MessageSkipReason,
   MessageStatus: () => MessageStatus,
   NEXT_TOUCH_REQUIRED: () => NEXT_TOUCH_REQUIRED,
+  NURTURE_AUTOMATIC_SENDING_NOTE: () => NURTURE_AUTOMATIC_SENDING_NOTE,
   NURTURE_CAPS: () => NURTURE_CAPS,
   NURTURE_DEFAULT_INTENSITY: () => NURTURE_DEFAULT_INTENSITY,
+  NURTURE_EMAIL_BODY_MAX: () => NURTURE_EMAIL_BODY_MAX,
   NURTURE_LIBRARY_PROCEDURE_MAX: () => NURTURE_LIBRARY_PROCEDURE_MAX,
+  NURTURE_PAUSE_PATIENT_REPLIED: () => NURTURE_PAUSE_PATIENT_REPLIED,
+  NURTURE_SEND_WINDOW: () => NURTURE_SEND_WINDOW,
   NURTURE_SMS_STOP_SUFFIX: () => NURTURE_SMS_STOP_SUFFIX,
   NURTURE_STOP_CASE_TERMINAL: () => NURTURE_STOP_CASE_TERMINAL,
   NURTURE_STOP_OPTED_OUT: () => NURTURE_STOP_OPTED_OUT,
   NURTURE_TRACKS: () => NURTURE_TRACKS,
   NextTouchInput: () => NextTouchInput,
   NotesRevisionDetail: () => NotesRevisionDetail,
+  NurtureApproveAllResponse: () => NurtureApproveAllResponse,
   NurtureCadence: () => NurtureCadence,
+  NurtureCampaignEmail: () => NurtureCampaignEmail,
+  NurtureCampaignResponse: () => NurtureCampaignResponse,
   NurtureCaseResponse: () => NurtureCaseResponse,
   NurtureChannelState: () => NurtureChannelState,
   NurtureConfigResponse: () => NurtureConfigResponse,
@@ -14929,9 +14937,11 @@ __export(contract_entry_exports, {
   NurtureEnrollmentStatus: () => NurtureEnrollmentStatus,
   NurtureIntensity: () => NurtureIntensity,
   NurtureLibraryVariant: () => NurtureLibraryVariant,
+  NurtureOutboxCampaign: () => NurtureOutboxCampaign,
   NurtureOutboxDraft: () => NurtureOutboxDraft,
   NurtureOutboxGroup: () => NurtureOutboxGroup,
   NurtureOutboxResponse: () => NurtureOutboxResponse,
+  NurtureRescheduleBody: () => NurtureRescheduleBody,
   NurtureStopBody: () => NurtureStopBody,
   NurtureTrackAvailability: () => NurtureTrackAvailability,
   NurtureTrackConfig: () => NurtureTrackConfig,
@@ -15240,6 +15250,7 @@ __export(contract_entry_exports, {
   libraryTemplateId: () => libraryTemplateId,
   nextTouchByCase: () => nextTouchByCase,
   nextTouchState: () => nextTouchState,
+  nurtureEmailTextProblem: () => nurtureEmailTextProblem,
   nurtureSchedule: () => nurtureSchedule,
   nurtureTemplateId: () => nurtureTemplateId,
   nurtureTokensIn: () => nurtureTokensIn,
@@ -16624,9 +16635,11 @@ var MessageStatus = import_zod6.z.enum([
   "delivered",
   "failed",
   "received",
-  "skipped"
+  "skipped",
+  "scheduled"
 ]);
 var SENDABLE_MESSAGE_STATUSES = ["draft"];
+var MessageSkipReason = import_zod6.z.enum(["manual", "case_terminal", "opted_out", "stopped_by_user"]);
 var ConsentState = import_zod6.z.enum(["opted_in", "opted_out", "unknown"]);
 var ConsentSource = import_zod6.z.enum(["od", "stop_keyword", "manual", "unsubscribe_link"]);
 var OdTextConsent = import_zod6.z.enum([
@@ -16673,7 +16686,17 @@ var TcMessage = import_zod6.z.object({
    * taken when the draft was written). Its body text is then a read-only
    * plain-text view of that layout; only the subject can be edited.
    */
-  emailTemplated: import_zod6.z.boolean().default(false)
+  emailTemplated: import_zod6.z.boolean().default(false),
+  /**
+   * (EL-2c) A library nurture email's planned send time (draft or scheduled),
+   * Mon–Fri 09:00–16:00 office time. null for every other message.
+   */
+  scheduledFor: IsoTimestamp2.nullable().default(null),
+  /** (EL-2c) Who approved it word for word, and when. Set exactly while `scheduled`. */
+  approvedBy: import_zod6.z.string().max(320).nullable().default(null),
+  approvedAt: IsoTimestamp2.nullable().default(null),
+  /** (EL-2c) Why it was skipped; null otherwise (and on rows skipped before EL-2c). */
+  skipReason: MessageSkipReason.nullable().default(null)
 });
 var TcContactConsent = import_zod6.z.object({
   consentId: Uuid,
@@ -17888,6 +17911,29 @@ function parseLibraryTemplateId(templateId) {
   const variant = NurtureLibraryVariant.safeParse(m[3]);
   return variant.success ? { procedureId: m[1], stage: m[2], variant: variant.data } : null;
 }
+var NURTURE_SEND_WINDOW = Object.freeze({
+  weekdays: Object.freeze([1, 2, 3, 4, 5]),
+  startMinute: 9 * 60,
+  endMinute: 16 * 60,
+  /** The time of day a step is planned at before the window and caps move it. */
+  plannedMinute: 10 * 60
+});
+var NURTURE_PAUSE_PATIENT_REPLIED = "patient_replied";
+var NurtureRescheduleBody = import_zod8.z.object({
+  date: import_zod8.z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  time: import_zod8.z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+}).strict();
+var NURTURE_EMAIL_BODY_MAX = 8e3;
+var EMAIL_TEXT_FORBIDDEN = new RegExp(
+  `[\\x00-\\x09\\x0b-\\x1f\\x7f-\\x9f${String.fromCharCode(8232, 8233)}\\u200b-\\u200f\\u202a-\\u202e\\u2066-\\u2069\\ufeff]`
+);
+function nurtureEmailTextProblem(text, max = NURTURE_EMAIL_BODY_MAX) {
+  if (!text.trim()) return "EMPTY";
+  if (text.length > max) return "TOO_LONG";
+  if (text.includes("{{")) return "MERGE_TOKEN";
+  if (EMAIL_TEXT_FORBIDDEN.test(text)) return "FORBIDDEN_CHARACTER";
+  return null;
+}
 var TcNurtureEnrollment = import_zod8.z.object({
   enrollmentId: Uuid,
   caseId: Uuid,
@@ -17914,7 +17960,17 @@ var TcNurtureEnrollment = import_zod8.z.object({
    * its intensity, or the library sequence's (minus any stage its procedure
    * skips). Server-computed, so the strip's "N of M drafted" is never a guess.
    */
-  stepCount: import_zod8.z.number().int().min(0)
+  stepCount: import_zod8.z.number().int().min(0),
+  /**
+   * EL-2c: of this enrollment's emails, how many are approved and waiting
+   * ('scheduled'), how many went out (sent, queued or delivered), and how many
+   * were skipped. Server-computed from its tc_messages rows.
+   */
+  approvedCount: import_zod8.z.number().int().min(0).default(0),
+  sentCount: import_zod8.z.number().int().min(0).default(0),
+  skippedCount: import_zod8.z.number().int().min(0).default(0),
+  /** EL-2c: the earliest planned time among its waiting emails (draft or scheduled), or null. */
+  nextSendAt: IsoTimestamp3.nullable().default(null)
 });
 var NurtureTrackUnavailableReason = import_zod8.z.enum([
   "switched_off",
@@ -17975,10 +18031,43 @@ var NurtureChannelState = import_zod8.z.object({
   enabled: import_zod8.z.boolean(),
   reason: import_zod8.z.enum(["switched_off", "not_configured", "office_not_configured"]).nullable()
 });
+var NurtureCampaignEmail = import_zod8.z.object({
+  message: TcMessage,
+  stage: import_zod8.z.string().max(20),
+  /** 0-based position in the enrollment's sequence. */
+  stepIndex: import_zod8.z.number().int().min(0),
+  consentBlockedHint: NurtureConsentHint.nullable()
+});
+var NURTURE_AUTOMATIC_SENDING_NOTE = "Automatic sending is not switched on for this office. Approved emails will wait.";
+var NurtureCampaignResponse = import_zod8.z.object({
+  enrollment: TcNurtureEnrollment,
+  patientName: import_zod8.z.string().max(200).nullable(),
+  // PHI
+  emails: import_zod8.z.array(NurtureCampaignEmail),
+  automaticSending: import_zod8.z.boolean()
+});
+var NurtureOutboxCampaign = import_zod8.z.object({
+  enrollment: TcNurtureEnrollment,
+  patientName: import_zod8.z.string().max(200).nullable(),
+  // PHI
+  /** How many of its emails still need a person to approve them. */
+  needsApproval: import_zod8.z.number().int().min(0),
+  /** Its waiting emails (draft or scheduled), earliest planned time first. */
+  emails: import_zod8.z.array(NurtureCampaignEmail)
+});
+var NurtureApproveAllResponse = import_zod8.z.object({
+  approved: import_zod8.z.number().int().min(0),
+  enrollment: TcNurtureEnrollment
+});
 var NurtureOutboxResponse = import_zod8.z.object({
   enabled: import_zod8.z.boolean(),
   channels: import_zod8.z.array(NurtureChannelState),
-  groups: import_zod8.z.array(NurtureOutboxGroup)
+  /** Hand-written campaigns' drafts, grouped by track (item 47). */
+  groups: import_zod8.z.array(NurtureOutboxGroup),
+  /** EL-2c: library campaigns, grouped per case, sorted by their next planned time. */
+  campaigns: import_zod8.z.array(NurtureOutboxCampaign).default([]),
+  /** EL-2c: always false — nothing sends approved emails yet. */
+  automaticSending: import_zod8.z.boolean().default(false)
 });
 var NurtureConfigResponse = import_zod8.z.object({
   enabled: import_zod8.z.boolean(),
@@ -21302,18 +21391,26 @@ function odToothText(tooth) {
   MessageBlockCode,
   MessageChannel,
   MessageDirection,
+  MessageSkipReason,
   MessageStatus,
   NEXT_TOUCH_REQUIRED,
+  NURTURE_AUTOMATIC_SENDING_NOTE,
   NURTURE_CAPS,
   NURTURE_DEFAULT_INTENSITY,
+  NURTURE_EMAIL_BODY_MAX,
   NURTURE_LIBRARY_PROCEDURE_MAX,
+  NURTURE_PAUSE_PATIENT_REPLIED,
+  NURTURE_SEND_WINDOW,
   NURTURE_SMS_STOP_SUFFIX,
   NURTURE_STOP_CASE_TERMINAL,
   NURTURE_STOP_OPTED_OUT,
   NURTURE_TRACKS,
   NextTouchInput,
   NotesRevisionDetail,
+  NurtureApproveAllResponse,
   NurtureCadence,
+  NurtureCampaignEmail,
+  NurtureCampaignResponse,
   NurtureCaseResponse,
   NurtureChannelState,
   NurtureConfigResponse,
@@ -21322,9 +21419,11 @@ function odToothText(tooth) {
   NurtureEnrollmentStatus,
   NurtureIntensity,
   NurtureLibraryVariant,
+  NurtureOutboxCampaign,
   NurtureOutboxDraft,
   NurtureOutboxGroup,
   NurtureOutboxResponse,
+  NurtureRescheduleBody,
   NurtureStopBody,
   NurtureTrackAvailability,
   NurtureTrackConfig,
@@ -21633,6 +21732,7 @@ function odToothText(tooth) {
   libraryTemplateId,
   nextTouchByCase,
   nextTouchState,
+  nurtureEmailTextProblem,
   nurtureSchedule,
   nurtureTemplateId,
   nurtureTokensIn,

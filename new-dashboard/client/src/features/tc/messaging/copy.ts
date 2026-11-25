@@ -32,6 +32,8 @@ export const STATUS_LABEL: Record<MessageStatus, string> = {
   failed: "Not sent",
   received: "Received",
   skipped: "Skipped — not sent",
+  // EL-2c: approved word for word, waiting for its planned time. Nothing sends it yet.
+  scheduled: "Approved — waiting, not sent",
 };
 
 /** Tone for the status chip. Only `delivered` is green. */
@@ -44,6 +46,7 @@ export const STATUS_TONE: Record<MessageStatus, "muted" | "info" | "ok" | "bad">
   failed: "bad",
   received: "info",
   skipped: "muted",
+  scheduled: "info",
 };
 
 /**

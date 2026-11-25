@@ -33,7 +33,15 @@
  *                    acted on; a re-delivered provider id is not stored twice.
  *   applyStatusCallback → (item 39) a provider delivery report, monotonic.
  *   skipNurtureDraft → (item 47) a human chose NOT to send a nurture draft:
- *                    draft → skipped. Nothing else moves.
+ *                    draft → skipped. Nothing else moves. (EL-2c) an approved
+ *                    ('scheduled') library email can be skipped too.
+ *   (EL-2c) approveNurtureEmail / approveAllNurtureEmails / unapproveNurtureEmail /
+ *                    rescheduleNurtureEmail → a library campaign's emails are
+ *                    approved word for word AHEAD of their planned time
+ *                    (draft ⇄ scheduled) and re-dated. NOTHING SENDS THEM: a
+ *                    'scheduled' row is not a draft, so sendMessage below
+ *                    refuses it, and EL-2c has no sender. The function body of
+ *                    sendMessage is unchanged by EL-2c.
  *   (item 47) recordInbound / recordOptOut / recordUnsubscribeLink also run
  *                    the nurture exit hooks: a reply PAUSES a running
  *                    enrollment, an opt-out STOPS it. Neither sends anything.
@@ -80,6 +88,13 @@ const { isSessionOfficeFresh, isOfficeKeyFormat } = require('../../platform/offi
 const nurtureHooks = require('../tcNurture/hooks');
 const acsConfig = require('../../config/acsEmail');
 const publicLinkIndex = require('../../platform/publicLinkIndex');
+// (EL-2c) The library campaign review actions: the nurture store (campaign
+// rows), the PURE planner, the zone, and the library's text → blocks. None of
+// them sends anything.
+const nurtureStore = require('../tcNurture/store');
+const nurtureEngine = require('../tcNurture/engine');
+const nurtureCfg = require('../../config/tcNurture');
+const emailLibrary = require('../tcEmailLibrary');
 
 const MESSAGE_COLS = [
   'message_id',
@@ -104,6 +119,12 @@ const MESSAGE_COLS = [
   // hash is deliberately NOT here: it never leaves the database.
   'email_blocks',
   'email_preheader',
+  // (EL-2c) a library nurture email's planned time, its approval, and why it
+  // was skipped (1795600000000_tc_messages_scheduled.js).
+  'scheduled_for',
+  'approved_by',
+  'approved_at',
+  'skip_reason',
 ];
 
 const CONSENT_COLS = [
@@ -185,6 +206,10 @@ function toMessage(r) {
     createdAt: iso(r.created_at),
     sentAt: iso(r.sent_at),
     emailTemplated: r.channel === 'email' && r.email_blocks != null,
+    scheduledFor: iso(r.scheduled_for),
+    approvedBy: r.approved_by ?? null,
+    approvedAt: iso(r.approved_at),
+    skipReason: r.skip_reason ?? null,
   });
 }
 
@@ -476,13 +501,68 @@ async function draftMessage(req, office, input) {
   return toMessage(row);
 }
 
+/**
+ * (EL-2c) Is this an email the nurture generator composed from the patient
+ * email library? Its template id is 'library.<procedure>.<stage>.<variant>'.
+ */
+function isLibraryEmailRow(r) {
+  return r.channel === 'email' && typeof r.template_id === 'string' && r.template_id.startsWith('library.');
+}
+
+/** (EL-2c) A library email's edited text, refused with one honest sentence. */
+function assertLibraryText(text, max, what) {
+  const problem = contract.nurtureEmailTextProblem(text, max);
+  if (!problem) return;
+  const why = {
+    EMPTY: `The ${what} can't be empty.`,
+    TOO_LONG: `The ${what} is too long (at most ${max} characters).`,
+    MERGE_TOKEN: `The ${what} still has a "{{" merge token in it. Write the words out instead.`,
+    FORBIDDEN_CHARACTER: `The ${what} has an invisible or control character in it (pasted from somewhere?). Retype that part.`,
+  }[problem];
+  throw new MessagingError('EMAIL_TEXT_INVALID', why, { problem, field: what });
+}
+
 /** Edit a draft's text. Only a draft; the address is never editable. */
 async function editDraft(req, office, messageId, input) {
   const row = await db(req, async (q) => {
     const existing = await loadMessage(q, office, messageId);
     if (!existing) throw new MessagingError('MESSAGE_NOT_FOUND', 'Message not found');
+    // (EL-2c) An APPROVED email is not editable: the approved text is exactly
+    // what would be sent. Unapprove it (back to a draft) to change it.
+    if (existing.status === 'scheduled') {
+      throw new MessagingError(
+        'MESSAGE_NOT_EDITABLE',
+        'This email is approved. Unapprove it first to change it — the approved text is exactly what would be sent.',
+        { status: existing.status }
+      );
+    }
     if (existing.status !== 'draft' || existing.direction !== 'outbound') {
       throw new MessagingError('MESSAGE_NOT_EDITABLE', 'Only a draft can be edited.', { status: existing.status });
+    }
+    // (EL-2c) A LIBRARY draft's body IS editable: its blocks are re-derived
+    // from the edited plain text by the library's own textToBlocks, so what is
+    // shown and what is sent stay the same text.
+    if (isLibraryEmailRow(existing) && existing.email_blocks != null) {
+      const body = String(input.body).replace(/\r\n?/g, '\n');
+      const subject = input.subject ?? existing.subject ?? null;
+      if (body !== existing.body) assertLibraryText(body, contract.NURTURE_EMAIL_BODY_MAX, 'email text');
+      if (subject !== existing.subject && subject != null) assertLibraryText(subject, 300, 'subject');
+      const blocks = body !== existing.body ? emailLibrary.textToBlocks(body) : null;
+      const res = blocks
+        ? await q.query(
+            `UPDATE tc_messages SET body = $1, subject = $2, email_blocks = $5
+              WHERE office_id = $3 AND message_id = $4 AND status = 'draft'
+              RETURNING ${MESSAGE_COLS.join(', ')}`,
+            [body, subject, office, messageId, JSON.stringify(blocks)]
+          )
+        : await q.query(
+            `UPDATE tc_messages SET body = $1, subject = $2
+              WHERE office_id = $3 AND message_id = $4 AND status = 'draft'
+              RETURNING ${MESSAGE_COLS.join(', ')}`,
+            [body, subject, office, messageId]
+          );
+      if (!res.rows.length) throw new MessagingError('MESSAGE_NOT_EDITABLE', 'Only a draft can be edited.');
+      return res.rows[0];
     }
     // (item 40) A template draft's body is a read-only view of its layout:
     // editing it here would change the thread text but not what is sent.
@@ -1119,7 +1199,7 @@ async function applyStatusCallback(req, office, { provider, providerMessageId, p
  */
 async function skipNurtureDraft(req, office, messageId) {
   const actor = actorOf(req);
-  const row = await db(req, async (q) => {
+  const row = await txn(req, async (q) => {
     const meta = await q.query(
       `SELECT message_id, status, enrollment_id FROM tc_messages WHERE office_id = $1 AND message_id = $2`,
       [office, messageId]
@@ -1128,19 +1208,396 @@ async function skipNurtureDraft(req, office, messageId) {
     if (!meta.rows[0].enrollment_id) {
       throw new MessagingError('MESSAGE_NOT_EDITABLE', 'Only a nurture draft can be skipped. Discard this one instead.');
     }
+    // (EL-2c) An APPROVED email ('scheduled') can be skipped too; the reason
+    // is recorded as 'manual'.
     const res = await q.query(
-      `UPDATE tc_messages SET status = 'skipped', skipped_by = $1, skipped_at = now()
-        WHERE office_id = $2 AND message_id = $3 AND status = 'draft'
+      `UPDATE tc_messages SET status = 'skipped', skipped_by = $1, skipped_at = now(), skip_reason = $5
+        WHERE office_id = $2 AND message_id = $3 AND status = ANY($4)
         RETURNING ${MESSAGE_COLS.join(', ')}`,
-      [actor, office, messageId]
+      [actor, office, messageId, [...nurtureStore.WAITING_STATUSES], 'manual']
     );
     if (!res.rows.length) {
       throw new MessagingError('MESSAGE_NOT_EDITABLE', 'Only a draft can be skipped.', { status: meta.rows[0].status });
     }
+    // (EL-2c) Skipping a library campaign's last waiting email finishes it.
+    await nurtureStore.completeIfFinished(q, office, meta.rows[0].enrollment_id, { now: clock() });
     return res.rows[0];
   });
   await auditMessage(req, 'UPDATE', 'tc_message.skipped', messageId, office);
   return toMessage(row);
+}
+
+// ── (EL-2c) approve up front: the library campaign review actions ──────────
+//
+// Beau, 2026-11-25: "Nothing sends that a human has not approved word for
+// word. Approved emails send on their scheduled date unless a stop condition
+// fires." These actions APPROVE, UNAPPROVE, RESCHEDULE. NONE OF THEM SENDS:
+// none calls sendMessage or an adapter, and an approved ('scheduled') email
+// is not even sendable by a click (sendMessage takes drafts only). It waits;
+// the automatic sender is EL-2d.
+//
+// Every action: the office comes from the MESSAGE ROW (a row of the other
+// office is 409 OFFICE_MISMATCH — `?office=` only ever refuses); the actor is
+// the request's SSO identity; every change is a CONDITIONAL UPDATE on the
+// status it expects, so a double click changes the row once; every change is
+// audited (ids only, never PHI).
+
+/** Run `fn(client)` in ONE transaction on the caller's tenant database. */
+function txn(req, fn) {
+  return tenantDb.withTenantDb(req, async (pool) => {
+    if (typeof pool.connect !== 'function') return fn(pool);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const out = await fn(client);
+      await client.query('COMMIT');
+      return out;
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // the original error is the one worth surfacing
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+  });
+}
+
+const NURTURE_MESSAGE_COLS = [...MESSAGE_COLS, 'enrollment_id', 'touch_key', 'consent_blocked_hint'];
+
+/** "Mon–Fri 9:00 AM–4:00 PM office time" */
+const SEND_WINDOW_WORDS = 'Monday to Friday, 9:00 AM to 4:00 PM office time';
+
+/** A message row by id; its OFFICE must be the asserted one. */
+async function loadOwnedNurtureMessage(q, office, messageId) {
+  const res = await q.query(`SELECT ${NURTURE_MESSAGE_COLS.join(', ')} FROM tc_messages WHERE message_id = $1`, [
+    messageId,
+  ]);
+  if (!res.rows.length) throw new MessagingError('MESSAGE_NOT_FOUND', 'Message not found');
+  const m = res.rows[0];
+  if (m.office_id !== office) {
+    throw new MessagingError('OFFICE_MISMATCH', 'That message belongs to the other office. Switch offices to work on it.');
+  }
+  return m;
+}
+
+/**
+ * The library enrollment a message belongs to, and its sequence. Refuses a
+ * message that is not a library campaign email.
+ */
+async function libraryCampaignOf(q, m) {
+  if (m.direction !== 'outbound' || !m.enrollment_id || !isLibraryEmailRow(m)) {
+    throw new MessagingError(
+      'MESSAGE_NOT_APPROVABLE',
+      'Only an email of a patient email library campaign can be approved ahead. Send this one by hand instead.'
+    );
+  }
+  const e = await nurtureStore.loadEnrollment(q, m.office_id, m.enrollment_id);
+  if (!e || !e.library_procedure_id) {
+    throw new MessagingError('MESSAGE_NOT_APPROVABLE', 'This email no longer belongs to a library campaign.');
+  }
+  return { e, steps: nurtureStore.stepsOf(e) };
+}
+
+/**
+ * The send-time a campaign email counts at for the caps: a waiting email at
+ * its planned time (none if it was never planned), anything that went out at
+ * when it was sent (or written). Skipped emails never left and do not count.
+ */
+function capTimeOf(r) {
+  if (r.status === 'skipped') return null;
+  if (nurtureStore.WAITING_STATUSES.includes(r.status)) return nurtureStore.dateOrNull(r.scheduled_for);
+  return nurtureStore.dateOrNull(r.sent_at) || nurtureStore.dateOrNull(r.created_at);
+}
+
+/**
+ * RE-PLAN THE LATE EMAILS of one library campaign forward from now
+ * (engine.replanForward): when its first waiting email's planned time has
+ * passed (or was never set), every waiting email is re-anchored on today,
+ * keeping their order and gaps and the caps against what already went out.
+ * Approvals are KEPT — the text did not change, only the date. Used by a late
+ * Approve and by Resume. Returns the ids whose time moved.
+ * @returns {Promise<string[]>}
+ */
+async function replanLateEmails(q, office, e, now) {
+  const steps = nurtureStore.stepsOf(e);
+  const rows = await nurtureStore.messagesOfEnrollments(q, office, [e.enrollment_id]);
+  const waiting = rows
+    .filter((r) => nurtureStore.WAITING_STATUSES.includes(r.status))
+    .map((r) => ({ r, i: nurtureStore.stepIndexOf(steps, r.touch_key) }))
+    .filter((x) => x.i >= 0)
+    .sort((a, b) => a.i - b.i);
+  const fixed = rows
+    .filter((r) => !nurtureStore.WAITING_STATUSES.includes(r.status))
+    .map(capTimeOf)
+    .filter(Boolean);
+  const times = nurtureEngine.replanForward({
+    tz: nurtureCfg.timezone(),
+    now,
+    pending: waiting.map((x) => ({ day: steps[x.i].day, time: nurtureStore.dateOrNull(x.r.scheduled_for) })),
+    fixed,
+  });
+  if (!times) return [];
+  const moved = [];
+  for (let k = 0; k < waiting.length; k++) {
+    const before = nurtureStore.dateOrNull(waiting[k].r.scheduled_for);
+    if (before && before.getTime() === times[k].getTime()) continue;
+    const res = await q.query(
+      `UPDATE tc_messages SET scheduled_for = $3
+        WHERE office_id = $1 AND message_id = $2 AND status = ANY($4)
+        RETURNING message_id`,
+      [office, waiting[k].r.message_id, times[k].toISOString(), [...nurtureStore.WAITING_STATUSES]]
+    );
+    if (res.rows.length) moved.push(waiting[k].r.message_id);
+  }
+  return moved;
+}
+
+/** Refuse an approval that could never be sent as it stands. */
+function assertApprovable(m) {
+  if (!m.to_address) {
+    throw new MessagingError(
+      'NO_ADDRESS',
+      "This email has no address: the case had no email when it was written. Add one to the case and start the campaign again."
+    );
+  }
+  if (!(m.subject && String(m.subject).trim())) {
+    throw new MessagingError('SUBJECT_REQUIRED', 'An email needs a subject. Edit it and add one before approving.');
+  }
+}
+
+/** The campaign must be running for its emails to be approved. */
+function assertActive(e) {
+  if (e.status !== 'active') {
+    throw new MessagingError(
+      'ENROLLMENT_NOT_ACTIVE',
+      `This campaign is ${e.status}, so its emails can't be approved${e.status === 'paused' ? ' until it is resumed' : ''}.`,
+      { enrollmentStatus: e.status }
+    );
+  }
+}
+
+/**
+ * APPROVE one library campaign email word for word: draft → scheduled, with
+ * who and when. A planned time already past (or never set) is re-planned
+ * forward first (replanLateEmails), and the email comes back with its new
+ * time. NOTHING IS SENT: an approved email waits.
+ * @returns {Promise<{ message: object, replanned: number }>}
+ */
+async function approveNurtureEmail(req, office, messageId) {
+  const actor = actorOf(req);
+  const now = clock();
+  const out = await txn(req, async (q) => {
+    const m = await loadOwnedNurtureMessage(q, office, messageId);
+    const { e } = await libraryCampaignOf(q, m);
+    if (m.status !== 'draft') {
+      throw new MessagingError(
+        'MESSAGE_NOT_APPROVABLE',
+        m.status === 'scheduled' ? 'This email is already approved.' : `This email is ${m.status}, so it can't be approved.`,
+        { status: m.status }
+      );
+    }
+    assertActive(e);
+    assertApprovable(m);
+    const planned = nurtureStore.dateOrNull(m.scheduled_for);
+    const moved = !planned || planned.getTime() < now.getTime() ? await replanLateEmails(q, m.office_id, e, now) : [];
+    const res = await q.query(
+      `UPDATE tc_messages SET status = 'scheduled', approved_by = $3, approved_at = $4
+        WHERE office_id = $1 AND message_id = $2 AND status = 'draft'
+        RETURNING ${MESSAGE_COLS.join(', ')}`,
+      [m.office_id, messageId, actor, now.toISOString()]
+    );
+    if (!res.rows.length) throw new MessagingError('MESSAGE_NOT_APPROVABLE', 'This email is already approved.');
+    return { row: res.rows[0], moved: moved.filter((id) => id !== messageId), office: m.office_id };
+  });
+  await auditMessage(req, 'UPDATE', 'tc_message.approved', messageId, out.office);
+  for (const id of out.moved) await auditMessage(req, 'UPDATE', 'tc_message.replanned', id, out.office);
+  return { message: toMessage(out.row), replanned: out.moved.length };
+}
+
+/**
+ * APPROVE EVERY DRAFT of one library campaign, in ONE transaction: all of them
+ * or none (a draft that could not be approved refuses the whole request, and
+ * says which step). One audit row per approved email. Returns the count — a
+ * second click finds no drafts and approves 0.
+ * @returns {Promise<{ approved: number, enrollmentId: string, office: string }>}
+ */
+async function approveAllNurtureEmails(req, office, enrollmentId) {
+  const actor = actorOf(req);
+  const now = clock();
+  const out = await txn(req, async (q) => {
+    const res = await q.query(
+      `SELECT ${nurtureStore.ENROLLMENT_COLS.join(', ')} FROM tc_nurture_enrollments WHERE enrollment_id = $1`,
+      [enrollmentId]
+    );
+    if (!res.rows.length) throw new MessagingError('ENROLLMENT_NOT_FOUND', 'Campaign not found');
+    const e = res.rows[0];
+    if (e.office_id !== office) {
+      throw new MessagingError('OFFICE_MISMATCH', 'That campaign belongs to the other office. Switch offices to work on it.');
+    }
+    if (!e.library_procedure_id) {
+      throw new MessagingError(
+        'MESSAGE_NOT_APPROVABLE',
+        'Only a patient email library campaign can be approved ahead. Send this campaign\'s drafts by hand.'
+      );
+    }
+    assertActive(e);
+    const steps = nurtureStore.stepsOf(e);
+    const drafts = (
+      await q.query(
+        `SELECT ${NURTURE_MESSAGE_COLS.join(', ')} FROM tc_messages
+          WHERE office_id = $1 AND enrollment_id = $2 AND status = 'draft' ORDER BY created_at`,
+        [e.office_id, e.enrollment_id]
+      )
+    ).rows;
+    for (const d of drafts) {
+      try {
+        if (!isLibraryEmailRow(d)) throw new MessagingError('MESSAGE_NOT_APPROVABLE', 'Not a library email.');
+        assertApprovable(d);
+      } catch (err) {
+        if (err instanceof MessagingError) {
+          const step = nurtureStore.stepIndexOf(steps, d.touch_key) + 1;
+          throw new MessagingError(err.code, `Email ${step} of ${steps.length}: ${err.message} Nothing was approved.`, {
+            messageId: d.message_id,
+          });
+        }
+        throw err;
+      }
+    }
+    if (!drafts.length) return { ids: [], moved: [], e };
+    const late = drafts.some((d) => {
+      const t = nurtureStore.dateOrNull(d.scheduled_for);
+      return !t || t.getTime() < now.getTime();
+    });
+    const moved = late ? await replanLateEmails(q, e.office_id, e, now) : [];
+    const ids = [];
+    for (const d of drafts) {
+      const u = await q.query(
+        `UPDATE tc_messages SET status = 'scheduled', approved_by = $3, approved_at = $4
+          WHERE office_id = $1 AND message_id = $2 AND status = 'draft'
+          RETURNING message_id`,
+        [e.office_id, d.message_id, actor, now.toISOString()]
+      );
+      if (u.rows.length) ids.push(d.message_id);
+    }
+    return { ids, moved: moved.filter((id) => !ids.includes(id)), e };
+  });
+  for (const id of out.ids) await auditMessage(req, 'UPDATE', 'tc_message.approved', id, office);
+  for (const id of out.moved) await auditMessage(req, 'UPDATE', 'tc_message.replanned', id, office);
+  return { approved: out.ids.length, enrollmentId: out.e.enrollment_id, office: out.e.office_id };
+}
+
+/** UNAPPROVE: scheduled → draft, approval cleared. The planned time stays. Always allowed (the safe direction). */
+async function unapproveNurtureEmail(req, office, messageId) {
+  const out = await txn(req, async (q) => {
+    const m = await loadOwnedNurtureMessage(q, office, messageId);
+    await libraryCampaignOf(q, m);
+    const res = await q.query(
+      `UPDATE tc_messages SET status = 'draft', approved_by = $3, approved_at = $4
+        WHERE office_id = $1 AND message_id = $2 AND status = 'scheduled'
+        RETURNING ${MESSAGE_COLS.join(', ')}`,
+      [m.office_id, messageId, null, null]
+    );
+    if (!res.rows.length) {
+      throw new MessagingError('MESSAGE_NOT_APPROVABLE', 'Only an approved email can be unapproved.', { status: m.status });
+    }
+    return { row: res.rows[0], office: m.office_id };
+  });
+  await auditMessage(req, 'UPDATE', 'tc_message.unapproved', messageId, out.office);
+  return toMessage(out.row);
+}
+
+/**
+ * RESCHEDULE one waiting library email (draft or approved) to a date and time
+ * in OFFICE time. Refused, naming the rule, when the new time is in the past
+ * (TIME_IN_PAST), outside the send window (OUTSIDE_SEND_WINDOW), out of the
+ * sequence's order (OUT_OF_ORDER), or would break a hard cap against the
+ * campaign's other emails (CAP_WOULD_EXCEED). An approval is kept: the text
+ * did not change. The same time twice changes nothing the second time.
+ * @param {{ date: string, time: string }} input
+ */
+async function rescheduleNurtureEmail(req, office, messageId, input) {
+  const now = clock();
+  const tz = nurtureCfg.timezone();
+  const [hh, mm] = input.time.split(':').map(Number);
+  const at = nurtureEngine.localInstant(tz, input.date, hh * 60 + mm);
+  const out = await txn(req, async (q) => {
+    const m = await loadOwnedNurtureMessage(q, office, messageId);
+    const { e, steps } = await libraryCampaignOf(q, m);
+    if (!nurtureStore.WAITING_STATUSES.includes(m.status)) {
+      throw new MessagingError('MESSAGE_NOT_APPROVABLE', `This email is ${m.status}, so its date can't change.`, {
+        status: m.status,
+      });
+    }
+    if (e.status === 'stopped' || e.status === 'completed') {
+      throw new MessagingError('ENROLLMENT_NOT_ACTIVE', `This campaign is ${e.status}.`, { enrollmentStatus: e.status });
+    }
+    if (Number.isNaN(at.getTime())) throw new MessagingError('OUTSIDE_SEND_WINDOW', 'That is not a date and time.');
+    if (at.getTime() < now.getTime()) {
+      throw new MessagingError('TIME_IN_PAST', 'That time has already passed. Pick a time from now on.');
+    }
+    if (!nurtureEngine.isInSendWindow(tz, at)) {
+      throw new MessagingError('OUTSIDE_SEND_WINDOW', `Library emails go out ${SEND_WINDOW_WORDS}. Pick a time inside it.`, {
+        rule: 'send_window',
+      });
+    }
+    const before = nurtureStore.dateOrNull(m.scheduled_for);
+    if (before && before.getTime() === at.getTime()) return { row: m, office: m.office_id, changed: false };
+
+    const mine = nurtureStore.stepIndexOf(steps, m.touch_key);
+    const rows = await nurtureStore.messagesOfEnrollments(q, m.office_id, [e.enrollment_id]);
+    const others = rows
+      .filter((r) => r.message_id !== messageId)
+      .map((r) => ({ i: nurtureStore.stepIndexOf(steps, r.touch_key), t: capTimeOf(r) }))
+      .filter((x) => x.t);
+    const prev = others.filter((x) => x.i >= 0 && x.i < mine).sort((a, b) => b.i - a.i)[0];
+    const next = others.filter((x) => x.i > mine).sort((a, b) => a.i - b.i)[0];
+    if ((prev && at.getTime() <= prev.t.getTime()) || (next && at.getTime() >= next.t.getTime())) {
+      const which = prev && at.getTime() <= prev.t.getTime() ? `after email ${prev.i + 1}` : `before email ${next.i + 1}`;
+      throw new MessagingError(
+        'OUT_OF_ORDER',
+        `Email ${mine + 1} has to go ${which} — the campaign keeps its order. Move that one first, or pick another time.`,
+        { rule: 'sequence_order' }
+      );
+    }
+    const v = nurtureEngine.capViolation(tz, [...others.map((x) => x.t), at]);
+    if (v) {
+      throw new MessagingError('CAP_WOULD_EXCEED', `That time would break the rule of ${v.rule}.`, { rule: v.code });
+    }
+    const res = await q.query(
+      `UPDATE tc_messages SET scheduled_for = $3
+        WHERE office_id = $1 AND message_id = $2 AND status = ANY($4)
+        RETURNING ${MESSAGE_COLS.join(', ')}`,
+      [m.office_id, messageId, at.toISOString(), [...nurtureStore.WAITING_STATUSES]]
+    );
+    if (!res.rows.length) throw new MessagingError('MESSAGE_NOT_APPROVABLE', 'This email changed while you were editing it.');
+    return { row: res.rows[0], office: m.office_id, changed: true };
+  });
+  if (out.changed) await auditMessage(req, 'UPDATE', 'tc_message.rescheduled', messageId, out.office);
+  return toMessage(out.row);
+}
+
+/**
+ * (EL-2c) After a person SENT a library campaign email by hand (the ordinary
+ * Send route), finish the campaign if that was its last waiting email. Never
+ * throws: the send already happened and its result stands; a failure here is
+ * logged and the nightly sweep finishes the campaign instead.
+ */
+async function settleNurtureAfterSend(req, office, messageId) {
+  try {
+    await txn(req, async (q) => {
+      const r = await q.query(`SELECT enrollment_id FROM tc_messages WHERE office_id = $1 AND message_id = $2`, [
+        office,
+        messageId,
+      ]);
+      const enrollmentId = r.rows.length ? r.rows[0].enrollment_id : null;
+      if (enrollmentId) await nurtureStore.completeIfFinished(q, office, enrollmentId, { now: clock() });
+    });
+  } catch (err) {
+    console.warn(`[messaging] nurture settle after send failed office=${office} message=${messageId}: ${(err && err.message) || err}`);
+  }
 }
 
 // ── the "new text" badge (item 39) ──────────────────────────────────────────
@@ -1232,6 +1689,15 @@ module.exports = {
   recordInbound,
   applyStatusCallback,
   skipNurtureDraft,
+  // (EL-2c) approve up front — none of these sends
+  NURTURE_MESSAGE_COLS,
+  approveNurtureEmail,
+  approveAllNurtureEmails,
+  unapproveNurtureEmail,
+  rescheduleNurtureEmail,
+  replanLateEmails,
+  settleNurtureAfterSend,
+  isLibraryEmailRow,
   countUnseen,
   listUnseenOnCases,
   markSeen,

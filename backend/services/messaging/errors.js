@@ -35,6 +35,16 @@ const HTTP_STATUS = Object.freeze({
   // adapters
   FEATURE_DISABLED: 501,
   SEND_FAILED: 502,
+  // (EL-2c) approve up front: the library campaign review actions
+  OFFICE_MISMATCH: 409,
+  ENROLLMENT_NOT_FOUND: 404,
+  ENROLLMENT_NOT_ACTIVE: 409,
+  MESSAGE_NOT_APPROVABLE: 409,
+  OUTSIDE_SEND_WINDOW: 409,
+  TIME_IN_PAST: 409,
+  OUT_OF_ORDER: 409,
+  CAP_WOULD_EXCEED: 409,
+  EMAIL_TEXT_INVALID: 400,
 });
 
 class MessagingError extends Error {
