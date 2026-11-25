@@ -62,7 +62,10 @@ test('planCampaign: enrollment day + step day at 10:00; a weekend step moves to 
   assert.deepEqual(times.map(local), [
     'Thu 2026-12-03 10:00', // day 0 at 10:00
     'Mon 2026-12-07 09:00', // day 2 is Saturday → the window's next opening
-    'Thu 2026-12-10 10:00', // day 7
+    // day 7 is 5 days after day 2, counted from where day 2 was PLACED (Mon
+    // 12-07): Sat 12-12 → the window's next opening. The sequence-gap rule:
+    // a gap is never shorter than the sequence's (Thu 12-10 would be 3 days).
+    'Mon 2026-12-14 09:00',
   ]);
   assert.equal(engine.capViolation(TZ, times), null);
 });
@@ -140,6 +143,99 @@ test('every library sequence, for every procedure, plans lawfully from any weekd
       }
     }
   }
+});
+
+// THE SEQUENCE-GAP RULE, table-driven. When the first email is pushed to the
+// window's next opening (after 16:00, a weekend), every later email moves with
+// it: a gap is never SHORTER than the sequence's gap in local days. Measured
+// on develop 7eb4009 before the fix, d0/d7/d16/d30/d50 from Wed 17:00 gave
+// gaps 6,9,14,20; from Fri 17:00 4,10,14,21; from Sat 12:00 7,7,14,21.
+const GAP_INSTANTS = [
+  ['Wed 14:00', '2026-12-02', '14:00'],
+  ['Wed 17:00', '2026-12-02', '17:00'],
+  ['Fri 15:59', '2026-12-04', '15:59'],
+  ['Fri 16:01', '2026-12-04', '16:01'],
+  ['Fri 17:00', '2026-12-04', '17:00'],
+  ['Sat 12:00', '2026-12-05', '12:00'],
+  ['Sun 23:30', '2026-12-06', '23:30'],
+  ['Mon 08:00', '2026-12-07', '08:00'],
+  ['Sat 12:00 CDT, the day before fall-back', '2026-10-31', '12:00'],
+  ['Sun 12:00 CST, fall-back day', '2026-11-01', '12:00'],
+  ['Sat 12:00 CST, the day before spring-forward', '2027-03-13', '12:00'],
+  ['Sun 12:00 CDT, spring-forward day', '2027-03-14', '12:00'],
+];
+
+/** Every distinct sequence of the four tracks (the procedures that skip a stage included). */
+function everySequence() {
+  const out = [];
+  for (const track of library.SEQUENCE_TRACKS) {
+    const seen = new Set();
+    for (const p of library.SOURCE.procedure_blocks) {
+      const steps = library.sequenceFor(track, p.id);
+      const key = steps.map((s) => s.day).join(',');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ label: `${track}/${p.id} [${key}]`, steps });
+    }
+  }
+  return out;
+}
+
+function assertLawfulPlan(times, steps, now, label) {
+  assert.equal(times.length, steps.length, label);
+  assert.equal(engine.capViolation(TZ, times), null, `${label} caps`);
+  for (let i = 0; i < times.length; i++) {
+    assert.ok(engine.isInSendWindow(TZ, times[i]), `${label} #${i} ${local(times[i])} inside the window`);
+    assert.ok(times[i] >= now, `${label} #${i} not before now`);
+    if (i === 0) continue;
+    assert.ok(times[i] > times[i - 1], `${label} #${i} strictly after #${i - 1}`);
+    const gap = engine.localDaysBetween(TZ, times[i - 1], times[i]);
+    const want = steps[i].day - steps[i - 1].day;
+    assert.ok(gap >= want, `${label} gap ${i} is ${gap} local days, the sequence says ${want}`);
+  }
+}
+
+test('the sequence-gap rule: planCampaign AND replanForward, every sequence, at every awkward instant', () => {
+  const sequences = everySequence();
+  assert.ok(sequences.length >= 8, 'the four tracks and their stage-skipping variants');
+  for (const [name, ymd, hhmm] of GAP_INSTANTS) {
+    const now = at(ymd, hhmm);
+    for (const { label, steps } of sequences) {
+      const planned = engine.planCampaign({ tz: TZ, enrolledAt: now, steps });
+      assertLawfulPlan(planned, steps, now, `planCampaign ${name} ${label}`);
+
+      // Never planned (the #359 catch-up shape) …
+      const fresh = engine.replanForward({ tz: TZ, now, pending: steps.map((s) => ({ day: s.day, time: null })) });
+      assertLawfulPlan(fresh, steps, now, `replanForward(null) ${name} ${label}`);
+      // … and planned 20 days ago, then paused (the Resume shape).
+      const old = engine.planCampaign({ tz: TZ, enrolledAt: new Date(now.getTime() - 20 * 24 * 3600 * 1000), steps });
+      const resumed = engine.replanForward({ tz: TZ, now, pending: steps.map((s, i) => ({ day: s.day, time: old[i] })) });
+      assertLawfulPlan(resumed, steps, now, `replanForward(late) ${name} ${label}`);
+      for (let i = 0; i < old.length; i++) assert.ok(resumed[i] >= old[i], `${label} #${i} only ever moves later`);
+    }
+  }
+});
+
+test('the sequence-gap rule, exact: d0/d7/d16/d30/d50 keeps 7,9,14,20 after 16:00 and on a weekend', () => {
+  const steps = [0, 7, 16, 30, 50].map((day) => ({ day }));
+  const gaps = (ts) => ts.slice(1).map((x, i) => engine.localDaysBetween(TZ, ts[i], x));
+  for (const [ymd, hhmm] of [['2026-12-04', '17:00'], ['2026-12-05', '12:00'], ['2026-12-06', '23:30']]) {
+    const now = at(ymd, hhmm);
+    assert.deepEqual(gaps(engine.planCampaign({ tz: TZ, enrolledAt: now, steps })), [7, 9, 14, 20], `planCampaign ${ymd} ${hhmm}`);
+  }
+  // Wed 17:00: day 0 is Thu 09:00, so day 16 lands on a Saturday and moves to
+  // Monday — LONGER than the sequence (11), never shorter (was 6,9,14,20).
+  assert.deepEqual(gaps(engine.planCampaign({ tz: TZ, enrolledAt: at('2026-12-02', '17:00'), steps })), [7, 11, 14, 21]);
+  // Fri 17:00: Monday first, then exactly the sequence's spacing from there.
+  const now = at('2026-12-04', '17:00');
+  const times = engine.replanForward({ tz: TZ, now, pending: steps.map((s) => ({ day: s.day, time: null })) });
+  assert.deepEqual(times.map(local), [
+    'Mon 2026-12-07 09:00',
+    'Mon 2026-12-14 10:00',
+    'Wed 2026-12-23 10:00',
+    'Wed 2027-01-06 10:00',
+    'Tue 2027-01-26 10:00',
+  ]);
 });
 
 test('DST: 10:00 office time stays 10:00 across the November and March changes', () => {

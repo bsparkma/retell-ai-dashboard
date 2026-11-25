@@ -36,6 +36,7 @@ const registry = require('../../platform/registry');
 const library = require('../../services/tcEmailLibrary');
 const messaging = require('../../services/messaging');
 const adapters = require('../../services/messaging/adapters');
+const nurtureRoute = require('./nurture');
 const engine = require('../../services/tcNurture/engine');
 const hooks = require('../../services/tcNurture/hooks');
 const generator = require('../../services/tcNurture/generator');
@@ -86,9 +87,23 @@ function armNeverSend(t) {
   return hits;
 }
 
+/** Pin BOTH clocks the planner is fed from: the review actions' (messaging) and Start/Resume's (the route). */
 function fixClock(t, at = NOW) {
   messaging.setClockForTests(() => new Date(at.getTime()));
-  t.after(() => messaging.resetClock());
+  nurtureRoute.setClockForTests(() => new Date(at.getTime()));
+  t.after(() => {
+    messaging.resetClock();
+    nurtureRoute.resetClock();
+  });
+}
+
+/** THE SEQUENCE-GAP RULE: each gap is at least the sequence's gap in local days. */
+function assertGapsKept(times, steps, label = '') {
+  for (let i = 1; i < times.length; i++) {
+    assert.ok(times[i] > times[i - 1], `${label} order kept`);
+    const gapDays = engine.localDaysBetween(TZ, times[i - 1], times[i]);
+    assert.ok(gapDays >= steps[i].day - steps[i - 1].day, `${label} gap ${i} kept (${gapDays} < ${steps[i].day - steps[i - 1].day})`);
+  }
 }
 
 async function boot(t) {
@@ -226,6 +241,7 @@ const audits = (app, type) => auditRows(app.db).filter((r) => (r.resource_type ?
 // ── Start: the whole campaign, in one transaction ──────────────────────────
 
 test('Start writes EVERY step as a draft with a planned time, in the enrollment\'s own transaction; nothing is sent', async (t) => {
+  fixClock(t);
   switchNurture(t, { roland: true });
   withEnv(t, PHONE_ENV, OFFICE_PHONE);
   armNeverSend(t);
@@ -264,6 +280,8 @@ test('Start writes EVERY step as a draft with a planned time, in the enrollment\
     if (i > 0) assert.ok(times[i] > times[i - 1], 'in sequence order');
   }
   assert.equal(engine.capViolation(TZ, times), null, 'the hard caps hold');
+  assertGapsKept(times, steps, 'Start');
+  assert.ok(times.every((x) => x >= NOW), 'nothing before the (fixed) now');
   assert.equal(e.nextSendAt, times[0].toISOString());
 
   // ONE transaction: one BEGIN … COMMIT around the enrollment and all ten INSERTs.
@@ -284,7 +302,7 @@ test('Start writes EVERY step as a draft with a planned time, in the enrollment\
   assert.equal(app.db.table('tc_case_events').filter((x) => x.type === 'nurture_touch_queued').length, 0);
 
   // And the nightly pass has nothing to write for it.
-  const out = await generator.runForOffice({ pool: app.db, tenantSlug: 'carein', office: 'roland', tz: TZ });
+  const out = await generator.runForOffice({ pool: app.db, tenantSlug: 'carein', office: 'roland', now: NOW, tz: TZ });
   assert.equal(out.due, 0);
   assert.equal(out.completed, 0, 'ten emails still waiting');
   assert.equal(app.db.table('tc_messages').length, 10);
@@ -580,7 +598,7 @@ test('skip: an approved email can be skipped (reason manual); a double click ref
   assert.equal(e.status, 'active');
 
   // The other four: three go out (a person sent them by hand), the last is skipped.
-  for (const m of msgs.slice(1, 4)) Object.assign(m, { status: 'sent', sent_at: new Date().toISOString() });
+  for (const m of msgs.slice(1, 4)) Object.assign(m, { status: 'sent', sent_at: NOW.toISOString() });
   const last = await skip(msgs[4]);
   assert.equal(last.status, 200);
   assert.equal(e.status, 'completed', 'completed only once its last email is sent or skipped');
@@ -594,20 +612,20 @@ test('completion: active until the last email is SENT — after a hand send, and
   armNeverSend(t);
   const app = await boot(t);
   const a = seedCampaign(app.db, seedCase(app.db, { status: 'nurture' }));
-  for (const m of a.msgs.slice(0, 4)) Object.assign(m, { status: 'sent', sent_at: new Date().toISOString() });
+  for (const m of a.msgs.slice(0, 4)) Object.assign(m, { status: 'sent', sent_at: NOW.toISOString() });
   // One still waiting: the sweep leaves it running.
-  let out = await generator.runForOffice({ pool: app.db, tenantSlug: 'carein', office: 'roland', tz: TZ });
+  let out = await generator.runForOffice({ pool: app.db, tenantSlug: 'carein', office: 'roland', now: NOW, tz: TZ });
   assert.equal(out.completed, 0);
   assert.equal(a.e.status, 'active');
   // The last one goes out by hand; the Send route then settles the campaign.
-  Object.assign(a.msgs[4], { status: 'sent', sent_at: new Date().toISOString() });
+  Object.assign(a.msgs[4], { status: 'sent', sent_at: NOW.toISOString() });
   await messaging.settleNurtureAfterSend({ user: { email: 'tc@carein.ai' } }, 'roland', a.msgs[4].message_id);
   assert.equal(a.e.status, 'completed');
 
   // A second campaign finished without a hand send (e.g. a failed send): the sweep completes it.
   const b = seedCampaign(app.db, seedCase(app.db, { status: 'nurture' }));
   for (const m of b.msgs) Object.assign(m, { status: m === b.msgs[0] ? 'failed' : 'sent' });
-  out = await generator.runForOffice({ pool: app.db, tenantSlug: 'carein', office: 'roland', tz: TZ });
+  out = await generator.runForOffice({ pool: app.db, tenantSlug: 'carein', office: 'roland', now: NOW, tz: TZ });
   assert.equal(out.completed, 1);
   assert.equal(b.e.status, 'completed');
 });
@@ -793,30 +811,39 @@ test('"Patient replied" pauses (reason patient_replied, marked by the actor) and
 test('Resume re-plans the late emails forward from now: order and gaps kept, caps hold, approvals kept, never bunched', async (t) => {
   armNeverSend(t);
   const app = await boot(t);
-  // Planned 20 days ago, paused since: emails 1 and 2 are late.
-  const enrolledAt = new Date(Date.now() - 20 * 24 * 3600 * 1000);
-  const { e, msgs, steps } = seedCampaign(app.db, seedCase(app.db, { status: 'nurture' }), { enrolledAt });
-  msgs[1].status = 'scheduled';
-  msgs[1].approved_by = 'tc@carein.ai';
-  msgs[1].approved_at = enrolledAt.toISOString();
-  e.status = 'paused';
-  const start = Date.now();
-  const r = await api(app.baseUrl, 'POST', N(`/enrollments/${e.enrollment_id}/resume?office=roland`), {});
-  assert.equal(r.status, 200, JSON.stringify(r.body));
-  assert.equal(r.body.enrollment.status, 'active');
-  const times = msgs.map((m) => new Date(m.scheduled_for));
-  assert.ok(times.every((x) => x.getTime() >= start - 1000), 'nothing left in the past');
-  for (let i = 1; i < times.length; i++) {
-    assert.ok(times[i] > times[i - 1], 'order kept');
-    const gapDays = engine.localDaysBetween(TZ, times[i - 1], times[i]);
-    assert.ok(gapDays >= steps[i].day - steps[i - 1].day, `gap ${i} kept (${gapDays})`);
+  // FIXED clocks, never the wall clock: inside the window, after 16:00 on a
+  // weekday, Friday evening and Saturday — the instants where the first email
+  // is pushed to the next opening and the rest used to stay behind (gap 6).
+  const instants = [
+    ['Tue 09:00', NOW],
+    ['Wed 17:00', new Date('2026-12-02T23:00:00.000Z')],
+    ['Fri 17:00', new Date('2026-12-04T23:00:00.000Z')],
+    ['Sat 12:00', new Date('2026-12-05T18:00:00.000Z')],
+  ];
+  for (const [label, now] of instants) {
+    fixClock(t, now);
+    // Planned 20 days ago, paused since: emails 1 and 2 are late.
+    const enrolledAt = new Date(now.getTime() - 20 * 24 * 3600 * 1000);
+    const tcCase = seedCase(app.db, { status: 'nurture' });
+    const { e, msgs, steps } = seedCampaign(app.db, tcCase, { enrolledAt });
+    msgs[1].status = 'scheduled';
+    msgs[1].approved_by = 'tc@carein.ai';
+    msgs[1].approved_at = enrolledAt.toISOString();
+    e.status = 'paused';
+    const auditsBefore = audits(app, 'tc_message.replanned').length;
+    const r = await api(app.baseUrl, 'POST', N(`/enrollments/${e.enrollment_id}/resume?office=roland`), {});
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.enrollment.status, 'active');
+    const times = msgs.map((m) => new Date(m.scheduled_for));
+    assert.ok(times.every((x) => x >= now), `${label} nothing left in the past`);
+    assertGapsKept(times, steps, label);
+    assert.equal(engine.capViolation(TZ, times), null, label);
+    assert.ok(times.every((x) => engine.isInSendWindow(TZ, x)), label);
+    assert.equal(msgs[1].status, 'scheduled', 'approval kept');
+    const ev = app.db.table('tc_case_events').find((x) => x.type === 'nurture_resumed' && x.case_id === tcCase.case_id);
+    assert.match(ev.description, /late emails? re-planned from today, in order and spaced as before \(approvals kept\)/);
+    assert.ok(audits(app, 'tc_message.replanned').length - auditsBefore >= 2, label);
   }
-  assert.equal(engine.capViolation(TZ, times), null);
-  assert.ok(times.every((x) => engine.isInSendWindow(TZ, x)));
-  assert.equal(msgs[1].status, 'scheduled', 'approval kept');
-  const ev = app.db.table('tc_case_events').find((x) => x.type === 'nurture_resumed');
-  assert.match(ev.description, /late emails? re-planned from today, in order and spaced as before \(approvals kept\)/);
-  assert.ok(audits(app, 'tc_message.replanned').length >= 2);
 });
 
 // ── the nightly catch-up of a #359-era campaign ────────────────────────────

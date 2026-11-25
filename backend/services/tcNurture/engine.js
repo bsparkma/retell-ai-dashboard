@@ -203,7 +203,12 @@ function renderTouch({ trackKey, touchKey, patientName, merge, withStopSuffix })
 // A library campaign is written IN FULL at Start (and #359-era campaigns are
 // caught up by the nightly pass), so every email gets a planned send time:
 //
-//   1. enrollment day + the step's day, at 10:00 office time
+//   1. enrollment day + the step's day, at 10:00 office time — and, for every
+//      email after the first, never earlier than the PLACED local day of the
+//      email before it plus the sequence's gap (day_j − day_(j−1)), at 10:00.
+//      So when the window or a cap pushes one email later, every later email
+//      moves with it: a gap is never SHORTER than the sequence's gap in local
+//      days (it may be longer).
 //   2. outside Mon–Fri 09:00–16:00 office time → the next opening of the window
 //   3. the hard caps, re-checked with capCheck above (the existing cap logic,
 //      counted in local days) against every email already placed; a violation
@@ -326,21 +331,35 @@ class PlanError extends Error {
 }
 
 /**
- * Place emails in order. Each starts from its `base` (never earlier than
- * `notBefore`, never at or before the email placed just before it), moves into
- * the send window, then is re-checked against the hard caps — `fixed` (emails
- * already out or already placed elsewhere) plus every email placed so far —
- * and moved later until capCheck passes.
- * @param {{ tz: string, bases: Date[], fixed?: Date[], notBefore?: Date|null }} input
+ * Place emails in SEQUENCE order. Each starts from its `base` (never earlier
+ * than `notBefore`, never at or before the email placed just before it). When
+ * `days` (the step day of each base) is given, email j is also never earlier
+ * than the placed local day of email j−1 plus (days[j] − days[j−1]) days, at
+ * 10:00 — THE SEQUENCE-GAP RULE: a gap is never shorter than the sequence's
+ * gap in local days. Then the send window, then the hard caps — `fixed`
+ * (emails already out or already placed elsewhere) plus every email placed so
+ * far — moving later until capCheck passes. Emails only ever move later.
+ *
+ * The rule lives HERE rather than in planCampaign/replanForward because it
+ * depends on where the previous email was actually PLACED (after its window
+ * and cap moves), which only this loop knows. Both production callers pass
+ * `days`; only the direct cap-logic unit tests call it without.
+ * @param {{ tz: string, bases: Date[], days?: readonly number[]|null, fixed?: Date[], notBefore?: Date|null }} input
  * @returns {Date[]} one planned time per base, strictly increasing
  */
-function planTimes({ tz, bases, fixed = [], notBefore = null }) {
+function planTimes({ tz, bases, days = null, fixed = [], notBefore = null }) {
+  if (days && days.length !== bases.length) throw new Error('[tcNurture] planTimes: days and bases differ in length');
   /** @type {Date[]} */
   const placed = [];
-  for (const base of bases) {
-    let cand = base;
+  for (let j = 0; j < bases.length; j++) {
+    let cand = bases[j];
     if (notBefore && cand.getTime() < notBefore.getTime()) cand = notBefore;
     const prev = placed[placed.length - 1];
+    if (prev && days) {
+      const gap = Math.max(0, days[j] - days[j - 1]);
+      const floor = plannedAtOn(tz, addDaysYmd(localDayKey(tz, prev), gap));
+      if (cand.getTime() < floor.getTime()) cand = floor;
+    }
     if (prev && cand.getTime() <= prev.getTime()) cand = new Date(prev.getTime() + MINUTE_MS);
     cand = nextAllowedSlot(tz, cand);
     // Each pass moves at least one local day later; 400 days is far beyond any
@@ -369,6 +388,7 @@ function planCampaign({ tz, enrolledAt, steps }) {
   return planTimes({
     tz,
     bases: steps.map((s) => plannedAtOn(tz, addDaysYmd(day0, s.day))),
+    days: steps.map((s) => s.day),
     notBefore: enrolledAt,
   });
 }
@@ -379,9 +399,11 @@ function planCampaign({ tz, enrolledAt, steps }) {
  * planned `time` (null = never planned). When the first one's time is past (or
  * null), all of them are re-anchored on today: email j at today + (day_j −
  * day_0), 10:00, never earlier than its current planned time and never before
- * `now` — so their order and their gaps are kept and nothing is bunched — then
- * the window and caps place them, counted against `fixed` (what already went
- * out). Returns null when nothing is late (nothing moves).
+ * `now`; planTimes then chains each email on the PLACED day of the one before
+ * (the sequence-gap rule), so when the first is pushed past tonight or the
+ * weekend the rest move with it — their order and gaps are kept and nothing is
+ * bunched — and the window and caps place them, counted against `fixed` (what
+ * already went out). Returns null when nothing is late (nothing moves).
  * @param {{ tz: string, now: Date, pending: Array<{ day: number, time: Date|null }>, fixed?: Date[] }} input
  * @returns {Date[]|null}
  */
@@ -394,7 +416,7 @@ function replanForward({ tz, now, pending, fixed = [] }) {
     const anchored = plannedAtOn(tz, addDaysYmd(today, p.day - first.day));
     return p.time && p.time.getTime() > anchored.getTime() ? p.time : anchored;
   });
-  return planTimes({ tz, bases, fixed, notBefore: now });
+  return planTimes({ tz, bases, days: pending.map((p) => p.day), fixed, notBefore: now });
 }
 
 /** The rule a cap code names, in words a person reads. */

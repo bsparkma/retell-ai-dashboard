@@ -1546,6 +1546,9 @@ async function rescheduleNurtureEmail(req, office, messageId, input) {
     const before = nurtureStore.dateOrNull(m.scheduled_for);
     if (before && before.getTime() === at.getTime()) return { row: m, office: m.office_id, changed: false };
 
+    // A PERSON moving one email: the window, the sequence's ORDER and the hard
+    // caps — deliberately NOT the planner's sequence-gap rule (engine.planTimes).
+    // A person may tighten two emails down to the 48-hour cap on purpose.
     const mine = nurtureStore.stepIndexOf(steps, m.touch_key);
     const rows = await nurtureStore.messagesOfEnrollments(q, m.office_id, [e.enrollment_id]);
     const others = rows
