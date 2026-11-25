@@ -87,7 +87,6 @@ export default function Admin() {
   const practiceCards = cards.filter((c) => c.group === "practice");
   const tcCards = cards.filter((c) => c.group === "module" && c.subgroup === "Treatment Coordinator");
   const voiceCards = cards.filter((c) => c.group === "module" && c.subgroup === "Voice");
-  const emailLibraryCards = cards.filter((c) => c.group === "module" && c.subgroup === "Patient emails");
   const voiceEntitled = hasModule(tenantModules, "voice");
 
   return (
@@ -126,14 +125,6 @@ export default function Admin() {
           <div className="space-y-3" data-testid="admin-module-tc">
             <SubHeading>Treatment Coordinator</SubHeading>
             <CardGrid cards={tcCards} />
-          </div>
-        )}
-
-        {/* EL-1: the patient email library, its own block while it is a draft. */}
-        {emailLibraryCards.length > 0 && (
-          <div className="space-y-3" data-testid="admin-module-tc-email-library">
-            <SubHeading>Patient emails</SubHeading>
-            <CardGrid cards={emailLibraryCards} />
           </div>
         )}
 

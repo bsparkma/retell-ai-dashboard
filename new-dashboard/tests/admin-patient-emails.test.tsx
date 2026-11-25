@@ -1,7 +1,7 @@
 /**
  * EL-1: /admin/patient-emails, the TC patient email library's wording + preview.
  *
- *   - the draft banner shows while the server says the library is unapproved
+ *   - the library status line (EL-2: the draft banner is retired) says whether the library is doctor-reviewed
  *   - the questionnaire is grouped by section; show_if hides a follow-up question
  *   - an edit previews with the UNSAVED answers (server-side compose, debounced)
  *   - Save sends the validated answers and says "Saved" only after the server's
@@ -146,10 +146,12 @@ afterEach(() => {
 });
 
 describe("/admin/patient-emails", () => {
-  it("shows the draft banner, the grouped questionnaire and a highlighted preview", async () => {
+  it("shows the library status, the grouped questionnaire and a highlighted preview", async () => {
     render(<AdminPatientEmails />);
-    expect((await screen.findByTestId("patient-emails-draft-banner")).textContent).toContain(
-      "Draft wording, pending doctor review. Nothing is sent from this page.",
+    // EL-2: the amber draft banner is gone; an unapproved library says so in one line.
+    expect(screen.queryByTestId("patient-emails-draft-banner")).toBeNull();
+    expect((await screen.findByTestId("patient-emails-library-status")).textContent).toContain(
+      "not doctor-reviewed: nurture campaigns cannot draft from it yet.",
     );
     expect(screen.getByTestId("patient-emails-section-Office basics")).toBeTruthy();
     expect(screen.getByTestId("patient-emails-section-Technology")).toBeTruthy();
@@ -255,11 +257,14 @@ describe("/admin/patient-emails", () => {
     expect((await screen.findByTestId("patient-emails-missing-schedule_link")).textContent).toContain("Treatment recap");
   });
 
-  it("no banner once the server says the library is approved", async () => {
+  it("no banner once the server says the library is approved; the status line says doctor-reviewed", async () => {
     apiMock.getEmailLibraryCatalog.mockResolvedValue({ ...CATALOG, clinicallyApproved: true });
     render(<AdminPatientEmails />);
     await screen.findByTestId("patient-emails-questionnaire");
     expect(screen.queryByTestId("patient-emails-draft-banner")).toBeNull();
+    expect(screen.getByTestId("patient-emails-library-status").textContent).toBe(
+      `Library v${CATALOG.libraryVersion}, doctor-reviewed.`,
+    );
   });
 });
 

@@ -18,6 +18,12 @@
  * fail). A draft flagged at draft time (opted out, unsubscribed, no address)
  * shows why and offers Skip only. Nurture switched off is said in words — not
  * an empty list that looks like "all caught up", and not a row of zeros.
+ *
+ * LIBRARY DRAFTS (EL-2). A draft the generator composed from the patient email
+ * library carries template_id 'library.<procedure>.<stage>.<variant>'; its row
+ * names the procedure and tone and shows the stage's label ("Why it matters")
+ * where a hand-written draft shows its touch key. Labels come from the
+ * library catalog, fetched only when such a draft is on screen.
  */
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "wouter";
@@ -25,7 +31,13 @@ import { toast } from "sonner";
 import { CheckCheck, Loader2, Mail, MessageSquare, RefreshCw, Send, SkipForward, Sprout } from "lucide-react";
 import type { OfficeId } from "@shared/tc/contract";
 import type { MessageChannel } from "@shared/tc/messaging";
-import type { NurtureOutboxDraft, NurtureOutboxGroup, NurtureOutboxResponse } from "@shared/tc/nurture";
+import type { EmailLibraryCatalogResponse } from "@shared/tc/emailLibrary";
+import {
+  parseLibraryTemplateId,
+  type NurtureOutboxDraft,
+  type NurtureOutboxGroup,
+  type NurtureOutboxResponse,
+} from "@shared/tc/nurture";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -39,7 +51,8 @@ import {
 import { sendMessage } from "../messaging/messagingApi";
 import { adapterReasonCopy, CHANNEL_LABEL } from "../messaging/copy";
 import { getNurtureOutbox, skipNurtureDraft } from "./campaignApi";
-import { approveErrorText, HINT_COPY, nurtureErrorText } from "./campaignCopy";
+import { approveErrorText, HINT_COPY, LIBRARY_TONE_LABEL, nurtureErrorText } from "./campaignCopy";
+import { libraryProcedureName, libraryStageLabel, useLibraryCatalog } from "./useLibraryCatalog";
 
 type ChannelState = NurtureOutboxResponse["channels"][number];
 
@@ -58,6 +71,10 @@ export function NurtureOutbox({ office }: { office: OfficeId }) {
   /** message ids with a request in flight */
   const [working, setWorking] = useState<ReadonlySet<string>>(new Set());
   const [confirmGroup, setConfirmGroup] = useState<NurtureOutboxGroup | null>(null);
+  const hasLibraryDraft = Boolean(
+    data?.groups.some((g) => g.drafts.some((d) => parseLibraryTemplateId(d.message.templateId) !== null)),
+  );
+  const library = useLibraryCatalog(office, hasLibraryDraft);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -164,6 +181,7 @@ export function NurtureOutbox({ office }: { office: OfficeId }) {
       ) : data ? (
         <OutboxBody
           data={data}
+          catalog={library.catalog}
           working={working}
           onApprove={(d) => void onApprove(d)}
           onSkip={(d) => void onSkip(d)}
@@ -202,12 +220,14 @@ function sendableCount(group: NurtureOutboxGroup, channels: ChannelState[]): num
 
 function OutboxBody({
   data,
+  catalog,
   working,
   onApprove,
   onSkip,
   onApproveAll,
 }: {
   data: NurtureOutboxResponse;
+  catalog: EmailLibraryCatalogResponse | null;
   working: ReadonlySet<string>;
   onApprove: (d: NurtureOutboxDraft) => void;
   onSkip: (d: NurtureOutboxDraft) => void;
@@ -262,6 +282,7 @@ function OutboxBody({
                   <DraftRow
                     key={d.message.messageId}
                     d={d}
+                    catalog={catalog}
                     blocked={blockedReason(d, data.channels)}
                     working={working.has(d.message.messageId)}
                     onApprove={() => onApprove(d)}
@@ -281,18 +302,21 @@ const CHANNEL_ICON: Record<MessageChannel, typeof Mail> = { sms: MessageSquare, 
 
 function DraftRow({
   d,
+  catalog,
   blocked,
   working,
   onApprove,
   onSkip,
 }: {
   d: NurtureOutboxDraft;
+  catalog: EmailLibraryCatalogResponse | null;
   blocked: string | null;
   working: boolean;
   onApprove: () => void;
   onSkip: () => void;
 }) {
   const Icon = CHANNEL_ICON[d.message.channel];
+  const lib = parseLibraryTemplateId(d.message.templateId);
   return (
     <li className="flex items-start gap-3 p-3" data-testid="outbox-draft">
       <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
@@ -302,7 +326,16 @@ function DraftRow({
             {d.patientName ?? "Unnamed case"}
           </Link>
           <span>· {CHANNEL_LABEL[d.message.channel]}</span>
-          <span>· {d.touchKey}</span>
+          {lib ? (
+            <>
+              <span data-testid="draft-library">
+                · Library: {libraryProcedureName(catalog, lib.procedureId)} · {LIBRARY_TONE_LABEL[lib.variant]}
+              </span>
+              <span data-testid="draft-stage">· {libraryStageLabel(catalog, lib.stage)}</span>
+            </>
+          ) : (
+            <span>· {d.touchKey}</span>
+          )}
           {d.consentBlockedHint && (
             <Badge variant="outline" className="border-amber-400 text-amber-800 dark:text-amber-300" data-testid="consent-hint">
               {HINT_COPY[d.consentBlockedHint]}

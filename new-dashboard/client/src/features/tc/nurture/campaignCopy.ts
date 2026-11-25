@@ -8,6 +8,7 @@ import type {
   NurtureConsentHint,
   NurtureEnrollmentStatus,
   NurtureIntensity,
+  NurtureLibraryVariant,
   NurtureTrackUnavailableReason,
 } from "@shared/tc/nurture";
 import { TcApiError, tcErrorMessage } from "../api";
@@ -17,6 +18,13 @@ export const INTENSITY_LABEL: Record<NurtureIntensity, string> = {
   gentle: "Gentle",
   standard: "Standard",
   assertive: "Assertive",
+};
+
+/** EL-2: the library tone, as the picker offers it and the strip / outbox show it. */
+export const LIBRARY_TONE_LABEL: Record<NurtureLibraryVariant, string> = {
+  A: "Warm",
+  B: "Direct",
+  C: "Educational",
 };
 
 export const UNAVAILABLE_COPY: Record<NurtureTrackUnavailableReason, string> = {

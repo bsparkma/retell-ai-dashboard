@@ -672,6 +672,12 @@ export const TcNurtureEnrollment = z.object({
   libraryProcedureId: z.string().max(NURTURE_LIBRARY_PROCEDURE_MAX).nullable(),
   /** EL-2: the library tone, set exactly when libraryProcedureId is. */
   libraryVariant: NurtureLibraryVariant.nullable(),
+  /**
+   * EL-2: how many touches this enrollment's schedule has — the preset's at
+   * its intensity, or the library sequence's (minus any stage its procedure
+   * skips). Server-computed, so the strip's "N of M drafted" is never a guess.
+   */
+  stepCount: z.number().int().min(0),
 });
 export type TcNurtureEnrollment = z.infer<typeof TcNurtureEnrollment>;
 

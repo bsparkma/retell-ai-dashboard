@@ -416,7 +416,7 @@ export const EmailLibraryCatalogResponse = z
     success: z.literal(true),
     office: OfficeKeySchema,
     libraryVersion: z.string(),
-    /** False until the doctor's review; flips only by PR. Nothing is sent from this library either way in EL-1. */
+    /** True since EL-2 (1.3.0 is the doctor-reviewed wording); flips only by PR. While false, nurture cannot start a library enrollment (409 LIBRARY_NOT_APPROVED). */
     clinicallyApproved: z.boolean(),
     status: z.string(),
     rulesOfUse: z.array(z.string()),

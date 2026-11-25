@@ -127,16 +127,17 @@ export const HUB_CARDS: readonly HubCard[] = [
     checkRoute: true,
   },
   {
-    // EL-1: the patient email library's wording + preview. Its own subgroup
-    // (rendered as its own block by Admin.tsx) while the library is a draft
-    // pending the doctor's review. tc.full route, checked like the TC cards.
+    // EL-1: the patient email library's wording + preview. EL-2 moved it into
+    // the Treatment Coordinator block: the library is doctor-reviewed and
+    // nurture campaigns draft from it, so it is TC configuration like the rest.
+    // tc.full route, checked like the TC cards.
     id: "patient-emails",
     group: "module",
-    subgroup: "Patient emails",
+    subgroup: "Treatment Coordinator",
     href: "/admin/patient-emails",
     icon: Mail,
     title: "Patient email library",
-    detail: "The wording of treatment follow-up emails, per office, with a live preview. Draft: nothing is sent",
+    detail: "The wording of treatment follow-up emails, per office, with a live preview. Nurture campaigns can draft from it",
     module: "tc",
     checkRoute: true,
   },

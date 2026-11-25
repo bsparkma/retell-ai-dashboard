@@ -133,6 +133,7 @@ test('library enroll: 201, procedure + tone stored, the library cadence (no dial
   assert.equal(e.libraryVariant, 'A');
   assert.equal(e.intensityAtEnroll, 'assertive', 'the dial is recorded');
   assert.equal(e.nextTouchKey, 'tp_recap', 'but the schedule is the library sequence');
+  assert.equal(e.stepCount, 10, 'warm_followup has 10 library steps (the assertive preset also has 10: this counts the sequence)');
 
   const row = app.db.table('tc_nurture_enrollments')[0];
   assert.equal(row.library_procedure_id, 'crown');
@@ -306,6 +307,7 @@ test('library enrollment: pause + resume recomputes the due date from the LIBRAR
   const id = r.body.enrollment.enrollmentId;
   // reactivation's first library step is day 0: due on enrollment day.
   assert.equal(r.body.enrollment.nextTouchKey, 'reactivation');
+  assert.equal(r.body.enrollment.stepCount, 5);
   const p = await api(app.baseUrl, 'POST', `/api/tc/nurture/enrollments/${id}/pause?office=roland`, {});
   assert.equal(p.status, 200, JSON.stringify(p.body));
   const s = await api(app.baseUrl, 'POST', `/api/tc/nurture/enrollments/${id}/resume?office=roland`, {});

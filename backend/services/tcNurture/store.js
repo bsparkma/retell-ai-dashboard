@@ -91,6 +91,7 @@ function toEnrollment(r, touchCount) {
     updatedAt: iso(r.updated_at),
     libraryProcedureId: r.library_procedure_id ?? null,
     libraryVariant: r.library_variant ?? null,
+    stepCount: steps.length,
   });
 }
 

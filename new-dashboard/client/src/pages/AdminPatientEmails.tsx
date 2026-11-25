@@ -26,7 +26,7 @@
  * email identity (Practice info), server-side.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, Loader2, Lock, Mail, RefreshCw, Save } from "lucide-react";
+import { AlertTriangle, BadgeCheck, CheckCircle2, Loader2, Lock, Mail, RefreshCw, Save } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -424,7 +424,7 @@ function OfficeEmailLibrary({ office }: { office: OfficeId }) {
 
   return (
     <div className="space-y-5">
-    {!catalog.clinicallyApproved && <DraftBanner />}
+    <LibraryStatus version={catalog.libraryVersion} approved={catalog.clinicallyApproved} />
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
       {/* ── Questionnaire ─────────────────────────────────────────────── */}
       <section className="space-y-5" aria-label="Questionnaire" data-testid="patient-emails-questionnaire">
@@ -665,18 +665,23 @@ export default function AdminPatientEmails() {
 }
 
 /**
- * Shown while the server says the library is not clinically approved (the flag
- * flips only by PR after the doctor's review). This page sends nothing either way.
+ * The library's version and review state, in one neutral line (EL-2 retired the
+ * amber "pending doctor review" banner: 1.3.0 IS the doctor's review). If a
+ * later library ships unapproved (the flag flips only by PR), the line says so,
+ * and says what that blocks: nurture campaigns cannot draft from it. This page
+ * sends nothing either way.
  */
-function DraftBanner() {
+function LibraryStatus({ version, approved }: { version: string; approved: boolean }) {
   return (
-    <div
-      role="note"
-      className="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm font-medium text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100"
-      data-testid="patient-emails-draft-banner"
-    >
-      <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
-      Draft wording, pending doctor review. Nothing is sent from this page.
-    </div>
+    <p className="flex items-center gap-2 text-xs text-muted-foreground" data-testid="patient-emails-library-status">
+      {approved ? (
+        <BadgeCheck className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" aria-hidden />
+      ) : (
+        <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden />
+      )}
+      {approved
+        ? `Library v${version}, doctor-reviewed.`
+        : `Library v${version}, not doctor-reviewed: nurture campaigns cannot draft from it yet.`}
+    </p>
   );
 }

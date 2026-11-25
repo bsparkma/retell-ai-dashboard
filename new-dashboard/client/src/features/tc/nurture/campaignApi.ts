@@ -18,6 +18,7 @@ import {
   NurtureConfigResponse,
   NurtureOutboxResponse,
   TcNurtureEnrollment,
+  type NurtureLibraryVariant,
   type NurtureTrackKey,
 } from "@shared/tc/nurture";
 import { tcRequest } from "../api";
@@ -31,15 +32,24 @@ export async function getCaseNurture(office: OfficeId, caseId: string): Promise<
   return NurtureCaseResponse.parse(res);
 }
 
+/** EL-2: start the track from the patient email library: this procedure, in this tone. */
+export interface LibraryChoice {
+  procedureId: string;
+  variant: NurtureLibraryVariant;
+}
+
 export async function startNurture(
   office: OfficeId,
   caseId: string,
   trackKey: NurtureTrackKey,
+  library: LibraryChoice | null = null,
 ): Promise<TcNurtureEnrollment> {
   const res = await tcRequest<unknown>("/tc/nurture/enrollments", {
     office,
     method: "POST",
-    body: { case_id: caseId, track_key: trackKey },
+    body: library
+      ? { case_id: caseId, track_key: trackKey, procedure_id: library.procedureId, variant: library.variant }
+      : { case_id: caseId, track_key: trackKey },
   });
   return EnrollmentResponse.parse(res).enrollment;
 }

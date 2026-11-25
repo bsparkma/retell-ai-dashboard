@@ -17394,7 +17394,7 @@ var EmailLibraryCatalogResponse = import_zod7.z.object({
   success: import_zod7.z.literal(true),
   office: OfficeKeySchema,
   libraryVersion: import_zod7.z.string(),
-  /** False until the doctor's review; flips only by PR. Nothing is sent from this library either way in EL-1. */
+  /** True since EL-2 (1.3.0 is the doctor-reviewed wording); flips only by PR. While false, nurture cannot start a library enrollment (409 LIBRARY_NOT_APPROVED). */
   clinicallyApproved: import_zod7.z.boolean(),
   status: import_zod7.z.string(),
   rulesOfUse: import_zod7.z.array(import_zod7.z.string()),
@@ -17908,7 +17908,13 @@ var TcNurtureEnrollment = import_zod8.z.object({
   /** EL-2: the library procedure this enrollment drafts from, or null for the hand-written touches. */
   libraryProcedureId: import_zod8.z.string().max(NURTURE_LIBRARY_PROCEDURE_MAX).nullable(),
   /** EL-2: the library tone, set exactly when libraryProcedureId is. */
-  libraryVariant: NurtureLibraryVariant.nullable()
+  libraryVariant: NurtureLibraryVariant.nullable(),
+  /**
+   * EL-2: how many touches this enrollment's schedule has — the preset's at
+   * its intensity, or the library sequence's (minus any stage its procedure
+   * skips). Server-computed, so the strip's "N of M drafted" is never a guess.
+   */
+  stepCount: import_zod8.z.number().int().min(0)
 });
 var NurtureTrackUnavailableReason = import_zod8.z.enum([
   "switched_off",
