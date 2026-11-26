@@ -13,7 +13,7 @@
  * HONEST: there is no automatic sender yet, so the screen says so in words —
  * an approved email waits. Nothing on this screen sends anything.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { CalendarClock, Check, CheckCheck, Eye, EyeOff, Info, Loader2, Pencil, SkipForward, Undo2 } from "lucide-react";
 import type { OfficeId } from "@shared/tc/contract";
@@ -43,9 +43,12 @@ import {
 import {
   LIBRARY_TONE_LABEL,
   REVIEW_CHIP_TONE,
+  checkPickedTime,
+  nurtureErrorText,
   officeDateTimeParts,
   plannedLabel,
   reviewChipText,
+  sendWindowWords,
 } from "./campaignCopy";
 import { libraryProcedureName, libraryStageLabel, useLibraryCatalog } from "./useLibraryCatalog";
 
@@ -106,6 +109,24 @@ export function NurtureCampaignReview({ office, enrollmentId, open, onOpenChange
       onChanged?.();
     } catch (e) {
       toast.error(tcErrorMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /**
+   * The Edit and Change date forms' save. Unlike `run`, a refusal THROWS back
+   * to the form, so the form can stay open with what the person typed and say
+   * why in place; only a success toasts. (Beau, staging 2026-11-25: a refused
+   * Sunday pick closed the form and read as "the date did not save".)
+   */
+  const save = async (key: string, fn: () => Promise<unknown>, done: string) => {
+    setBusy(key);
+    try {
+      await fn();
+      toast.success(done);
+      await load();
+      onChanged?.();
     } finally {
       setBusy(null);
     }
@@ -221,10 +242,10 @@ export function NurtureCampaignReview({ office, enrollmentId, open, onOpenChange
                     void run(x.message.messageId, () => skipNurtureDraft(office, x.message.messageId), "Skipped. It won't be sent.")
                   }
                   onReschedule={(when) =>
-                    void run(x.message.messageId, () => rescheduleNurtureEmail(office, x.message.messageId, when), "Planned time changed.")
+                    save(x.message.messageId, () => rescheduleNurtureEmail(office, x.message.messageId, when), "Planned time changed.")
                   }
                   onEdit={(body, subject) =>
-                    void run(x.message.messageId, () => editDraft(office, x.message.messageId, { body, subject }), "Saved.")
+                    save(x.message.messageId, () => editDraft(office, x.message.messageId, { body, subject }), "Saved.")
                   }
                 />
               ))}
@@ -235,6 +256,11 @@ export function NurtureCampaignReview({ office, enrollmentId, open, onOpenChange
     </Dialog>
   );
 }
+
+/** How long a changed label stays highlighted after a save, so the change is noticeable. */
+const FLASH_MS = 2500;
+const FLASH_CLASS =
+  "rounded bg-amber-100 px-1 text-amber-950 ring-1 ring-amber-300 dark:bg-amber-900/60 dark:text-amber-100 dark:ring-amber-700";
 
 function EmailRow({
   office,
@@ -258,8 +284,10 @@ function EmailRow({
   onApprove: () => void;
   onUnapprove: () => void;
   onSkip: () => void;
-  onReschedule: (when: { date: string; time: string }) => void;
-  onEdit: (body: string, subject: string) => void;
+  /** Resolves on success; REJECTS with the server's refusal, which the form shows inline. */
+  onReschedule: (when: { date: string; time: string }) => Promise<void>;
+  /** Resolves on success; REJECTS with the server's refusal, which the form shows inline. */
+  onEdit: (body: string, subject: string) => Promise<void>;
 }) {
   const m = email.message;
   const [mode, setMode] = useState<"none" | "edit" | "date">("none");
@@ -268,12 +296,19 @@ function EmailRow({
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [body, setBody] = useState(m.body);
   const [subject, setSubject] = useState(m.subject ?? "");
-  const parts = officeDateTimeParts(m.scheduledFor);
-  const [date, setDate] = useState(parts.date);
-  const [time, setTime] = useState(parts.time);
+  const [date, setDate] = useState(() => officeDateTimeParts(m.scheduledFor).date);
+  const [time, setTime] = useState(() => officeDateTimeParts(m.scheduledFor).time);
+  /** The open form's save is in flight: Save spins and is disabled, and the form stays open. */
+  const [saving, setSaving] = useState(false);
+  /** The server's refusal, inline in the open form until the next attempt or Cancel. */
+  const [formError, setFormError] = useState<string | null>(null);
+  const [flash, setFlash] = useState<"planned" | "body" | null>(null);
+  // A synchronous guard: two clicks in one frame would both still see `saving` as false.
+  const inFlight = useRef(false);
   const working = busy === m.messageId || busy === "all";
   const waiting = m.status === "draft" || m.status === "scheduled";
   const problem = nurtureEmailTextProblem(body);
+  const pick = checkPickedTime(date, time);
 
   const togglePreview = async () => {
     if (showPreview) {
@@ -297,6 +332,67 @@ function EmailRow({
     setSubject(m.subject ?? "");
   }, [m.body, m.subject]);
 
+  // The date inputs follow the row: a reload with a new planned time re-seeds them.
+  useEffect(() => {
+    const parts = officeDateTimeParts(m.scheduledFor);
+    setDate(parts.date);
+    setTime(parts.time);
+  }, [m.scheduledFor]);
+
+  useEffect(() => {
+    if (!flash) return;
+    const t = setTimeout(() => setFlash(null), FLASH_MS);
+    return () => clearTimeout(t);
+  }, [flash]);
+
+  /** Close only on success; on a refusal keep the form and its values, and say why in place. */
+  const submit = async (fn: () => Promise<void>, changed: "planned" | "body") => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setSaving(true);
+    setFormError(null);
+    try {
+      await fn();
+      setMode("none");
+      setFlash(changed);
+    } catch (e) {
+      setFormError(nurtureErrorText(e));
+    } finally {
+      inFlight.current = false;
+      setSaving(false);
+    }
+  };
+
+  /** Cancel drops the refusal and puts the inputs back to the row's own values. */
+  const cancel = () => {
+    setFormError(null);
+    setBody(m.body);
+    setSubject(m.subject ?? "");
+    const parts = officeDateTimeParts(m.scheduledFor);
+    setDate(parts.date);
+    setTime(parts.time);
+    setMode("none");
+  };
+
+  const toggleForm = (which: "edit" | "date") => {
+    if (mode === which) {
+      cancel();
+      return;
+    }
+    setFormError(null);
+    setMode(which);
+  };
+
+  const formAlert = formError ? (
+    <p
+      role="alert"
+      className="basis-full rounded-md border border-red-300 bg-red-50 px-2 py-1.5 text-xs text-red-900 dark:border-red-800 dark:bg-red-950/50 dark:text-red-200"
+      data-testid="nurture-review-form-error"
+    >
+      Not saved: {formError}
+    </p>
+  ) : null;
+
   return (
     <li className="rounded-lg border border-border bg-card p-3" data-testid="nurture-review-email" data-status={m.status}>
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -304,7 +400,11 @@ function EmailRow({
           Email {email.stepIndex + 1} of {total}
         </span>
         <span>· {stageLabel}</span>
-        <span className="flex items-center gap-1" data-testid="nurture-review-planned">
+        <span
+          className={`flex items-center gap-1 transition-colors ${flash === "planned" ? FLASH_CLASS : ""}`}
+          data-testid="nurture-review-planned"
+          data-flash={flash === "planned" ? "true" : undefined}
+        >
           · <CalendarClock className="h-3 w-3" aria-hidden /> {plannedLabel(m.scheduledFor)}
         </span>
         <span
@@ -317,63 +417,89 @@ function EmailRow({
       <p className="mt-1 text-sm font-semibold text-foreground">{m.subject}</p>
 
       {mode === "edit" ? (
-        <div className="mt-2 space-y-2">
+        <div className="mt-2 space-y-2" data-testid="nurture-review-edit-form">
           <label className="block text-xs text-muted-foreground">
             Subject
-            <Input value={subject} onChange={(ev) => setSubject(ev.target.value)} maxLength={300} className="mt-1" />
+            <Input value={subject} onChange={(ev) => setSubject(ev.target.value)} maxLength={300} className="mt-1" disabled={saving} />
           </label>
           <label className="block text-xs text-muted-foreground">
             Email text
-            <Textarea value={body} onChange={(ev) => setBody(ev.target.value)} rows={10} className="mt-1 font-mono text-xs" />
+            <Textarea
+              value={body}
+              onChange={(ev) => setBody(ev.target.value)}
+              rows={10}
+              className="mt-1 font-mono text-xs"
+              disabled={saving}
+            />
           </label>
           {problem && (
             <p className="text-xs text-red-600 dark:text-red-400" data-testid="nurture-review-text-problem">
               {TEXT_PROBLEM_COPY[problem]}
             </p>
           )}
+          {formAlert}
           <div className="flex justify-end gap-2">
-            <Button size="sm" variant="ghost" onClick={() => setMode("none")}>
+            <Button size="sm" variant="ghost" onClick={cancel} disabled={saving}>
               Cancel
             </Button>
             <Button
               size="sm"
-              disabled={working || problem !== null || !subject.trim()}
-              onClick={() => {
-                setMode("none");
-                onEdit(body, subject.trim());
-              }}
+              className="gap-1"
+              disabled={saving || working || problem !== null || !subject.trim()}
+              onClick={() => void submit(() => onEdit(body, subject.trim()), "body")}
             >
-              Save
+              {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />} Save
             </Button>
           </div>
         </div>
       ) : (
-        <p className="mt-1 line-clamp-3 whitespace-pre-wrap break-words text-sm text-muted-foreground">{m.body}</p>
+        <p
+          className={`mt-1 line-clamp-3 whitespace-pre-wrap break-words text-sm text-muted-foreground transition-colors ${
+            flash === "body" ? FLASH_CLASS : ""
+          }`}
+          data-testid="nurture-review-body"
+          data-flash={flash === "body" ? "true" : undefined}
+        >
+          {m.body}
+        </p>
       )}
 
       {mode === "date" && (
         <div className="mt-2 flex flex-wrap items-end gap-2" data-testid="nurture-review-date-form">
           <label className="text-xs text-muted-foreground">
             Date
-            <Input type="date" value={date} onChange={(ev) => setDate(ev.target.value)} className="mt-1 w-40" />
+            <Input type="date" value={date} onChange={(ev) => setDate(ev.target.value)} className="mt-1 w-40" disabled={saving} />
           </label>
           <label className="text-xs text-muted-foreground">
             Time (office)
-            <Input type="time" value={time} onChange={(ev) => setTime(ev.target.value)} className="mt-1 w-32" />
+            <Input type="time" value={time} onChange={(ev) => setTime(ev.target.value)} className="mt-1 w-32" disabled={saving} />
           </label>
-          <p className="basis-full text-xs text-muted-foreground">Monday to Friday, 9:00 AM to 4:00 PM office time.</p>
-          <Button size="sm" variant="ghost" onClick={() => setMode("none")}>
+          {pick.words && (
+            <p className="basis-full text-sm font-medium text-foreground" data-testid="nurture-review-pick-words">
+              {pick.words} office time
+            </p>
+          )}
+          {pick.problem ? (
+            <p
+              className="basis-full rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs text-amber-950 dark:border-amber-700 dark:bg-amber-950/50 dark:text-amber-100"
+              data-testid="nurture-review-pick-problem"
+            >
+              {pick.problem}
+            </p>
+          ) : (
+            <p className="basis-full text-xs text-muted-foreground">Emails go out {sendWindowWords()}.</p>
+          )}
+          {formAlert}
+          <Button size="sm" variant="ghost" onClick={cancel} disabled={saving}>
             Cancel
           </Button>
           <Button
             size="sm"
-            disabled={working || !date || !time}
-            onClick={() => {
-              setMode("none");
-              onReschedule({ date, time });
-            }}
+            className="gap-1"
+            disabled={saving || working || !pick.inWindow}
+            onClick={() => void submit(() => onReschedule({ date, time }), "planned")}
           >
-            Save date
+            {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />} Save date
           </Button>
         </div>
       )}
@@ -403,11 +529,11 @@ function EmailRow({
         )}
         {m.status === "draft" && (
           <>
-            <Button size="sm" variant="ghost" className="gap-1" disabled={working} onClick={() => setMode(mode === "edit" ? "none" : "edit")}>
+            <Button size="sm" variant="ghost" className="gap-1" disabled={working} onClick={() => toggleForm("edit")}>
               <Pencil className="h-3.5 w-3.5" /> Edit
             </Button>
             <Button size="sm" className="gap-1" disabled={working || !running} onClick={onApprove} data-testid="nurture-review-approve">
-              {working ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />} Approve
+              {working && !saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />} Approve
             </Button>
           </>
         )}
@@ -418,7 +544,7 @@ function EmailRow({
         )}
         {waiting && (
           <>
-            <Button size="sm" variant="ghost" className="gap-1" disabled={working} onClick={() => setMode(mode === "date" ? "none" : "date")}>
+            <Button size="sm" variant="ghost" className="gap-1" disabled={working} onClick={() => toggleForm("date")}>
               <CalendarClock className="h-3.5 w-3.5" /> Change date
             </Button>
             <Button size="sm" variant="ghost" className="gap-1" disabled={working} onClick={onSkip} data-testid="nurture-review-skip">

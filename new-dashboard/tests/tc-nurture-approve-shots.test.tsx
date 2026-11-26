@@ -13,6 +13,10 @@
  *   tcnurture-12-campaign-strip     the case strip on a library campaign
  *   tcnurture-13-outbox-campaigns   the outbox: library campaigns per case with
  *                                   a needs-approval count, a hand-written group below
+ *   tcnurture-14-date-sunday-pick   Change date on a Sunday pick: the pick in words,
+ *                                   the window line naming Monday, Save date disabled
+ *   tcnurture-15-date-refused       a server refusal shown inline: the form stays
+ *                                   open with the picked values and the message
  *
  * The email text is the library's own composed text for the roland test
  * patient (tests/fixtures/tc-nurture-crown-campaign.json). NO NETWORK, NO
@@ -28,6 +32,7 @@ import { Router as WouterRouter } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 import type { NurtureCaseResponse } from "@shared/tc/nurture";
 import { CASE_A, CATALOG, ENR_A, campaignResponse, libraryEnrollment, outboxWithCampaigns, rendered } from "./fixtures/tcNurtureCampaign";
+import { TcApiError } from "@/features/tc/api";
 
 (globalThis as Record<string, unknown>).React = React;
 
@@ -148,5 +153,31 @@ describe.skipIf(!process.env.TC_SHOTS)("nurture approve-up-front shots", () => {
     await screen.findAllByTestId("outbox-campaign");
     await waitFor(() => screen.getAllByTestId("outbox-campaign-email")[0].textContent?.includes("Treatment recap"));
     dump("tcnurture-13-outbox-campaigns@1280x1200");
+  });
+
+  it("14 Change date on a Sunday pick", async () => {
+    wrap(<NurtureCampaignReview office="roland" enrollmentId={ENR_A} open onOpenChange={() => {}} />);
+    const rows = await screen.findAllByTestId("nurture-review-email");
+    fireEvent.click(within(rows[0]).getByText("Change date"));
+    const form = within(rows[0]).getByTestId("nurture-review-date-form");
+    fireEvent.change(within(form).getByLabelText("Date"), { target: { value: "2026-11-29" } });
+    fireEvent.change(within(form).getByLabelText("Time (office)"), { target: { value: "10:00" } });
+    await within(form).findByTestId("nurture-review-pick-problem");
+    dump("tcnurture-14-date-sunday-pick@1280x1100");
+  });
+
+  it("15 a server refusal shown inline", async () => {
+    api.rescheduleNurtureEmail.mockRejectedValue(
+      new TcApiError("Email 4 has to go after email 3 — the campaign keeps its order. Move that one first, or pick another time.", 409, "OUT_OF_ORDER", null, []),
+    );
+    wrap(<NurtureCampaignReview office="roland" enrollmentId={ENR_A} open onOpenChange={() => {}} />);
+    const rows = await screen.findAllByTestId("nurture-review-email");
+    fireEvent.click(within(rows[3]).getByText("Change date"));
+    const form = within(rows[3]).getByTestId("nurture-review-date-form");
+    fireEvent.change(within(form).getByLabelText("Date"), { target: { value: "2026-12-07" } });
+    fireEvent.change(within(form).getByLabelText("Time (office)"), { target: { value: "11:00" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Save date" }));
+    await within(rows[3]).findByRole("alert");
+    dump("tcnurture-15-date-refused@1280x1500");
   });
 });
