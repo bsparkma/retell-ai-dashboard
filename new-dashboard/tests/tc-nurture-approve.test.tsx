@@ -79,6 +79,9 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 import { NurtureCampaignBar } from "@/features/tc/nurture/NurtureCampaignBar";
 import { NurtureCampaignReview } from "@/features/tc/nurture/NurtureCampaignReview";
 import { NurtureOutbox } from "@/features/tc/nurture/NurtureOutbox";
+import { checkPickedTime, sendWindowWords } from "@/features/tc/nurture/campaignCopy";
+import { TcApiError } from "@/features/tc/api";
+import { toast } from "sonner";
 
 function wrap(node: React.ReactNode) {
   const { hook } = memoryLocation({ path: "/tc/cases/x" });
@@ -238,6 +241,209 @@ describe("Review campaign", () => {
     expect(screen.queryByTestId("nurture-approve-all")).toBeNull();
     const rows = screen.getAllByTestId("nurture-review-email");
     expect((within(rows[3]).getByTestId("nurture-review-approve") as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("Review campaign forms wait for the server (fix: a refused save must be visible)", () => {
+  const open = () =>
+    wrap(<NurtureCampaignReview office="roland" enrollmentId={ENR_A} open onOpenChange={() => {}} onChanged={() => {}} />);
+  /** The campaign with email 4 (index 3) moved to `scheduledFor`. */
+  const withEmail3At = (scheduledFor: string) =>
+    campaignResponse({
+      emails: campaignResponse().emails.map((x, i) => (i === 3 ? { ...x, message: { ...x.message, scheduledFor } } : x)),
+    });
+  /** A promise the test settles by hand, to look at the form while the request is in flight. */
+  function deferred<T>() {
+    let resolve!: (v: T) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+  const openDateForm = async () => {
+    open();
+    const rows = await screen.findAllByTestId("nurture-review-email");
+    fireEvent.click(within(rows[3]).getByText("Change date"));
+    return { rows, form: within(rows[3]).getByTestId("nurture-review-date-form") };
+  };
+  const pickIn = (form: HTMLElement, date: string, time: string) => {
+    fireEvent.change(within(form).getByLabelText("Date"), { target: { value: date } });
+    fireEvent.change(within(form).getByLabelText("Time (office)"), { target: { value: time } });
+  };
+  beforeEach(() => {
+    vi.mocked(toast.success).mockClear();
+    vi.mocked(toast.error).mockClear();
+  });
+  const saveDate = (form: HTMLElement) => within(form).getByRole("button", { name: "Save date" }) as HTMLButtonElement;
+
+  it("a refused reschedule keeps the form open, with the server's message inline and the picked values", async () => {
+    const { rows, form } = await openDateForm();
+    pickIn(form, "2026-12-11", "11:30");
+    const refusal = deferred<never>();
+    api.rescheduleNurtureEmail.mockReturnValue(refusal.promise);
+    fireEvent.click(saveDate(form));
+    // In flight: the form is still open, Save spins and is disabled.
+    expect(within(rows[3]).getByTestId("nurture-review-date-form")).toBeTruthy();
+    expect(saveDate(form).disabled).toBe(true);
+    expect(saveDate(form).querySelector(".animate-spin")).not.toBeNull();
+    refusal.reject(
+      new TcApiError("Email 4 has to go after email 3 — the campaign keeps its order. Move that one first, or pick another time.", 409, "OUT_OF_ORDER", null, []),
+    );
+    const alert = await within(rows[3]).findByRole("alert");
+    expect(alert.textContent).toMatch(/Not saved: Email 4 has to go after email 3/);
+    const still = within(rows[3]).getByTestId("nurture-review-date-form");
+    expect((within(still).getByLabelText("Date") as HTMLInputElement).value).toBe("2026-12-11");
+    expect((within(still).getByLabelText("Time (office)") as HTMLInputElement).value).toBe("11:30");
+    // The row still shows the old time, and no toast pretended anything.
+    expect(within(rows[3]).getByTestId("nurture-review-planned").textContent).toContain("Thu, Dec 10 · 10:00 AM");
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
+    // The message stays until the next attempt...
+    api.rescheduleNurtureEmail.mockReturnValue(new Promise(() => {}));
+    fireEvent.click(saveDate(still));
+    await waitFor(() => expect(within(rows[3]).queryByRole("alert")).toBeNull());
+  });
+
+  it("Cancel clears a refusal and puts the row's own date back", async () => {
+    const { rows, form } = await openDateForm();
+    pickIn(form, "2026-12-11", "11:30");
+    api.rescheduleNurtureEmail.mockRejectedValue(new TcApiError("That time would break the rule of 3 emails in 7 days.", 409, "CAP_WOULD_EXCEED", null, []));
+    fireEvent.click(saveDate(form));
+    await within(rows[3]).findByRole("alert");
+    fireEvent.click(within(form).getByRole("button", { name: "Cancel" }));
+    expect(within(rows[3]).queryByTestId("nurture-review-date-form")).toBeNull();
+    fireEvent.click(within(rows[3]).getByText("Change date"));
+    const again = within(rows[3]).getByTestId("nurture-review-date-form");
+    expect(within(rows[3]).queryByRole("alert")).toBeNull();
+    expect((within(again).getByLabelText("Date") as HTMLInputElement).value).toBe("2026-12-10");
+  });
+
+  it("a refused edit keeps the typed text and says why inline", async () => {
+    open();
+    const rows = await screen.findAllByTestId("nurture-review-email");
+    fireEvent.click(within(rows[3]).getByText("Edit"));
+    const typed = "Hi Test Patient,\n\nA shorter note.\n\nTest Coordinator";
+    fireEvent.change(within(rows[3]).getByRole("textbox", { name: "Email text" }), { target: { value: typed } });
+    fireEvent.change(within(rows[3]).getByRole("textbox", { name: "Subject" }), { target: { value: "A new subject" } });
+    api.editDraft.mockRejectedValue(new TcApiError("This email is scheduled, so it can't be edited. Unapprove it first.", 409, "MESSAGE_NOT_EDITABLE", null, []));
+    fireEvent.click(within(rows[3]).getByRole("button", { name: "Save" }));
+    expect((await within(rows[3]).findByRole("alert")).textContent).toMatch(/Not saved: This email is scheduled/);
+    expect(within(rows[3]).getByTestId("nurture-review-edit-form")).toBeTruthy();
+    expect((within(rows[3]).getByRole("textbox", { name: "Email text" }) as HTMLTextAreaElement).value).toBe(typed);
+    expect((within(rows[3]).getByRole("textbox", { name: "Subject" }) as HTMLInputElement).value).toBe("A new subject");
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("a Sunday pick says what it is, names Monday, and disables Save date", async () => {
+    const { form } = await openDateForm();
+    pickIn(form, "2026-11-29", "10:00");
+    expect(within(form).getByTestId("nurture-review-pick-words").textContent).toBe("Sunday, Nov 29, 10:00 AM office time");
+    expect(within(form).getByTestId("nurture-review-pick-problem").textContent).toBe(
+      "Emails go out Monday to Friday, 9:00 AM to 4:00 PM office time. The next allowed time is Monday, Nov 30, 9:00 AM.",
+    );
+    expect(saveDate(form).disabled).toBe(true);
+    fireEvent.click(saveDate(form));
+    expect(api.rescheduleNurtureEmail).not.toHaveBeenCalled();
+  });
+
+  it("a 5:00 PM pick disables Save date and names the next morning that sends", async () => {
+    const { form } = await openDateForm();
+    pickIn(form, "2026-12-11", "17:00");
+    expect(within(form).getByTestId("nurture-review-pick-words").textContent).toBe("Friday, Dec 11, 5:00 PM office time");
+    expect(within(form).getByTestId("nurture-review-pick-problem").textContent).toContain("The next allowed time is Monday, Dec 14, 9:00 AM.");
+    expect(saveDate(form).disabled).toBe(true);
+  });
+
+  it("a valid pick enables Save date; success closes the form and the new time is highlighted", async () => {
+    const { rows, form } = await openDateForm();
+    pickIn(form, "2026-12-11", "11:30");
+    expect(within(form).getByTestId("nurture-review-pick-words").textContent).toBe("Friday, Dec 11, 11:30 AM office time");
+    expect(within(form).queryByTestId("nurture-review-pick-problem")).toBeNull();
+    expect(saveDate(form).disabled).toBe(false);
+    const ok = deferred<ReturnType<typeof message>>();
+    api.rescheduleNurtureEmail.mockReturnValue(ok.promise);
+    // 2026-12-11 11:30 Chicago (CST) is 17:30Z.
+    api.getNurtureCampaign.mockResolvedValue(withEmail3At("2026-12-11T17:30:00.000Z"));
+    fireEvent.click(saveDate(form));
+    expect(within(rows[3]).getByTestId("nurture-review-date-form")).toBeTruthy();
+    ok.resolve(message(3, { scheduledFor: "2026-12-11T17:30:00.000Z" }));
+    await waitFor(() => expect(within(rows[3]).queryByTestId("nurture-review-date-form")).toBeNull());
+    const planned = within(rows[3]).getByTestId("nurture-review-planned");
+    expect(planned.textContent).toContain("Fri, Dec 11 · 11:30 AM");
+    expect(planned.getAttribute("data-flash")).toBe("true");
+    expect(toast.success).toHaveBeenCalledWith("Planned time changed.");
+  });
+
+  it("a successful edit closes the form and highlights the new text", async () => {
+    open();
+    const rows = await screen.findAllByTestId("nurture-review-email");
+    fireEvent.click(within(rows[3]).getByText("Edit"));
+    const typed = "Hi Test Patient,\n\nA shorter note.";
+    fireEvent.change(within(rows[3]).getByRole("textbox", { name: "Email text" }), { target: { value: typed } });
+    api.editDraft.mockResolvedValue(message(3, { body: typed }));
+    api.getNurtureCampaign.mockResolvedValue(
+      campaignResponse({
+        emails: campaignResponse().emails.map((x, i) => (i === 3 ? { ...x, message: { ...x.message, body: typed } } : x)),
+      }),
+    );
+    fireEvent.click(within(rows[3]).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(within(rows[3]).queryByTestId("nurture-review-edit-form")).toBeNull());
+    const shown = within(rows[3]).getByTestId("nurture-review-body");
+    expect(shown.textContent).toBe(typed);
+    expect(shown.getAttribute("data-flash")).toBe("true");
+  });
+
+  it("the date inputs re-seed after a reload brings a new planned time", async () => {
+    const { rows, form } = await openDateForm();
+    expect((within(form).getByLabelText("Date") as HTMLInputElement).value).toBe("2026-12-10");
+    // Something else reloads the campaign (an approval here) while the form is open,
+    // and the server has moved email 4 to Mon Dec 14 09:00 (15:00Z).
+    api.approveNurtureEmail.mockResolvedValue({ message: message(3, { status: "scheduled" }), replanned: 0 });
+    api.getNurtureCampaign.mockResolvedValue(withEmail3At("2026-12-14T15:00:00.000Z"));
+    fireEvent.click(within(rows[3]).getByTestId("nurture-review-approve"));
+    await waitFor(() => expect(within(rows[3]).getByTestId("nurture-review-planned").textContent).toContain("Mon, Dec 14 · 9:00 AM"));
+    const now = within(rows[3]).getByTestId("nurture-review-date-form");
+    expect((within(now).getByLabelText("Date") as HTMLInputElement).value).toBe("2026-12-14");
+    expect((within(now).getByLabelText("Time (office)") as HTMLInputElement).value).toBe("09:00");
+  });
+
+  it("a double click on Save date sends one request", async () => {
+    const { form } = await openDateForm();
+    pickIn(form, "2026-12-11", "11:30");
+    api.rescheduleNurtureEmail.mockReturnValue(new Promise(() => {}));
+    const button = saveDate(form);
+    fireEvent.click(button);
+    fireEvent.click(button);
+    await waitFor(() => expect(api.rescheduleNurtureEmail).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("checkPickedTime (pure, office time, no clock)", () => {
+  it.each([
+    ["2026-12-11", "16:00", true, null],
+    ["2026-12-11", "09:00", true, null],
+    ["2026-12-11", "16:01", false, "Monday, Dec 14, 9:00 AM"],
+    ["2026-12-14", "08:59", false, "Monday, Dec 14, 9:00 AM"],
+    ["2026-12-12", "12:00", false, "Monday, Dec 14, 9:00 AM"],
+    ["2026-12-09", "23:30", false, "Thursday, Dec 10, 9:00 AM"],
+    ["2026-11-01", "10:00", false, "Monday, Nov 2, 9:00 AM"],
+  ])("%s %s → in window %s, next %s", (date, time, inWindow, next) => {
+    const r = checkPickedTime(date, time);
+    expect(r.inWindow).toBe(inWindow);
+    if (next) expect(r.problem).toContain(`The next allowed time is ${next}.`);
+    else expect(r.problem).toBeNull();
+  });
+
+  it("says nothing about an incomplete or impossible pick", () => {
+    expect(checkPickedTime("", "10:00")).toEqual({ words: null, inWindow: false, problem: null });
+    expect(checkPickedTime("2026-02-30", "10:00")).toEqual({ words: null, inWindow: false, problem: null });
+    expect(checkPickedTime("2026-12-11", "")).toEqual({ words: null, inWindow: false, problem: null });
+  });
+
+  it("reads the window off the shared contract", () => {
+    expect(sendWindowWords()).toBe("Monday to Friday, 9:00 AM to 4:00 PM office time");
   });
 });
 
